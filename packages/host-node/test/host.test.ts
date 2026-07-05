@@ -51,6 +51,22 @@ test("NodeShell executes commands with cwd, exit codes, and timeout", async () =
 	});
 });
 
+test("NodeShell streams stdout/stderr chunks and survives broken callbacks", async () => {
+	await withTempDir(async (dir) => {
+		const shell = new NodeShell(dir);
+		const chunks: string[] = [];
+		const result = await shell.exec("echo one; sleep 0.3; echo two", {
+			onStdout: (chunk) => {
+				chunks.push(chunk);
+				throw new Error("broken callback");
+			},
+		});
+		assert.ok(chunks.length >= 2, `expected >=2 streamed chunks, got ${chunks.length}`);
+		assert.equal(result.stdout, "one\ntwo\n");
+		assert.equal(result.exitCode, 0);
+	});
+});
+
 test("coding tools work end-to-end against the node host", async () => {
 	await withTempDir(async (dir) => {
 		const tools = createCodingTools({ fs: new NodeFileSystem(dir), shell: new NodeShell(dir) });

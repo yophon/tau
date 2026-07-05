@@ -34,6 +34,13 @@ export interface ShellExecResult {
 export interface Shell {
 	exec(
 		command: string,
-		options?: { cwd?: string; timeoutSeconds?: number; signal?: TauAbortSignal },
+		options?: {
+			cwd?: string;
+			timeoutSeconds?: number;
+			signal?: TauAbortSignal;
+			/** Streaming stdout chunks, mirroring pi's ExecutionEnv. Callback errors must not break execution. */
+			onStdout?: (chunk: string) => void;
+			onStderr?: (chunk: string) => void;
+		},
 	): Promise<ShellExecResult>;
 }

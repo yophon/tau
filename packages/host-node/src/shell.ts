@@ -34,7 +34,13 @@ export class NodeShell implements Shell {
 
 	async exec(
 		command: string,
-		options?: { cwd?: string; timeoutSeconds?: number; signal?: TauAbortSignal },
+		options?: {
+			cwd?: string;
+			timeoutSeconds?: number;
+			signal?: TauAbortSignal;
+			onStdout?: (chunk: string) => void;
+			onStderr?: (chunk: string) => void;
+		},
 	): Promise<ShellExecResult> {
 		if (options?.signal?.aborted) throw new ShellError("aborted", "aborted");
 		const timeoutSeconds = options?.timeoutSeconds;
@@ -83,9 +89,19 @@ export class NodeShell implements Shell {
 			child.stderr.setEncoding("utf8");
 			child.stdout.on("data", (chunk: string) => {
 				stdout += chunk;
+				try {
+					options?.onStdout?.(chunk);
+				} catch {
+					// A broken callback must not break command execution.
+				}
 			});
 			child.stderr.on("data", (chunk: string) => {
 				stderr += chunk;
+				try {
+					options?.onStderr?.(chunk);
+				} catch {
+					// A broken callback must not break command execution.
+				}
 			});
 			child.on("error", (error) => {
 				settle({ ok: false, error: new ShellError("spawn_error", toError(error).message, error) });

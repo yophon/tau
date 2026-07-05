@@ -1,5 +1,6 @@
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "./messages.ts";
-import type { Tool } from "./tools.ts";
+import type { ChatStreamEvent } from "./openai.ts";
+import type { Tool, ToolResult } from "./tools.ts";
 
 /**
  * The extension API deliberately mirrors pi's extension API
@@ -58,6 +59,83 @@ export interface TurnEndEvent {
 	toolResults: ToolResultMessage[];
 }
 
+/** Fired before each LLM call with the messages about to be sent. Handlers may return a replacement. */
+export interface ContextEvent {
+	type: "context";
+	messages: AgentMessage[];
+}
+
+export type ContextEventResult = { messages?: AgentMessage[] } | undefined;
+
+/** Fired once per prompt, after input handling and before the agent loop. */
+export interface BeforeAgentStartEvent {
+	type: "before_agent_start";
+	prompt: string;
+	systemPrompt: string;
+}
+
+/** systemPrompt replacements chain across extensions, as in pi. */
+export type BeforeAgentStartEventResult = { systemPrompt?: string } | undefined;
+
+/**
+ * Fired when an assistant message starts streaming. The message is partial.
+ * Deviation from pi: currently fired for assistant messages only (pi also
+ * fires for user/toolResult); revisit with session events in Phase 3.
+ */
+export interface MessageStartEvent {
+	type: "message_start";
+	message: AgentMessage;
+}
+
+/** Fired per stream event while an assistant message streams. */
+export interface MessageUpdateEvent {
+	type: "message_update";
+	message: AssistantMessage;
+	/** Deviation from pi: carries tau's ChatStreamEvent instead of pi's AssistantMessageEvent. */
+	event: ChatStreamEvent;
+}
+
+/** Fired when a message is finalized. Handlers may replace it (same role required). */
+export interface MessageEndEvent {
+	type: "message_end";
+	message: AgentMessage;
+}
+
+export type MessageEndEventResult = { message?: AgentMessage } | undefined;
+
+/** Fired when a tool starts executing (after tool_call passed the block gate). */
+export interface ToolExecutionStartEvent {
+	type: "tool_execution_start";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+}
+
+/** Fired with streaming partial output during tool execution (e.g. bash stdout chunks). */
+export interface ToolExecutionUpdateEvent {
+	type: "tool_execution_update";
+	toolCallId: string;
+	toolName: string;
+	args: Record<string, unknown>;
+	partialOutput: string;
+}
+
+/** Fired when a tool finishes executing, before tool_result. */
+export interface ToolExecutionEndEvent {
+	type: "tool_execution_end";
+	toolCallId: string;
+	toolName: string;
+	result: ToolResult;
+}
+
+/** Fired by hosts to decide whether a project directory's extensions may be loaded. */
+export interface ProjectTrustEvent {
+	type: "project_trust";
+	cwd: string;
+}
+
+export type ProjectTrustEventResult = { trusted: "yes" | "no" | "undecided"; remember?: boolean } | undefined;
+
 /** Fired for user input before it enters the conversation. */
 export interface InputEvent {
 	type: "input";
@@ -102,6 +180,14 @@ export interface RegisteredCommand {
 	handler: (args: string, ctx: ExtensionContext) => Promise<string | undefined> | string | undefined;
 }
 
+/** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
+export interface RegisteredFlag {
+	name: string;
+	description?: string;
+	type: "boolean" | "string";
+	default?: boolean | string;
+}
+
 /** Registration surface handed to an extension's setup function. */
 export interface ExtensionAPI {
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
@@ -109,14 +195,29 @@ export interface ExtensionAPI {
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
+	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
+	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
+	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
+	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
+	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): void;
 	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
+	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): void;
+	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): void;
+	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
+	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
 
 	/** Register a tool the model can call. Same-name registrations override (later wins). */
 	registerTool(tool: Tool): void;
 
 	/** Register a custom command. */
 	registerCommand(name: string, options: Omit<RegisteredCommand, "name">): void;
+
+	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
+	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
+
+	/** Read a flag value (host-supplied, falling back to the declared default). */
+	getFlag(name: string): boolean | string | undefined;
 }
 
 /**
@@ -133,8 +234,17 @@ interface HandlerLists {
 	turn_start: ExtensionHandler<TurnStartEvent>[];
 	turn_end: ExtensionHandler<TurnEndEvent>[];
 	input: ExtensionHandler<InputEvent, InputEventResult>[];
+	context: ExtensionHandler<ContextEvent, ContextEventResult>[];
+	before_agent_start: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>[];
+	message_start: ExtensionHandler<MessageStartEvent>[];
+	message_update: ExtensionHandler<MessageUpdateEvent>[];
+	message_end: ExtensionHandler<MessageEndEvent, MessageEndEventResult>[];
 	tool_call: ExtensionHandler<ToolCallEvent, ToolCallEventResult>[];
+	tool_execution_start: ExtensionHandler<ToolExecutionStartEvent>[];
+	tool_execution_update: ExtensionHandler<ToolExecutionUpdateEvent>[];
+	tool_execution_end: ExtensionHandler<ToolExecutionEndEvent>[];
 	tool_result: ExtensionHandler<ToolResultEvent, ToolResultEventResult>[];
+	project_trust: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>[];
 }
 
 /**
@@ -145,34 +255,63 @@ interface HandlerLists {
 export class ExtensionRegistry {
 	readonly tools = new Map<string, Tool>();
 	readonly commands = new Map<string, RegisteredCommand>();
+	readonly flags = new Map<string, RegisteredFlag>();
+	private readonly flagValues = new Map<string, boolean | string>();
 	private readonly handlers: HandlerLists = {
 		agent_start: [],
 		agent_end: [],
 		turn_start: [],
 		turn_end: [],
 		input: [],
+		context: [],
+		before_agent_start: [],
+		message_start: [],
+		message_update: [],
+		message_end: [],
 		tool_call: [],
+		tool_execution_start: [],
+		tool_execution_update: [],
+		tool_execution_end: [],
 		tool_result: [],
+		project_trust: [],
 	};
 
 	static async load(extensions: Extension[]): Promise<ExtensionRegistry> {
 		const registry = new ExtensionRegistry();
+		await registry.add(extensions);
+		return registry;
+	}
+
+	/** Run additional extensions' setup against this registry (e.g. project extensions after a trust decision). */
+	async add(extensions: Extension[]): Promise<void> {
 		const on = (event: keyof HandlerLists, handler: unknown): void => {
-			(registry.handlers[event] as unknown[]).push(handler);
+			(this.handlers[event] as unknown[]).push(handler);
 		};
 		const api: ExtensionAPI = {
 			on: on as ExtensionAPI["on"],
 			registerTool: (tool) => {
-				registry.tools.set(tool.name, tool);
+				this.tools.set(tool.name, tool);
 			},
 			registerCommand: (name, options) => {
-				registry.commands.set(name, { name, ...options });
+				this.commands.set(name, { name, ...options });
 			},
+			registerFlag: (name, options) => {
+				this.flags.set(name, { name, ...options });
+			},
+			getFlag: (name) => this.getFlag(name),
 		};
 		for (const extension of extensions) {
 			await extension(api);
 		}
-		return registry;
+	}
+
+	/** Host-side: supply parsed CLI flag values. Unknown names are ignored (host validates). */
+	setFlagValues(values: Record<string, boolean | string>): void {
+		for (const [name, value] of Object.entries(values)) this.flagValues.set(name, value);
+	}
+
+	getFlag(name: string): boolean | string | undefined {
+		return this.flagValues.get(name) ?? this.flags.get(name)?.default;
 	}
 
 	/** Run input handlers. Transforms chain; "handled" short-circuits. */
@@ -205,6 +344,73 @@ export class ExtensionRegistry {
 			if (result.isError !== undefined) event.isError = result.isError;
 		}
 		return { output: event.output, isError: event.isError };
+	}
+
+	/** Run context handlers. Replacements chain: each handler sees the previous replacement. */
+	async runContext(messages: AgentMessage[], ctx: ExtensionContext): Promise<AgentMessage[]> {
+		let current = messages;
+		for (const handler of this.handlers.context) {
+			const result = await handler({ type: "context", messages: current }, ctx);
+			if (result?.messages) current = result.messages;
+		}
+		return current;
+	}
+
+	/** Run before_agent_start handlers. systemPrompt replacements chain, as in pi. */
+	async runBeforeAgentStart(prompt: string, systemPrompt: string, ctx: ExtensionContext): Promise<string> {
+		let current = systemPrompt;
+		for (const handler of this.handlers.before_agent_start) {
+			const result = await handler({ type: "before_agent_start", prompt, systemPrompt: current }, ctx);
+			if (result?.systemPrompt !== undefined) current = result.systemPrompt;
+		}
+		return current;
+	}
+
+	async notifyMessageStart(message: AgentMessage, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.message_start) await handler({ type: "message_start", message }, ctx);
+	}
+
+	async notifyMessageUpdate(message: AssistantMessage, event: ChatStreamEvent, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.message_update) {
+			await handler({ type: "message_update", message, event }, ctx);
+		}
+	}
+
+	/** Run message_end handlers. Replacements chain; a replacement changing the role is ignored. */
+	async runMessageEnd(message: AgentMessage, ctx: ExtensionContext): Promise<AgentMessage> {
+		let current = message;
+		for (const handler of this.handlers.message_end) {
+			const result = await handler({ type: "message_end", message: current }, ctx);
+			if (result?.message && result.message.role === current.role) current = result.message;
+		}
+		return current;
+	}
+
+	async notifyToolExecutionStart(event: Omit<ToolExecutionStartEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.tool_execution_start) {
+			await handler({ type: "tool_execution_start", ...event }, ctx);
+		}
+	}
+
+	async notifyToolExecutionUpdate(event: Omit<ToolExecutionUpdateEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.tool_execution_update) {
+			await handler({ type: "tool_execution_update", ...event }, ctx);
+		}
+	}
+
+	async notifyToolExecutionEnd(event: Omit<ToolExecutionEndEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.tool_execution_end) {
+			await handler({ type: "tool_execution_end", ...event }, ctx);
+		}
+	}
+
+	/** Run project_trust handlers. The first decisive answer (yes/no) wins. */
+	async runProjectTrust(cwd: string, ctx: ExtensionContext): Promise<NonNullable<ProjectTrustEventResult>> {
+		for (const handler of this.handlers.project_trust) {
+			const result = await handler({ type: "project_trust", cwd }, ctx);
+			if (result && result.trusted !== "undecided") return result;
+		}
+		return { trusted: "undecided" };
 	}
 
 	async notifyAgentStart(ctx: ExtensionContext): Promise<void> {

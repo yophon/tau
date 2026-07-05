@@ -103,9 +103,14 @@ results). Handlers chain in registration order. UI interaction goes through
 the optional `UiCapability` the host provides (the CLI backs it with readline,
 and omits it on non-TTY stdin so extensions degrade instead of hanging).
 
-The CLI auto-loads `.tau/extensions/*.ts` from the working directory and
+The CLI loads global extensions from `~/.tau/extensions/` (always trusted) and
+project extensions from `cwd/.tau/extensions/` behind a **trust gate**: the
+first run in a directory asks for confirmation (remembered in
+`~/.tau/trust.json`); headless runs skip untrusted project extensions. It
 dispatches `/command` input to registered extension commands (`/help` lists
-them). See [examples/extensions/guard.ts](examples/extensions/guard.ts).
+them), forwards extension-declared `--flags`, queues lines typed during a
+running turn as steering messages, and Ctrl+C aborts the current turn. See
+[examples/extensions/guard.ts](examples/extensions/guard.ts).
 
 ## Documentation
 

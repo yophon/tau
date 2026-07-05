@@ -2,54 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import type { AssistantMessage } from "../src/messages.ts";
-import type { Platform, PlatformResponse } from "../src/platform.ts";
+import type { PlatformResponse } from "../src/platform.ts";
 import type { Tool } from "../src/tools.ts";
-
-/**
- * Fake provider: a Platform whose fetch returns scripted SSE responses. The
- * whole agent loop runs against injected capabilities only — this test is the
- * kernel's runtime-independence proof.
- */
-function makeSseResponse(payloads: unknown[]): PlatformResponse {
-	const encoder = new TextEncoder();
-	const chunks = [...payloads.map((payload) => `data: ${JSON.stringify(payload)}\n\n`), "data: [DONE]\n\n"].map(
-		(text) => encoder.encode(text),
-	);
-	let index = 0;
-	return {
-		ok: true,
-		status: 200,
-		text: async () => "",
-		body: {
-			getReader: () => ({
-				read: async () => {
-					if (index >= chunks.length) return { done: true };
-					return { done: false, value: chunks[index++] };
-				},
-				cancel: () => undefined,
-			}),
-		},
-	};
-}
-
-function fakePlatform(responses: PlatformResponse[], requests: unknown[] = []): Platform {
-	let call = 0;
-	return {
-		fetch: async (_url, init) => {
-			requests.push(JSON.parse(init?.body ?? "{}"));
-			const response = responses[call++];
-			if (!response) throw new Error("Fake platform ran out of scripted responses");
-			return response;
-		},
-		createUtf8Decoder: () => {
-			const decoder = new TextDecoder();
-			return {
-				decode: (chunk) => decoder.decode(chunk, { stream: true }),
-				flush: () => decoder.decode(),
-			};
-		},
-	};
-}
+import { fakePlatform, makeSseResponse, textTurn } from "./helpers.ts";
 
 const echoTool: Tool = {
 	name: "echo_tool",
@@ -59,7 +14,7 @@ const echoTool: Tool = {
 };
 
 test("agent loop executes tool calls and completes with a final message", async () => {
-	const toolCallTurn = [
+	const toolCallSplitTurn = [
 		{
 			choices: [
 				{
@@ -87,7 +42,7 @@ test("agent loop executes tool calls and completes with a final message", async 
 	const requests: unknown[] = [];
 	const agent = new Agent({
 		config: { baseUrl: "https://fake.test/v1", apiKey: "test-key", model: "fake-model" },
-		platform: fakePlatform([makeSseResponse(toolCallTurn), makeSseResponse(finalTurn)], requests),
+		platform: fakePlatform([makeSseResponse(toolCallSplitTurn), makeSseResponse(finalTurn)], requests),
 		systemPrompt: "You are a test agent.",
 		tools: [echoTool],
 	});
@@ -139,11 +94,10 @@ test("agent surfaces reasoning deltas and handles unknown tools gracefully", asy
 			],
 		},
 	];
-	const turn2 = [{ choices: [{ delta: { content: "recovered" }, finish_reason: "stop" }] }];
 
 	const agent = new Agent({
 		config: { baseUrl: "https://fake.test/v1", model: "fake-model" },
-		platform: fakePlatform([makeSseResponse(turn1), makeSseResponse(turn2)]),
+		platform: fakePlatform([makeSseResponse(turn1), makeSseResponse(textTurn("recovered"))]),
 		tools: [echoTool],
 	});
 
@@ -179,3 +133,56 @@ test("http errors carry status and body", async () => {
 		(error: Error) => error.name === "HttpError" && error.message.includes("401"),
 	);
 });
+
+test("steering messages are consumed after the turn's tools, follow-ups when the prompt would end", async () => {
+	const requests: unknown[] = [];
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake-model" },
+		platform: fakePlatform(
+			[
+				makeSseResponse(toolCallTurnFor("echo_tool")),
+				makeSseResponse(textTurn("first answer")),
+				makeSseResponse(textTurn("follow-up answer")),
+			],
+			requests,
+		),
+		tools: [echoTool],
+	});
+
+	const eventTypes: string[] = [];
+	for await (const event of agent.prompt("start")) {
+		eventTypes.push(event.type);
+		if (event.type === "tool_start") agent.steer("steer me");
+		if (event.type === "assistant_message" && event.message.content === "first answer") {
+			agent.followUp("one more thing");
+		}
+	}
+
+	// Steered message appears in the 2nd request, after the tool result.
+	const secondRoles = (requests[1] as { messages: { role: string; content: string | null }[] }).messages.map(
+		(m) => `${m.role}:${m.content ?? ""}`,
+	);
+	assert.ok(secondRoles.includes("user:steer me"));
+	// Follow-up triggers a 3rd request containing it.
+	const thirdRoles = (requests[2] as { messages: { role: string; content: string | null }[] }).messages.map(
+		(m) => `${m.role}:${m.content ?? ""}`,
+	);
+	assert.ok(thirdRoles.includes("user:one more thing"));
+	// user_message events surfaced for both queued messages; exactly one agent_end.
+	assert.equal(eventTypes.filter((t) => t === "user_message").length, 2);
+	assert.equal(eventTypes.filter((t) => t === "agent_end").length, 1);
+	assert.equal((agent.messages.at(-1) as AssistantMessage).content, "follow-up answer");
+});
+
+function toolCallTurnFor(name: string): unknown[] {
+	return [
+		{
+			choices: [
+				{
+					delta: { tool_calls: [{ index: 0, id: "call_1", function: { name, arguments: '{"text":"x"}' } }] },
+					finish_reason: "tool_calls",
+				},
+			],
+		},
+	];
+}

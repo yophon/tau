@@ -7,7 +7,11 @@ export interface ToolResult {
 }
 
 export interface Tool extends ToolDefinition {
-	execute(args: Record<string, unknown>, signal?: TauAbortSignal): Promise<ToolResult>;
+	execute(
+		args: Record<string, unknown>,
+		signal?: TauAbortSignal,
+		onUpdate?: (partialOutput: string) => void,
+	): Promise<ToolResult>;
 }
 
 export function errorResult(message: string): ToolResult {

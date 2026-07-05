@@ -1,4 +1,4 @@
-export { Agent, type AgentEvent, type AgentOptions } from "./agent.ts";
+export { Agent, type AgentEvent, type AgentOptions, type QueueMode } from "./agent.ts";
 export type { FileInfo, FileKind, FileSystem, Shell, ShellExecResult } from "./capabilities.ts";
 export { createCodingTools } from "./coding-tools.ts";
 export {
@@ -14,6 +14,10 @@ export {
 export {
 	type AgentEndEvent,
 	type AgentStartEvent,
+	type BeforeAgentStartEvent,
+	type BeforeAgentStartEventResult,
+	type ContextEvent,
+	type ContextEventResult,
 	type Extension,
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -21,9 +25,19 @@ export {
 	ExtensionRegistry,
 	type InputEvent,
 	type InputEventResult,
+	type MessageEndEvent,
+	type MessageEndEventResult,
+	type MessageStartEvent,
+	type MessageUpdateEvent,
+	type ProjectTrustEvent,
+	type ProjectTrustEventResult,
 	type RegisteredCommand,
+	type RegisteredFlag,
 	type ToolCallEvent,
 	type ToolCallEventResult,
+	type ToolExecutionEndEvent,
+	type ToolExecutionStartEvent,
+	type ToolExecutionUpdateEvent,
 	type ToolResultEvent,
 	type ToolResultEventResult,
 	type TurnEndEvent,

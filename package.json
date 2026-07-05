@@ -8,7 +8,7 @@
 		"check": "biome check --write --error-on-warnings . && npm run check:types && npm run check:purity",
 		"check:types": "tsc -p packages/kernel/tsconfig.json && tsc -p packages/kernel/tsconfig.test.json && tsc -p packages/host-node/tsconfig.json && tsc -p packages/cli/tsconfig.json && tsc -p examples/tsconfig.json",
 		"check:purity": "node scripts/check-kernel-purity.mjs",
-		"test": "node --test packages/kernel/test/*.test.ts packages/host-node/test/*.test.ts",
+		"test": "node --test packages/kernel/test/*.test.ts packages/host-node/test/*.test.ts packages/cli/test/*.test.ts",
 		"tau": "node --disable-warning=ExperimentalWarning packages/cli/src/main.ts"
 	},
 	"devDependencies": {

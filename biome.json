@@ -21,6 +21,7 @@
 			"packages/*/src/**/*.ts",
 			"packages/*/test/**/*.ts",
 			"examples/**/*.ts",
+			"test-fixtures/**/*.ts",
 			"scripts/**/*.mjs",
 			"!**/node_modules/**/*"
 		]

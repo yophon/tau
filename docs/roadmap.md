@@ -18,17 +18,11 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：13 测试；guard 扩展 e2e 双路径验证（headless 降级 block + tmux 交互 confirm）。初版自行发明 API 后按 D7 重写为 pi 镜像。
 
-## Phase 2 ⬜ 内核循环钩子补全（pi 对齐）
+## Phase 2 ✅ 内核循环钩子补全（pi 对齐）（2026-07-04）
 
-**目标**：把属于内核循环层的 pi 钩子/能力补齐（[pi-parity.md](pi-parity.md) 盘点出的缺口），让内核 API 在会话/TUI 压上来之前定型。
+规格书：[specs/phase-2-kernel-hooks.md](specs/phase-2-kernel-hooks.md)。新事件 context / before_agent_start / message_start·update·end / tool_execution_start·update·end / project_trust；steering/followUp 队列（照抄 pi PendingMessageQueue，含 QueueMode）；`Shell.exec` 流式回调 + bash 工具接通 + `Tool.execute` 的 onUpdate；registerFlag/getFlag；CLI 信任门（全局 `~/.tau/extensions` 始终信任，项目扩展经 project_trust 事件/TTY 确认/`trust.json` 记忆，headless 拒绝）+ 全局扩展目录 + flag 透传 + REPL 流式中输入即 steering + Ctrl+C 中断当前轮（不退 REPL）。
 
-- 先读 pi：`packages/agent/docs/hooks.md`（harness 钩子最终设计，HookEvent 幻影类型）、`packages/agent/src/agent.ts`（steering/followUp 队列）
-- 新事件：`context`（LLM 调用前改 messages）、`before_agent_start`（注入消息/替换 system prompt）、`message_start/update/end`（message_end 可替换）、`tool_execution_start/update/end`
-- `Shell.exec` 增加 `onStdout`/`onStderr` 流式回调（照抄 pi ExecutionEnv 签名），bash 工具接通 → tool_execution_update
-- **steering / follow-up 队列**：Agent 支持流式中插话与排队追问（照抄 pi agent-core 的 PendingMessageQueue 语义）
-- `registerFlag`/`getFlag`（CLI flag 转发）
-- **安全**：project trust 门——默认不加载未信任目录的 `.tau/extensions`，TTY 询问可记住（`~/.tau/trust.json`），headless 默认拒绝（pi-parity.md 标注的现有漏洞）
-- **验收**：context 钩子注入记忆的测试；steering e2e（流式中插话被下一轮消费）；不受信任目录不加载扩展的测试
+**完成记录**：26 测试全绿（含 4 个自动化 CLI e2e：工具回路、信任门双态、steering、SIGINT abort——e2e 从此入 CI）；tmux 手工验证交互信任门（询问→y→扩展加载→二次运行免询问，trust.json 持久化正确）。还清技术债 #1–#4。与规格偏差：无；规格预留的部分完成项（before_agent_start 的 message 注入、message_* 仅 assistant）按计划推迟到 P3，pi-parity 已标注。发现并修复实现前未预见的问题：TTY 下 readline 拦截 Ctrl+C 导致"中断轮"变"退 REPL"（已修：有运行中的轮先 abort）；macOS tmpdir 符号链接与 trust 键不一致（测试用 realpath）。
 
 ## Phase 3 ⬜ 会话持久化（Sessions）
 
@@ -129,10 +123,9 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 | # | 债 | 影响 | 计划 |
 |---|---|---|---|
-| 1 | CLI 无条件自动加载 `cwd/.tau/extensions/*.ts` | **安全**：恶意仓库内跑 tau = 任意代码执行 | P2（project trust 门） |
-| 2 | `kernel/test/agent.test.ts` 与 `extensions.test.ts` 重复定义 `makeSseResponse`/`fakePlatform` | 维护成本 | P2 顺手抽 `test/helpers.ts` |
-| 3 | mock OpenAI 服务器每次在临时目录手写 | e2e 不可复现、不入 CI | P2 沉淀为入库 fixture + CLI e2e 脚本 |
-| 4 | abort 路径无 e2e（Ctrl+C 中断流式、REPL SIGINT 与 readline 交互） | 中断行为可能有未知缺陷 | P2（steering 改循环时一并测） |
 | 5 | `--disable-warning=ExperimentalWarning` 仅在 npm script，直接 node 跑 CLI 仍有告警 | 观感 | P8（TUI 时统一入口处理） |
 | 6 | `@tau/*` 为占位 scope | 发布前必须定名 | P11 |
 | 7 | 自定义 `Platform.fetch` 收到的 `signal` 是 `TauAbortSignal` 结构子集，非标准 AbortSignal；非 fetch 适配器需自行桥接 | 小程序/RN 适配器作者易踩 | P10 适配器实现时验证并文档化 |
+| 8 | CLI 的 tool_update 事件未渲染（bash 流式输出对用户不可见，仅扩展可见） | 长命令期间无进度反馈 | P8（TUI 渲染） |
+
+（#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。）

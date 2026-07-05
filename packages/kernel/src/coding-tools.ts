@@ -1,5 +1,5 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
-import { errorResult, optionalNumber, requireString, type Tool, type ToolResult } from "./tools.ts";
+import { errorResult, optionalNumber, requireString, type Tool } from "./tools.ts";
 
 const MAX_READ_LINES = 2000;
 const MAX_OUTPUT_CHARS = 50_000;
@@ -21,12 +21,10 @@ function countOccurrences(haystack: string, needle: string): number {
 	return count;
 }
 
-function wrapExecute(
-	execute: (args: Record<string, unknown>, signal?: Parameters<Tool["execute"]>[1]) => Promise<ToolResult>,
-): Tool["execute"] {
-	return async (args, signal) => {
+function wrapExecute(execute: Tool["execute"]): Tool["execute"] {
+	return async (args, signal, onUpdate) => {
 		try {
-			return await execute(args, signal);
+			return await execute(args, signal, onUpdate);
 		} catch (cause) {
 			return errorResult(cause instanceof Error ? cause.message : String(cause));
 		}
@@ -130,10 +128,10 @@ function createBashTool(shell: Shell): Tool {
 			},
 			required: ["command"],
 		},
-		execute: wrapExecute(async (args, signal) => {
+		execute: wrapExecute(async (args, signal, onUpdate) => {
 			const command = requireString(args, "command");
 			const timeoutSeconds = optionalNumber(args, "timeoutSeconds") ?? DEFAULT_BASH_TIMEOUT_SECONDS;
-			const result = await shell.exec(command, { timeoutSeconds, signal });
+			const result = await shell.exec(command, { timeoutSeconds, signal, onStdout: onUpdate, onStderr: onUpdate });
 			const parts: string[] = [];
 			if (result.stdout !== "") parts.push(result.stdout);
 			if (result.stderr !== "") parts.push(result.stderr);

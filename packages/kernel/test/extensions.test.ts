@@ -2,65 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
-import type { Platform, PlatformResponse } from "../src/platform.ts";
 import type { Tool } from "../src/tools.ts";
-
-function makeSseResponse(payloads: unknown[]): PlatformResponse {
-	const encoder = new TextEncoder();
-	const chunks = [...payloads.map((payload) => `data: ${JSON.stringify(payload)}\n\n`), "data: [DONE]\n\n"].map(
-		(text) => encoder.encode(text),
-	);
-	let index = 0;
-	return {
-		ok: true,
-		status: 200,
-		text: async () => "",
-		body: {
-			getReader: () => ({
-				read: async () => (index >= chunks.length ? { done: true } : { done: false, value: chunks[index++] }),
-				cancel: () => undefined,
-			}),
-		},
-	};
-}
-
-function fakePlatform(responses: PlatformResponse[], requests: unknown[] = []): Platform {
-	let call = 0;
-	return {
-		fetch: async (_url, init) => {
-			requests.push(JSON.parse(init?.body ?? "{}"));
-			const response = responses[call++];
-			if (!response) throw new Error("Fake platform ran out of scripted responses");
-			return response;
-		},
-		createUtf8Decoder: () => {
-			const decoder = new TextDecoder();
-			return {
-				decode: (chunk) => decoder.decode(chunk, { stream: true }),
-				flush: () => decoder.decode(),
-			};
-		},
-	};
-}
-
-function toolCallTurn(name: string, args: Record<string, unknown>): unknown[] {
-	return [
-		{
-			choices: [
-				{
-					delta: {
-						tool_calls: [{ index: 0, id: "call_1", function: { name, arguments: JSON.stringify(args) } }],
-					},
-					finish_reason: "tool_calls",
-				},
-			],
-		},
-	];
-}
-
-function textTurn(text: string): unknown[] {
-	return [{ choices: [{ delta: { content: text }, finish_reason: "stop" }] }];
-}
+import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
 
 test("extensions register tools, transform input, and observe lifecycle events", async () => {
 	const seen: string[] = [];
