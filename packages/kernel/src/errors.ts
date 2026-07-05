@@ -5,6 +5,8 @@ export type TauErrorCode =
 	| "aborted"
 	| "max_turns"
 	| "no_host"
+	| "no_session"
+	| "busy"
 	| "compaction_failed"
 	| "invalid_response";
 
@@ -50,7 +52,7 @@ export class FileError extends Error {
 	}
 }
 
-export type SessionErrorCode = "invalid_session" | "invalid_entry" | "not_found";
+export type SessionErrorCode = "invalid_session" | "invalid_entry" | "invalid_fork_target" | "not_found";
 
 export class SessionError extends Error {
 	readonly code: SessionErrorCode;

@@ -1,4 +1,15 @@
 export { Agent, type AgentEvent, type AgentOptions, type QueueMode } from "./agent.ts";
+export {
+	BRANCH_SUMMARY_PREAMBLE,
+	type BranchPreparation,
+	type BranchSummaryDetails,
+	type BranchSummaryResult,
+	type CollectEntriesResult,
+	collectEntriesForBranchSummary,
+	type GenerateBranchSummaryOptions,
+	generateBranchSummary,
+	prepareBranchEntries,
+} from "./branch.ts";
 export type { FileInfo, FileKind, FileSystem, Shell, ShellExecResult } from "./capabilities.ts";
 export { createCodingTools } from "./coding-tools.ts";
 export {
@@ -16,6 +27,7 @@ export {
 	type FileOperations,
 	findCutPoint,
 	findTurnStartIndex,
+	formatFileOperations,
 	generateSummary,
 	prepareCompaction,
 	runCompaction,
@@ -62,10 +74,15 @@ export {
 	type RegisteredFlag,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeCompactResult,
+	type SessionBeforeForkEvent,
+	type SessionBeforeForkResult,
+	type SessionBeforeTreeEvent,
+	type SessionBeforeTreeResult,
 	type SessionCompactEvent,
 	type SessionInfoChangedEvent,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
+	type SessionTreeEvent,
 	type ToolCallEvent,
 	type ToolCallEventResult,
 	type ToolExecutionEndEvent,
@@ -73,6 +90,7 @@ export {
 	type ToolExecutionUpdateEvent,
 	type ToolResultEvent,
 	type ToolResultEventResult,
+	type TreePreparation,
 	type TurnEndEvent,
 	type TurnStartEvent,
 	type UiCapability,
@@ -80,6 +98,7 @@ export {
 export {
 	type AgentMessage,
 	type AssistantMessage,
+	type BranchSummaryMessage,
 	type CompactionSummaryMessage,
 	type CustomMessage,
 	emptyUsage,
@@ -115,6 +134,8 @@ export {
 	type Utf8Decoder,
 } from "./platform.ts";
 export {
+	type ForkOptions,
+	getEntriesToFork,
 	InMemorySessionRepo,
 	InMemorySessionStore,
 	JsonlSessionRepo,

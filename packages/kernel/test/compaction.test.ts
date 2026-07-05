@@ -12,7 +12,7 @@ import {
 import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
 import { type AgentMessage, emptyUsage, messageText, type Usage } from "../src/messages.ts";
 import { InMemorySessionRepo, restoreSession, type SessionEntry, SessionRecorder } from "../src/session.ts";
-import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
+import { fakePlatform, makeSseResponse, textTurn } from "./helpers.ts";
 
 function usageOf(totalTokens: number): Usage {
 	return { ...emptyUsage(), input: totalTokens, totalTokens };

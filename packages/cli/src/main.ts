@@ -37,7 +37,10 @@ Options:
       --no-session       Do not persist this conversation
   -h, --help             Show this help
 
-REPL commands: /name <name>, /sessions, /compact [instructions], /help.
+REPL commands: /name <name>, /sessions, /compact [instructions], /tree [<id>],
+/fork [<id>], /help. /tree lists jump points; /tree <id> navigates there
+(summarizing the abandoned branch); /fork copies the session into a new file
+(up to <id> if given) and switches to it.
 
 Extensions may declare additional --<flag> options (see registerFlag).
 Without -p, tau starts an interactive REPL. During a running turn, typed lines
@@ -414,18 +417,20 @@ async function main(): Promise<void> {
 			store = await sessionRepo.create();
 		}
 	}
-	const recorder = store ? await SessionRecorder.open(store) : undefined;
+	let recorder = store ? await SessionRecorder.open(store) : undefined;
 
-	const agent = new Agent({
-		config,
-		platform,
-		systemPrompt: options.system ?? defaultSystemPrompt(cwd),
-		tools: createCodingTools({ fs: new NodeFileSystem(cwd), shell: new NodeShell(cwd) }),
-		extensions,
-		ui,
-		initialMessages,
-		session: recorder,
-	});
+	const buildAgent = (messages: typeof initialMessages, session: SessionRecorder | undefined): Agent =>
+		new Agent({
+			config,
+			platform,
+			systemPrompt: options.system ?? defaultSystemPrompt(cwd),
+			tools: createCodingTools({ fs: new NodeFileSystem(cwd), shell: new NodeShell(cwd) }),
+			extensions,
+			ui,
+			initialMessages: messages,
+			session,
+		});
+	let agent = buildAgent(initialMessages, recorder);
 	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
 
 	if (options.print !== undefined) {
@@ -486,6 +491,74 @@ async function main(): Promise<void> {
 					console.log(dim(`Session named "${name}".`));
 				} else {
 					console.log(red(recorder ? "Usage: /name <name>" : "No active session (--no-session)."));
+				}
+				continue;
+			}
+			if (input === "/tree" || input.startsWith("/tree ")) {
+				if (!store) {
+					console.log(red("No active session (--no-session)."));
+					continue;
+				}
+				const arg = input.slice("/tree".length).trim();
+				if (arg === "") {
+					const entries = await store.getEntries();
+					const onPath = new Set((await store.getPathToRoot(await store.getLeafId())).map((entry) => entry.id));
+					let shown = 0;
+					for (const entry of entries) {
+						if (entry.type !== "message" || entry.message.role !== "user") continue;
+						const marker = onPath.has(entry.id) ? "●" : dim("○");
+						console.log(`${marker} ${cyan(entry.id)}  ${firstLine(messageText(entry.message), 80)}`);
+						shown++;
+					}
+					console.log(
+						shown === 0
+							? dim("No user messages in this session yet.")
+							: dim("Jump with /tree <id> (● = on current path)."),
+					);
+					continue;
+				}
+				try {
+					const result = await agent.navigateTo(arg);
+					console.log(
+						result.cancelled
+							? dim("Navigation cancelled.")
+							: dim(`Moved to ${arg} (${agent.messages.length} messages in context).`),
+					);
+				} catch (error) {
+					console.log(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
+				}
+				continue;
+			}
+			if (input === "/fork" || input.startsWith("/fork ")) {
+				if (!store) {
+					console.log(red("No active session (--no-session)."));
+					continue;
+				}
+				const arg = input.slice("/fork".length).trim();
+				try {
+					// A full copy has no fork point to negotiate over, so the
+					// session_before_fork event only fires for entry-targeted forks.
+					if (arg !== "") {
+						const decision = await extensions.runSessionBeforeFork(
+							{ entryId: arg, position: "before" },
+							agent.extensionContext(),
+						);
+						if (decision.cancel) {
+							console.log(dim("Fork cancelled."));
+							continue;
+						}
+					}
+					const source = await store.getMetadata();
+					const newStore = await sessionRepo.fork(source, arg === "" ? undefined : { entryId: arg });
+					const restored = await restoreSession(newStore);
+					store = newStore;
+					recorder = await SessionRecorder.open(newStore);
+					agent = buildAgent(restored.messages, recorder);
+					await extensions.notifySessionStart("resume", agent.extensionContext());
+					const meta = await newStore.getMetadata();
+					console.log(dim(`Forked to ${meta.filePath ?? meta.id} (${restored.messages.length} messages).`));
+				} catch (error) {
+					console.log(red(`/fork failed: ${error instanceof Error ? error.message : String(error)}`));
 				}
 				continue;
 			}

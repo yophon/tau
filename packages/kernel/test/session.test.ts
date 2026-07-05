@@ -8,7 +8,8 @@ import { NodeFileSystem } from "../../host-node/src/fs.ts";
 import { Agent } from "../src/agent.ts";
 import { SessionError } from "../src/errors.ts";
 import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
-import { messageText } from "../src/messages.ts";
+import { type AssistantMessage, emptyUsage, messageText } from "../src/messages.ts";
+import { OPENAI_COMPLETIONS_API } from "../src/openai.ts";
 import {
 	InMemorySessionRepo,
 	JsonlSessionRepo,
@@ -32,6 +33,17 @@ test("uuidv7: format, time-ordering, same-millisecond monotonicity", () => {
 
 /** Contract tests both SessionRepo implementations must pass. */
 function repoContract(name: string, makeRepo: () => Promise<{ repo: SessionRepo; cleanup(): Promise<void> }>): void {
+	const assistantMessage = (text: string): AssistantMessage => ({
+		role: "assistant",
+		content: [{ type: "text", text }],
+		api: OPENAI_COMPLETIONS_API,
+		provider: "test",
+		model: "test",
+		usage: emptyUsage(),
+		stopReason: "stop",
+		timestamp: 2,
+	});
+
 	test(`${name}: create/append/reopen/list/delete round-trip`, async () => {
 		const { repo, cleanup } = await makeRepo();
 		try {
@@ -74,6 +86,67 @@ function repoContract(name: string, makeRepo: () => Promise<{ repo: SessionRepo;
 			await cleanup();
 		}
 	});
+
+	test(`${name}: fork semantics (full / at / before) and invalid targets`, async () => {
+		const { repo, cleanup } = await makeRepo();
+		try {
+			const store = await repo.create();
+			const recorder = await SessionRecorder.open(store);
+			await recorder.recordMessage({ role: "user", content: "q1", timestamp: 1 });
+			await recorder.recordMessage(assistantMessage("a1"));
+			await recorder.recordMessage({ role: "user", content: "q2", timestamp: 3 });
+			await recorder.recordMessage(assistantMessage("a2"));
+			const source = await store.getMetadata();
+			const [, e2, e3] = await store.getEntries();
+
+			// Full copy: every entry, lineage recorded.
+			const full = await repo.fork(source);
+			assert.equal((await full.getEntries()).length, 4);
+			assert.ok((await full.getMetadata()).parentSession);
+			assert.notEqual((await full.getMetadata()).id, source.id);
+			assert.deepEqual(
+				(await restoreSession(full)).messages.map((m) => messageText(m)),
+				["q1", "a1", "q2", "a2"],
+			);
+
+			// "before" (default) requires a user message and cuts above it.
+			const before = await repo.fork(source, { entryId: e3.id });
+			assert.deepEqual(
+				(await restoreSession(before)).messages.map((m) => messageText(m)),
+				["q1", "a1"],
+			);
+
+			// "at" includes the target entry.
+			const at = await repo.fork(source, { entryId: e3.id, position: "at" });
+			assert.deepEqual(
+				(await restoreSession(at)).messages.map((m) => messageText(m)),
+				["q1", "a1", "q2"],
+			);
+
+			// "before" a non-user message and unknown entries are invalid targets.
+			for (const options of [{ entryId: e2.id }, { entryId: "missing" }]) {
+				await assert.rejects(
+					() => repo.fork(source, options),
+					(error: unknown) => error instanceof SessionError && error.code === "invalid_fork_target",
+				);
+			}
+
+			// Branches evolve independently after the fork.
+			const forkRecorder = await SessionRecorder.open(before);
+			await forkRecorder.recordMessage({ role: "user", content: "q3", timestamp: 5 });
+			assert.equal((await store.getEntries()).length, 4);
+			assert.deepEqual(
+				(await restoreSession(before)).messages.map((m) => messageText(m)),
+				["q1", "a1", "q3"],
+			);
+			assert.deepEqual(
+				(await restoreSession(store)).messages.map((m) => messageText(m)),
+				["q1", "a1", "q2", "a2"],
+			);
+		} finally {
+			await cleanup();
+		}
+	});
 }
 
 repoContract("InMemorySessionRepo", async () => ({
@@ -87,6 +160,29 @@ repoContract("JsonlSessionRepo", async () => {
 		repo: new JsonlSessionRepo(new NodeFileSystem(dir), fakePlatform([]), dir, "/test"),
 		cleanup: () => rm(dir, { recursive: true, force: true }),
 	};
+});
+
+test("JsonlSessionRepo fork: new file with parentSession header, lineage survives reopen", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "tau-session-fork-"));
+	try {
+		const repo = new JsonlSessionRepo(new NodeFileSystem(dir), fakePlatform([]), dir, "/test");
+		const store = await repo.create();
+		const recorder = await SessionRecorder.open(store);
+		await recorder.recordMessage({ role: "user", content: "q1", timestamp: 1 });
+		const source = await store.getMetadata();
+
+		const forked = await repo.fork(source);
+		const forkedMeta = await forked.getMetadata();
+		assert.ok(forkedMeta.filePath);
+		assert.notEqual(forkedMeta.filePath, source.filePath);
+		assert.equal(forkedMeta.parentSession, source.filePath);
+
+		const reopened = await repo.open(forkedMeta);
+		assert.equal((await reopened.getMetadata()).parentSession, source.filePath);
+		assert.equal((await repo.list()).length, 2);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });
 
 test("JsonlSessionRepo rejects bad headers and bad entry lines with line numbers", async () => {

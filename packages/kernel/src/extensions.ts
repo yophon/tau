@@ -2,6 +2,8 @@ import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } fr
 import { TauError } from "./errors.ts";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
+import type { TauAbortSignal } from "./platform.ts";
+import type { SessionEntry } from "./session.ts";
 import type { Tool, ToolResult } from "./tools.ts";
 
 /**
@@ -188,6 +190,54 @@ export interface SessionCompactEvent {
 	reason: CompactionReason;
 }
 
+/** Fired before forking a session; may cancel the fork. */
+export interface SessionBeforeForkEvent {
+	type: "session_before_fork";
+	entryId: string;
+	position: "before" | "at";
+}
+
+/** pi also has skipConversationRestore (product-layer restore concern); tau omits it. */
+export type SessionBeforeForkResult = { cancel?: boolean } | undefined;
+
+/**
+ * What a tree navigation is about to do. pi subset (D7): userWantsSummary,
+ * replaceInstructions and label are TUI interaction products, deferred to P8.
+ */
+export interface TreePreparation {
+	targetId: string;
+	oldLeafId: string | null;
+	commonAncestorId: string | null;
+	entriesToSummarize: SessionEntry[];
+	customInstructions?: string;
+}
+
+/** Fired before tree navigation; may cancel it or supply the branch summary. */
+export interface SessionBeforeTreeEvent {
+	type: "session_before_tree";
+	preparation: TreePreparation;
+	signal?: TauAbortSignal;
+}
+
+export type SessionBeforeTreeResult =
+	| {
+			cancel?: boolean;
+			/** Extension-provided summary; skips generation. */
+			summary?: { summary: string; details?: unknown };
+			/** Override custom instructions for summarization. */
+			customInstructions?: string;
+	  }
+	| undefined;
+
+/** Fired after tree navigation completed. */
+export interface SessionTreeEvent {
+	type: "session_tree";
+	newLeafId: string | null;
+	oldLeafId: string | null;
+	summaryEntry?: SessionEntry;
+	fromExtension?: boolean;
+}
+
 /** Fired for user input before it enters the conversation. */
 export interface InputEvent {
 	type: "input";
@@ -266,6 +316,9 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
+	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
+	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
 
 	/** Inject a custom message into the conversation (enters LLM context as a user-role message). */
 	sendMessage(message: CustomMessageInput): void;
@@ -319,6 +372,9 @@ interface HandlerLists {
 	session_info_changed: ExtensionHandler<SessionInfoChangedEvent>[];
 	session_before_compact: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>[];
 	session_compact: ExtensionHandler<SessionCompactEvent>[];
+	session_before_fork: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>[];
+	session_before_tree: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>[];
+	session_tree: ExtensionHandler<SessionTreeEvent>[];
 }
 
 /** Actions an attached Agent provides to back sendMessage/appendEntry/setSessionName. */
@@ -361,6 +417,9 @@ export class ExtensionRegistry {
 		session_info_changed: [],
 		session_before_compact: [],
 		session_compact: [],
+		session_before_fork: [],
+		session_before_tree: [],
+		session_tree: [],
 	};
 
 	static async load(extensions: Extension[]): Promise<ExtensionRegistry> {
@@ -550,6 +609,40 @@ export class ExtensionRegistry {
 	async notifySessionCompact(event: Omit<SessionCompactEvent, "type">, ctx: ExtensionContext): Promise<void> {
 		for (const handler of this.handlers.session_compact) {
 			await handler({ type: "session_compact", ...event }, ctx);
+		}
+	}
+
+	/** Run session_before_fork handlers: a cancel short-circuits. */
+	async runSessionBeforeFork(
+		event: Omit<SessionBeforeForkEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<NonNullable<SessionBeforeForkResult>> {
+		for (const handler of this.handlers.session_before_fork) {
+			const result = await handler({ type: "session_before_fork", ...event }, ctx);
+			if (result?.cancel) return result;
+		}
+		return {};
+	}
+
+	/** Run session_before_tree handlers: cancel short-circuits; summary/customInstructions merge (later wins). */
+	async runSessionBeforeTree(
+		event: Omit<SessionBeforeTreeEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<NonNullable<SessionBeforeTreeResult>> {
+		const merged: NonNullable<SessionBeforeTreeResult> = {};
+		for (const handler of this.handlers.session_before_tree) {
+			const result = await handler({ type: "session_before_tree", ...event }, ctx);
+			if (!result) continue;
+			if (result.cancel) return { cancel: true };
+			if (result.summary) merged.summary = result.summary;
+			if (result.customInstructions !== undefined) merged.customInstructions = result.customInstructions;
+		}
+		return merged;
+	}
+
+	async notifySessionTree(event: Omit<SessionTreeEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.session_tree) {
+			await handler({ type: "session_tree", ...event }, ctx);
 		}
 	}
 

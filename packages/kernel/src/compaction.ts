@@ -92,6 +92,7 @@ export function estimateTokens(message: AgentMessage): number {
 			}
 			break;
 		case "compactionSummary":
+		case "branchSummary":
 			chars = message.summary.length;
 			break;
 	}
@@ -130,6 +131,14 @@ export function shouldCompact(contextTokens: number, contextWindow: number, sett
 
 function entryMessage(entry: SessionEntry): AgentMessage | undefined {
 	if (entry.type === "message") return entry.message;
+	if (entry.type === "branch_summary") {
+		return {
+			role: "branchSummary",
+			summary: entry.summary,
+			fromId: entry.fromId,
+			timestamp: Date.parse(entry.timestamp) || 0,
+		};
+	}
 	if (entry.type === "custom_message") {
 		return {
 			role: "custom",
@@ -148,7 +157,7 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 	for (let i = startIndex; i < endIndex; i++) {
 		const entry = entries[i];
 		if (entry.type === "message" && entry.message.role !== "toolResult") cutPoints.push(i);
-		else if (entry.type === "custom_message") cutPoints.push(i);
+		else if (entry.type === "custom_message" || entry.type === "branch_summary") cutPoints.push(i);
 	}
 	return cutPoints;
 }
@@ -157,7 +166,7 @@ function findValidCutPoints(entries: SessionEntry[], startIndex: number, endInde
 export function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, startIndex: number): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
 		const entry = entries[i];
-		if (entry.type === "custom_message") return i;
+		if (entry.type === "custom_message" || entry.type === "branch_summary") return i;
 		if (entry.type === "message" && entry.message.role === "user") return i;
 	}
 	return -1;
@@ -329,6 +338,7 @@ export function serializeConversation(messages: AgentMessage[]): string {
 				break;
 			}
 			case "compactionSummary":
+			case "branchSummary":
 				parts.push(`[User]: ${message.summary}`);
 				break;
 			case "assistant": {
@@ -384,7 +394,7 @@ export function computeFileLists(fileOps: FileOperations): { readFiles: string[]
 	return { readFiles, modifiedFiles: [...modified].sort() };
 }
 
-function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
+export function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
 	const sections: string[] = [];
 	if (readFiles.length > 0) sections.push(`<read-files>\n${readFiles.join("\n")}\n</read-files>`);
 	if (modifiedFiles.length > 0) sections.push(`<modified-files>\n${modifiedFiles.join("\n")}\n</modified-files>`);
@@ -468,7 +478,7 @@ export function prepareCompaction(
 	};
 }
 
-async function completeText(
+export async function completeText(
 	platform: Platform,
 	config: OpenAICompatConfig,
 	systemPrompt: string,

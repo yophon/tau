@@ -45,6 +45,14 @@ export type SessionEntry =
 			details?: unknown;
 			fromHook?: boolean;
 	  })
+	| (SessionEntryBase & {
+			type: "branch_summary";
+			/** Old leaf of the abandoned branch (see SessionRecorder.moveTo for the pi deviation). */
+			fromId: string;
+			summary: string;
+			details?: unknown;
+			fromHook?: boolean;
+	  })
 	| (SessionEntryBase & { type: "leaf"; leafId: string | null });
 
 /** Omit that distributes over unions (plain Omit collapses SessionEntry to its common fields). */
@@ -56,6 +64,8 @@ export interface SessionMetadata {
 	timestamp: string;
 	filePath?: string;
 	name?: string;
+	/** Fork lineage: source file path (JSONL) or source session id (in-memory). */
+	parentSession?: string;
 }
 
 /** Mirrors pi's SessionStorage (harness/types.ts), minus find/label (P5). */
@@ -70,15 +80,50 @@ export interface SessionStore {
 	getEntries(): Promise<SessionEntry[]>;
 }
 
-/** Mirrors pi's SessionRepo; fork arrives with branching (P5). */
+/** Mirrors pi's SessionRepo. */
 export interface SessionRepo {
 	create(options?: { id?: string }): Promise<SessionStore>;
 	open(metadata: SessionMetadata): Promise<SessionStore>;
 	list(): Promise<SessionMetadata[]>;
 	delete(metadata: SessionMetadata): Promise<void>;
+	/** Copy a session (or a prefix of it) into a new independent session. */
+	fork(source: SessionMetadata, options?: ForkOptions): Promise<SessionStore>;
 }
 
-const ENTRY_TYPES = new Set(["message", "custom", "custom_message", "session_info", "leaf", "compaction"]);
+export interface ForkOptions {
+	/** Fork point; omitted = copy the whole session including all branches. */
+	entryId?: string;
+	/** "at" includes the target entry; "before" (default) requires a user message and cuts above it. */
+	position?: "before" | "at";
+	id?: string;
+}
+
+const ENTRY_TYPES = new Set([
+	"message",
+	"custom",
+	"custom_message",
+	"session_info",
+	"leaf",
+	"compaction",
+	"branch_summary",
+]);
+
+/** Entries a fork copies, verbatim from pi's getEntriesToFork (session/repo-utils.ts). */
+export async function getEntriesToFork(store: SessionStore, options: ForkOptions): Promise<SessionEntry[]> {
+	if (!options.entryId) return store.getEntries();
+	const target = await store.getEntry(options.entryId);
+	if (!target) throw new SessionError("invalid_fork_target", `Entry ${options.entryId} not found`);
+	let effectiveLeafId: string | null;
+	if ((options.position ?? "before") === "at") {
+		effectiveLeafId = target.id;
+	} else {
+		if (target.type !== "message" || target.message.role !== "user") {
+			throw new SessionError("invalid_fork_target", `Entry ${options.entryId} is not a user message`);
+		}
+		effectiveLeafId = target.parentId;
+	}
+	return store.getPathToRoot(effectiveLeafId);
+}
 
 /** Entry-id generation as in pi: first 8 hex of a uuidv7, retried on collision. */
 function generateEntryId(randomBytes: Platform["randomBytes"], has: (id: string) => boolean): string {
@@ -204,6 +249,22 @@ export class InMemorySessionRepo implements SessionRepo {
 		this.stores.delete(metadata.id);
 		this.metadataById.delete(metadata.id);
 	}
+
+	async fork(source: SessionMetadata, options?: ForkOptions): Promise<SessionStore> {
+		const sourceStore = await this.open(source);
+		const entries = await getEntriesToFork(sourceStore, options ?? {});
+		const metadata: SessionMetadata = {
+			id: options?.id ?? uuidv7(this.platform.randomBytes),
+			cwd: this.cwd,
+			timestamp: new Date().toISOString(),
+			parentSession: source.id,
+		};
+		const store = new InMemorySessionStore(metadata, this.platform.randomBytes);
+		for (const entry of entries) await store.appendEntry(entry);
+		this.stores.set(metadata.id, store);
+		this.metadataById.set(metadata.id, metadata);
+		return store;
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +355,7 @@ class JsonlSessionStore implements SessionStore {
 			timestamp: this.header.timestamp,
 			filePath: this.filePath,
 			name: lastSessionName(this.tree.entries),
+			parentSession: this.header.parentSession,
 		};
 	}
 
@@ -404,6 +466,27 @@ export class JsonlSessionRepo implements SessionRepo {
 		if (!metadata.filePath) throw new SessionError("not_found", `Session ${metadata.id} has no file path`);
 		await this.fs.remove(metadata.filePath);
 	}
+
+	async fork(source: SessionMetadata, options?: ForkOptions): Promise<SessionStore> {
+		if (!source.filePath) throw new SessionError("not_found", `Session ${source.id} has no file path`);
+		const sourceStore = await this.loadStore(source.filePath);
+		const entries = await getEntriesToFork(sourceStore, options ?? {});
+		const id = options?.id ?? uuidv7(this.platform.randomBytes);
+		const timestamp = new Date().toISOString();
+		const header: SessionHeader = {
+			type: "session",
+			version: 3,
+			id,
+			timestamp,
+			cwd: this.cwd,
+			parentSession: source.filePath,
+		};
+		const fileName = `${timestamp.replaceAll(":", "-")}_${id}.jsonl`;
+		const filePath = `${this.sessionsDir}/${fileName}`;
+		const lines = [header, ...entries].map((line) => JSON.stringify(line));
+		await this.fs.writeTextFile(filePath, `${lines.join("\n")}\n`);
+		return this.loadStore(filePath);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -469,6 +552,41 @@ export class SessionRecorder {
 
 	async setName(name: string): Promise<void> {
 		await this.append({ type: "session_info", name });
+	}
+
+	/**
+	 * Move the active leaf to another entry (session-tree navigation),
+	 * optionally recording a branch_summary of the abandoned branch at the new
+	 * position. Mirrors pi's Session.moveTo. Deviation: pi's implementation
+	 * writes fromId = destination id (redundant with parentId); tau records the
+	 * abandoned branch's old leaf, matching pi's session-format.md ("Entry we
+	 * branched from") whose example has fromId ≠ parentId.
+	 */
+	async moveTo(
+		entryId: string | null,
+		summary?: { summary: string; details?: unknown; fromHook?: boolean },
+	): Promise<SessionEntry | undefined> {
+		if (entryId !== null && !(await this.store.getEntry(entryId))) {
+			throw new SessionError("not_found", `Entry ${entryId} not found`);
+		}
+		const fromId = this.leafId ?? "root";
+		await this.store.setLeafId(entryId);
+		this.leafId = entryId;
+		if (!summary) return undefined;
+		const id = await this.store.createEntryId();
+		const entry: SessionEntry = {
+			type: "branch_summary",
+			id,
+			parentId: entryId,
+			timestamp: new Date().toISOString(),
+			fromId,
+			summary: summary.summary,
+			details: summary.details,
+			fromHook: summary.fromHook,
+		};
+		await this.store.appendEntry(entry);
+		this.leafId = id;
+		return entry;
 	}
 }
 
@@ -549,6 +667,14 @@ function collectMessages(path: SessionEntry[]): RestoredSession {
 			}
 			case "session_info":
 				name = entry.name;
+				break;
+			case "branch_summary":
+				messages.push({
+					role: "branchSummary",
+					summary: entry.summary,
+					fromId: entry.fromId,
+					timestamp: Date.parse(entry.timestamp) || 0,
+				});
 				break;
 			case "custom":
 			case "leaf":

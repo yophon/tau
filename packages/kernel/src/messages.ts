@@ -87,6 +87,15 @@ export interface CustomMessage {
 	timestamp: number;
 }
 
+/** Summary of an abandoned session-tree branch (pi shape). */
+export interface BranchSummaryMessage {
+	role: "branchSummary";
+	summary: string;
+	/** Entry id the abandoned branch's leaf pointed at. */
+	fromId: string;
+	timestamp: number;
+}
+
 /** Summary message that replaces compacted history in context (pi shape). */
 export interface CompactionSummaryMessage {
 	role: "compactionSummary";
@@ -100,6 +109,7 @@ export type AgentMessage =
 	| AssistantMessage
 	| ToolResultMessage
 	| CustomMessage
+	| BranchSummaryMessage
 	| CompactionSummaryMessage;
 
 export function emptyUsage(): Usage {
@@ -115,7 +125,7 @@ export function emptyUsage(): Usage {
 
 /** Concatenated text of a message's text blocks (string content returned as-is). */
 export function messageText(message: AgentMessage): string {
-	if (message.role === "compactionSummary") return message.summary;
+	if (message.role === "compactionSummary" || message.role === "branchSummary") return message.summary;
 	if (message.role === "user" || message.role === "custom") {
 		if (typeof message.content === "string") return message.content;
 		return message.content

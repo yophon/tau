@@ -12,6 +12,21 @@ import {
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import { SseParser } from "./sse.ts";
 
+// Wire framing for summary messages, verbatim from pi's convertToLlm
+// (packages/agent/src/harness/messages.ts). Both summaries enter context as
+// user messages wrapped in <summary> tags.
+const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+
+<summary>
+`;
+const COMPACTION_SUMMARY_SUFFIX = `
+</summary>`;
+const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
+
+<summary>
+`;
+const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+
 export interface OpenAICompatConfig {
 	/** Base URL up to and including the version segment, e.g. "https://api.openai.com/v1". */
 	baseUrl: string;
@@ -92,8 +107,10 @@ function toWireMessage(message: AgentMessage): Record<string, unknown> {
 			// pi's convertToLlm sends custom messages to the model as user messages.
 			return { role: "user", content: userContentToWire(message.content) };
 		case "compactionSummary":
-			// As in pi: the compaction summary enters context as a user message.
-			return { role: "user", content: message.summary };
+			// As in pi's convertToLlm: enters context as a user message wrapped in <summary> tags.
+			return { role: "user", content: COMPACTION_SUMMARY_PREFIX + message.summary + COMPACTION_SUMMARY_SUFFIX };
+		case "branchSummary":
+			return { role: "user", content: BRANCH_SUMMARY_PREFIX + message.summary + BRANCH_SUMMARY_SUFFIX };
 		case "assistant": {
 			const text = message.content
 				.filter((block): block is TextContent => block.type === "text")

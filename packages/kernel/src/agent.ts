@@ -1,3 +1,4 @@
+import { collectEntriesForBranchSummary, generateBranchSummary } from "./branch.ts";
 import {
 	type CompactionResult,
 	type CompactionSettings,
@@ -8,8 +9,14 @@ import {
 	runCompaction,
 	shouldCompact,
 } from "./compaction.ts";
-import { TauError } from "./errors.ts";
-import type { ExtensionContext, ExtensionRegistry, ToolCallEvent, UiCapability } from "./extensions.ts";
+import { SessionError, TauError } from "./errors.ts";
+import type {
+	ExtensionContext,
+	ExtensionRegistry,
+	ToolCallEvent,
+	TreePreparation,
+	UiCapability,
+} from "./extensions.ts";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -120,6 +127,8 @@ export class Agent {
 	private pendingCompaction: string | null = null;
 	/** Serializes session writes triggered by sync extension actions. */
 	private pendingRecording: Promise<void> = Promise.resolve();
+	/** True while a prompt() generator is being consumed (guards navigateTo). */
+	private running = false;
 
 	constructor(options: AgentOptions) {
 		this.platform = options.platform ?? defaultPlatform();
@@ -277,6 +286,82 @@ export class Agent {
 	}
 
 	async *prompt(input: string, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
+		if (this.running) throw new TauError("busy", "prompt() is already running");
+		this.running = true;
+		try {
+			yield* this.runPrompt(input, signal);
+		} finally {
+			this.running = false;
+		}
+	}
+
+	/**
+	 * Navigate the session tree to another entry (pi's navigateTree): summarize
+	 * the branch being abandoned (unless summarize: false or an extension
+	 * supplies/cancels via session_before_tree), move the leaf, record a
+	 * branch_summary entry at the new position, and rebuild the conversation
+	 * from the new path. Deviation from pi: tau moves the leaf to the target
+	 * entry itself — pi moves to a user-message target's parent and refills the
+	 * editor with its text, an interaction that needs a TUI (P8).
+	 */
+	async navigateTo(
+		entryId: string,
+		options?: { summarize?: boolean; customInstructions?: string; signal?: TauAbortSignal },
+	): Promise<{ cancelled: boolean }> {
+		if (!this.session) throw new TauError("no_session", "navigateTo() requires a session");
+		if (this.running) throw new TauError("busy", "navigateTo() requires an idle agent");
+		await this.pendingRecording;
+		const store = this.session.store;
+		const oldLeafId = await store.getLeafId();
+		if (oldLeafId === entryId) return { cancelled: false };
+		const targetEntry = await store.getEntry(entryId);
+		if (!targetEntry) throw new SessionError("not_found", `Entry ${entryId} not found`);
+
+		const ctx = this.extensionContext();
+		const { entries, commonAncestorId } = await collectEntriesForBranchSummary(store, oldLeafId, entryId);
+		const preparation: TreePreparation = {
+			targetId: entryId,
+			oldLeafId,
+			commonAncestorId,
+			entriesToSummarize: entries,
+			customInstructions: options?.customInstructions,
+		};
+		const hook = this.extensions
+			? await this.extensions.runSessionBeforeTree({ preparation, signal: options?.signal }, ctx)
+			: {};
+		if (hook.cancel) return { cancelled: true };
+
+		let summaryText = hook.summary?.summary;
+		let summaryDetails = hook.summary?.details;
+		if (!summaryText && options?.summarize !== false && entries.length > 0) {
+			try {
+				const generated = await generateBranchSummary(this.platform, this.config, entries, {
+					customInstructions: hook.customInstructions ?? options?.customInstructions,
+					signal: options?.signal,
+				});
+				summaryText = generated.summary;
+				summaryDetails = { readFiles: generated.readFiles, modifiedFiles: generated.modifiedFiles };
+			} catch (error) {
+				// As in pi: an aborted summary generation cancels the navigation.
+				if (error instanceof TauError && error.code === "aborted") return { cancelled: true };
+				throw error;
+			}
+		}
+
+		const fromExtension = hook.summary !== undefined;
+		const summaryEntry = await this.session.moveTo(
+			entryId,
+			summaryText ? { summary: summaryText, details: summaryDetails, fromHook: fromExtension || undefined } : undefined,
+		);
+		const newLeafId = await store.getLeafId();
+		const path = await store.getPathToRoot(newLeafId);
+		this.messages.length = 0;
+		this.messages.push(...messagesFromPath(path).messages);
+		await this.extensions?.notifySessionTree({ newLeafId, oldLeafId, summaryEntry, fromExtension }, ctx);
+		return { cancelled: false };
+	}
+
+	private async *runPrompt(input: string, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
 		const ctx = this.extensionContext();
 
 		let finalInput = input;
