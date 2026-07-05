@@ -1,0 +1,14 @@
+{
+	"name": "@tau/host-node",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "Node.js capability providers for the tau kernel: filesystem and shell",
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@tau/kernel": "0.0.1"
+	}
+}

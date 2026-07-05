@@ -1,0 +1,18 @@
+{
+	"name": "@tau/cli",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "Minimal terminal frontend for the tau kernel",
+	"bin": {
+		"tau": "./src/main.ts"
+	},
+	"exports": {
+		".": "./src/main.ts",
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@tau/host-node": "0.0.1",
+		"@tau/kernel": "0.0.1"
+	}
+}

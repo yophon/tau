@@ -1,0 +1,11 @@
+{
+	"name": "@tau/kernel",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "Runtime-agnostic agent kernel: pure ECMAScript plus an injectable platform seam",
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	}
+}
