@@ -24,18 +24,11 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：26 测试全绿（含 4 个自动化 CLI e2e：工具回路、信任门双态、steering、SIGINT abort——e2e 从此入 CI）；tmux 手工验证交互信任门（询问→y→扩展加载→二次运行免询问，trust.json 持久化正确）。还清技术债 #1–#4。与规格偏差：无；规格预留的部分完成项（before_agent_start 的 message 注入、message_* 仅 assistant）按计划推迟到 P3，pi-parity 已标注。发现并修复实现前未预见的问题：TTY 下 readline 拦截 Ctrl+C 导致"中断轮"变"退 REPL"（已修：有运行中的轮先 abort）；macOS tmpdir 符号链接与 trust 键不一致（测试用 realpath）。
 
-## Phase 3 ⬜ 会话持久化（Sessions）
+## Phase 3 ✅ 会话持久化（Sessions）（2026-07-04）
 
-**目标**：对话可持久化、可恢复、可列出；为 compaction 和分支打地基。
+规格书：[specs/phase-3-sessions.md](specs/phase-3-sessions.md)。**前置项（D13，用户裁决）：消息形状全面对齐 pi**——内容块数组（Text/Thinking/ToolCall/Image）、pi 的 Usage/StopReason/timestamp/api/provider/model，SystemMessage 移出消息联合（system prompt 成为独立参数，context 事件只见对话）。会话：pi v3 JSONL 格式（header/树形 entry/8-hex id/leaf 指针），`SessionStore`/`SessionRepo` 接口镜像 pi，InMemory 与 Jsonl 双实现共享契约测试；`SessionRecorder` + `restoreSession`；`Platform.randomBytes` + uuidv7（照抄 pi）；FileSystem 增 appendFile/remove。扩展：sendMessage/appendEntry/setSessionName 动作（经 attachHostActions）、session_start/shutdown/info_changed 事件、before_agent_start 的 message 注入、message_start/end 覆盖全部消息角色。CLI：默认持久化、--continue/--session/--no-session、/name、/sessions。
 
-- 先读 pi：`packages/agent/src/harness/session/`（jsonl-repo.ts / jsonl-storage.ts / memory-repo.ts / session.ts / uuid.ts）、`packages/coding-agent/docs/session-format.md`
-- 内核新增 `SessionStore` 能力接口 + `InMemorySessionStore`；照抄 pi 的 JSONL 会话格式（entry 结构、uuidv7 id、元数据头）
-- host-node 实现基于 FileSystem 的 JSONL store（会话目录 `~/.tau/sessions/<cwd-hash>/`，参考 pi 布局）
-- Agent 集成：entry 追加挂在现有事件点上，不改循环结构
-- 会话事件：`session_start` / `session_info_changed` / `session_before_switch` / `session_shutdown`
-- 扩展动作：`sendMessage` / `appendEntry`（自定义消息与持久化 entry，照抄 pi 语义）
-- CLI：`--continue`（续最近会话）、`--session <id>`、`/sessions` 命令
-- **验收**：跨进程恢复对话 e2e（mock 服务器）；纯度门禁过（uuidv7 需随机数——扩展 `Platform` 加 `randomBytes`，defaultPlatform 用 crypto.getRandomValues + Math.random 兜底，照抄 pi 的 uuid.ts 写法）
+**完成记录**：33 测试全绿（新增 uuidv7、双 repo 契约、坏文件报错、记录+恢复+续写、扩展动作、--continue e2e 断言第二次运行携带完整上下文）。与规格偏差：无。教训：初版会话规格因消息形状分歧埋了永久兼容性风险，用户质询后以 D13 修正——现在会话文件是真 pi v3。
 
 ## Phase 4 ⬜ 上下文压缩（Compaction）
 

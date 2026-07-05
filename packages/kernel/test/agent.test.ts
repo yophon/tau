@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
-import type { AssistantMessage } from "../src/messages.ts";
+import { type AssistantMessage, messageText } from "../src/messages.ts";
 import type { PlatformResponse } from "../src/platform.ts";
 import type { Tool } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn } from "./helpers.ts";
@@ -71,7 +71,8 @@ test("agent loop executes tool calls and completes with a final message", async 
 		["user", "assistant", "toolResult", "assistant"],
 	);
 	const toolResult = agent.messages[2];
-	assert.equal(toolResult.role === "toolResult" && toolResult.content, "echo: hi");
+	assert.ok(toolResult.role === "toolResult");
+	assert.equal(messageText(toolResult), "echo: hi");
 	const finalMessage = agent.messages[3] as AssistantMessage;
 	assert.equal(finalMessage.usage?.totalTokens, 15);
 
@@ -110,7 +111,7 @@ test("agent surfaces reasoning deltas and handles unknown tools gracefully", asy
 	assert.equal(reasoning, "thinking…");
 	assert.equal(sawToolError, true);
 	const finalMessage = agent.messages.at(-1) as AssistantMessage;
-	assert.equal(finalMessage.content, "recovered");
+	assert.equal(messageText(finalMessage), "recovered");
 });
 
 test("http errors carry status and body", async () => {
@@ -153,7 +154,7 @@ test("steering messages are consumed after the turn's tools, follow-ups when the
 	for await (const event of agent.prompt("start")) {
 		eventTypes.push(event.type);
 		if (event.type === "tool_start") agent.steer("steer me");
-		if (event.type === "assistant_message" && event.message.content === "first answer") {
+		if (event.type === "assistant_message" && messageText(event.message) === "first answer") {
 			agent.followUp("one more thing");
 		}
 	}
@@ -171,7 +172,7 @@ test("steering messages are consumed after the turn's tools, follow-ups when the
 	// user_message events surfaced for both queued messages; exactly one agent_end.
 	assert.equal(eventTypes.filter((t) => t === "user_message").length, 2);
 	assert.equal(eventTypes.filter((t) => t === "agent_end").length, 1);
-	assert.equal((agent.messages.at(-1) as AssistantMessage).content, "follow-up answer");
+	assert.equal(messageText(agent.messages.at(-1) as AssistantMessage), "follow-up answer");
 });
 
 function toolCallTurnFor(name: string): unknown[] {

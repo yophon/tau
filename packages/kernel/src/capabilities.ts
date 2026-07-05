@@ -20,8 +20,10 @@ export interface FileSystem {
 	readonly cwd: string;
 	readTextFile(path: string): Promise<string>;
 	writeTextFile(path: string, content: string): Promise<void>;
+	appendFile(path: string, content: string): Promise<void>;
 	listDir(path: string): Promise<FileInfo[]>;
 	stat(path: string): Promise<FileInfo>;
+	remove(path: string): Promise<void>;
 }
 
 export interface ShellExecResult {

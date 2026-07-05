@@ -37,6 +37,20 @@ export function fakePlatform(responses: PlatformResponse[], requests: unknown[] 
 				flush: () => decoder.decode(),
 			};
 		},
+		randomBytes: seededRandomBytes(),
+	};
+}
+
+/** Deterministic pseudo-random bytes so tests are reproducible. */
+export function seededRandomBytes(seed = 42): (length: number) => Uint8Array {
+	let state = seed;
+	return (length) => {
+		const bytes = new Uint8Array(length);
+		for (let i = 0; i < length; i++) {
+			state = (state * 1103515245 + 12345) & 0x7fffffff;
+			bytes[i] = state & 0xff;
+		}
+		return bytes;
 	};
 }
 

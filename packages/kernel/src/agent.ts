@@ -1,8 +1,18 @@
 import { TauError } from "./errors.ts";
 import type { ExtensionContext, ExtensionRegistry, ToolCallEvent, UiCapability } from "./extensions.ts";
-import type { AgentMessage, AssistantMessage, ToolCallRequest, ToolResultMessage, UserMessage } from "./messages.ts";
-import { type OpenAICompatConfig, streamChatCompletion } from "./openai.ts";
+import {
+	type AgentMessage,
+	type AssistantMessage,
+	type CustomMessage,
+	emptyUsage,
+	type ToolCall,
+	type ToolResultMessage,
+	toolCallsOf,
+	type UserMessage,
+} from "./messages.ts";
+import { OPENAI_COMPLETIONS_API, type OpenAICompatConfig, streamChatCompletion } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
+import type { SessionRecorder } from "./session.ts";
 import type { Tool, ToolResult } from "./tools.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
@@ -46,6 +56,10 @@ export interface AgentOptions {
 	extensions?: ExtensionRegistry;
 	/** Host UI capability, exposed to extensions via ctx.ui. */
 	ui?: UiCapability;
+	/** Seed conversation state, e.g. restored from a session. */
+	initialMessages?: AgentMessage[];
+	/** Session recorder; when present, conversation messages are persisted as they happen. */
+	session?: SessionRecorder;
 	/** Safety valve for runaway tool loops within a single prompt. Defaults to 50. */
 	maxTurnsPerPrompt?: number;
 	steeringMode?: QueueMode;
@@ -57,9 +71,9 @@ export type AgentEvent =
 	| { type: "reasoning_delta"; delta: string }
 	| { type: "assistant_message"; message: AssistantMessage }
 	| { type: "user_message"; message: UserMessage }
-	| { type: "tool_start"; toolCall: ToolCallRequest }
-	| { type: "tool_update"; toolCall: ToolCallRequest; partialOutput: string }
-	| { type: "tool_result"; toolCall: ToolCallRequest; result: ToolResult }
+	| { type: "tool_start"; toolCall: ToolCall }
+	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string }
+	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
 	| { type: "agent_end"; messages: AgentMessage[] };
 
 const DEFAULT_MAX_TURNS = 50;
@@ -87,6 +101,9 @@ export class Agent {
 	private readonly maxTurnsPerPrompt: number;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
+	private readonly session: SessionRecorder | undefined;
+	/** Serializes session writes triggered by sync extension actions. */
+	private pendingRecording: Promise<void> = Promise.resolve();
 
 	constructor(options: AgentOptions) {
 		this.platform = options.platform ?? defaultPlatform();
@@ -96,9 +113,52 @@ export class Agent {
 		for (const [name, tool] of options.extensions?.tools ?? []) this.tools.set(name, tool);
 		this.extensions = options.extensions;
 		this.ui = options.ui;
+		if (options.initialMessages) this.messages.push(...options.initialMessages);
 		this.maxTurnsPerPrompt = options.maxTurnsPerPrompt ?? DEFAULT_MAX_TURNS;
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
+		this.session = options.session;
+		const session = options.session;
+		options.extensions?.attachHostActions({
+			sendMessage: (input) => {
+				const message: CustomMessage = {
+					role: "custom",
+					customType: input.customType,
+					content: input.content,
+					display: input.display ?? true,
+					details: input.details,
+					timestamp: Date.now(),
+				};
+				this.messages.push(message);
+				if (session) this.pendingRecording = this.pendingRecording.then(() => session.recordMessage(message));
+			},
+			appendEntry: (customType, data) => {
+				if (session) this.pendingRecording = this.pendingRecording.then(() => session.appendCustom(customType, data));
+			},
+			setSessionName: (name) => {
+				if (session) this.pendingRecording = this.pendingRecording.then(() => session.setName(name));
+				void this.extensions?.notifySessionInfoChanged(name, this.extensionContext());
+			},
+		});
+	}
+
+	/** Persist a message, after any queued extension-triggered writes. */
+	private async recordMessage(message: AgentMessage): Promise<void> {
+		if (!this.session) return;
+		await this.pendingRecording;
+		await this.session.recordMessage(message);
+	}
+
+	/** Fire message_start/message_end for a non-streamed message, then store and persist it. */
+	private async commitMessage(message: AgentMessage, ctx: ExtensionContext): Promise<AgentMessage> {
+		let final = message;
+		if (this.extensions) {
+			await this.extensions.notifyMessageStart(final, ctx);
+			final = await this.extensions.runMessageEnd(final, ctx);
+		}
+		this.messages.push(final);
+		await this.recordMessage(final);
+		return final;
 	}
 
 	/** Context handed to extension handlers; also usable by hosts to dispatch extension commands. */
@@ -108,12 +168,12 @@ export class Agent {
 
 	/** Queue a message consumed after the current turn's tools, before the next LLM call. */
 	steer(text: string): void {
-		this.steeringQueue.enqueue({ role: "user", content: text });
+		this.steeringQueue.enqueue({ role: "user", content: text, timestamp: Date.now() });
 	}
 
 	/** Queue a message consumed when the prompt would otherwise end; the loop then continues. */
 	followUp(text: string): void {
-		this.followUpQueue.enqueue({ role: "user", content: text });
+		this.followUpQueue.enqueue({ role: "user", content: text, timestamp: Date.now() });
 	}
 
 	hasQueuedMessages(): boolean {
@@ -143,43 +203,72 @@ export class Agent {
 
 		let systemPrompt = this.systemPrompt ?? "";
 		if (this.extensions) {
-			systemPrompt = await this.extensions.runBeforeAgentStart(finalInput, systemPrompt, ctx);
+			const beforeStart = await this.extensions.runBeforeAgentStart(finalInput, systemPrompt, ctx);
+			systemPrompt = beforeStart.systemPrompt;
+			for (const injected of beforeStart.messages) {
+				await this.commitMessage(
+					{
+						role: "custom",
+						customType: injected.customType,
+						content: injected.content,
+						display: injected.display ?? true,
+						details: injected.details,
+						timestamp: Date.now(),
+					},
+					ctx,
+				);
+			}
 		}
 
-		this.messages.push({ role: "user", content: finalInput });
+		await this.commitMessage({ role: "user", content: finalInput, timestamp: Date.now() }, ctx);
 		await this.extensions?.notifyAgentStart(ctx);
 
 		for (let turnIndex = 0; turnIndex < this.maxTurnsPerPrompt; turnIndex++) {
 			await this.extensions?.notifyTurnStart(turnIndex, ctx);
 
-			let request: AgentMessage[] =
-				systemPrompt !== "" ? [{ role: "system", content: systemPrompt }, ...this.messages] : [...this.messages];
+			let request: AgentMessage[] = [...this.messages];
 			if (this.extensions) {
 				request = await this.extensions.runContext(request, ctx);
 			}
 
-			const partial: AssistantMessage = { role: "assistant", content: "", toolCalls: [] };
+			const partial: AssistantMessage = {
+				role: "assistant",
+				content: [],
+				api: OPENAI_COMPLETIONS_API,
+				provider: this.config.provider ?? "openai-compat",
+				model: this.config.model,
+				usage: emptyUsage(),
+				stopReason: "stop",
+				timestamp: Date.now(),
+			};
 			await this.extensions?.notifyMessageStart(partial, ctx);
 
 			let assistantMessage: AssistantMessage | undefined;
 			const stream = streamChatCompletion(this.platform, this.config, request, {
+				systemPrompt: systemPrompt === "" ? undefined : systemPrompt,
 				tools: this.tools.size > 0 ? [...this.tools.values()] : undefined,
 				signal,
 			});
 			for await (const event of stream) {
 				switch (event.type) {
-					case "text_delta":
-						partial.content += event.delta;
+					case "text_delta": {
+						const last = partial.content.at(-1);
+						if (last?.type === "text") last.text += event.delta;
+						else partial.content.push({ type: "text", text: event.delta });
 						await this.extensions?.notifyMessageUpdate(partial, event, ctx);
 						yield { type: "text_delta", delta: event.delta };
 						break;
-					case "reasoning_delta":
-						partial.reasoning = (partial.reasoning ?? "") + event.delta;
+					}
+					case "reasoning_delta": {
+						const last = partial.content.at(-1);
+						if (last?.type === "thinking") last.thinking += event.delta;
+						else partial.content.push({ type: "thinking", thinking: event.delta });
 						await this.extensions?.notifyMessageUpdate(partial, event, ctx);
 						yield { type: "reasoning_delta", delta: event.delta };
 						break;
+					}
 					case "tool_call":
-						partial.toolCalls.push(event.toolCall);
+						partial.content.push(event.toolCall);
 						await this.extensions?.notifyMessageUpdate(partial, event, ctx);
 						break;
 					case "response_end":
@@ -194,10 +283,12 @@ export class Agent {
 				assistantMessage = (await this.extensions.runMessageEnd(assistantMessage, ctx)) as AssistantMessage;
 			}
 			this.messages.push(assistantMessage);
+			await this.recordMessage(assistantMessage);
 			yield { type: "assistant_message", message: assistantMessage };
 
+			const toolCalls = toolCallsOf(assistantMessage);
 			const toolResults: ToolResultMessage[] = [];
-			for (const toolCall of assistantMessage.toolCalls) {
+			for (const toolCall of toolCalls) {
 				yield { type: "tool_start", toolCall };
 				const { result, updates } = await this.executeToolCall(toolCall, ctx, signal);
 				for (const partialOutput of updates) {
@@ -207,31 +298,33 @@ export class Agent {
 					role: "toolResult",
 					toolCallId: toolCall.id,
 					toolName: toolCall.name,
-					content: result.output,
+					content: [{ type: "text", text: result.output }],
 					isError: result.isError === true,
+					timestamp: Date.now(),
 				};
-				this.messages.push(toolResultMessage);
-				toolResults.push(toolResultMessage);
+				const committedToolResult = (await this.commitMessage(toolResultMessage, ctx)) as ToolResultMessage;
+				toolResults.push(committedToolResult);
 				yield { type: "tool_result", toolCall, result };
 			}
 
 			for (const steered of this.steeringQueue.drain()) {
-				this.messages.push(steered);
-				yield { type: "user_message", message: steered };
+				const committed = (await this.commitMessage(steered, ctx)) as UserMessage;
+				yield { type: "user_message", message: committed };
 			}
 
 			await this.extensions?.notifyTurnEnd(turnIndex, assistantMessage, toolResults, ctx);
 
-			const hasPendingWork = assistantMessage.toolCalls.length > 0 || this.messages.at(-1)?.role === "user";
+			const hasPendingWork = toolCalls.length > 0 || this.messages.at(-1)?.role === "user";
 			if (!hasPendingWork) {
 				const followUps = this.followUpQueue.drain();
 				if (followUps.length > 0) {
 					for (const followUp of followUps) {
-						this.messages.push(followUp);
-						yield { type: "user_message", message: followUp };
+						const committed = (await this.commitMessage(followUp, ctx)) as UserMessage;
+						yield { type: "user_message", message: committed };
 					}
 					continue;
 				}
+				await this.pendingRecording;
 				await this.extensions?.notifyAgentEnd(this.messages, ctx);
 				yield { type: "agent_end", messages: this.messages };
 				return;
@@ -242,7 +335,7 @@ export class Agent {
 	}
 
 	private async executeToolCall(
-		toolCall: ToolCallRequest,
+		toolCall: ToolCall,
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 	): Promise<{ result: ToolResult; updates: string[] }> {
@@ -250,19 +343,9 @@ export class Agent {
 		if (!tool) {
 			return { result: { output: `Unknown tool: ${toolCall.name}`, isError: true }, updates: [] };
 		}
-		let args: Record<string, unknown>;
-		try {
-			const parsed: unknown = toolCall.arguments === "" ? {} : JSON.parse(toolCall.arguments);
-			if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-				return { result: { output: "Tool arguments must be a JSON object", isError: true }, updates: [] };
-			}
-			args = parsed as Record<string, unknown>;
-		} catch {
-			return {
-				result: { output: `Invalid JSON in tool arguments: ${toolCall.arguments.slice(0, 200)}`, isError: true },
-				updates: [],
-			};
-		}
+		// Execution works on a copy so tool_call handlers can rewrite arguments
+		// without mutating the stored assistant message.
+		let args: Record<string, unknown> = { ...toolCall.arguments };
 		if (this.extensions) {
 			const event: ToolCallEvent = {
 				type: "tool_call",

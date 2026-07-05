@@ -4,7 +4,21 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@tau/host-node";
-import { Agent, createCodingTools, ExtensionRegistry, type OpenAICompatConfig, type UiCapability } from "@tau/kernel";
+import {
+	Agent,
+	createCodingTools,
+	defaultPlatform,
+	ExtensionRegistry,
+	JsonlSessionRepo,
+	messageText,
+	type OpenAICompatConfig,
+	restoreSession,
+	SessionRecorder,
+	type SessionStore,
+	sessionDirSlug,
+	thinkingText,
+	type UiCapability,
+} from "@tau/kernel";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -16,7 +30,12 @@ Options:
   -m, --model <model>    Model id (env: TAU_MODEL)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
+  -c, --continue         Resume the most recent session for this directory
+      --session <path>   Resume a specific session file
+      --no-session       Do not persist this conversation
   -h, --help             Show this help
+
+REPL commands: /name <name> (name the session), /sessions (list), /help.
 
 Extensions may declare additional --<flag> options (see registerFlag).
 Without -p, tau starts an interactive REPL. During a running turn, typed lines
@@ -28,13 +47,16 @@ interface CliOptions {
 	model?: string;
 	system?: string;
 	print?: string;
+	continue: boolean;
+	sessionPath?: string;
+	noSession: boolean;
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading. */
 	extras: string[];
 }
 
 function parseArgs(argv: string[]): CliOptions {
-	const options: CliOptions = { help: false, extras: [] };
+	const options: CliOptions = { help: false, extras: [], continue: false, noSession: false };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		const next = (): string => {
@@ -65,6 +87,16 @@ function parseArgs(argv: string[]): CliOptions {
 			case "-p":
 			case "--print":
 				options.print = next();
+				break;
+			case "-c":
+			case "--continue":
+				options.continue = true;
+				break;
+			case "--session":
+				options.sessionPath = next();
+				break;
+			case "--no-session":
+				options.noSession = true;
 				break;
 			case "-h":
 			case "--help":
@@ -249,13 +281,15 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 					process.stdout.write(event.delta);
 					break;
 				case "assistant_message":
-					if (event.message.content !== "" || event.message.reasoning) process.stdout.write("\n");
+					if (messageText(event.message) !== "" || thinkingText(event.message) !== "") process.stdout.write("\n");
 					break;
 				case "user_message":
-					process.stdout.write(dim(`↳ steered: ${firstLine(event.message.content)}\n`));
+					process.stdout.write(dim(`↳ steered: ${firstLine(messageText(event.message))}\n`));
 					break;
 				case "tool_start":
-					process.stdout.write(`${cyan(`⚙ ${event.toolCall.name}`)} ${dim(firstLine(event.toolCall.arguments))}\n`);
+					process.stdout.write(
+						`${cyan(`⚙ ${event.toolCall.name}`)} ${dim(firstLine(JSON.stringify(event.toolCall.arguments)))}\n`,
+					);
 					break;
 				case "tool_update":
 					break;
@@ -266,8 +300,8 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 				}
 				case "agent_end": {
 					const last = agent.messages.at(-1);
-					if (last?.role === "assistant" && last.usage) {
-						process.stdout.write(dim(`[tokens: ${last.usage.inputTokens} in, ${last.usage.outputTokens} out]\n`));
+					if (last?.role === "assistant" && last.usage.totalTokens > 0) {
+						process.stdout.write(dim(`[tokens: ${last.usage.input} in, ${last.usage.output} out]\n`));
 					}
 					break;
 				}
@@ -330,16 +364,55 @@ async function main(): Promise<void> {
 	const ui = process.stdin.isTTY ? createUi(readline) : undefined;
 	const extensions = await loadExtensionRegistry(cwd, ui);
 	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
+
+	const platform = defaultPlatform();
+	const sessionRepo = new JsonlSessionRepo(
+		new NodeFileSystem("/"),
+		platform,
+		join(homedir(), ".tau", "sessions", sessionDirSlug(cwd)),
+		cwd,
+	);
+	let store: SessionStore | undefined;
+	let sessionReason: "startup" | "resume" = "startup";
+	let initialMessages = undefined as Awaited<ReturnType<typeof restoreSession>>["messages"] | undefined;
+	if (!options.noSession) {
+		if (options.sessionPath) {
+			store = await sessionRepo.open({ id: "", cwd, timestamp: "", filePath: resolve(options.sessionPath) });
+			sessionReason = "resume";
+		} else if (options.continue) {
+			const sessions = await sessionRepo.list();
+			if (sessions.length > 0) {
+				store = await sessionRepo.open(sessions[0]);
+				sessionReason = "resume";
+			}
+		}
+		if (store) {
+			const restored = await restoreSession(store);
+			initialMessages = restored.messages;
+			console.log(
+				dim(`Resumed session (${restored.messages.length} messages${restored.name ? `, "${restored.name}"` : ""}).`),
+			);
+		} else {
+			store = await sessionRepo.create();
+		}
+	}
+	const recorder = store ? await SessionRecorder.open(store) : undefined;
+
 	const agent = new Agent({
 		config,
+		platform,
 		systemPrompt: options.system ?? defaultSystemPrompt(cwd),
 		tools: createCodingTools({ fs: new NodeFileSystem(cwd), shell: new NodeShell(cwd) }),
 		extensions,
 		ui,
+		initialMessages,
+		session: recorder,
 	});
+	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
 
 	if (options.print !== undefined) {
 		await runTurn(agent, options.print, readline);
+		await extensions.notifySessionShutdown("quit", agent.extensionContext());
 		readline.close();
 		return;
 	}
@@ -366,11 +439,29 @@ async function main(): Promise<void> {
 		if (input === "") continue;
 		if (input === "exit" || input === "quit") break;
 		if (input.startsWith("/")) {
+			if (input === "/sessions") {
+				for (const session of await sessionRepo.list()) {
+					console.log(`${session.timestamp}  ${session.name ?? dim("(unnamed)")}  ${dim(session.filePath ?? "")}`);
+				}
+				continue;
+			}
+			if (input.startsWith("/name ")) {
+				const name = input.slice("/name ".length).trim();
+				if (recorder && name !== "") {
+					await recorder.setName(name);
+					await extensions.notifySessionInfoChanged(name, agent.extensionContext());
+					console.log(dim(`Session named "${name}".`));
+				} else {
+					console.log(red(recorder ? "Usage: /name <name>" : "No active session (--no-session)."));
+				}
+				continue;
+			}
 			await runCommand(agent, extensions, input);
 			continue;
 		}
 		await runTurn(agent, input, readline);
 	}
+	await extensions.notifySessionShutdown("quit", agent.extensionContext());
 	readline.close();
 }
 

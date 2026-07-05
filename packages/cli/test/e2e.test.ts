@@ -172,6 +172,57 @@ test("lines typed during a running turn become steering messages", async () => {
 	});
 });
 
+test("sessions persist across runs and --continue restores full context", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock1 = await startMockOpenAI([() => mockTextTurn("first answer")]);
+		try {
+			const cli = startCli(["-p", "remember this"], { cwd, home, baseUrl: mock1.baseUrl });
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("first answer"), cli.output());
+		} finally {
+			await mock1.close();
+		}
+
+		const mock2 = await startMockOpenAI([() => mockTextTurn("second answer")]);
+		try {
+			const cli = startCli(["-p", "next question", "--continue"], { cwd, home, baseUrl: mock2.baseUrl });
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("Resumed session (2 messages"), cli.output());
+			const wire = (mock2.requests[0] as { messages: { role: string; content: string | null }[] }).messages;
+			const flat = wire.map((m) => `${m.role}:${m.content ?? ""}`);
+			assert.ok(
+				flat.some((m) => m === "user:remember this"),
+				JSON.stringify(flat),
+			);
+			assert.ok(
+				flat.some((m) => m === "assistant:first answer"),
+				JSON.stringify(flat),
+			);
+			assert.ok(
+				flat.some((m) => m === "user:next question"),
+				JSON.stringify(flat),
+			);
+		} finally {
+			await mock2.close();
+		}
+
+		// --no-session must not create a third session file.
+		const mock3 = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			const cli = startCli(["-p", "ephemeral", "--no-session"], { cwd, home, baseUrl: mock3.baseUrl });
+			await cli.waitForExit();
+		} finally {
+			await mock3.close();
+		}
+		const { readdir } = await import("node:fs/promises");
+		const sessionsRoot = join(home, ".tau", "sessions");
+		const dirs = await readdir(sessionsRoot);
+		const files = await readdir(join(sessionsRoot, dirs[0]));
+		// Run 1 created one session; --continue appended to it in place; --no-session added nothing.
+		assert.equal(files.length, 1, files.join(", "));
+	});
+});
+
 test("SIGINT aborts the running turn and the REPL keeps working", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([

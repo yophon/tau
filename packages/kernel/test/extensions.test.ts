@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
+import { messageText } from "../src/messages.ts";
 import type { Tool } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
 
@@ -47,7 +48,8 @@ test("extensions register tools, transform input, and observe lifecycle events",
 	const firstRequest = requests[0] as { messages: { role: string; content: string }[] };
 	assert.equal(firstRequest.messages[0].content, "hi (rewritten)");
 	const toolResult = agent.messages.find((message) => message.role === "toolResult");
-	assert.equal(toolResult?.role === "toolResult" && toolResult.content, "hello tau");
+	assert.ok(toolResult?.role === "toolResult");
+	assert.equal(messageText(toolResult), "hello tau");
 	assert.deepEqual(seen, ["agent_start", "turn_start:0", "turn_end:0:1", "turn_start:1", "turn_end:1:0", "agent_end"]);
 });
 

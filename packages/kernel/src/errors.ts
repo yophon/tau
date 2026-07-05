@@ -4,6 +4,7 @@ export type TauErrorCode =
 	| "stream_error"
 	| "aborted"
 	| "max_turns"
+	| "no_host"
 	| "invalid_response";
 
 export class TauError extends Error {
@@ -45,6 +46,18 @@ export class FileError extends Error {
 		this.name = "FileError";
 		this.code = code;
 		this.path = path;
+	}
+}
+
+export type SessionErrorCode = "invalid_session" | "invalid_entry" | "not_found";
+
+export class SessionError extends Error {
+	readonly code: SessionErrorCode;
+
+	constructor(code: SessionErrorCode, message: string, cause?: unknown) {
+		super(message, cause === undefined ? undefined : { cause });
+		this.name = "SessionError";
+		this.code = code;
 	}
 }
 

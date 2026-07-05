@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
+import { messageText } from "../src/messages.ts";
 import type { Tool } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
 
@@ -19,7 +20,7 @@ const streamingTool: Tool = {
 test("context handlers chain and rewrite the request without touching stored messages", async () => {
 	const first: Extension = (api) => {
 		api.on("context", (event) => ({
-			messages: [...event.messages, { role: "user", content: "injected-memory" }],
+			messages: [...event.messages, { role: "user", content: "injected-memory", timestamp: 0 }],
 		}));
 	};
 	const second: Extension = (api) => {
@@ -111,10 +112,12 @@ test("full event order for a prompt with one streaming tool call", async () => {
 	assert.deepEqual(seen, [
 		"input",
 		"before_agent_start",
+		"message_start", // user message (P3: message events cover all message roles)
+		"message_end",
 		"agent_start",
 		"turn_start:0",
 		"context",
-		"message_start",
+		"message_start", // assistant (streaming)
 		"message_update:tool_call",
 		"message_end",
 		"tool_call",
@@ -123,6 +126,8 @@ test("full event order for a prompt with one streaming tool call", async () => {
 		"tool_execution_update:part2",
 		"tool_execution_end",
 		"tool_result",
+		"message_start", // toolResult message
+		"message_end",
 		"turn_end:0:1",
 		"turn_start:1",
 		"context",
@@ -138,11 +143,11 @@ test("message_end can replace the message but not its role", async () => {
 	const censor: Extension = (api) => {
 		api.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return undefined;
-			return { message: { ...event.message, content: "[censored]" } };
+			return { message: { ...event.message, content: [{ type: "text", text: "[censored]" }] } };
 		});
 	};
 	const roleChanger: Extension = (api) => {
-		api.on("message_end", () => ({ message: { role: "user", content: "hijacked" } }));
+		api.on("message_end", () => ({ message: { role: "user", content: "hijacked", timestamp: 0 } }));
 	};
 	const agent = new Agent({
 		config: { baseUrl: "https://fake.test/v1", model: "fake" },
@@ -154,7 +159,8 @@ test("message_end can replace the message but not its role", async () => {
 	}
 	const finalMessage = agent.messages.at(-1);
 	assert.equal(finalMessage?.role, "assistant");
-	assert.equal(finalMessage?.role === "assistant" && finalMessage.content, "[censored]");
+	assert.ok(finalMessage?.role === "assistant");
+	assert.equal(messageText(finalMessage), "[censored]");
 });
 
 test("flags: declared defaults and host-supplied values", async () => {

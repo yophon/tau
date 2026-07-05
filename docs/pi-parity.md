@@ -14,11 +14,11 @@
 | `agent_start` / `agent_end` | 循环起止 | ✅ |
 | `turn_start` / `turn_end` | 轮次起止（turn_end 带 toolResults） | ✅ |
 | `context` | **每次 LLM 调用前修改 messages**（记忆注入/上下文过滤，pi 最强钩子之一） | ✅ P2 |
-| `before_agent_start` | prompt 后、循环前：注入消息/**替换 system prompt** | ✅ P2（systemPrompt 替换；`message?` 注入依赖 custom message，📍P3） |
-| `message_start` / `message_update` / `message_end` | 消息级流式观察；message_end 可替换消息 | ✅ P2（仅 assistant 消息触发，user/toolResult 📍P3；update 携带 tau ChatStreamEvent 而非 pi AssistantMessageEvent） |
+| `before_agent_start` | prompt 后、循环前：注入消息/**替换 system prompt** | ✅ P2+P3（systemPrompt 替换 + message 注入） |
+| `message_start` / `message_update` / `message_end` | 消息级流式观察；message_end 可替换消息 | ✅ P2+P3（全消息角色；update 仅 assistant 流式，携带 tau ChatStreamEvent 而非 pi AssistantMessageEvent） |
 | `tool_execution_start` / `update` / `end` | 工具执行过程观察（update 携带流式部分输出） | ✅ P2 |
-| `session_start` / `session_info_changed` / `session_shutdown` | 会话生命周期 | 📍P3 |
-| `session_before_switch` | 切换会话前（可取消） | 📍P3 |
+| `session_start` / `session_info_changed` / `session_shutdown` | 会话生命周期 | ✅ P3（reason 取子集：startup/resume/quit） |
+| `session_before_switch` | 切换会话前（可取消） | 📍P8（tau 暂无运行中切换会话；/resume 交互属 TUI） |
 | `session_before_compact` / `session_compact` | 压缩前（可取消/**可完全接管压缩**）/压缩后 | 📍P4 |
 | `session_before_fork` | 分叉前（可取消） | 📍P5 |
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | 📍P5 |
@@ -32,8 +32,8 @@
 | pi 特性 | 说明 | tau 状态 |
 |---|---|---|
 | **steering / follow-up 队列** | `Agent` 支持流式中插话（steer）与排队追问（followUp），`sendUserMessage(deliverAs)` | ✅ P2（steer/followUp/QueueMode；`sendUserMessage` 扩展动作形态 📍P3） |
-| `sendMessage` / `appendEntry` | 扩展注入自定义消息 / 持久化自定义 entry（不进 LLM 上下文） | 📍P3（依赖会话 entry 格式） |
-| `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | 📍P4（usage 部分 P2 可先给） |
+| `sendMessage` / `appendEntry` | 扩展注入自定义消息 / 持久化自定义 entry（不进 LLM 上下文） | ✅ P3（sendMessage 的 triggerTurn/deliverAs 📍P8） |
+| `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | 📍P4 |
 | `registerFlag` / `getFlag` | 扩展注册 CLI flag | ✅ P2 |
 | `registerShortcut` | 键盘快捷键 | 📍P8（TUI） |
 | `registerMessageRenderer` / `registerEntryRenderer` | 自定义消息/entry 的 TUI 渲染 | 📍P8（TUI） |

@@ -1,4 +1,4 @@
-import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
 import { FileError, type FileErrorCode, type FileInfo, type FileKind, type FileSystem, toError } from "@tau/kernel";
 
@@ -59,6 +59,25 @@ export class NodeFileSystem implements FileSystem {
 		try {
 			await mkdir(dirname(resolved), { recursive: true });
 			await writeFile(resolved, content, "utf8");
+		} catch (error) {
+			throw toFileError(error, resolved);
+		}
+	}
+
+	async appendFile(path: string, content: string): Promise<void> {
+		const resolved = this.resolvePath(path);
+		try {
+			await mkdir(dirname(resolved), { recursive: true });
+			await appendFile(resolved, content, "utf8");
+		} catch (error) {
+			throw toFileError(error, resolved);
+		}
+	}
+
+	async remove(path: string): Promise<void> {
+		const resolved = this.resolvePath(path);
+		try {
+			await rm(resolved);
 		} catch (error) {
 			throw toFileError(error, resolved);
 		}

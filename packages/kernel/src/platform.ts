@@ -52,6 +52,8 @@ export interface Utf8Decoder {
 export interface Platform {
 	fetch: PlatformFetch;
 	createUtf8Decoder(): Utf8Decoder;
+	/** Fill-quality randomness for ids (uuidv7). Not for cryptographic use. */
+	randomBytes(length: number): Uint8Array;
 }
 
 interface TextDecoderLike {
@@ -61,6 +63,7 @@ interface TextDecoderLike {
 interface GlobalCandidates {
 	fetch?: PlatformFetch;
 	TextDecoder?: new (encoding?: string) => TextDecoderLike;
+	crypto?: { getRandomValues?(bytes: Uint8Array): Uint8Array };
 }
 
 /**
@@ -92,6 +95,16 @@ export function defaultPlatform(): Platform {
 				decode: (chunk) => decoder.decode(chunk, { stream: true }),
 				flush: () => decoder.decode(),
 			};
+		},
+		// Mirrors pi's fillRandomBytes: crypto when present, Math.random fallback.
+		randomBytes: (length) => {
+			const bytes = new Uint8Array(length);
+			if (g.crypto?.getRandomValues) {
+				g.crypto.getRandomValues(bytes);
+				return bytes;
+			}
+			for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+			return bytes;
 		},
 	};
 }

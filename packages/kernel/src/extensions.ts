@@ -1,3 +1,4 @@
+import { TauError } from "./errors.ts";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Tool, ToolResult } from "./tools.ts";
@@ -74,8 +75,16 @@ export interface BeforeAgentStartEvent {
 	systemPrompt: string;
 }
 
-/** systemPrompt replacements chain across extensions, as in pi. */
-export type BeforeAgentStartEventResult = { systemPrompt?: string } | undefined;
+/** Payload for sendMessage and before_agent_start message injection (pi's CustomMessage pick). */
+export interface CustomMessageInput {
+	customType: string;
+	content: string;
+	display?: boolean;
+	details?: unknown;
+}
+
+/** systemPrompt replacements chain; injected messages accumulate across extensions, as in pi. */
+export type BeforeAgentStartEventResult = { systemPrompt?: string; message?: CustomMessageInput } | undefined;
 
 /**
  * Fired when an assistant message starts streaming. The message is partial.
@@ -135,6 +144,24 @@ export interface ProjectTrustEvent {
 }
 
 export type ProjectTrustEventResult = { trusted: "yes" | "no" | "undecided"; remember?: boolean } | undefined;
+
+/** Fired when a session is started or resumed. */
+export interface SessionStartEvent {
+	type: "session_start";
+	reason: "startup" | "resume";
+}
+
+/** Fired before the extension runtime is torn down. */
+export interface SessionShutdownEvent {
+	type: "session_shutdown";
+	reason: "quit";
+}
+
+/** Fired when the session name changes. */
+export interface SessionInfoChangedEvent {
+	type: "session_info_changed";
+	name: string | undefined;
+}
 
 /** Fired for user input before it enters the conversation. */
 export interface InputEvent {
@@ -206,6 +233,18 @@ export interface ExtensionAPI {
 	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
+	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
+	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
+	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
+
+	/** Inject a custom message into the conversation (enters LLM context as a user-role message). */
+	sendMessage(message: CustomMessageInput): void;
+
+	/** Persist extension state as a session entry that never enters LLM context. */
+	appendEntry(customType: string, data: unknown): void;
+
+	/** Set the session's display name. */
+	setSessionName(name: string): void;
 
 	/** Register a tool the model can call. Same-name registrations override (later wins). */
 	registerTool(tool: Tool): void;
@@ -245,6 +284,16 @@ interface HandlerLists {
 	tool_execution_end: ExtensionHandler<ToolExecutionEndEvent>[];
 	tool_result: ExtensionHandler<ToolResultEvent, ToolResultEventResult>[];
 	project_trust: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>[];
+	session_start: ExtensionHandler<SessionStartEvent>[];
+	session_shutdown: ExtensionHandler<SessionShutdownEvent>[];
+	session_info_changed: ExtensionHandler<SessionInfoChangedEvent>[];
+}
+
+/** Actions an attached Agent provides to back sendMessage/appendEntry/setSessionName. */
+export interface ExtensionHostActions {
+	sendMessage(message: CustomMessageInput): void;
+	appendEntry(customType: string, data: unknown): void;
+	setSessionName(name: string): void;
 }
 
 /**
@@ -257,6 +306,7 @@ export class ExtensionRegistry {
 	readonly commands = new Map<string, RegisteredCommand>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
+	private hostActions: ExtensionHostActions | undefined;
 	private readonly handlers: HandlerLists = {
 		agent_start: [],
 		agent_end: [],
@@ -274,6 +324,9 @@ export class ExtensionRegistry {
 		tool_execution_end: [],
 		tool_result: [],
 		project_trust: [],
+		session_start: [],
+		session_shutdown: [],
+		session_info_changed: [],
 	};
 
 	static async load(extensions: Extension[]): Promise<ExtensionRegistry> {
@@ -299,10 +352,25 @@ export class ExtensionRegistry {
 				this.flags.set(name, { name, ...options });
 			},
 			getFlag: (name) => this.getFlag(name),
+			sendMessage: (message) => this.requireHostActions("sendMessage").sendMessage(message),
+			appendEntry: (customType, data) => this.requireHostActions("appendEntry").appendEntry(customType, data),
+			setSessionName: (name) => this.requireHostActions("setSessionName").setSessionName(name),
 		};
 		for (const extension of extensions) {
 			await extension(api);
 		}
+	}
+
+	/** Called by the Agent on construction to back the action methods. */
+	attachHostActions(actions: ExtensionHostActions): void {
+		this.hostActions = actions;
+	}
+
+	private requireHostActions(action: string): ExtensionHostActions {
+		if (!this.hostActions) {
+			throw new TauError("no_host", `${action}() requires an attached Agent (call it from an event handler)`);
+		}
+		return this.hostActions;
 	}
 
 	/** Host-side: supply parsed CLI flag values. Unknown names are ignored (host validates). */
@@ -356,14 +424,20 @@ export class ExtensionRegistry {
 		return current;
 	}
 
-	/** Run before_agent_start handlers. systemPrompt replacements chain, as in pi. */
-	async runBeforeAgentStart(prompt: string, systemPrompt: string, ctx: ExtensionContext): Promise<string> {
+	/** Run before_agent_start handlers. systemPrompt replacements chain; injected messages accumulate. */
+	async runBeforeAgentStart(
+		prompt: string,
+		systemPrompt: string,
+		ctx: ExtensionContext,
+	): Promise<{ systemPrompt: string; messages: CustomMessageInput[] }> {
 		let current = systemPrompt;
+		const messages: CustomMessageInput[] = [];
 		for (const handler of this.handlers.before_agent_start) {
 			const result = await handler({ type: "before_agent_start", prompt, systemPrompt: current }, ctx);
 			if (result?.systemPrompt !== undefined) current = result.systemPrompt;
+			if (result?.message) messages.push(result.message);
 		}
-		return current;
+		return { systemPrompt: current, messages };
 	}
 
 	async notifyMessageStart(message: AgentMessage, ctx: ExtensionContext): Promise<void> {
@@ -411,6 +485,20 @@ export class ExtensionRegistry {
 			if (result && result.trusted !== "undecided") return result;
 		}
 		return { trusted: "undecided" };
+	}
+
+	async notifySessionStart(reason: SessionStartEvent["reason"], ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.session_start) await handler({ type: "session_start", reason }, ctx);
+	}
+
+	async notifySessionShutdown(reason: SessionShutdownEvent["reason"], ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.session_shutdown) await handler({ type: "session_shutdown", reason }, ctx);
+	}
+
+	async notifySessionInfoChanged(name: string | undefined, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.session_info_changed) {
+			await handler({ type: "session_info_changed", name }, ctx);
+		}
 	}
 
 	async notifyAgentStart(ctx: ExtensionContext): Promise<void> {
