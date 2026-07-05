@@ -223,6 +223,55 @@ test("sessions persist across runs and --continue restores full context", async 
 	});
 });
 
+test("auto-compaction triggers via --context-window and --continue restores the summary", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const bigUsageTurn = {
+			payloads: [
+				{ choices: [{ delta: { content: "long history answer" }, finish_reason: "stop" }] },
+				{ choices: [], usage: { prompt_tokens: 60000, completion_tokens: 10, total_tokens: 60010 } },
+			],
+		};
+		const mock1 = await startMockOpenAI([
+			() => bigUsageTurn,
+			() => mockTextTurn("E2E-COMPACT-SUMMARY"),
+			() => mockTextTurn("post-compaction answer"),
+		]);
+		try {
+			// Run 1: turn 1 reports huge usage; a second prompt in the same session
+			// is simulated by a second -p run on the same session via --continue.
+			let cli = startCli(["-p", "fill the context"], { cwd, home, baseUrl: mock1.baseUrl });
+			await cli.waitForExit();
+			cli = startCli(["-p", "next", "--continue", "--context-window", "50000"], {
+				cwd,
+				home,
+				baseUrl: mock1.baseUrl,
+			});
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("[compacted:"), cli.output());
+			// The post-compaction request starts with the summary. (With default
+			// keepRecentTokens the tiny real messages are all retained after it —
+			// the mock only faked a huge usage number.)
+			const finalRequest = mock1.requests.at(-1) as { messages: { role: string; content: string | null }[] };
+			const firstUserMessage = finalRequest.messages.find((m) => m.role === "user");
+			assert.ok(firstUserMessage?.content?.includes("E2E-COMPACT-SUMMARY"), JSON.stringify(finalRequest.messages));
+		} finally {
+			await mock1.close();
+		}
+
+		// Run 3: --continue restores the compacted session (summary first).
+		const mock2 = await startMockOpenAI([() => mockTextTurn("resumed fine")]);
+		try {
+			const cli = startCli(["-p", "still there?", "--continue"], { cwd, home, baseUrl: mock2.baseUrl });
+			await cli.waitForExit();
+			const wire = (mock2.requests[0] as { messages: { role: string; content: string | null }[] }).messages;
+			const firstUser = wire.find((m) => m.role === "user");
+			assert.ok(firstUser?.content?.includes("E2E-COMPACT-SUMMARY"), JSON.stringify(wire));
+		} finally {
+			await mock2.close();
+		}
+	});
+});
+
 test("SIGINT aborts the running turn and the REPL keeps working", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([

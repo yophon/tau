@@ -30,16 +30,11 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：33 测试全绿（新增 uuidv7、双 repo 契约、坏文件报错、记录+恢复+续写、扩展动作、--continue e2e 断言第二次运行携带完整上下文）。与规格偏差：无。教训：初版会话规格因消息形状分歧埋了永久兼容性风险，用户质询后以 D13 修正——现在会话文件是真 pi v3。
 
-## Phase 4 ⬜ 上下文压缩（Compaction）
+## Phase 4 ✅ 上下文压缩（Compaction）（2026-07-04）
 
-**目标**：长对话自动/手动压缩，不爆上下文窗口。
+规格书：[specs/phase-4-compaction.md](specs/phase-4-compaction.md)。pi 算法整体照抄（compaction.ts + utils.ts）：双层 token 估算（最后有效 assistant usage + chars/4 尾部启发式，aborted/error 跳过）、切点选择（keepRecentTokens 保护 + split-turn 双摘要拼接）、结构化摘要 prompt 逐字照抄 + 迭代更新（previousSummary 走 UPDATE prompt）、文件操作提取进 details。新消息角色 compactionSummary（wire 以 user 发送）；compaction entry 落盘；messagesFromPath 统一实现 pi 的压缩感知上下文重建（restore 与内存路径共用）。事件 session_before_compact（可取消/可接管，接管标 fromHook）/ session_compact；ExtensionContext 增 getContextUsage()/compact()。Agent：config.contextWindow（用户配置，无模型库）+ AgentOptions.compaction；自动触发在 turn 之间；手动 Agent.compact()。CLI：/compact [instructions]、--context-window/-w（env TAU_CONTEXT_WINDOW）、未配置时启动提示、压缩事件 dim 输出。
 
-- 先读 pi：`packages/agent/src/harness/compaction/`（compaction.ts 的 estimateTokens/findCutPoint/generateSummary/shouldCompact）、`packages/coding-agent/docs/compaction.md`
-- 移植 pi 的算法：token 估算、切点选择（turn 边界）、摘要生成（用同一 LLM）、阈值触发
-- 压缩事件：`session_before_compact`（可取消/可接管）/ `session_compact`；`ctx.getContextUsage()` / `ctx.compact()`
-- 与 Phase 3 的会话格式对接（compaction entry 类型）
-- CLI：`/compact` 命令 + 自动触发
-- **验收**：长对话压缩后继续正确对话的 e2e；压缩前后 token 估算测试
+**完成记录**：40 测试全绿（估算/切点/split-turn/迭代摘要单测；自动触发集成测试断言摘要请求用 pi 原文 system prompt、后续请求为 summary+kept；取消/接管；InMemory 持久化恢复；CLI e2e 压缩后 --continue 恢复摘要）。与规格偏差：无。备注：keepRecentTokens 的切点保护意味着"usage 虚高但消息实际很小"时压缩后消息全保留——算法正确行为，e2e 初版断言想错已修正。
 
 ## Phase 5 ⬜ 会话分支（Branching）
 

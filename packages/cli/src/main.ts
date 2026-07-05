@@ -30,12 +30,14 @@ Options:
   -m, --model <model>    Model id (env: TAU_MODEL)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
+  -w, --context-window <n>  Model context window in tokens; enables auto-compaction
+                         (env: TAU_CONTEXT_WINDOW)
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
   -h, --help             Show this help
 
-REPL commands: /name <name> (name the session), /sessions (list), /help.
+REPL commands: /name <name>, /sessions, /compact [instructions], /help.
 
 Extensions may declare additional --<flag> options (see registerFlag).
 Without -p, tau starts an interactive REPL. During a running turn, typed lines
@@ -48,6 +50,7 @@ interface CliOptions {
 	system?: string;
 	print?: string;
 	continue: boolean;
+	contextWindow?: number;
 	sessionPath?: string;
 	noSession: boolean;
 	help: boolean;
@@ -92,6 +95,16 @@ function parseArgs(argv: string[]): CliOptions {
 			case "--continue":
 				options.continue = true;
 				break;
+			case "-w":
+			case "--context-window": {
+				const parsed = Number.parseInt(next(), 10);
+				if (!Number.isFinite(parsed) || parsed <= 0) {
+					console.error("--context-window must be a positive integer");
+					process.exit(1);
+				}
+				options.contextWindow = parsed;
+				break;
+			}
 			case "--session":
 				options.sessionPath = next();
 				break;
@@ -293,6 +306,9 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 					break;
 				case "tool_update":
 					break;
+				case "compaction":
+					process.stdout.write(dim(`[compacted: ~${event.result.tokensBefore} tokens summarized]\n`));
+					break;
 				case "tool_result": {
 					const marker = event.result.isError ? red("✗") : dim("✓");
 					process.stdout.write(`${marker} ${dim(firstLine(event.result.output))}\n`);
@@ -356,7 +372,9 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	const config: OpenAICompatConfig = { baseUrl, apiKey, model };
+	const envWindow = Number.parseInt(process.env.TAU_CONTEXT_WINDOW ?? "", 10);
+	const contextWindow = options.contextWindow ?? (Number.isFinite(envWindow) && envWindow > 0 ? envWindow : undefined);
+	const config: OpenAICompatConfig = { baseUrl, apiKey, model, contextWindow };
 	const cwd = resolve(process.cwd());
 	const readline = createInterface({ input: process.stdin, output: process.stdout });
 	// Headless stdin (pipes, CI) cannot answer prompts; omit the UI capability
@@ -417,6 +435,9 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (contextWindow === undefined) {
+		console.log(dim("No --context-window configured: auto-compaction is off (use /compact manually)."));
+	}
 	const extensionNote = extensions.tools.size + extensions.commands.size > 0 ? " · extensions loaded" : "";
 	console.log(dim(`tau · ${model} @ ${baseUrl} · cwd ${cwd}${extensionNote} · "exit" or Ctrl+D to quit`));
 	// In a TTY, readline intercepts Ctrl+C: abort the running turn if there is
@@ -442,6 +463,18 @@ async function main(): Promise<void> {
 			if (input === "/sessions") {
 				for (const session of await sessionRepo.list()) {
 					console.log(`${session.timestamp}  ${session.name ?? dim("(unnamed)")}  ${dim(session.filePath ?? "")}`);
+				}
+				continue;
+			}
+			if (input === "/compact" || input.startsWith("/compact ")) {
+				const instructions = input.slice("/compact".length).trim();
+				try {
+					const result = await agent.compact(instructions === "" ? undefined : instructions);
+					console.log(
+						result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."),
+					);
+				} catch (error) {
+					console.log(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
 				}
 				continue;
 			}

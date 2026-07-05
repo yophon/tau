@@ -19,7 +19,7 @@
 | `tool_execution_start` / `update` / `end` | 工具执行过程观察（update 携带流式部分输出） | ✅ P2 |
 | `session_start` / `session_info_changed` / `session_shutdown` | 会话生命周期 | ✅ P3（reason 取子集：startup/resume/quit） |
 | `session_before_switch` | 切换会话前（可取消） | 📍P8（tau 暂无运行中切换会话；/resume 交互属 TUI） |
-| `session_before_compact` / `session_compact` | 压缩前（可取消/**可完全接管压缩**）/压缩后 | 📍P4 |
+| `session_before_compact` / `session_compact` | 压缩前（可取消/**可完全接管压缩**）/压缩后 | ✅ P4（reason 取子集 manual/threshold，overflow 📍P8 前视） |
 | `session_before_fork` | 分叉前（可取消） | 📍P5 |
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | 📍P5 |
 | `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | 📍P6 |
@@ -33,7 +33,7 @@
 |---|---|---|
 | **steering / follow-up 队列** | `Agent` 支持流式中插话（steer）与排队追问（followUp），`sendUserMessage(deliverAs)` | ✅ P2（steer/followUp/QueueMode；`sendUserMessage` 扩展动作形态 📍P3） |
 | `sendMessage` / `appendEntry` | 扩展注入自定义消息 / 持久化自定义 entry（不进 LLM 上下文） | ✅ P3（sendMessage 的 triggerTurn/deliverAs 📍P8） |
-| `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | 📍P4 |
+| `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | ✅ P4（getContextUsage/compact；abort 走宿主 AbortController，ctx.abort 📍P8） |
 | `registerFlag` / `getFlag` | 扩展注册 CLI flag | ✅ P2 |
 | `registerShortcut` | 键盘快捷键 | 📍P8（TUI） |
 | `registerMessageRenderer` / `registerEntryRenderer` | 自定义消息/entry 的 TUI 渲染 | 📍P8（TUI） |

@@ -1,3 +1,4 @@
+import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError } from "./errors.ts";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
@@ -28,6 +29,10 @@ export interface UiCapability {
 export interface ExtensionContext {
 	ui?: UiCapability;
 	messages: readonly AgentMessage[];
+	/** Current context-token estimate (present when an Agent backs this context). */
+	getContextUsage?: () => ContextUsageEstimate & { contextWindow?: number };
+	/** Request a compaction before the next LLM call. */
+	compact?: (customInstructions?: string) => void;
 }
 
 /** Handler signature, as in pi: returning undefined/void means "no opinion". */
@@ -163,6 +168,26 @@ export interface SessionInfoChangedEvent {
 	name: string | undefined;
 }
 
+export type CompactionReason = "manual" | "threshold";
+
+/** Fired before compaction runs; may cancel it or take it over entirely. */
+export interface SessionBeforeCompactEvent {
+	type: "session_before_compact";
+	preparation: CompactionPreparation;
+	customInstructions?: string;
+	reason: CompactionReason;
+}
+
+export type SessionBeforeCompactResult = { cancel?: boolean; result?: CompactionResult } | undefined;
+
+/** Fired after compaction completed. */
+export interface SessionCompactEvent {
+	type: "session_compact";
+	result: CompactionResult;
+	fromExtension: boolean;
+	reason: CompactionReason;
+}
+
 /** Fired for user input before it enters the conversation. */
 export interface InputEvent {
 	type: "input";
@@ -236,6 +261,11 @@ export interface ExtensionAPI {
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
+	on(
+		event: "session_before_compact",
+		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
+	): void;
+	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
 
 	/** Inject a custom message into the conversation (enters LLM context as a user-role message). */
 	sendMessage(message: CustomMessageInput): void;
@@ -287,6 +317,8 @@ interface HandlerLists {
 	session_start: ExtensionHandler<SessionStartEvent>[];
 	session_shutdown: ExtensionHandler<SessionShutdownEvent>[];
 	session_info_changed: ExtensionHandler<SessionInfoChangedEvent>[];
+	session_before_compact: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>[];
+	session_compact: ExtensionHandler<SessionCompactEvent>[];
 }
 
 /** Actions an attached Agent provides to back sendMessage/appendEntry/setSessionName. */
@@ -327,6 +359,8 @@ export class ExtensionRegistry {
 		session_start: [],
 		session_shutdown: [],
 		session_info_changed: [],
+		session_before_compact: [],
+		session_compact: [],
 	};
 
 	static async load(extensions: Extension[]): Promise<ExtensionRegistry> {
@@ -498,6 +532,24 @@ export class ExtensionRegistry {
 	async notifySessionInfoChanged(name: string | undefined, ctx: ExtensionContext): Promise<void> {
 		for (const handler of this.handlers.session_info_changed) {
 			await handler({ type: "session_info_changed", name }, ctx);
+		}
+	}
+
+	/** Run session_before_compact handlers: cancel or takeover short-circuits. */
+	async runSessionBeforeCompact(
+		event: Omit<SessionBeforeCompactEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<NonNullable<SessionBeforeCompactResult>> {
+		for (const handler of this.handlers.session_before_compact) {
+			const result = await handler({ type: "session_before_compact", ...event }, ctx);
+			if (result?.cancel || result?.result) return result;
+		}
+		return {};
+	}
+
+	async notifySessionCompact(event: Omit<SessionCompactEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.session_compact) {
+			await handler({ type: "session_compact", ...event }, ctx);
 		}
 	}
 

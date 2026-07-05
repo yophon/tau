@@ -1,3 +1,13 @@
+import {
+	type CompactionResult,
+	type CompactionSettings,
+	type ContextUsageEstimate,
+	DEFAULT_COMPACTION_SETTINGS,
+	estimateContextTokens,
+	prepareCompaction,
+	runCompaction,
+	shouldCompact,
+} from "./compaction.ts";
 import { TauError } from "./errors.ts";
 import type { ExtensionContext, ExtensionRegistry, ToolCallEvent, UiCapability } from "./extensions.ts";
 import {
@@ -12,7 +22,7 @@ import {
 } from "./messages.ts";
 import { OPENAI_COMPLETIONS_API, type OpenAICompatConfig, streamChatCompletion } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
-import type { SessionRecorder } from "./session.ts";
+import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
 import type { Tool, ToolResult } from "./tools.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
@@ -64,6 +74,8 @@ export interface AgentOptions {
 	maxTurnsPerPrompt?: number;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
+	/** Compaction thresholds; auto-compaction also requires config.contextWindow. */
+	compaction?: Partial<CompactionSettings>;
 }
 
 export type AgentEvent =
@@ -74,6 +86,7 @@ export type AgentEvent =
 	| { type: "tool_start"; toolCall: ToolCall }
 	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string }
 	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
+	| { type: "compaction"; result: CompactionResult }
 	| { type: "agent_end"; messages: AgentMessage[] };
 
 const DEFAULT_MAX_TURNS = 50;
@@ -102,6 +115,9 @@ export class Agent {
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
 	private readonly session: SessionRecorder | undefined;
+	private readonly compactionSettings: CompactionSettings;
+	/** Custom instructions of a requested compaction, or null when none is pending. */
+	private pendingCompaction: string | null = null;
 	/** Serializes session writes triggered by sync extension actions. */
 	private pendingRecording: Promise<void> = Promise.resolve();
 
@@ -118,6 +134,7 @@ export class Agent {
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.session = options.session;
+		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
 		const session = options.session;
 		options.extensions?.attachHostActions({
 			sendMessage: (input) => {
@@ -163,7 +180,78 @@ export class Agent {
 
 	/** Context handed to extension handlers; also usable by hosts to dispatch extension commands. */
 	extensionContext(): ExtensionContext {
-		return { ui: this.ui, messages: this.messages };
+		return {
+			ui: this.ui,
+			messages: this.messages,
+			getContextUsage: () => this.getContextUsage(),
+			compact: (customInstructions) => {
+				this.pendingCompaction = customInstructions ?? "";
+			},
+		};
+	}
+
+	/** Current context-token estimate (pi semantics: last assistant usage + trailing heuristic). */
+	getContextUsage(): ContextUsageEstimate & { contextWindow?: number } {
+		return { ...estimateContextTokens(this.messages), contextWindow: this.config.contextWindow };
+	}
+
+	/**
+	 * Compact the conversation now: summarize old history (session_before_compact
+	 * may cancel or take over), record a compaction entry when a session is
+	 * attached, and rewrite messages to [summary, ...kept].
+	 */
+	async compact(
+		customInstructions?: string,
+		reason: "manual" | "threshold" = "manual",
+		signal?: TauAbortSignal,
+	): Promise<CompactionResult | undefined> {
+		const ctx = this.extensionContext();
+		let pathEntries: SessionEntry[];
+		if (this.session) {
+			await this.pendingRecording;
+			pathEntries = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
+		} else {
+			// In-memory pseudo entries: ids are 1-based message indices.
+			pathEntries = this.messages.map((message, i) => ({
+				type: "message" as const,
+				id: String(i + 1),
+				parentId: i === 0 ? null : String(i),
+				timestamp: "",
+				message,
+			}));
+		}
+		const preparation = prepareCompaction(pathEntries, this.compactionSettings, this.messages);
+		if (!preparation) return undefined;
+
+		const decision = this.extensions
+			? await this.extensions.runSessionBeforeCompact({ preparation, customInstructions, reason }, ctx)
+			: {};
+		if (decision.cancel) return undefined;
+		const fromExtension = decision.result !== undefined;
+		const result =
+			decision.result ?? (await runCompaction(this.platform, this.config, preparation, customInstructions, signal));
+
+		if (this.session) {
+			await this.session.recordCompaction({ ...result, fromHook: fromExtension || undefined });
+			const path = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
+			this.messages.length = 0;
+			this.messages.push(...messagesFromPath(path).messages);
+		} else {
+			const keptStart = Number(result.firstKeptEntryId) - 1;
+			const kept = Number.isInteger(keptStart) && keptStart >= 0 ? this.messages.slice(keptStart) : [];
+			this.messages.length = 0;
+			this.messages.push(
+				{
+					role: "compactionSummary",
+					summary: result.summary,
+					tokensBefore: result.tokensBefore,
+					timestamp: Date.now(),
+				},
+				...kept,
+			);
+		}
+		await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
+		return result;
 	}
 
 	/** Queue a message consumed after the current turn's tools, before the next LLM call. */
@@ -225,6 +313,20 @@ export class Agent {
 
 		for (let turnIndex = 0; turnIndex < this.maxTurnsPerPrompt; turnIndex++) {
 			await this.extensions?.notifyTurnStart(turnIndex, ctx);
+
+			// Compaction runs between turns (as in pi): requested first, then threshold.
+			if (this.pendingCompaction !== null) {
+				const customInstructions = this.pendingCompaction;
+				this.pendingCompaction = null;
+				const result = await this.compact(customInstructions === "" ? undefined : customInstructions, "manual", signal);
+				if (result) yield { type: "compaction", result };
+			} else if (
+				this.config.contextWindow !== undefined &&
+				shouldCompact(estimateContextTokens(this.messages).tokens, this.config.contextWindow, this.compactionSettings)
+			) {
+				const result = await this.compact(undefined, "threshold", signal);
+				if (result) yield { type: "compaction", result };
+			}
 
 			let request: AgentMessage[] = [...this.messages];
 			if (this.extensions) {

@@ -37,6 +37,14 @@ export type SessionEntry =
 			details?: unknown;
 	  })
 	| (SessionEntryBase & { type: "session_info"; name?: string })
+	| (SessionEntryBase & {
+			type: "compaction";
+			summary: string;
+			firstKeptEntryId: string;
+			tokensBefore: number;
+			details?: unknown;
+			fromHook?: boolean;
+	  })
 	| (SessionEntryBase & { type: "leaf"; leafId: string | null });
 
 /** Omit that distributes over unions (plain Omit collapses SessionEntry to its common fields). */
@@ -70,7 +78,7 @@ export interface SessionRepo {
 	delete(metadata: SessionMetadata): Promise<void>;
 }
 
-const ENTRY_TYPES = new Set(["message", "custom", "custom_message", "session_info", "leaf"]);
+const ENTRY_TYPES = new Set(["message", "custom", "custom_message", "session_info", "leaf", "compaction"]);
 
 /** Entry-id generation as in pi: first 8 hex of a uuidv7, retried on collision. */
 function generateEntryId(randomBytes: Platform["randomBytes"], has: (id: string) => boolean): string {
@@ -404,7 +412,7 @@ export class JsonlSessionRepo implements SessionRepo {
 
 /** Appends conversation state to a SessionStore, maintaining the parentId chain. */
 export class SessionRecorder {
-	private readonly store: SessionStore;
+	readonly store: SessionStore;
 	private leafId: string | null;
 
 	private constructor(store: SessionStore, leafId: string | null) {
@@ -429,6 +437,16 @@ export class SessionRecorder {
 			timestamp: new Date().toISOString(),
 		} as SessionEntry);
 		this.leafId = id;
+	}
+
+	async recordCompaction(result: {
+		summary: string;
+		firstKeptEntryId: string;
+		tokensBefore: number;
+		details?: unknown;
+		fromHook?: boolean;
+	}): Promise<void> {
+		await this.append({ type: "compaction", ...result });
 	}
 
 	async recordMessage(message: AgentMessage): Promise<void> {
@@ -459,9 +477,57 @@ export interface RestoredSession {
 	name?: string;
 }
 
+/**
+ * Rebuild conversation messages from path entries, honoring compaction as in
+ * pi's buildContextEntries: with a compaction entry on the path, context =
+ * [compaction summary, entries from firstKeptEntryId to the compaction,
+ * entries after the compaction].
+ */
+export function messagesFromPath(path: SessionEntry[]): RestoredSession {
+	let compactionIndex = -1;
+	for (let i = path.length - 1; i >= 0; i--) {
+		if (path[i].type === "compaction") {
+			compactionIndex = i;
+			break;
+		}
+	}
+	let selected = path;
+	let summaryMessage: AgentMessage | undefined;
+	if (compactionIndex >= 0) {
+		const compaction = path[compactionIndex];
+		if (compaction.type === "compaction") {
+			summaryMessage = {
+				role: "compactionSummary",
+				summary: compaction.summary,
+				tokensBefore: compaction.tokensBefore,
+				timestamp: Date.parse(compaction.timestamp) || 0,
+			};
+			let firstKeptIndex = path.findIndex((entry) => entry.id === compaction.firstKeptEntryId);
+			if (firstKeptIndex < 0) firstKeptIndex = compactionIndex + 1;
+			selected = [...path.slice(firstKeptIndex, compactionIndex), ...path.slice(compactionIndex + 1)];
+		}
+	}
+	const restored = collectMessages(selected);
+	// Session name comes from the full path, not just the retained segment.
+	const name = lastSessionNameFromPath(path) ?? restored.name;
+	if (summaryMessage) restored.messages.unshift(summaryMessage);
+	return { messages: restored.messages, name };
+}
+
+function lastSessionNameFromPath(path: SessionEntry[]): string | undefined {
+	for (let i = path.length - 1; i >= 0; i--) {
+		const entry = path[i];
+		if (entry.type === "session_info") return entry.name;
+	}
+	return undefined;
+}
+
 /** Rebuild conversation state from the store's active path (leaf → root). */
 export async function restoreSession(store: SessionStore): Promise<RestoredSession> {
-	const path = await store.getPathToRoot(await store.getLeafId());
+	return messagesFromPath(await store.getPathToRoot(await store.getLeafId()));
+}
+
+function collectMessages(path: SessionEntry[]): RestoredSession {
 	const messages: AgentMessage[] = [];
 	let name: string | undefined;
 	for (const entry of path) {
@@ -486,6 +552,7 @@ export async function restoreSession(store: SessionStore): Promise<RestoredSessi
 				break;
 			case "custom":
 			case "leaf":
+			case "compaction":
 				break;
 		}
 	}

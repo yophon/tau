@@ -18,6 +18,8 @@ export interface OpenAICompatConfig {
 	/** BYOK API key, sent as a Bearer token. Omit for keyless local endpoints. */
 	apiKey?: string;
 	model: string;
+	/** Model context window in tokens; enables automatic compaction (tau has no model database). */
+	contextWindow?: number;
 	/** Provider label recorded on assistant messages (pi's `provider` field). Defaults to "openai-compat". */
 	provider?: string;
 	/** Extra request headers, merged after the defaults. */
@@ -89,6 +91,9 @@ function toWireMessage(message: AgentMessage): Record<string, unknown> {
 		case "custom":
 			// pi's convertToLlm sends custom messages to the model as user messages.
 			return { role: "user", content: userContentToWire(message.content) };
+		case "compactionSummary":
+			// As in pi: the compaction summary enters context as a user message.
+			return { role: "user", content: message.summary };
 		case "assistant": {
 			const text = message.content
 				.filter((block): block is TextContent => block.type === "text")

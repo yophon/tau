@@ -5,6 +5,7 @@ export type TauErrorCode =
 	| "aborted"
 	| "max_turns"
 	| "no_host"
+	| "compaction_failed"
 	| "invalid_response";
 
 export class TauError extends Error {

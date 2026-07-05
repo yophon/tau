@@ -87,7 +87,20 @@ export interface CustomMessage {
 	timestamp: number;
 }
 
-export type AgentMessage = UserMessage | AssistantMessage | ToolResultMessage | CustomMessage;
+/** Summary message that replaces compacted history in context (pi shape). */
+export interface CompactionSummaryMessage {
+	role: "compactionSummary";
+	summary: string;
+	tokensBefore: number;
+	timestamp: number;
+}
+
+export type AgentMessage =
+	| UserMessage
+	| AssistantMessage
+	| ToolResultMessage
+	| CustomMessage
+	| CompactionSummaryMessage;
 
 export function emptyUsage(): Usage {
 	return {
@@ -102,6 +115,7 @@ export function emptyUsage(): Usage {
 
 /** Concatenated text of a message's text blocks (string content returned as-is). */
 export function messageText(message: AgentMessage): string {
+	if (message.role === "compactionSummary") return message.summary;
 	if (message.role === "user" || message.role === "custom") {
 		if (typeof message.content === "string") return message.content;
 		return message.content
