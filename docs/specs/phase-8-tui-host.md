@@ -134,7 +134,7 @@ class TuiUiCapability implements UiCapability {
 
 ### P8D：模型/主题/产品打磨
 
-- [ ] `/model`：最小模型切换命令（先从用户输入 model id 开始，不做 provider registry）。
+- [x] `/model`：最小模型切换命令（用户输入 model id，不做 provider registry）。
 - [ ] `model_select` 事件：模型切换前后通知扩展。
 - [ ] thinking level：若 config/模型支持，提供 `/thinking` 或快捷键切换。
 - [ ] `thinking_level_select` 事件。

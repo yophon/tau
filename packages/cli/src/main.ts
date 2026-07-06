@@ -486,6 +486,9 @@ async function main(): Promise<void> {
 			shell,
 			store,
 			recorder,
+			setModel: (nextModel) => {
+				config.model = nextModel;
+			},
 			buildAgent,
 		});
 		return;

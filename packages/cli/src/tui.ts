@@ -44,6 +44,7 @@ const builtInCommands: SlashCommand[] = [
 	{ name: "tree", argumentHint: "[id]", description: "List jump points or navigate to one." },
 	{ name: "fork", argumentHint: "[id]", description: "Copy this session and switch to the fork." },
 	{ name: "follow", argumentHint: "<text>", description: "Queue a follow-up after the current turn." },
+	{ name: "model", argumentHint: "[model]", description: "Show or switch the model id." },
 	{ name: "quit", description: "Exit the TUI." },
 ];
 
@@ -88,13 +89,15 @@ export interface RunTuiOptions {
 	shell: Shell;
 	store?: SessionStore;
 	recorder?: SessionRecorder;
+	setModel(model: string): void;
 	buildAgent(messages: AgentMessage[] | undefined, session: SessionRecorder | undefined): Agent;
 }
 
 export async function runTui(options: RunTuiOptions): Promise<void> {
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
-	const header = new Text(`${bold("tau")} ${dim(`${options.model} @ ${options.baseUrl}`)}\n${dim(options.cwd)}`, 1, 0);
+	let currentModel = options.model;
+	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
 	const footer = new Text("", 1, 0);
@@ -131,8 +134,13 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		tui.requestRender();
 	};
 
+	const setHeader = (): void => {
+		header.setText(formatHeader(currentModel, options.baseUrl, options.cwd));
+		tui.requestRender();
+	};
+
 	const setFooter = (): void => {
-		footer.setText(formatFooter(agent, options.model, options.cwd, sessionLabel));
+		footer.setText(formatFooter(agent, currentModel, options.cwd, sessionLabel));
 		tui.requestRender();
 	};
 
@@ -288,6 +296,18 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 		if (name === "follow") {
 			appendText(red("No running turn. Send a prompt normally, or use /follow <text> while a turn is running."));
+			return true;
+		}
+		if (name === "model") {
+			if (args === "") {
+				appendText(dim(`Current model: ${currentModel}`));
+				return true;
+			}
+			currentModel = args;
+			options.setModel(args);
+			setHeader();
+			setFooter();
+			appendText(dim(`Model set to ${args}.`));
 			return true;
 		}
 		if (name === "name") {
@@ -567,6 +587,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 function firstLine(text: string, max = 120): string {
 	const line = text.split("\n")[0] ?? "";
 	return line.length > max ? `${line.slice(0, max)}...` : line;
+}
+
+function formatHeader(model: string, baseUrl: string, cwd: string): string {
+	return `${bold("tau")} ${dim(`${model} @ ${baseUrl}`)}\n${dim(cwd)}`;
 }
 
 function parseUserBash(input: string): { command: string; record: boolean } | undefined {
