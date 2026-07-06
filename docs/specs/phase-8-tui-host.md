@@ -110,13 +110,15 @@ class TuiUiCapability implements UiCapability {
 - [ ] TUI `/fork` selector：列表选择 fork target。
 - [x] TUI `/sessions` / `/resume <id|path|timestamp|name>`：文本列表显示 session id，命令支持精确匹配和唯一前缀匹配后切换/恢复。
 - [ ] TUI `/sessions` selector：选择历史 session 并切换/恢复。
-- [ ] TUI `/compact [instructions]`：显示 compaction start/end 状态，支持 Esc/Ctrl+C abort compaction。
+- [x] TUI `/compact [instructions]`：显示 compaction start/end/aborted 状态，支持 Ctrl+C abort compaction。
+- [ ] TUI compaction polish：支持 Esc abort compaction，并展示更细的 compaction 进度/阶段。
 - [x] TUI `/name`：inline input 或 command 参数设置 session name。
 - [ ] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [ ] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
 - [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
 - [ ] Steering/follow-up：运行中输入默认 steer；增加一个快捷键或命令把输入排为 followUp。
-- [ ] Abort UX：运行中 Ctrl+C abort 后保留 TUI，明确显示 aborted 状态，不留下 pending tool 组件。
+- [x] Abort UX：运行中 Ctrl+C abort 后保留 TUI，明确显示 turn/compaction aborted 状态。
+- [ ] Abort UX polish：abort 后清理或标记 pending tool 组件。
 
 ### P8C：扩展 API / pi parity
 

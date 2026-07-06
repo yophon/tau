@@ -93,7 +93,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	tui.addChild(footer);
 	tui.setFocus(editor);
 
-	let running = false;
+	let runningTask: "turn" | "compaction" | undefined;
 	let controller: AbortController | undefined;
 	let agent = options.agent;
 	let store = options.store;
@@ -166,9 +166,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 
 	tui.addInputListener((data) => {
 		if (matchesKey(data, "ctrl+c")) {
-			if (running && controller) {
+			if (runningTask && controller) {
 				controller.abort();
-				setStatus(dim("Aborting current turn..."));
+				setStatus(dim(runningTask === "compaction" ? "Aborting compaction..." : "Aborting current turn..."));
 			} else {
 				void stop();
 			}
@@ -185,9 +185,13 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			pendingUiPrompt(input);
 			return;
 		}
-		if (running) {
+		if (runningTask === "turn") {
 			agent.steer(input);
 			appendText(dim(`↳ steered: ${input}`));
+			return;
+		}
+		if (runningTask === "compaction") {
+			appendText(dim("Compaction is running. Press Ctrl+C to abort it."));
 			return;
 		}
 		void handleInput(input);
@@ -219,12 +223,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			return true;
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
-			try {
-				const result = await agent.compact(args === "" ? undefined : args);
-				appendText(result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."));
-			} catch (error) {
-				appendText(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
-			}
+			await runCompact(args === "" ? undefined : args);
 			return true;
 		}
 		if (name === "name") {
@@ -356,8 +355,29 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		return true;
 	}
 
+	async function runCompact(instructions: string | undefined): Promise<void> {
+		runningTask = "compaction";
+		controller = new AbortController();
+		setStatus(cyan("Compacting..."));
+		appendText(dim("Compacting conversation..."));
+		try {
+			const result = await agent.compact(instructions, "manual", controller.signal);
+			appendText(result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."));
+		} catch (error) {
+			appendText(
+				isAbortError(error)
+					? dim("Compaction aborted.")
+					: red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`),
+			);
+		} finally {
+			runningTask = undefined;
+			controller = undefined;
+			setStatus(dim("Ready"));
+		}
+	}
+
 	async function runPrompt(input: string): Promise<void> {
-		running = true;
+		runningTask = "turn";
 		controller = new AbortController();
 		setStatus(cyan("Working..."));
 		appendText(bold(`> ${input}`));
@@ -385,9 +405,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			appendText(red(`Error: ${message}`));
+			appendText(isAbortError(error) ? dim("Turn aborted.") : red(`Error: ${message}`));
 		} finally {
-			running = false;
+			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
 		}
@@ -421,6 +441,12 @@ function sessionMatches(session: SessionMetadata, selector: string, prefix: bool
 		(value): value is string => value !== undefined && value !== "",
 	);
 	return values.some((value) => (prefix ? value.startsWith(selector) : value === selector));
+}
+
+function isAbortError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (error.name === "AbortError") return true;
+	return "code" in error && error.code === "aborted";
 }
 
 interface RenderState {
