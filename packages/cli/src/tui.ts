@@ -17,6 +17,7 @@ import {
 	type JsonlSessionRepo,
 	messageText,
 	type SessionRecorder,
+	type SessionStore,
 	type UiCapability,
 } from "@tau/kernel";
 
@@ -63,6 +64,7 @@ export interface RunTuiOptions {
 	cwd: string;
 	contextWindow?: number;
 	sessionRepo: JsonlSessionRepo;
+	store?: SessionStore;
 	recorder?: SessionRecorder;
 }
 
@@ -233,6 +235,36 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 			return true;
 		}
+		if (name === "tree") {
+			if (!options.store) {
+				appendText(red("No active session (--no-session)."));
+				return true;
+			}
+			if (args === "") {
+				const entries = await options.store.getEntries();
+				const path = await options.store.getPathToRoot(await options.store.getLeafId());
+				const onPath = new Set(path.map((entry) => entry.id));
+				const lines: string[] = [];
+				for (const entry of entries) {
+					if (entry.type !== "message" || entry.message.role !== "user") continue;
+					const marker = onPath.has(entry.id) ? "●" : "○";
+					lines.push(`${marker} ${entry.id}  ${firstLine(messageText(entry.message), 80)}`);
+				}
+				appendText(lines.length === 0 ? dim("No user messages in this session yet.") : lines.join("\n"));
+				return true;
+			}
+			try {
+				const result = await options.agent.navigateTo(args);
+				appendText(
+					result.cancelled
+						? dim("Navigation cancelled.")
+						: dim(`Moved to ${args} (${options.agent.messages.length} messages in context).`),
+				);
+			} catch (error) {
+				appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
+			}
+			return true;
+		}
 		const command = options.extensions.commands.get(name);
 		if (!command) return false;
 		try {
@@ -285,6 +317,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	tui.start();
 	tui.requestRender();
 	await done;
+}
+
+function firstLine(text: string, max = 120): string {
+	const line = text.split("\n")[0] ?? "";
+	return line.length > max ? `${line.slice(0, max)}...` : line;
 }
 
 interface RenderState {
