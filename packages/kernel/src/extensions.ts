@@ -457,6 +457,14 @@ export interface RegisteredWidget {
 	handler: (ctx: ExtensionContext) => Promise<RegisteredWidgetRenderResult> | RegisteredWidgetRenderResult;
 }
 
+export type RegisteredStatusItemResult = string | undefined;
+
+export interface RegisteredStatusItem {
+	name: string;
+	description?: string;
+	handler: (ctx: ExtensionContext) => Promise<RegisteredStatusItemResult> | RegisteredStatusItemResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -532,6 +540,12 @@ export interface ExtensionAPI {
 	/** Register a TUI widget. Hosts that do not support widgets may ignore it. */
 	registerWidget(name: string, options: Omit<RegisteredWidget, "name">): void;
 
+	/** Register a compact TUI header status segment. Hosts that do not support it may ignore it. */
+	registerHeaderItem(name: string, options: Omit<RegisteredStatusItem, "name">): void;
+
+	/** Register a compact TUI footer status segment. Hosts that do not support it may ignore it. */
+	registerFooterItem(name: string, options: Omit<RegisteredStatusItem, "name">): void;
+
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
 
@@ -598,6 +612,8 @@ export class ExtensionRegistry {
 	readonly entryRenderers = new Map<string, RegisteredEntryRenderer>();
 	readonly toolRenderers = new Map<string, RegisteredToolRenderer>();
 	readonly widgets = new Map<string, RegisteredWidget>();
+	readonly headerItems = new Map<string, RegisteredStatusItem>();
+	readonly footerItems = new Map<string, RegisteredStatusItem>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -665,6 +681,12 @@ export class ExtensionRegistry {
 			},
 			registerWidget: (name, options) => {
 				this.widgets.set(name, { name, ...options });
+			},
+			registerHeaderItem: (name, options) => {
+				this.headerItems.set(name, { name, ...options });
+			},
+			registerFooterItem: (name, options) => {
+				this.footerItems.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });

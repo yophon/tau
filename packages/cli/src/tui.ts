@@ -156,7 +156,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const tui = new TUI(terminal);
 	let currentModel = options.model;
 	let currentThinkingLevel = options.thinkingLevel;
-	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd), 1, 0);
+	let headerStatusItems: string[] = [];
+	let footerStatusItems: string[] = [];
+	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd, headerStatusItems), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
 	const aboveEditorWidgets = new Container();
@@ -198,12 +200,14 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	};
 
 	const setHeader = (): void => {
-		header.setText(formatHeader(currentModel, options.baseUrl, options.cwd));
+		header.setText(formatHeader(currentModel, options.baseUrl, options.cwd, headerStatusItems));
 		tui.requestRender();
 	};
 
 	const setFooter = (): void => {
-		footer.setText(formatFooter(agent, currentModel, currentThinkingLevel, options.cwd, sessionLabel));
+		footer.setText(
+			formatFooter(agent, currentModel, currentThinkingLevel, options.cwd, sessionLabel, footerStatusItems),
+		);
 		tui.requestRender();
 	};
 
@@ -228,6 +232,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await options.extensions.notifySessionStart("resume", agent.extensionContext());
 		const metadata = await newStore.getMetadata();
 		await refreshFooterSession(metadata);
+		await refreshStatusItems();
 		await refreshExtensionWidgets();
 		return { metadata, messageCount: restored.messages.length };
 	};
@@ -304,7 +309,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const messageStart = agent.messages.length;
 			const output = await shortcut.handler(agent.extensionContext());
 			await renderNewMessages(messageStart);
-			await refreshExtensionWidgets();
+			await refreshExtensionSurfaces();
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
@@ -398,8 +403,34 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		tui.requestRender();
 	};
 
-	const refreshFooterAndWidgets = async (): Promise<void> => {
+	const refreshStatusItems = async (): Promise<void> => {
+		const nextHeaderItems: string[] = [];
+		const nextFooterItems: string[] = [];
+		for (const item of options.extensions.headerItems.values()) {
+			try {
+				const result = await item.handler(agent.extensionContext());
+				if (result) nextHeaderItems.push(result);
+			} catch (error) {
+				nextHeaderItems.push(`header ${item.name} failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		for (const item of options.extensions.footerItems.values()) {
+			try {
+				const result = await item.handler(agent.extensionContext());
+				if (result) nextFooterItems.push(result);
+			} catch (error) {
+				nextFooterItems.push(`footer ${item.name} failed: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		headerStatusItems = nextHeaderItems;
+		footerStatusItems = nextFooterItems;
+		setHeader();
+		setFooter();
+	};
+
+	const refreshExtensionSurfaces = async (): Promise<void> => {
 		await refreshFooterSession();
+		await refreshStatusItems();
 		await refreshExtensionWidgets();
 	};
 
@@ -568,8 +599,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 			await recorder.setName(args);
 			await options.extensions.notifySessionInfoChanged(args, agent.extensionContext());
-			await refreshFooterSession();
-			await refreshExtensionWidgets();
+			await refreshExtensionSurfaces();
 			appendText(dim(`Session named "${args}".`));
 			return true;
 		}
@@ -769,7 +799,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const messageStart = agent.messages.length;
 			const output = await command.handler(args, agent.extensionContext());
 			await renderNewMessages(messageStart);
-			await refreshExtensionWidgets();
+			await refreshExtensionSurfaces();
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
@@ -848,7 +878,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
-			void refreshFooterAndWidgets();
+			void refreshExtensionSurfaces();
 		}
 	}
 
@@ -870,7 +900,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
-			void refreshFooterAndWidgets();
+			void refreshExtensionSurfaces();
 		}
 	}
 
@@ -919,12 +949,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
-			void refreshFooterAndWidgets();
+			void refreshExtensionSurfaces();
 		}
 	}
 
-	await refreshFooterSession();
-	await refreshExtensionWidgets();
+	await refreshExtensionSurfaces();
 	tui.start();
 	tui.requestRender();
 	await done;
@@ -965,8 +994,9 @@ function firstLine(text: string, max = 120): string {
 	return line.length > max ? `${line.slice(0, max)}...` : line;
 }
 
-function formatHeader(model: string, baseUrl: string, cwd: string): string {
-	return `${bold("tau")} ${dim(`${model} @ ${baseUrl}`)}\n${dim(cwd)}`;
+function formatHeader(model: string, baseUrl: string, cwd: string, statusItems: string[]): string {
+	const suffix = statusItems.length === 0 ? "" : ` ${dim(statusItems.join(" · "))}`;
+	return `${bold("tau")} ${dim(`${model} @ ${baseUrl}`)}${suffix}\n${dim(cwd)}`;
 }
 
 function parseUserBash(input: string): { command: string; record: boolean } | undefined {
@@ -1039,6 +1069,7 @@ function formatFooter(
 	thinkingLevel: ThinkingLevel | undefined,
 	cwd: string,
 	sessionLabel: string,
+	statusItems: string[],
 ): string {
 	const usage = agent.getContextUsage();
 	const context =
@@ -1057,6 +1088,7 @@ function formatFooter(
 			context,
 			usageSource,
 			`cwd ${cwd}`,
+			...statusItems,
 			"Enter submit",
 			"Ctrl+C abort/exit",
 			"Esc compact abort",

@@ -85,6 +85,8 @@ export {
 	type RegisteredMessageRenderer,
 	type RegisteredMessageRenderResult,
 	type RegisteredShortcut,
+	type RegisteredStatusItem,
+	type RegisteredStatusItemResult,
 	type RegisteredToolRenderEvent,
 	type RegisteredToolRenderer,
 	type RegisteredToolRenderResult,

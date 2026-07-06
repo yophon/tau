@@ -274,6 +274,14 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			description: "Ping widget",
 			handler: (ctx) => `widget:${ctx.messages.length}`,
 		});
+		api.registerHeaderItem("ping-header", {
+			description: "Ping header",
+			handler: () => "header:ok",
+		});
+		api.registerFooterItem("ping-footer", {
+			description: "Ping footer",
+			handler: (ctx) => `footer:${ctx.messages.length}`,
+		});
 	};
 	const second: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-b` }));
@@ -337,6 +345,8 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 	const widget = registry.widgets.get("ping-widget");
 	assert.equal(widget?.placement, "below-editor");
 	assert.equal(await widget?.handler({ messages: [] }), "widget:0");
+	assert.equal(await registry.headerItems.get("ping-header")?.handler({ messages: [] }), "header:ok");
+	assert.equal(await registry.footerItems.get("ping-footer")?.handler({ messages: [] }), "footer:0");
 });
 
 test("extension tools receive context capabilities", async () => {
