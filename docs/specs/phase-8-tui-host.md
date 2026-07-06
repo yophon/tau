@@ -114,7 +114,7 @@ class TuiUiCapability implements UiCapability {
 | 核心交互 | Done | `/sessions` 文本列表与 `/resume <id|path|timestamp|name>` | 支持精确匹配和唯一前缀匹配后恢复 |
 | 核心交互 | Next | `/sessions` selector | 裸 `/sessions` 或新命令可选择并恢复历史 session |
 | 核心交互 | Done | `/tree` 文本列表与 `/tree <id>` 跳转 | user-message jump points 可列出和跳转 |
-| 核心交互 | Next | `/tree` selector | 列表选择 jump point 后调用 `Agent.navigateTo()` |
+| 核心交互 | Done | `/tree` selector | 列表选择 jump point 后调用 `Agent.navigateTo()` |
 | 核心交互 | Done | `/fork [<id>]` 文本命令 | 裸 `/fork` 全量复制；`/fork <id>` 从目标前分叉 |
 | 核心交互 | Next | `/fork` selector | 可从 jump point 列表选择 fork target |
 | 核心交互 | Done | `/compact [instructions]` start/end/aborted 状态 | compact 可见，Ctrl+C 可 abort |
@@ -163,7 +163,7 @@ class TuiUiCapability implements UiCapability {
 ### P8B：核心交互补齐
 
 - [x] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
-- [ ] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。（文本列表与 `/tree <id>` 跳转已落地；selector 待做）
+- [x] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。
 - [x] TUI `/fork [<id>]`：文本命令复用 REPL 语义，裸 `/fork` 全量复制，`/fork <id>` 从指定 user entry 前分叉并切换到新 session。
 - [ ] TUI `/fork` selector：列表选择 fork target。
 - [x] TUI `/sessions` / `/resume <id|path|timestamp|name>`：文本列表显示 session id，命令支持精确匹配和唯一前缀匹配后切换/恢复。
@@ -216,7 +216,7 @@ P8A/P8B/P8D 验证记录：
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。
 - TUI 启动期 project trust 已使用 `createStartupTuiUi()`，不再经过 readline；tmux 冒烟确认首次信任 prompt、项目扩展命令加载、`trust.json` 持久化均正常。
 - TUI `/name <name>` 与 `/sessions` 文本列表已实现；tmux 冒烟确认 session 命名和列表显示。
-- TUI `/tree` 文本列表与 `/tree <id>` 跳转已实现；tmux 冒烟确认列表展示 user message jump points。
+- TUI `/tree` selector 与 `/tree <id>` 跳转已实现；tmux 冒烟确认 selector 展示 user message jump points，Enter 选择后调用 navigate 并移动上下文。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
 
 ## 风险与开放问题

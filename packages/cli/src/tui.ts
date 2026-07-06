@@ -1,5 +1,6 @@
 import {
 	CombinedAutocompleteProvider,
+	type Component,
 	Container,
 	Editor,
 	type EditorTheme,
@@ -8,6 +9,8 @@ import {
 	type MarkdownTheme,
 	matchesKey,
 	ProcessTerminal,
+	type SelectItem,
+	SelectList,
 	type SelectListTheme,
 	type SlashCommand,
 	Text,
@@ -201,6 +204,33 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await refreshFooterSession(metadata);
 		return { metadata, messageCount: restored.messages.length };
 	};
+
+	const selectItem = (title: string, items: SelectItem[]): Promise<SelectItem | undefined> =>
+		new Promise((resolve) => {
+			const list = new SelectList(items, Math.min(10, Math.max(1, items.length)), selectListTheme, {
+				minPrimaryColumnWidth: 16,
+				maxPrimaryColumnWidth: 36,
+			});
+			const overlay: Component = {
+				invalidate: () => list.invalidate(),
+				handleInput: (data) => list.handleInput(data),
+				render: (width) => [bold(title), ...list.render(width), dim("↑/↓ select · Enter confirm · Esc cancel")],
+			};
+			let done = false;
+			let handle: ReturnType<TUI["showOverlay"]> | undefined;
+			const finish = (item: SelectItem | undefined): void => {
+				if (done) return;
+				done = true;
+				handle?.hide();
+				tui.setFocus(editor);
+				tui.requestRender();
+				resolve(item);
+			};
+			list.onSelect = (item) => finish(item);
+			list.onCancel = () => finish(undefined);
+			handle = tui.showOverlay(overlay, { width: "90%", minWidth: 50, maxHeight: "70%", anchor: "center", margin: 2 });
+			tui.requestRender();
+		});
 
 	const stop = async (): Promise<void> => {
 		await options.extensions.notifySessionShutdown("quit", agent.extensionContext());
@@ -414,13 +444,35 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				const entries = await store.getEntries();
 				const path = await store.getPathToRoot(await store.getLeafId());
 				const onPath = new Set(path.map((entry) => entry.id));
-				const lines: string[] = [];
+				const items: SelectItem[] = [];
 				for (const entry of entries) {
 					if (entry.type !== "message" || entry.message.role !== "user") continue;
 					const marker = onPath.has(entry.id) ? "●" : "○";
-					lines.push(`${marker} ${entry.id}  ${firstLine(messageText(entry.message), 80)}`);
+					items.push({
+						value: entry.id,
+						label: `${marker} ${entry.id}`,
+						description: firstLine(messageText(entry.message), 80),
+					});
 				}
-				appendText(lines.length === 0 ? dim("No user messages in this session yet.") : lines.join("\n"));
+				if (items.length === 0) {
+					appendText(dim("No user messages in this session yet."));
+					return true;
+				}
+				const selected = await selectItem("Jump to a user message", items);
+				if (!selected) {
+					appendText(dim("Navigation cancelled."));
+					return true;
+				}
+				try {
+					const result = await agent.navigateTo(selected.value);
+					appendText(
+						result.cancelled
+							? dim("Navigation cancelled.")
+							: dim(`Moved to ${selected.value} (${agent.messages.length} messages in context).`),
+					);
+				} catch (error) {
+					appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
+				}
 				return true;
 			}
 			try {
