@@ -34,7 +34,7 @@ import {
 import { OPENAI_COMPLETIONS_API, type OpenAICompatConfig, streamChatCompletion } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
-import type { Tool, ToolResult } from "./tools.ts";
+import type { Tool, ToolResult, ToolUpdateStream } from "./tools.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
 export type QueueMode = "one-at-a-time" | "all";
@@ -97,10 +97,15 @@ export type AgentEvent =
 	| { type: "assistant_message"; message: AssistantMessage }
 	| { type: "user_message"; message: UserMessage }
 	| { type: "tool_start"; toolCall: ToolCall }
-	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string }
+	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string; stream?: ToolUpdateStream }
 	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
 	| { type: "compaction"; result: CompactionResult }
 	| { type: "agent_end"; messages: AgentMessage[] };
+
+interface ToolUpdate {
+	partialOutput: string;
+	stream?: ToolUpdateStream;
+}
 
 const DEFAULT_MAX_TURNS = 50;
 
@@ -531,10 +536,37 @@ export class Agent {
 			const toolResults: ToolResultMessage[] = [];
 			for (const toolCall of toolCalls) {
 				yield { type: "tool_start", toolCall };
-				const { result, updates } = await this.executeToolCall(toolCall, ctx, signal);
-				for (const partialOutput of updates) {
-					yield { type: "tool_update", toolCall, partialOutput };
+				const updates: ToolUpdate[] = [];
+				let wakeUpdate: (() => void) | undefined;
+				let executionDone = false;
+				const execution = this.executeToolCall(toolCall, ctx, signal, (update) => {
+					updates.push(update);
+					wakeUpdate?.();
+					wakeUpdate = undefined;
+				});
+				execution.then(
+					() => {
+						executionDone = true;
+						wakeUpdate?.();
+						wakeUpdate = undefined;
+					},
+					() => {
+						executionDone = true;
+						wakeUpdate?.();
+						wakeUpdate = undefined;
+					},
+				);
+				while (!executionDone || updates.length > 0) {
+					const update = updates.shift();
+					if (update) {
+						yield { type: "tool_update", toolCall, partialOutput: update.partialOutput, stream: update.stream };
+						continue;
+					}
+					await new Promise<void>((resolve) => {
+						wakeUpdate = resolve;
+					});
 				}
+				const { result } = await execution;
 				const toolResultMessage: ToolResultMessage = {
 					role: "toolResult",
 					toolCallId: toolCall.id,
@@ -579,10 +611,11 @@ export class Agent {
 		toolCall: ToolCall,
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
-	): Promise<{ result: ToolResult; updates: string[] }> {
+		onUpdate?: (update: ToolUpdate) => void,
+	): Promise<{ result: ToolResult }> {
 		const tool = this.currentTools().get(toolCall.name);
 		if (!tool) {
-			return { result: { output: `Unknown tool: ${toolCall.name}`, isError: true }, updates: [] };
+			return { result: { output: `Unknown tool: ${toolCall.name}`, isError: true } };
 		}
 		// Execution works on a copy so tool_call handlers can rewrite arguments
 		// without mutating the stored assistant message.
@@ -598,30 +631,32 @@ export class Agent {
 			if (decision.blocked) {
 				return {
 					result: { output: `Tool call blocked: ${decision.reason ?? "blocked by extension"}`, isError: true },
-					updates: [],
 				};
 			}
 			args = event.input;
 		}
 
 		await this.extensions?.notifyToolExecutionStart({ toolCallId: toolCall.id, toolName: toolCall.name, args }, ctx);
-		const updates: string[] = [];
 		const updateNotifications: Promise<void>[] = [];
-		const onUpdate = (partialOutput: string): void => {
-			updates.push(partialOutput);
+		const emitUpdate = (partialOutput: string, stream?: ToolUpdateStream): void => {
 			if (this.extensions) {
-				updateNotifications.push(
-					this.extensions.notifyToolExecutionUpdate(
-						{ toolCallId: toolCall.id, toolName: toolCall.name, args, partialOutput },
+				const notification = this.extensions
+					.notifyToolExecutionUpdate(
+						{ toolCallId: toolCall.id, toolName: toolCall.name, args, partialOutput, stream },
 						ctx,
-					),
-				);
+					)
+					.then(() => {
+						onUpdate?.({ partialOutput, stream });
+					});
+				updateNotifications.push(notification);
+			} else {
+				onUpdate?.({ partialOutput, stream });
 			}
 		};
 
 		let result: ToolResult;
 		try {
-			result = await tool.execute(args, signal, onUpdate, ctx);
+			result = await tool.execute(args, signal, emitUpdate, ctx);
 		} catch (cause) {
 			result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
 		}
@@ -642,6 +677,6 @@ export class Agent {
 			);
 			result = { output: finalResult.output, isError: finalResult.isError };
 		}
-		return { result, updates };
+		return { result };
 	}
 }

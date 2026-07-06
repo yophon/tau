@@ -7,11 +7,13 @@ export interface ToolResult {
 	isError?: boolean;
 }
 
+export type ToolUpdateStream = "stdout" | "stderr";
+
 export interface Tool extends ToolDefinition {
 	execute(
 		args: Record<string, unknown>,
 		signal?: TauAbortSignal,
-		onUpdate?: (partialOutput: string) => void,
+		onUpdate?: (partialOutput: string, stream?: ToolUpdateStream) => void,
 		ctx?: ExtensionContext,
 	): Promise<ToolResult>;
 }

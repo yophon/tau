@@ -11,8 +11,8 @@ const streamingTool: Tool = {
 	description: "Emits two partial updates",
 	parameters: { type: "object", properties: {} },
 	execute: async (_args, _signal, onUpdate) => {
-		onUpdate?.("part1");
-		onUpdate?.("part2");
+		onUpdate?.("part1", "stdout");
+		onUpdate?.("part2", "stderr");
 		return { output: "part1part2" };
 	},
 };
@@ -211,7 +211,7 @@ test("host receives tool_update events for streaming tools", async () => {
 	});
 	const updates: string[] = [];
 	for await (const event of agent.prompt("go")) {
-		if (event.type === "tool_update") updates.push(event.partialOutput);
+		if (event.type === "tool_update") updates.push(`${event.stream}:${event.partialOutput}`);
 	}
-	assert.deepEqual(updates, ["part1", "part2"]);
+	assert.deepEqual(updates, ["stdout:part1", "stderr:part2"]);
 });

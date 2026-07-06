@@ -167,6 +167,7 @@ export interface ToolExecutionUpdateEvent {
 	toolName: string;
 	args: Record<string, unknown>;
 	partialOutput: string;
+	stream?: "stdout" | "stderr";
 }
 
 /** Fired when a tool finishes executing, before tool_result. */

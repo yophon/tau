@@ -125,7 +125,7 @@ class TuiUiCapability implements UiCapability {
 | 核心交互 | Done | abort 后 pending tool 标记 | 被中断的工具组件明确显示 aborted |
 | 用户 bash | Done | `!` / `!!` 用户 bash | `!` 结果进上下文；`!!` 只显示不记录 |
 | 用户 bash | Done | `user_bash` 扩展事件 | 扩展可改写、取消、调整是否记录 |
-| 用户 bash | Next | bash stdout/stderr 增量 renderer | 长命令期间 stdout/stderr 持续刷新，可区分 stream |
+| 用户 bash | Done | bash stdout/stderr 增量 renderer | 长命令期间 stdout/stderr 持续刷新，可区分 stream |
 | 模型/思考 | Done | `/model [model]` 最小文本切换 | 无参数显示当前模型；有参数切换后下一请求使用新模型 |
 | 模型/思考 | Next | `model_select` 事件 | 模型切换前后通知扩展，可拦截或记录 |
 | 模型/思考 | Later | model selector | 在有 provider/model registry 后提供选择 UI |
@@ -174,7 +174,7 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI `/name`：inline input 或 command 参数设置 session name。
 - [x] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [x] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
-- [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
+- [x] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
 - [x] Steering/follow-up：运行中输入默认 steer；`/follow <text>` 把输入排为 followUp。
 - [x] Abort UX：运行中 Ctrl+C abort 后保留 TUI，明确显示 turn/compaction aborted 状态。
 - [x] Abort UX polish：abort 后标记 pending tool 组件。
@@ -220,6 +220,7 @@ P8A/P8B/P8D 验证记录：
 - TUI `/tree` selector 与 `/tree <id>` 跳转已实现；tmux 冒烟确认 selector 展示 user message jump points，Enter 选择后调用 navigate 并移动上下文。
 - TUI `/fork` selector 已实现；tmux 冒烟确认 selector 展示 full session 与 user message targets，选择 user target 后从该 entry 前分叉并切换 session。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
+- TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
 
 ## 风险与开放问题
 

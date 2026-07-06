@@ -596,7 +596,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		runningTask = "bash";
 		controller = new AbortController();
 		setStatus(cyan("Running bash..."));
-		let liveOutput = "";
+		const liveOutput: LiveStreamOutput = createLiveStreamOutput();
 		const component = new Text(
 			`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${dim("running...")}`,
 			1,
@@ -605,7 +605,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		chat.addChild(component);
 		const updateLiveOutput = (): void => {
 			component.setText(
-				`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${liveOutput || dim("running...")}`,
+				`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${
+					formatLiveStreamOutput(liveOutput) || dim("running...")
+				}`,
 			);
 			tui.requestRender();
 		};
@@ -613,16 +615,17 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const result = await options.shell.exec(effectiveCommand, {
 				signal: controller.signal,
 				onStdout: (chunk) => {
-					liveOutput += chunk;
+					appendLiveStreamOutput(liveOutput, chunk, "stdout");
 					updateLiveOutput();
 				},
 				onStderr: (chunk) => {
-					liveOutput += chunk;
+					appendLiveStreamOutput(liveOutput, chunk, "stderr");
 					updateLiveOutput();
 				},
 			});
 			const output = formatShellOutput(result);
-			component.setText(`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${output}`);
+			const displayOutput = formatShellDisplayOutput(result, liveOutput);
+			component.setText(`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${displayOutput}`);
 			if (effectiveRecordInContext) {
 				const message = createUserBashMessage(effectiveCommand, result, output);
 				agent.messages.push(message);
@@ -678,6 +681,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		let assistantComponent: Markdown | undefined;
 		let assistantText = "";
 		const toolComponents = new Map<string, Text>();
+		const toolOutputs = new Map<string, LiveStreamOutput>();
 		const pendingTools = new Map<string, string>();
 		try {
 			for await (const event of agent.prompt(input, controller.signal)) {
@@ -694,6 +698,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 						assistantText = text;
 					},
 					toolComponents,
+					toolOutputs,
 					pendingTools,
 					addComponent: (component) => chat.addChild(component),
 				});
@@ -865,6 +870,12 @@ function formatShellOutput(result: ShellExecResult): string {
 	return output;
 }
 
+function formatShellDisplayOutput(result: ShellExecResult, liveOutput: LiveStreamOutput): string {
+	const output = formatLiveStreamOutput(liveOutput) || "(no output)";
+	if (result.exitCode === 0) return output;
+	return `${output}\nExit code ${result.exitCode}`;
+}
+
 function createUserBashMessage(command: string, result: ShellExecResult, output: string): CustomMessage {
 	return {
 		role: "custom",
@@ -915,8 +926,33 @@ interface RenderState {
 	getAssistantText(): string;
 	setAssistantText(text: string): void;
 	toolComponents: Map<string, Text>;
+	toolOutputs: Map<string, LiveStreamOutput>;
 	pendingTools: Map<string, string>;
 	addComponent(component: Text): void;
+}
+
+interface LiveStreamOutput {
+	stdout: string;
+	stderr: string;
+	fallback: string;
+}
+
+function createLiveStreamOutput(): LiveStreamOutput {
+	return { stdout: "", stderr: "", fallback: "" };
+}
+
+function appendLiveStreamOutput(output: LiveStreamOutput, chunk: string, stream?: "stdout" | "stderr"): void {
+	if (stream === "stdout") output.stdout += chunk;
+	else if (stream === "stderr") output.stderr += chunk;
+	else output.fallback += chunk;
+}
+
+function formatLiveStreamOutput(output: LiveStreamOutput): string {
+	const sections: string[] = [];
+	if (output.stdout !== "") sections.push(`${dim("stdout")}\n${output.stdout.trimEnd()}`);
+	if (output.stderr !== "") sections.push(`${dim("stderr")}\n${red(output.stderr.trimEnd())}`);
+	if (output.fallback !== "") sections.push(dim(output.fallback.trimEnd()));
+	return sections.join("\n");
 }
 
 function renderEvent(event: AgentEvent, state: RenderState): void {
@@ -962,7 +998,10 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 				state.addComponent(component);
 			}
 			state.pendingTools.set(event.toolCall.id, event.toolCall.name);
-			component.setText(`${cyan(`⚙ ${event.toolCall.name}`)}\n${dim(event.partialOutput)}`);
+			const output = state.toolOutputs.get(event.toolCall.id) ?? createLiveStreamOutput();
+			state.toolOutputs.set(event.toolCall.id, output);
+			appendLiveStreamOutput(output, event.partialOutput, event.stream);
+			component.setText(`${cyan(`⚙ ${event.toolCall.name}`)}\n${formatLiveStreamOutput(output)}`);
 			break;
 		}
 		case "tool_result": {
@@ -974,7 +1013,10 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 				state.addComponent(component);
 			}
 			state.pendingTools.delete(event.toolCall.id);
-			component.setText(`${marker} ${dim(event.toolCall.name)}\n${event.result.output}`);
+			const liveOutput = state.toolOutputs.get(event.toolCall.id);
+			state.toolOutputs.delete(event.toolCall.id);
+			const output = liveOutput ? formatLiveStreamOutput(liveOutput) || event.result.output : event.result.output;
+			component.setText(`${marker} ${dim(event.toolCall.name)}\n${output}`);
 			break;
 		}
 		case "compaction":

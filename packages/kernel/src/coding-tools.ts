@@ -131,7 +131,12 @@ function createBashTool(shell: Shell): Tool {
 		execute: wrapExecute(async (args, signal, onUpdate) => {
 			const command = requireString(args, "command");
 			const timeoutSeconds = optionalNumber(args, "timeoutSeconds") ?? DEFAULT_BASH_TIMEOUT_SECONDS;
-			const result = await shell.exec(command, { timeoutSeconds, signal, onStdout: onUpdate, onStderr: onUpdate });
+			const result = await shell.exec(command, {
+				timeoutSeconds,
+				signal,
+				onStdout: (chunk) => onUpdate?.(chunk, "stdout"),
+				onStderr: (chunk) => onUpdate?.(chunk, "stderr"),
+			});
 			const parts: string[] = [];
 			if (result.stdout !== "") parts.push(result.stdout);
 			if (result.stderr !== "") parts.push(result.stderr);
