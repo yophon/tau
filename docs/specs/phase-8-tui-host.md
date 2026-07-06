@@ -119,7 +119,7 @@ class TuiUiCapability implements UiCapability {
 | 核心交互 | Done | `/fork` selector | 可从 jump point 列表选择 fork target |
 | 核心交互 | Done | `/compact [instructions]` start/end/aborted 状态 | compact 可见，Ctrl+C 可 abort |
 | 核心交互 | Done | compaction Esc abort | Esc 能取消进行中的 compaction |
-| 核心交互 | Later | compaction polish | 展示更细的阶段、耗时、summary/kept 粗略结果 |
+| 核心交互 | Done | compaction polish | `/compact` 展示准备/摘要阶段、耗时、tokens before/after、summary 字符数与 kept messages |
 | 核心交互 | Done | 运行中普通输入作为 steering message | 长 turn 期间输入不丢失 |
 | 核心交互 | Done | `/follow <text>` follow-up 队列 | 当前 turn 结束后自动追加下一轮 |
 | 核心交互 | Done | abort 后 pending tool 标记 | 被中断的工具组件明确显示 aborted |
@@ -199,7 +199,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] tool collapse/expand：全局快捷键与单个 tool item 折叠状态。
 - [x] thinking block show/hide：快捷键切换 reasoning 展示，状态反映到 footer。
 - [ ] startup diagnostics：展示 loaded extensions/skills/prompts/themes/resources，便于自举排障。
-- [ ] compaction polish：展示阶段、耗时、summary/kept 粗略结果。
+- [x] compaction polish：展示阶段、耗时、summary/kept 粗略结果。
 
 ### P8E：Acceptance / Self-Dogfood
 
@@ -229,7 +229,7 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI `/sessions` selector：选择历史 session 并切换/恢复。
 - [x] TUI `/compact [instructions]`：显示 compaction start/end/aborted 状态，支持 Ctrl+C abort compaction。
 - [x] TUI compaction Esc：支持 Esc abort compaction。
-- [ ] TUI compaction polish：展示更细的 compaction 进度/阶段。
+- [x] TUI compaction polish：展示更细的 compaction 进度/阶段、耗时、summary/kept 粗略结果。
 - [x] TUI `/name`：inline input 或 command 参数设置 session name。
 - [x] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [x] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
@@ -294,6 +294,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `/help` 扩展诊断已增强；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 `/help` 显示扩展 command、shortcut、message/entry/tool renderer、widget、header item、footer item。
 - TUI `/reload` host-node 扩展热重载已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认同一 TUI 会话中全局扩展文件从 `before-reload` 改为 `after-reload` 后，执行 `/reload` 会刷新 header item 为 `reload-smoke-after`，`/ping` 命令输出变为 `after-reload`。
 - TUI `/reload` resources reload 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认 `resources_discover` header 从 `resources:startup` 变为 `resources:reload`，reload-only prompt command `/hello world` 展开为 `Reload hello world` 并完成 mock provider 回复。
+- TUI `/compact` polish 已实现；tmux 冒烟确认手动 compact 输出 `Compacting conversation (...)`，完成后显示 tokens before/after、kept messages、summary chars 与耗时。
 
 ## 风险与开放问题
 

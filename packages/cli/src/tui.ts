@@ -20,6 +20,7 @@ import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
+	type CompactionResult,
 	type CustomMessage,
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
@@ -979,10 +980,35 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		runningTask = "compaction";
 		controller = new AbortController();
 		setStatus(cyan("Compacting..."));
-		appendText(dim("Compacting conversation..."));
+		const startedAt = Date.now();
+		const messagesBefore = agent.messages.length;
+		const tokensBeforeEstimate = agent.getContextUsage().tokens;
+		appendText(
+			dim(`Compacting conversation (${messagesBefore} messages, ~${formatNumber(tokensBeforeEstimate)} tokens)...`),
+		);
 		try {
+			setStatus(cyan("Compacting: summarizing history..."));
 			const result = await agent.compact(instructions, "manual", controller.signal);
-			appendText(result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."));
+			if (result) {
+				const elapsedMs = Date.now() - startedAt;
+				const tokensAfterEstimate = agent.getContextUsage().tokens;
+				const keptMessages =
+					agent.messages.length > 0 && agent.messages[0]?.role === "compactionSummary"
+						? agent.messages.length - 1
+						: agent.messages.length;
+				appendText(
+					dim(
+						formatCompactionResult(result, {
+							elapsedMs,
+							messagesBefore,
+							keptMessages,
+							tokensAfterEstimate,
+						}),
+					),
+				);
+			} else {
+				appendText(dim(`Nothing to compact (${formatElapsed(Date.now() - startedAt)}).`));
+			}
 		} catch (error) {
 			appendText(
 				isAbortError(error)
@@ -1253,6 +1279,32 @@ function formatThinkingLevel(level: ThinkingLevel | undefined): string {
 
 function formatNumber(value: number): string {
 	return new Intl.NumberFormat("en-US").format(Math.max(0, Math.round(value)));
+}
+
+function formatElapsed(ms: number): string {
+	if (ms < 1000) return `${ms}ms`;
+	return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+}
+
+function formatCompactionResult(
+	result: CompactionResult,
+	stats?: {
+		elapsedMs?: number;
+		messagesBefore?: number;
+		keptMessages?: number;
+		tokensAfterEstimate?: number;
+	},
+): string {
+	const parts = [
+		`Compacted: ~${formatNumber(result.tokensBefore)} tokens before`,
+		stats?.tokensAfterEstimate !== undefined ? `~${formatNumber(stats.tokensAfterEstimate)} after` : undefined,
+		stats?.messagesBefore !== undefined && stats.keptMessages !== undefined
+			? `${formatNumber(stats.keptMessages)}/${formatNumber(stats.messagesBefore)} messages kept`
+			: undefined,
+		`summary ${formatNumber(result.summary.length)} chars`,
+		stats?.elapsedMs !== undefined ? formatElapsed(stats.elapsedMs) : undefined,
+	];
+	return parts.filter((part): part is string => Boolean(part)).join(" · ");
 }
 
 function formatSessionLabel(metadata: SessionMetadata): string {
@@ -1590,7 +1642,7 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			break;
 		}
 		case "compaction":
-			state.getAssistant().setText(dim(`[compacted: ~${event.result.tokensBefore} tokens summarized]`));
+			state.getAssistant().setText(dim(`[${formatCompactionResult(event.result)}]`));
 			break;
 		case "agent_end":
 			break;
