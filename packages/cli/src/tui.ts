@@ -394,15 +394,36 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			if (sessions.length === 0) {
 				appendText(dim("No sessions found."));
 			} else {
-				appendText(
-					[
-						...sessions.map(
-							(session) =>
-								`${session.timestamp}  ${session.id}  ${session.name ?? "(unnamed)"}  ${dim(session.filePath ?? "")}`,
-						),
-						dim("Resume with /resume <id|path|timestamp|name>."),
-					].join("\n"),
+				const currentSession = store ? await store.getMetadata() : undefined;
+				const selectedItem = await selectItem(
+					"Resume a session",
+					sessions.map((session) => ({
+						value: session.id,
+						label: formatSessionSelectorLabel(session, session.id === currentSession?.id),
+						description: formatSessionSelectorDescription(session),
+					})),
 				);
+				if (!selectedItem) {
+					appendText(dim("Session selection cancelled."));
+					return true;
+				}
+				const selected = sessions.find((session) => session.id === selectedItem.value);
+				if (!selected) {
+					appendText(red(`No session matches "${selectedItem.value}".`));
+					return true;
+				}
+				try {
+					const result = await switchSession(await options.sessionRepo.open(selected));
+					appendText(
+						dim(
+							`Resumed ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages${
+								result.metadata.name ? `, "${result.metadata.name}"` : ""
+							}).`,
+						),
+					);
+				} catch (error) {
+					appendText(red(`/sessions failed: ${error instanceof Error ? error.message : String(error)}`));
+				}
 			}
 			return true;
 		}
@@ -791,6 +812,17 @@ function formatNumber(value: number): string {
 
 function formatSessionLabel(metadata: SessionMetadata): string {
 	return metadata.name ?? (metadata.id === "" ? "unnamed" : metadata.id.slice(0, 8));
+}
+
+function formatSessionSelectorLabel(metadata: SessionMetadata, current: boolean): string {
+	const label = metadata.name ?? metadata.id.slice(0, 8);
+	return current ? `● ${label}` : `○ ${label}`;
+}
+
+function formatSessionSelectorDescription(metadata: SessionMetadata): string {
+	return [metadata.timestamp, metadata.id, metadata.filePath]
+		.filter((value): value is string => Boolean(value))
+		.join("  ");
 }
 
 function formatShellOutput(result: ShellExecResult): string {

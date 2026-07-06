@@ -111,8 +111,8 @@ class TuiUiCapability implements UiCapability {
 | 核心交互 | Done | `/help` 文本命令列表 + 扩展 commands | 内置命令和扩展命令都能显示 |
 | 核心交互 | Done | autocomplete：slash commands + 文件路径基础补全 | Tab 补全命令和本地路径 |
 | 核心交互 | Done | `/name` session 命名 | `/sessions` 可看到新名称 |
-| 核心交互 | Done | `/sessions` 文本列表与 `/resume <id|path|timestamp|name>` | 支持精确匹配和唯一前缀匹配后恢复 |
-| 核心交互 | Next | `/sessions` selector | 裸 `/sessions` 或新命令可选择并恢复历史 session |
+| 核心交互 | Done | `/resume <id|path|timestamp|name>` | 支持精确匹配和唯一前缀匹配后恢复 |
+| 核心交互 | Done | `/sessions` selector | 裸 `/sessions` 或新命令可选择并恢复历史 session |
 | 核心交互 | Done | `/tree` 文本列表与 `/tree <id>` 跳转 | user-message jump points 可列出和跳转 |
 | 核心交互 | Done | `/tree` selector | 列表选择 jump point 后调用 `Agent.navigateTo()` |
 | 核心交互 | Done | `/fork [<id>]` 文本命令 | 裸 `/fork` 全量复制；`/fork <id>` 从目标前分叉 |
@@ -166,8 +166,8 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。
 - [x] TUI `/fork [<id>]`：文本命令复用 REPL 语义，裸 `/fork` 全量复制，`/fork <id>` 从指定 user entry 前分叉并切换到新 session。
 - [ ] TUI `/fork` selector：列表选择 fork target。
-- [x] TUI `/sessions` / `/resume <id|path|timestamp|name>`：文本列表显示 session id，命令支持精确匹配和唯一前缀匹配后切换/恢复。
-- [ ] TUI `/sessions` selector：选择历史 session 并切换/恢复。
+- [x] TUI `/resume <id|path|timestamp|name>`：命令支持精确匹配和唯一前缀匹配后切换/恢复。
+- [x] TUI `/sessions` selector：选择历史 session 并切换/恢复。
 - [x] TUI `/compact [instructions]`：显示 compaction start/end/aborted 状态，支持 Ctrl+C abort compaction。
 - [x] TUI compaction Esc：支持 Esc abort compaction。
 - [ ] TUI compaction polish：展示更细的 compaction 进度/阶段。
@@ -215,7 +215,8 @@ P8A/P8B/P8D 验证记录：
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。
 - TUI 启动期 project trust 已使用 `createStartupTuiUi()`，不再经过 readline；tmux 冒烟确认首次信任 prompt、项目扩展命令加载、`trust.json` 持久化均正常。
-- TUI `/name <name>` 与 `/sessions` 文本列表已实现；tmux 冒烟确认 session 命名和列表显示。
+- TUI `/name <name>` 已实现；tmux 冒烟确认 session 命名和列表显示。
+- TUI `/sessions` selector 已实现；tmux 冒烟确认 selector 展示历史 session，Enter 选择后恢复 session 并刷新 footer/context。
 - TUI `/tree` selector 与 `/tree <id>` 跳转已实现；tmux 冒烟确认 selector 展示 user message jump points，Enter 选择后调用 navigate 并移动上下文。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
 
