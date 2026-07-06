@@ -132,3 +132,34 @@ test("resources extension reloads prompt commands with resources_discover reload
 		});
 	});
 });
+
+test("resources extension exposes loaded resource diagnostics", async () => {
+	await withTempDir(async (dir) => {
+		await mkdir(join(dir, "skills", "demo"), { recursive: true });
+		await writeFile(join(dir, "skills", "demo", "SKILL.md"), "---\ndescription: Demo\n---\nDemo skill");
+		await mkdir(join(dir, "prompts"), { recursive: true });
+		await writeFile(join(dir, "prompts", "greet.md"), "---\ndescription: Greet\n---\nHello $1");
+
+		const registry = await ExtensionRegistry.load([
+			createResourcesExtension({
+				includeDefaults: false,
+				skillPaths: [join(dir, "skills")],
+				promptPaths: [join(dir, "prompts")],
+			}),
+		]);
+		const agent = new Agent({
+			config: { baseUrl: "https://fake.test/v1", model: "fake" },
+			platform: fakePlatform([]),
+			extensions: registry,
+			capabilities: { fs: new NodeFileSystem(dir), paths: { cwd: dir } },
+		});
+
+		await registry.notifySessionStart("startup", agent.extensionContext());
+		const diagnostic = await registry.diagnostics.get("resources")?.handler(agent.extensionContext());
+		assert.deepEqual(diagnostic, {
+			label: "resources",
+			value: "1 skills, 1 prompts, 0 warnings",
+			details: ["reason: startup", `skill paths: ${join(dir, "skills")}`, `prompt paths: ${join(dir, "prompts")}`],
+		});
+	});
+});

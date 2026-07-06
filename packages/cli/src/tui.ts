@@ -25,6 +25,7 @@ import {
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
 	messageText,
+	type RegisteredDiagnosticResult,
 	type RegisteredEntryRenderer,
 	type RegisteredEntryRenderResult,
 	type RegisteredMessageRenderer,
@@ -66,6 +67,7 @@ const builtInCommands: SlashCommand[] = [
 		description: "Show or set reasoning effort.",
 	},
 	{ name: "tools", argumentHint: "[all|collapse|expand|reset|<id>]", description: "Inspect or fold tool output." },
+	{ name: "diagnostics", description: "Show loaded extension and resource diagnostics." },
 	{ name: "reload", description: "Reload extensions and extension-provided UI surfaces." },
 	{ name: "quit", description: "Exit the TUI." },
 ];
@@ -172,6 +174,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	let headerStatusItems: string[] = [];
 	let footerStatusItems: string[] = [];
 	const fallbackToolDisplays = new Map<string, ToolDisplayState>();
+	let lastSessionStartReason: "startup" | "resume" | "reload" = "startup";
+	let lastReloadStatus = "not run";
 	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd, headerStatusItems), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
@@ -251,6 +255,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		agent = options.buildAgent(restored.messages, recorder, extensions);
 		agent.setUi(uiCapability);
 		await extensions.notifySessionStart("resume", agent.extensionContext());
+		lastSessionStartReason = "resume";
 		const metadata = await newStore.getMetadata();
 		await refreshFooterSession(metadata);
 		await refreshStatusItems();
@@ -455,6 +460,58 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await refreshExtensionWidgets();
 	};
 
+	const formatDiagnostics = async (): Promise<string> => {
+		const lines = [
+			bold("Loaded diagnostics"),
+			dim(`session_start: ${lastSessionStartReason} · reload: ${lastReloadStatus}`),
+			"",
+			bold("Host surfaces"),
+			[
+				`${extensions.tools.size} tools`,
+				`${extensions.commands.size} commands`,
+				`${extensions.shortcuts.size} shortcuts`,
+				`${extensions.messageRenderers.size} message renderers`,
+				`${extensions.entryRenderers.size} entry renderers`,
+				`${extensions.toolRenderers.size} tool renderers`,
+				`${extensions.widgets.size} widgets`,
+				`${extensions.headerItems.size} header items`,
+				`${extensions.footerItems.size} footer items`,
+				`${extensions.diagnostics.size} diagnostics`,
+			].join(" · "),
+		];
+		try {
+			const resourceReason = lastSessionStartReason === "reload" ? "reload" : "startup";
+			const discovered = await agent.extensionContext().discoverResources?.(resourceReason);
+			lines.push(
+				"",
+				bold("Resource discovery"),
+				discovered
+					? [
+							`${discovered.skillPaths.length} skill paths`,
+							`${discovered.promptPaths.length} prompt paths`,
+							`${discovered.themePaths.length} theme paths`,
+						].join(" · ")
+					: dim("unavailable"),
+			);
+		} catch (error) {
+			lines.push("", bold("Resource discovery"), red(error instanceof Error ? error.message : String(error)));
+		}
+		lines.push("", bold("Extension diagnostics"));
+		if (extensions.diagnostics.size === 0) {
+			lines.push(dim("No extension diagnostics registered."));
+			return lines.join("\n");
+		}
+		for (const diagnostic of extensions.diagnostics.values()) {
+			try {
+				const result = await diagnostic.handler(agent.extensionContext());
+				lines.push(...formatDiagnosticResult(diagnostic.name, result));
+			} catch (error) {
+				lines.push(`${red(diagnostic.name)}  ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+		return lines.join("\n");
+	};
+
 	async function switchModel(requestedModel: string): Promise<void> {
 		const previousModel = currentModel;
 		const decision = await extensions.runModelSelectBefore(
@@ -499,15 +556,19 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
 			extensions = nextExtensions;
 			agent = nextAgent;
+			lastSessionStartReason = "reload";
+			lastReloadStatus = `success ${new Date().toISOString()}`;
 			editor.setAutocompleteProvider(
 				new CombinedAutocompleteProvider(buildAutocompleteCommands(extensions), options.cwd),
 			);
 			await refreshExtensionSurfaces();
 			appendText(dim("Extensions reloaded."));
+			appendText(await formatDiagnostics());
 		} catch (error) {
 			extensions = previousExtensions;
 			agent = previousAgent;
 			agent.setUi(uiCapability);
+			lastReloadStatus = `failed ${new Date().toISOString()}`;
 			editor.setAutocompleteProvider(
 				new CombinedAutocompleteProvider(buildAutocompleteCommands(extensions), options.cwd),
 			);
@@ -525,6 +586,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				setFooter();
 			}
 			appendText(red(`Reload failed: ${error instanceof Error ? error.message : String(error)}`));
+			appendText(await formatDiagnostics());
 		} finally {
 			setStatus(dim("Ready"));
 		}
@@ -691,6 +753,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 		if (name === "tools") {
 			handleToolsCommand(args);
+			return true;
+		}
+		if (name === "diagnostics") {
+			appendText(await formatDiagnostics());
 			return true;
 		}
 		if (name === "reload") {
@@ -1141,6 +1207,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	}
 
 	await refreshExtensionSurfaces();
+	appendText(await formatDiagnostics());
 	tui.start();
 	tui.requestRender();
 	await done;
@@ -1268,10 +1335,24 @@ function formatHelp(extensions: ExtensionRegistry): string {
 			...[...extensions.footerItems.values()].map(
 				(item) => `${cyan(item.name)}  footer item${item.description ? ` · ${item.description}` : ""}`,
 			),
+			...[...extensions.diagnostics.values()].map(
+				(diagnostic) =>
+					`${cyan(diagnostic.name)}  diagnostic${diagnostic.description ? ` · ${diagnostic.description}` : ""}`,
+			),
 		],
 		"No extension surfaces registered.",
 	);
 	return lines.join("\n");
+}
+
+function formatDiagnosticResult(name: string, result: RegisteredDiagnosticResult): string[] {
+	if (result === undefined) return [`${cyan(name)}  ${dim("no diagnostic data")}`];
+	if (typeof result === "string") return [`${cyan(name)}  ${result}`];
+	if (Array.isArray(result)) return [`${cyan(name)}`, ...result.map((line) => `  ${line}`)];
+	const header = `${cyan(name)}  ${result.label}${result.value === undefined ? "" : `: ${String(result.value)}`}`;
+	const details: string[] =
+		result.details === undefined ? [] : Array.isArray(result.details) ? result.details : [result.details];
+	return [header, ...details.map((line) => `  ${line}`)];
 }
 
 function pushHelpSection(lines: string[], title: string, items: string[], emptyText: string): void {

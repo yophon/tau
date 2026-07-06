@@ -465,6 +465,18 @@ export interface RegisteredStatusItem {
 	handler: (ctx: ExtensionContext) => Promise<RegisteredStatusItemResult> | RegisteredStatusItemResult;
 }
 
+export type RegisteredDiagnosticResult =
+	| string
+	| string[]
+	| { label: string; value?: string | number | boolean; details?: string | string[] }
+	| undefined;
+
+export interface RegisteredDiagnostic {
+	name: string;
+	description?: string;
+	handler: (ctx: ExtensionContext) => Promise<RegisteredDiagnosticResult> | RegisteredDiagnosticResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -546,6 +558,9 @@ export interface ExtensionAPI {
 	/** Register a compact TUI footer status segment. Hosts that do not support it may ignore it. */
 	registerFooterItem(name: string, options: Omit<RegisteredStatusItem, "name">): void;
 
+	/** Register a read-only diagnostic section. Hosts may surface it in startup diagnostics or help views. */
+	registerDiagnostic(name: string, options: Omit<RegisteredDiagnostic, "name">): void;
+
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
 
@@ -614,6 +629,7 @@ export class ExtensionRegistry {
 	readonly widgets = new Map<string, RegisteredWidget>();
 	readonly headerItems = new Map<string, RegisteredStatusItem>();
 	readonly footerItems = new Map<string, RegisteredStatusItem>();
+	readonly diagnostics = new Map<string, RegisteredDiagnostic>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -687,6 +703,9 @@ export class ExtensionRegistry {
 			},
 			registerFooterItem: (name, options) => {
 				this.footerItems.set(name, { name, ...options });
+			},
+			registerDiagnostic: (name, options) => {
+				this.diagnostics.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });

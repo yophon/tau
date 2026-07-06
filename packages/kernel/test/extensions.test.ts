@@ -282,6 +282,10 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			description: "Ping footer",
 			handler: (ctx) => `footer:${ctx.messages.length}`,
 		});
+		api.registerDiagnostic("ping-diagnostic", {
+			description: "Ping diagnostic",
+			handler: (ctx) => ({ label: "ping", value: ctx.messages.length, details: ["ok"] }),
+		});
 	};
 	const second: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-b` }));
@@ -347,6 +351,9 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 	assert.equal(await widget?.handler({ messages: [] }), "widget:0");
 	assert.equal(await registry.headerItems.get("ping-header")?.handler({ messages: [] }), "header:ok");
 	assert.equal(await registry.footerItems.get("ping-footer")?.handler({ messages: [] }), "footer:0");
+	const diagnostic = registry.diagnostics.get("ping-diagnostic");
+	assert.equal(diagnostic?.description, "Ping diagnostic");
+	assert.deepEqual(await diagnostic?.handler({ messages: [] }), { label: "ping", value: 0, details: ["ok"] });
 });
 
 test("extension tools receive context capabilities", async () => {

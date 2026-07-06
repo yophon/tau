@@ -32,7 +32,10 @@ export interface ResourcesExtensionOptions {
 interface LoadedResources {
 	skills: Skill[];
 	promptTemplates: PromptTemplate[];
+	skillPaths: string[];
+	promptPaths: string[];
 	diagnostics: ResourceDiagnostic[];
+	reason: ResourceDiscoverReason;
 }
 
 type ResourceDiscoverReason = "startup" | "reload";
@@ -344,11 +347,28 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 			return block === "" ? undefined : { systemPrompt: `${event.systemPrompt}\n\n${block}`.trim() };
 		});
 
+		api.registerDiagnostic("resources", {
+			description: "Loaded skills and prompt templates.",
+			handler: async (ctx) => {
+				const resources = await load(ctx);
+				return {
+					label: "resources",
+					value: `${resources.skills.length} skills, ${resources.promptTemplates.length} prompts, ${resources.diagnostics.length} warnings`,
+					details: [
+						`reason: ${resources.reason}`,
+						`skill paths: ${resources.skillPaths.length === 0 ? "none" : resources.skillPaths.join(", ")}`,
+						`prompt paths: ${resources.promptPaths.length === 0 ? "none" : resources.promptPaths.join(", ")}`,
+						...resources.diagnostics.slice(0, 5).map((diagnostic) => `${diagnostic.code}: ${diagnostic.path}`),
+					],
+				};
+			},
+		});
+
 		async function load(ctx: ExtensionContext, reason: ResourceDiscoverReason = "startup"): Promise<LoadedResources> {
 			if (loaded && reason !== "reload") return loaded;
 			loaded = (async () => {
 				const fs = ctx.capabilities?.fs;
-				if (!fs) return { skills: [], promptTemplates: [], diagnostics: [] };
+				if (!fs) return { skills: [], promptTemplates: [], skillPaths: [], promptPaths: [], diagnostics: [], reason };
 				const paths = ctx.capabilities?.paths;
 				const defaultsEnabled = options.includeDefaults !== false;
 				const discovered = await ctx.discoverResources?.(reason);
@@ -371,7 +391,10 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 				const resources = {
 					skills: skills.skills,
 					promptTemplates: prompts.promptTemplates,
+					skillPaths,
+					promptPaths,
 					diagnostics: [...skills.diagnostics, ...prompts.diagnostics],
+					reason,
 				};
 				for (const template of resources.promptTemplates) {
 					api.registerCommand(template.name, {

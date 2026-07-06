@@ -144,7 +144,7 @@ class TuiUiCapability implements UiCapability {
 | 主题/打磨 | Later | footer polish | 更完整 token usage/cost、session 状态、自定义 footer 区 |
 | 主题/打磨 | Done | tool collapse/expand | `Ctrl+T` 全局折叠/展开 fallback 工具输出，`/tools <id>` 支持单项覆盖 |
 | 主题/打磨 | Done | thinking block show/hide | `Ctrl+R` 切换后续 reasoning delta 展示，footer 显示 shown/hidden 状态 |
-| 主题/打磨 | Later | startup diagnostics | 展示 loaded skills/prompts/extensions/resources 诊断 |
+| 主题/打磨 | Done | startup diagnostics | 启动和 `/diagnostics` 展示 extensions/resources 诊断，`/reload` 后刷新 |
 | 验收 | Acceptance | TTY e2e 覆盖扩展 | tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径 |
 | 验收 | Acceptance | 自举验收 | 用 `npm run tau -- --tui` 开发 tau 至少一轮，记录并修复阻塞问题 |
 
@@ -234,11 +234,11 @@ class TuiUiCapability implements UiCapability {
 
 ### P8D-6：Startup Diagnostics
 
-- [ ] 启动后显示或可展开 loaded diagnostics：extensions、commands、shortcuts、message/entry/tool renderers、widgets、header/footer items。
-- [ ] 纳入资源发现结果：skills、prompts、themes/resources 的数量、来源和失败项；没有对应能力时明确显示 unavailable 而不是空白。
-- [ ] 诊断信息支持 `/reload` 后刷新，并显示 startup/resume/reload reason 与最近一次 reload 成功/失败时间。
-- [ ] 失败诊断不阻塞 TUI 启动；错误要可读、可复制，避免吞掉 extension/resource 加载异常。
-- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖干净启动、有全局扩展、有 resources、reload 后诊断变化、加载失败诊断。
+- [x] 启动后显示或可展开 loaded diagnostics：extensions、commands、shortcuts、message/entry/tool renderers、widgets、header/footer items。
+- [x] 纳入资源发现结果：skills、prompts、themes/resources 的数量、来源和失败项；没有对应能力时明确显示 unavailable 而不是空白。
+- [x] 诊断信息支持 `/reload` 后刷新，并显示 startup/resume/reload reason 与最近一次 reload 成功/失败时间。
+- [x] 失败诊断不阻塞 TUI 启动；错误要可读、可复制，避免吞掉 extension/resource 加载异常。
+- [x] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖干净启动、有项目扩展、有 resources、reload 后诊断变化、手动 `/diagnostics`。
 
 ### P8E-1：TTY Smoke Automation
 
@@ -323,7 +323,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
 - [x] Tool collapse/expand：`Ctrl+T` 展开/折叠 fallback 工具输出，`/tools` 查看工具 id 并用 `/tools <id>` 单项覆盖。
 - [x] Thinking block show/hide：`Ctrl+R` 切换 reasoning 展示，状态反映到 footer。
-- [ ] Startup loaded resources：展示 loaded skills/prompts/extensions 诊断。
+- [x] Startup loaded resources：启动和 `/diagnostics` 展示 loaded extensions/resources 诊断，`/reload` 后刷新 skills/prompts 计数和 reason。
 - [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
 - [ ] 自举验收：用 `npm run tau -- --tui` 日常开发 tau 至少一轮，记录发现的问题。
 
@@ -355,6 +355,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `/reload` resources reload 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认 `resources_discover` header 从 `resources:startup` 变为 `resources:reload`，reload-only prompt command `/hello world` 展开为 `Reload hello world` 并完成 mock provider 回复。
 - TUI `/compact` polish 已实现；tmux 冒烟确认手动 compact 输出 `Compacting conversation (...)`，完成后显示 tokens before/after、kept messages、summary chars 与耗时。
 - TUI tool collapse/expand 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认长 bash 工具运行中按 `Ctrl+T` 后显示折叠摘要与 footer `tools collapsed`，完成后 `/tools` 列出工具 id，`/tools <id>` 可在全局 collapsed 下单项展开，运行中 Ctrl+C 后保留折叠态错误/中断摘要并显示 `Turn aborted.`。
+- TUI startup diagnostics 已实现；新增 extension diagnostic surface 与 `/diagnostics`，`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认启动时显示 host surfaces、resources 诊断和自定义 diagnostic，新增 skill/prompt 后 `/reload` 显示 `session_start: reload` 且 resources 从 `1 skills, 1 prompts` 刷新到 `2 skills, 2 prompts`，手动 `/diagnostics` 可重复查看。
 
 ## 风险与开放问题
 
