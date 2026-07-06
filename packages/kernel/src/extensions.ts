@@ -373,6 +373,30 @@ export interface RegisteredShortcut {
 	handler: (ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
 }
 
+export interface ExtensionRenderComponent {
+	render(width: number): string[];
+	handleInput?(data: string): void;
+	wantsKeyRelease?: boolean;
+	invalidate(): void;
+}
+
+export type RegisteredMessageRenderResult =
+	| string
+	| { text: string; format?: "text" | "markdown" }
+	| ExtensionRenderComponent
+	| undefined;
+
+export interface RegisteredMessageRenderer {
+	name: string;
+	description?: string;
+	roles?: AgentMessage["role"][];
+	customTypes?: string[];
+	handler: (
+		message: AgentMessage,
+		ctx: ExtensionContext,
+	) => Promise<RegisteredMessageRenderResult> | RegisteredMessageRenderResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -436,6 +460,9 @@ export interface ExtensionAPI {
 	/** Register a TUI keyboard shortcut. Hosts that do not support shortcuts may ignore it. */
 	registerShortcut(name: string, options: Omit<RegisteredShortcut, "name">): void;
 
+	/** Register a custom TUI message renderer. Hosts that do not support renderers may ignore it. */
+	registerMessageRenderer(name: string, options: Omit<RegisteredMessageRenderer, "name">): void;
+
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
 
@@ -498,6 +525,7 @@ export class ExtensionRegistry {
 	readonly tools = new Map<string, Tool>();
 	readonly commands = new Map<string, RegisteredCommand>();
 	readonly shortcuts = new Map<string, RegisteredShortcut>();
+	readonly messageRenderers = new Map<string, RegisteredMessageRenderer>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -553,6 +581,9 @@ export class ExtensionRegistry {
 			},
 			registerShortcut: (name, options) => {
 				this.shortcuts.set(name, { name, ...options });
+			},
+			registerMessageRenderer: (name, options) => {
+				this.messageRenderers.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });

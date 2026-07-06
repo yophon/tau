@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import type { FileInfo, FileSystem } from "../src/capabilities.ts";
 import { type Extension, type ExtensionAPI, ExtensionRegistry } from "../src/extensions.ts";
-import { messageText } from "../src/messages.ts";
+import { emptyUsage, messageText } from "../src/messages.ts";
 import type { Tool } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
 
@@ -243,7 +243,7 @@ test("thinking_level_select handlers can rewrite, cancel, and observe after sele
 	]);
 });
 
-test("handlers chain in registration order and commands/shortcuts are exposed to hosts", async () => {
+test("handlers chain in registration order and TUI registrations are exposed to hosts", async () => {
 	const first: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-a` }));
 		api.registerCommand("ping", { description: "Ping", handler: () => "pong" });
@@ -251,6 +251,11 @@ test("handlers chain in registration order and commands/shortcuts are exposed to
 			key: "ctrl+g",
 			description: "Ping shortcut",
 			handler: () => "shortcut pong",
+		});
+		api.registerMessageRenderer("ping-renderer", {
+			roles: ["assistant"],
+			description: "Ping renderer",
+			handler: (message) => `rendered:${message.role}`,
 		});
 	};
 	const second: Extension = (api) => {
@@ -262,6 +267,24 @@ test("handlers chain in registration order and commands/shortcuts are exposed to
 	const shortcut = registry.shortcuts.get("ping-shortcut");
 	assert.equal(shortcut?.key, "ctrl+g");
 	assert.equal(await shortcut?.handler({ messages: [] }), "shortcut pong");
+	const renderer = registry.messageRenderers.get("ping-renderer");
+	assert.deepEqual(renderer?.roles, ["assistant"]);
+	assert.equal(
+		await renderer?.handler(
+			{
+				role: "assistant",
+				content: [{ type: "text", text: "hello" }],
+				api: "openai-chat",
+				provider: "mock",
+				model: "mock",
+				usage: emptyUsage(),
+				stopReason: "stop",
+				timestamp: 0,
+			},
+			{ messages: [] },
+		),
+		"rendered:assistant",
+	);
 });
 
 test("extension tools receive context capabilities", async () => {

@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut / registerMessageRenderer 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -39,7 +39,8 @@
 | `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | ✅ P4（getContextUsage/compact；abort 走宿主 AbortController，ctx.abort 📍P8） |
 | `registerFlag` / `getFlag` | 扩展注册 CLI flag | ✅ P2 |
 | `registerShortcut` | 键盘快捷键 | ✅ P8（TUI 空闲快捷键；`/help` 显示） |
-| `registerMessageRenderer` / `registerEntryRenderer` | 自定义消息/entry 的 TUI 渲染 | 📍P8（TUI） |
+| `registerMessageRenderer` | 自定义消息 TUI 渲染 | ✅ P8（user/assistant/custom message；支持 role/customType 匹配） |
+| `registerEntryRenderer` | 自定义 entry 的 TUI 渲染 | 📍P8（TUI） |
 | Themes | TUI 主题系统 | 📍P8（TUI） |
 | `/reload` 热重载扩展 | 运行时重载 | 📍P8（host-node 便利；小程序宿主原理性无此功能） |
 | `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ❌ D3（OpenAI 兼容 only；如需求出现走扩展层协议适配再议） |

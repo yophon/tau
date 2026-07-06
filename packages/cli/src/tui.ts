@@ -24,6 +24,8 @@ import {
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
 	messageText,
+	type RegisteredMessageRenderer,
+	type RegisteredMessageRenderResult,
 	restoreSession,
 	type SessionMetadata,
 	SessionRecorder,
@@ -286,11 +288,41 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const shortcut = options.extensions.shortcuts.get(name);
 		if (!shortcut) return;
 		try {
+			const messageStart = agent.messages.length;
 			const output = await shortcut.handler(agent.extensionContext());
+			await renderNewMessages(messageStart);
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
 			appendText(red(`Shortcut failed: ${error instanceof Error ? error.message : String(error)}`));
+		}
+	};
+
+	const renderMessageWithExtensions = async (message: AgentMessage, target?: Markdown): Promise<boolean> => {
+		for (const renderer of options.extensions.messageRenderers.values()) {
+			if (!messageRendererMatches(renderer, message)) continue;
+			try {
+				const result = await renderer.handler(message, agent.extensionContext());
+				const component = messageRenderResultToComponent(result, target);
+				if (!component) continue;
+				if (component !== target) chat.addChild(component);
+				tui.requestRender();
+				return true;
+			} catch (error) {
+				appendText(
+					red(`Message renderer ${renderer.name} failed: ${error instanceof Error ? error.message : String(error)}`),
+				);
+				return false;
+			}
+		}
+		return false;
+	};
+
+	const renderNewMessages = async (startIndex: number): Promise<void> => {
+		for (const message of agent.messages.slice(startIndex)) {
+			if (message.role === "custom" && !message.display) continue;
+			if (await renderMessageWithExtensions(message)) continue;
+			if (message.role === "custom") appendText(dim(messageText(message)));
 		}
 	};
 
@@ -640,7 +672,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const command = options.extensions.commands.get(name);
 		if (!command) return false;
 		try {
+			const messageStart = agent.messages.length;
 			const output = await command.handler(args, agent.extensionContext());
+			await renderNewMessages(messageStart);
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
@@ -757,7 +791,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const pendingTools = new Map<string, string>();
 		try {
 			for await (const event of agent.prompt(input, controller.signal)) {
-				renderEvent(event, {
+				await renderEvent(event, {
 					getAssistant: () => {
 						if (!assistantComponent) {
 							assistantComponent = new Markdown("", 1, 0, markdownTheme);
@@ -773,6 +807,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					toolOutputs,
 					pendingTools,
 					addComponent: (component) => chat.addChild(component),
+					renderMessage: renderMessageWithExtensions,
 				});
 				tui.requestRender();
 			}
@@ -1035,6 +1070,7 @@ interface RenderState {
 	toolOutputs: Map<string, LiveStreamOutput>;
 	pendingTools: Map<string, string>;
 	addComponent(component: Text): void;
+	renderMessage(message: AgentMessage, target?: Markdown): Promise<boolean>;
 }
 
 interface LiveStreamOutput {
@@ -1061,7 +1097,41 @@ function formatLiveStreamOutput(output: LiveStreamOutput): string {
 	return sections.join("\n");
 }
 
-function renderEvent(event: AgentEvent, state: RenderState): void {
+function messageRendererMatches(renderer: RegisteredMessageRenderer, message: AgentMessage): boolean {
+	if (renderer.roles && !renderer.roles.includes(message.role)) return false;
+	if (renderer.customTypes) {
+		if (message.role !== "custom") return false;
+		if (!renderer.customTypes.includes(message.customType)) return false;
+	}
+	return true;
+}
+
+function messageRenderResultToComponent(
+	result: RegisteredMessageRenderResult,
+	target?: Markdown,
+): Component | undefined {
+	if (result === undefined) return undefined;
+	if (typeof result === "string") {
+		if (target) {
+			target.setText(result);
+			return target;
+		}
+		return new Text(result, 1, 0);
+	}
+	if (isComponent(result)) return result;
+	const text = result.text;
+	if (target) {
+		target.setText(text);
+		return target;
+	}
+	return result.format === "markdown" ? new Markdown(text, 1, 0, markdownTheme) : new Text(text, 1, 0);
+}
+
+function isComponent(value: unknown): value is Component {
+	return typeof value === "object" && value !== null && "render" in value && typeof value.render === "function";
+}
+
+async function renderEvent(event: AgentEvent, state: RenderState): Promise<void> {
 	switch (event.type) {
 		case "text_delta": {
 			const next = state.getAssistantText() + event.delta;
@@ -1076,6 +1146,8 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 			break;
 		}
 		case "assistant_message": {
+			const target = state.getAssistantText() === "" ? undefined : state.getAssistant();
+			if (await state.renderMessage(event.message, target)) break;
 			const text = messageText(event.message);
 			if (state.getAssistantText() === "" && text !== "") {
 				state.setAssistantText(text);
@@ -1084,6 +1156,7 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 			break;
 		}
 		case "user_message":
+			await state.renderMessage(event.message);
 			break;
 		case "tool_start": {
 			const component = new Text(

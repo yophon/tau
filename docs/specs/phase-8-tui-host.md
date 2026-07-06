@@ -132,7 +132,7 @@ class TuiUiCapability implements UiCapability {
 | 模型/思考 | Done | thinking level 命令 | `/thinking` 设置/清除 `extraBody.reasoning_effort` 覆盖 |
 | 模型/思考 | Done | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
 | 扩展 API | Done | `registerShortcut` | 扩展可注册快捷键；TUI 空闲且无 UI prompt 时触发；`/help` 显示快捷键 |
-| 扩展 API | Next | `registerMessageRenderer` | 扩展可覆盖或追加消息渲染组件 |
+| 扩展 API | Done | `registerMessageRenderer` | 扩展可按 role/customType 渲染 user/assistant/custom message，未命中走 fallback |
 | 扩展 API | Next | `registerEntryRenderer` | 扩展可渲染自定义 session entry |
 | 扩展 API | Next | 自定义 tool renderer | tool call/result 支持组件 renderer，fallback 仍可用 |
 | 扩展 API | Later | extension widgets | editor 上方/下方可挂临时组件 |
@@ -154,10 +154,10 @@ class TuiUiCapability implements UiCapability {
 
 ### P8C-1：Renderer API
 
-- [ ] 设计 `registerMessageRenderer` kernel API：注册名、支持的 message role/customType、优先级/注册顺序、renderer 输入上下文、返回值与 fallback 约定。
-- [ ] 在 TUI 增加 message renderer 调度：先尝试扩展 renderer，未命中或返回空时走现有 markdown/text/tool fallback。
-- [ ] 覆盖 assistant/user/custom message 的最小路径；renderer 抛错时显示可诊断错误，但不打断 TUI。
-- [ ] 单测覆盖 registry 暴露与注册顺序；tmux 冒烟覆盖一个扩展把 custom message 渲染为可见文本。
+- [x] 设计 `registerMessageRenderer` kernel API：注册名、支持的 message role/customType、优先级/注册顺序、renderer 输入上下文、返回值与 fallback 约定。
+- [x] 在 TUI 增加 message renderer 调度：先尝试扩展 renderer，未命中或返回空时走现有 markdown/text/tool fallback。
+- [x] 覆盖 assistant/user/custom message 的最小路径；renderer 抛错时显示可诊断错误，但不打断 TUI。
+- [x] 单测覆盖 registry 暴露与注册顺序；tmux 冒烟覆盖一个扩展把 custom message 渲染为可见文本。
 
 ### P8C-2：Entry Renderer API
 
@@ -240,7 +240,7 @@ class TuiUiCapability implements UiCapability {
 ### P8C：扩展 API / pi parity
 
 - [x] `registerShortcut`：扩展注册快捷键，TUI 空闲且无 UI prompt 时触发；`/help` 显示扩展快捷键。
-- [ ] `registerMessageRenderer`：扩展自定义消息渲染组件。
+- [x] `registerMessageRenderer`：扩展自定义消息渲染组件。
 - [ ] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
 - [ ] 自定义 tool renderer：tool call/result 支持扩展提供组件；无 renderer 时走文本 fallback。
 - [ ] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
@@ -282,6 +282,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `/thinking` 与 `thinking_level_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/thinking low` 改写为 `high` 且下一请求 body 带 `reasoning_effort: "high"`。
 - TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
 - TUI `registerShortcut` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展注册 `ctrl+g` 后 TUI 显示 `shortcut-ok`。
+- TUI `registerMessageRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 assistant renderer 可覆盖流式回复为 `rendered:tui-renderer-ok`，custom renderer 可把 `/emit` 注入的 custom message 显示为 `rendered:custom:smoke`，user renderer 可把运行中 steering message 显示为 `rendered:user`。
 
 ## 风险与开放问题
 
