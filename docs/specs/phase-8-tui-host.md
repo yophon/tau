@@ -141,7 +141,8 @@ class TuiUiCapability implements UiCapability {
 - [x] `/help`：TUI 文本版内置命令列表 + 扩展 commands。
 - [ ] `/help` polish：按可滚动组件展示，支持命令详情。
 - [ ] Autocomplete：slash commands、文件路径基础补全。
-- [ ] Footer：cwd、session name、model、context usage、token usage。
+- [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
+- [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
 - [ ] Tool collapse/expand：快捷键展开/折叠所有工具输出。
 - [ ] Thinking block show/hide：快捷键切换 reasoning 展示。
 - [ ] Startup loaded resources：展示 loaded skills/prompts/extensions 诊断。

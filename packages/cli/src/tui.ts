@@ -89,13 +89,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const header = new Text(`${bold("tau")} ${dim(`${options.model} @ ${options.baseUrl}`)}\n${dim(options.cwd)}`, 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
-	const footer = new Text(
-		dim(
-			`${options.contextWindow ? `context ${options.contextWindow}` : "auto-compaction off"} · Enter submit · Ctrl+C abort/exit`,
-		),
-		1,
-		0,
-	);
+	const footer = new Text("", 1, 0);
 	const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
 	tui.addChild(header);
 	tui.addChild(chat);
@@ -109,6 +103,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	let agent = options.agent;
 	let store = options.store;
 	let recorder = options.recorder;
+	let sessionLabel = store ? "session loading" : "no session";
 	let pendingUiPrompt: ((input: string) => void) | undefined;
 	let resolveDone: (() => void) | undefined;
 	const done = new Promise<void>((resolve) => {
@@ -125,6 +120,21 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		tui.requestRender();
 	};
 
+	const setFooter = (): void => {
+		footer.setText(formatFooter(agent, options.model, options.cwd, sessionLabel));
+		tui.requestRender();
+	};
+
+	const refreshFooterSession = async (metadata?: SessionMetadata): Promise<void> => {
+		try {
+			const current = metadata ?? (store ? await store.getMetadata() : undefined);
+			sessionLabel = current ? formatSessionLabel(current) : "no session";
+		} catch {
+			sessionLabel = store ? "session unknown" : "no session";
+		}
+		setFooter();
+	};
+
 	const switchSession = async (
 		newStore: SessionStore,
 	): Promise<{ metadata: SessionMetadata; messageCount: number }> => {
@@ -134,7 +144,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		agent = options.buildAgent(restored.messages, recorder);
 		agent.setUi(uiCapability);
 		await options.extensions.notifySessionStart("resume", agent.extensionContext());
-		return { metadata: await newStore.getMetadata(), messageCount: restored.messages.length };
+		const metadata = await newStore.getMetadata();
+		await refreshFooterSession(metadata);
+		return { metadata, messageCount: restored.messages.length };
 	};
 
 	const stop = async (): Promise<void> => {
@@ -243,6 +255,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 			await recorder.setName(args);
 			await options.extensions.notifySessionInfoChanged(args, agent.extensionContext());
+			await refreshFooterSession();
 			appendText(dim(`Session named "${args}".`));
 			return true;
 		}
@@ -379,6 +392,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
+			void refreshFooterSession();
 		}
 	}
 
@@ -416,9 +430,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
+			void refreshFooterSession();
 		}
 	}
 
+	await refreshFooterSession();
 	tui.start();
 	tui.requestRender();
 	await done;
@@ -448,6 +464,37 @@ function formatHelp(extensionCommands: { name: string; description: string }[]):
 		);
 	}
 	return lines.join("\n");
+}
+
+function formatFooter(agent: Agent, model: string, cwd: string, sessionLabel: string): string {
+	const usage = agent.getContextUsage();
+	const context =
+		usage.contextWindow === undefined
+			? `context ${formatNumber(usage.tokens)} tokens`
+			: `context ${formatNumber(usage.tokens)}/${formatNumber(usage.contextWindow)} tokens`;
+	const usageSource =
+		usage.usageTokens > 0
+			? `usage ${formatNumber(usage.usageTokens)} + trailing ${formatNumber(usage.trailingTokens)}`
+			: "usage estimated";
+	return dim(
+		[
+			`model ${model}`,
+			`session ${sessionLabel}`,
+			context,
+			usageSource,
+			`cwd ${cwd}`,
+			"Enter submit",
+			"Ctrl+C abort/exit",
+		].join(" · "),
+	);
+}
+
+function formatNumber(value: number): string {
+	return new Intl.NumberFormat("en-US").format(Math.max(0, Math.round(value)));
+}
+
+function formatSessionLabel(metadata: SessionMetadata): string {
+	return metadata.name ?? (metadata.id === "" ? "unnamed" : metadata.id.slice(0, 8));
 }
 
 function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
