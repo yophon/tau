@@ -107,7 +107,7 @@ class TuiUiCapability implements UiCapability {
 | 基础宿主 | Done | tool_start/tool_update/tool_result 文本 fallback | 工具调用过程可见，失败结果可见 |
 | 基础宿主 | Done | Ctrl+C：运行中 abort，空闲时退出 | abort 后 TUI 不中断；空闲退出正常 |
 | 基础宿主 | Done | TUI `UiCapability` facade：confirm/input/select/notify | 运行中扩展可调用 UI 能力 |
-| 核心交互 | Next | 启动期 project trust 使用 TUI confirm | 首次进入含项目扩展目录时不落回 readline/no-UI |
+| 核心交互 | Done | 启动期 project trust 使用 TUI confirm | 首次进入含项目扩展目录时不落回 readline/no-UI |
 | 核心交互 | Done | `/help` 文本命令列表 + 扩展 commands | 内置命令和扩展命令都能显示 |
 | 核心交互 | Done | autocomplete：slash commands + 文件路径基础补全 | Tab 补全命令和本地路径 |
 | 核心交互 | Done | `/name` session 命名 | `/sessions` 可看到新名称 |
@@ -162,7 +162,7 @@ class TuiUiCapability implements UiCapability {
 
 ### P8B：核心交互补齐
 
-- [ ] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
+- [x] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
 - [ ] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。（文本列表与 `/tree <id>` 跳转已落地；selector 待做）
 - [x] TUI `/fork [<id>]`：文本命令复用 REPL 语义，裸 `/fork` 全量复制，`/fork <id>` 从指定 user entry 前分叉并切换到新 session。
 - [ ] TUI `/fork` selector：列表选择 fork target。
@@ -213,7 +213,8 @@ P8A/P8B/P8D 验证记录：
 - `npm run check` 全绿。
 - `npm test` 70 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
-- TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。启动期 project trust 仍使用旧路径，待后续重排。
+- TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。
+- TUI 启动期 project trust 已使用 `createStartupTuiUi()`，不再经过 readline；tmux 冒烟确认首次信任 prompt、项目扩展命令加载、`trust.json` 持久化均正常。
 - TUI `/name <name>` 与 `/sessions` 文本列表已实现；tmux 冒烟确认 session 命名和列表显示。
 - TUI `/tree` 文本列表与 `/tree <id>` 跳转已实现；tmux 冒烟确认列表展示 user message jump points。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。

@@ -19,7 +19,7 @@ import {
 	thinkingText,
 	type UiCapability,
 } from "@tau/kernel";
-import { runTui } from "./tui.ts";
+import { createStartupTuiUi, runTui } from "./tui.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -394,10 +394,22 @@ async function main(): Promise<void> {
 	const contextWindow = options.contextWindow ?? (Number.isFinite(envWindow) && envWindow > 0 ? envWindow : undefined);
 	const config: OpenAICompatConfig = { baseUrl, apiKey, model, contextWindow };
 	const cwd = resolve(process.cwd());
-	const readline = createInterface({ input: process.stdin, output: process.stdout });
+	if (options.tui && options.print === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+		console.error("--tui requires a TTY stdin/stdout");
+		process.exit(1);
+	}
+	const readline =
+		options.tui && options.print === undefined
+			? undefined
+			: createInterface({ input: process.stdin, output: process.stdout });
 	// Headless stdin (pipes, CI) cannot answer prompts; omit the UI capability
 	// so extensions take their no-UI degradation path instead of hanging.
-	const ui = process.stdin.isTTY ? createUi(readline) : undefined;
+	const ui =
+		options.tui && options.print === undefined
+			? createStartupTuiUi()
+			: readline && process.stdin.isTTY
+				? createUi(readline)
+				: undefined;
 	const extensions = await loadExtensionRegistry(cwd, ui);
 	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
 
@@ -461,6 +473,7 @@ async function main(): Promise<void> {
 	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
 
 	if (options.print !== undefined) {
+		if (!readline) throw new Error("print mode requires readline");
 		await runTurn(agent, options.print, readline);
 		await extensions.notifySessionShutdown("quit", agent.extensionContext());
 		readline.close();
@@ -468,13 +481,6 @@ async function main(): Promise<void> {
 	}
 
 	if (options.tui) {
-		if (!process.stdin.isTTY || !process.stdout.isTTY) {
-			console.error("--tui requires a TTY stdin/stdout");
-			await extensions.notifySessionShutdown("quit", agent.extensionContext());
-			readline.close();
-			process.exit(1);
-		}
-		readline.close();
 		await runTui({
 			agent,
 			extensions,
@@ -494,6 +500,7 @@ async function main(): Promise<void> {
 		return;
 	}
 
+	if (!readline) throw new Error("interactive REPL requires readline");
 	if (contextWindow === undefined) {
 		console.log(dim("No --context-window configured: auto-compaction is off (use /compact manually)."));
 	}

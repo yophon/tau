@@ -93,6 +93,40 @@ export interface RunTuiOptions {
 	buildAgent(messages: AgentMessage[] | undefined, session: SessionRecorder | undefined): Agent;
 }
 
+export function createStartupTuiUi(): UiCapability {
+	return {
+		confirm: async (title, message) => {
+			const answer = await promptStartupTui([bold(title), ...(message ? [dim(message)] : []), dim("[y/N]")]);
+			return /^y(es)?$/i.test(answer.trim());
+		},
+		input: async (title, placeholder) => {
+			const answer = await promptStartupTui([bold(title), ...(placeholder ? [dim(placeholder)] : [])]);
+			const trimmed = answer.trim();
+			return trimmed === "" ? undefined : trimmed;
+		},
+		select: async (title, values) => {
+			const answer = await promptStartupTui([
+				bold(title),
+				...values.map((value, index) => `${index + 1}. ${value}`),
+				dim("Enter a number or exact value."),
+			]);
+			const trimmed = answer.trim();
+			const index = Number.parseInt(trimmed, 10) - 1;
+			return values[index] ?? values.find((value) => value === trimmed);
+		},
+		notify: (message, level) => {
+			const terminal = new ProcessTerminal();
+			const tui = new TUI(terminal);
+			tui.addChild(
+				new Text(level === "error" ? red(message) : level === "warning" ? cyan(message) : dim(message), 1, 0),
+			);
+			tui.start();
+			tui.requestRender();
+			tui.stop();
+		},
+	};
+}
+
 export async function runTui(options: RunTuiOptions): Promise<void> {
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
@@ -582,6 +616,36 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	tui.start();
 	tui.requestRender();
 	await done;
+}
+
+function promptStartupTui(lines: string[]): Promise<string> {
+	const terminal = new ProcessTerminal();
+	const tui = new TUI(terminal);
+	const container = new Container();
+	const editor = new Editor(tui, editorTheme, { paddingX: 1 });
+	container.addChild(new Text(lines.join("\n"), 1, 0));
+	container.addChild(editor);
+	tui.addChild(container);
+	tui.setFocus(editor);
+	return new Promise((resolve) => {
+		const finish = (answer: string): void => {
+			tui.stop();
+			resolve(answer);
+		};
+		editor.onSubmit = (text) => {
+			editor.setText("");
+			finish(text);
+		};
+		tui.addInputListener((data) => {
+			if (matchesKey(data, "ctrl+c") || matchesKey(data, Key.escape)) {
+				finish("");
+				return { consume: true };
+			}
+			return undefined;
+		});
+		tui.start();
+		tui.requestRender();
+	});
 }
 
 function firstLine(text: string, max = 120): string {
