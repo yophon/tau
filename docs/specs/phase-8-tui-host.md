@@ -111,7 +111,8 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI `/sessions` / `/resume <id|path|timestamp|name>`：文本列表显示 session id，命令支持精确匹配和唯一前缀匹配后切换/恢复。
 - [ ] TUI `/sessions` selector：选择历史 session 并切换/恢复。
 - [x] TUI `/compact [instructions]`：显示 compaction start/end/aborted 状态，支持 Ctrl+C abort compaction。
-- [ ] TUI compaction polish：支持 Esc abort compaction，并展示更细的 compaction 进度/阶段。
+- [x] TUI compaction Esc：支持 Esc abort compaction。
+- [ ] TUI compaction polish：展示更细的 compaction 进度/阶段。
 - [x] TUI `/name`：inline input 或 command 参数设置 session name。
 - [ ] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [ ] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。

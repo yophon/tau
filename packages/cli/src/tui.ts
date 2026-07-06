@@ -2,6 +2,7 @@ import {
 	Container,
 	Editor,
 	type EditorTheme,
+	Key,
 	Markdown,
 	type MarkdownTheme,
 	matchesKey,
@@ -188,6 +189,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	agent.setUi(uiCapability);
 
 	tui.addInputListener((data) => {
+		if (matchesKey(data, Key.escape) && runningTask === "compaction" && controller) {
+			controller.abort();
+			setStatus(dim("Aborting compaction..."));
+			return { consume: true };
+		}
 		if (matchesKey(data, "ctrl+c")) {
 			if (runningTask && controller) {
 				controller.abort();
@@ -453,6 +459,7 @@ function formatHelp(extensionCommands: { name: string; description: string }[]):
 		bold("Shortcuts"),
 		`${cyan("Enter")}  Submit input`,
 		`${cyan("Ctrl+C")}  Abort the current turn/compaction, or exit while idle`,
+		`${cyan("Esc")}  Abort compaction`,
 	];
 	if (extensionCommands.length === 0) {
 		lines.push("", bold("Extension commands"), dim("No extension commands registered."));
@@ -485,6 +492,7 @@ function formatFooter(agent: Agent, model: string, cwd: string, sessionLabel: st
 			`cwd ${cwd}`,
 			"Enter submit",
 			"Ctrl+C abort/exit",
+			"Esc compact abort",
 		].join(" · "),
 	);
 }
