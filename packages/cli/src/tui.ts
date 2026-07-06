@@ -523,7 +523,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 		const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
 		if (name === "help") {
-			appendText(formatHelp([...options.extensions.commands.values()], [...options.extensions.shortcuts.values()]));
+			appendText(formatHelp(options.extensions));
 			return true;
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
@@ -1011,10 +1011,7 @@ function parseFollowUpCommand(input: string): string | undefined {
 	return input.slice("/follow ".length).trim();
 }
 
-function formatHelp(
-	extensionCommands: { name: string; description: string }[],
-	extensionShortcuts: { key: string; description: string }[],
-): string {
+function formatHelp(extensions: ExtensionRegistry): string {
 	const lines = [
 		bold("Built-in commands"),
 		...builtInCommands.map((command) => `${cyan(formatCommandUsage(command))}  ${command.description ?? ""}`),
@@ -1028,25 +1025,67 @@ function formatHelp(
 		`${cyan("! <command>")}  Run bash and add output to context`,
 		`${cyan("!! <command>")}  Run bash and only show output`,
 	];
-	if (extensionCommands.length === 0) {
-		lines.push("", bold("Extension commands"), dim("No extension commands registered."));
-	} else {
-		lines.push(
-			"",
-			bold("Extension commands"),
-			...extensionCommands.map((command) => `${cyan(`/${command.name}`)}  ${command.description}`),
-		);
-	}
-	if (extensionShortcuts.length === 0) {
-		lines.push("", bold("Extension shortcuts"), dim("No extension shortcuts registered."));
-	} else {
-		lines.push(
-			"",
-			bold("Extension shortcuts"),
-			...extensionShortcuts.map((shortcut) => `${cyan(shortcut.key)}  ${shortcut.description}`),
-		);
-	}
+	pushHelpSection(
+		lines,
+		"Extension commands",
+		[...extensions.commands.values()].map((command) => `${cyan(`/${command.name}`)}  ${command.description}`),
+		"No extension commands registered.",
+	);
+	pushHelpSection(
+		lines,
+		"Extension shortcuts",
+		[...extensions.shortcuts.values()].map((shortcut) => `${cyan(shortcut.key)}  ${shortcut.description}`),
+		"No extension shortcuts registered.",
+	);
+	pushHelpSection(
+		lines,
+		"Extension renderers",
+		[
+			...[...extensions.messageRenderers.values()].map(
+				(renderer) =>
+					`${cyan(renderer.name)}  message${renderer.roles ? ` roles=${renderer.roles.join(",")}` : ""}${
+						renderer.customTypes ? ` customTypes=${renderer.customTypes.join(",")}` : ""
+					}${renderer.description ? ` · ${renderer.description}` : ""}`,
+			),
+			...[...extensions.entryRenderers.values()].map(
+				(renderer) =>
+					`${cyan(renderer.name)}  entry${renderer.entryTypes ? ` types=${renderer.entryTypes.join(",")}` : ""}${
+						renderer.customTypes ? ` customTypes=${renderer.customTypes.join(",")}` : ""
+					}${renderer.description ? ` · ${renderer.description}` : ""}`,
+			),
+			...[...extensions.toolRenderers.values()].map(
+				(renderer) =>
+					`${cyan(renderer.name)}  tool${renderer.toolNames ? ` names=${renderer.toolNames.join(",")}` : ""}${
+						renderer.phases ? ` phases=${renderer.phases.join(",")}` : ""
+					}${renderer.description ? ` · ${renderer.description}` : ""}`,
+			),
+		],
+		"No extension renderers registered.",
+	);
+	pushHelpSection(
+		lines,
+		"Extension surfaces",
+		[
+			...[...extensions.widgets.values()].map(
+				(widget) =>
+					`${cyan(widget.name)}  widget placement=${widget.placement ?? "above-editor"}${
+						widget.description ? ` · ${widget.description}` : ""
+					}`,
+			),
+			...[...extensions.headerItems.values()].map(
+				(item) => `${cyan(item.name)}  header item${item.description ? ` · ${item.description}` : ""}`,
+			),
+			...[...extensions.footerItems.values()].map(
+				(item) => `${cyan(item.name)}  footer item${item.description ? ` · ${item.description}` : ""}`,
+			),
+		],
+		"No extension surfaces registered.",
+	);
 	return lines.join("\n");
+}
+
+function pushHelpSection(lines: string[], title: string, items: string[], emptyText: string): void {
+	lines.push("", bold(title), ...(items.length === 0 ? [dim(emptyText)] : items));
 }
 
 function buildAutocompleteCommands(extensions: ExtensionRegistry): SlashCommand[] {

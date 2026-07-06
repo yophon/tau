@@ -178,7 +178,7 @@ class TuiUiCapability implements UiCapability {
 - [x] `extension widgets`：定义 editor 上方/下方临时组件注册与清理语义；先支持文本/简单 Component。
 - [x] `custom header/footer`：允许扩展追加状态段，更新频率由 host 控制，避免每帧调用扩展。
 - [ ] 为 `registerShortcut` 增加重载清理语义：配合 `/reload` 后 registry 替换即可移除旧快捷键。
-- [ ] `/help` 显示 renderer/widget/header/footer/shortcut 来源，便于诊断加载结果。
+- [x] `/help` 显示 renderer/widget/header/footer/shortcut 来源，便于诊断加载结果。
 
 ### P8R：Reload / Resources
 
@@ -256,7 +256,7 @@ class TuiUiCapability implements UiCapability {
 - [x] `thinking_level_select` 事件。
 - [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
 - [x] `/help`：TUI 文本版内置命令列表 + 扩展 commands。
-- [ ] `/help` polish：按可滚动组件展示，支持命令详情。
+- [x] `/help` extension diagnostics：显示扩展 commands/shortcuts/renderers/widgets/header/footer。
 - [x] Autocomplete：slash commands、文件路径基础补全。
 - [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
 - [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
@@ -287,6 +287,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI 自定义 tool renderer 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展 tool renderer 可显示 `tool-render:start`、`tool-render:update:stream-chunk`、`tool-render:result:tool-final:stdout`。
 - TUI extension widgets 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展可在 editor 上方显示 `widget-above:0`、下方显示 `widget-below:0`，执行 `/bump` 后刷新为 `widget-above:1` / `widget-below:1`。
 - TUI custom header/footer 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展可显示 `header-status:0` / `footer-status:0`，执行 `/bump` 后刷新为 `header-status:1` / `footer-status:1`。
+- TUI `/help` 扩展诊断已增强；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 `/help` 显示扩展 command、shortcut、message/entry/tool renderer、widget、header item、footer item。
 
 ## 风险与开放问题
 
