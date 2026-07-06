@@ -77,6 +77,8 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **进展记录（P8A，2026-07-06）**：引入 `@earendil-works/pi-tui@0.80.3`，Node engine 提升到 `>=22.19.0`；新增可选 `--tui` 模式，保留 `-p` 与 readline REPL；基础 TUI 支持 editor 提交、assistant markdown/text 流式、tool_start/tool_update/tool_result 文本渲染、`/help`/`/compact`/扩展 command prompt action、Ctrl+C abort/退出；运行中 Agent 注入 TUI `UiCapability` facade（confirm/input/select/notify）。验证：`npm run check` 全绿、`npm test` 69 测试全绿、tmux TTY 冒烟（mock provider 返回 `tui smoke ok`，TUI 显示响应并可 Ctrl+C 退出）。未完成：启动期 project trust 的 TUI 化、`/tree`/`/fork` TUI 化、`!`/`!!`、model/thinking selector、themes、renderer/shortcut API、`/reload`。
 
+**剩余任务索引**：Phase 8 不再靠 roadmap 粗粒度 bullet 追踪，详细 checklist 以 [specs/phase-8-tui-host.md](specs/phase-8-tui-host.md) 为准，分为 P8B 核心交互、P8C 扩展 API/pi parity、P8D 模型/主题/打磨验收。
+
 ## Phase 9 ⬜ 浏览器宿主（可移植性证明 #1）
 
 **目标**：内核在浏览器跑通完整 agent 循环，验证架构主张。

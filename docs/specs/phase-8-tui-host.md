@@ -92,13 +92,56 @@ class TuiUiCapability implements UiCapability {
 
 ## 验收清单
 
+### P8A：基础 TUI 宿主（已部分落地）
+
 - [x] `npm run tau -- --tui` 在 TTY 下进入 TUI。
 - [x] TUI 可发送普通 prompt，流式显示 assistant markdown/text。
-- [ ] TUI 可显示 tool_start/tool_update/tool_result，bash 流式输出不再不可见。
-- [ ] Ctrl+C 可 abort 当前 turn，TUI 不退出。
-- [ ] TUI 版 `UiCapability.confirm` 能驱动 project trust 或测试扩展确认。（运行中 Agent 已注入 TUI UI facade；project trust 仍需重排启动顺序）
+- [x] TUI 可显示 tool_start/tool_update/tool_result 的文本 fallback。
+- [x] Ctrl+C 可 abort 当前 turn，空闲时退出。
+- [x] 运行中 Agent 注入 TUI `UiCapability` facade（confirm/input/select/notify）。
 - [x] `-p`、headless、readline REPL 现有 e2e 不回退。
 - [x] `npm run check` 与 `npm test` 全绿。
+
+### P8B：核心交互补齐
+
+- [ ] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
+- [ ] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。
+- [ ] TUI `/fork`：列表选择 fork target；裸 `/fork` 仍全量复制。
+- [ ] TUI `/sessions` / `/resume`：选择历史 session 并切换/恢复。
+- [ ] TUI `/compact [instructions]`：显示 compaction start/end 状态，支持 Esc/Ctrl+C abort compaction。
+- [ ] TUI `/name`：inline input 或 command 参数设置 session name。
+- [ ] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
+- [ ] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
+- [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
+- [ ] Steering/follow-up：运行中输入默认 steer；增加一个快捷键或命令把输入排为 followUp。
+- [ ] Abort UX：运行中 Ctrl+C abort 后保留 TUI，明确显示 aborted 状态，不留下 pending tool 组件。
+
+### P8C：扩展 API / pi parity
+
+- [ ] `registerShortcut`：扩展注册快捷键，TUI 绑定并在退出/重载时清理。
+- [ ] `registerMessageRenderer`：扩展自定义消息渲染组件。
+- [ ] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
+- [ ] 自定义 tool renderer：tool call/result 支持扩展提供组件；无 renderer 时走文本 fallback。
+- [ ] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
+- [ ] TUI custom header/footer：允许扩展覆盖或追加 header/footer 状态。
+- [ ] `/reload`：重载 host-node 扩展、resources、themes；处理 project trust 与 session_shutdown/session_start。
+- [ ] `resources_discover` reload reason：`/reload` 时触发 `reason:"reload"` 并刷新 ext-resources。
+
+### P8D：模型/主题/产品打磨
+
+- [ ] `/model`：最小模型切换命令（先从用户输入 model id 开始，不做 provider registry）。
+- [ ] `model_select` 事件：模型切换前后通知扩展。
+- [ ] thinking level：若 config/模型支持，提供 `/thinking` 或快捷键切换。
+- [ ] `thinking_level_select` 事件。
+- [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
+- [ ] `/help`：TUI 内置命令列表 + 扩展 commands，按可滚动组件展示。
+- [ ] Autocomplete：slash commands、文件路径基础补全。
+- [ ] Footer：cwd、session name、model、context usage、token usage。
+- [ ] Tool collapse/expand：快捷键展开/折叠所有工具输出。
+- [ ] Thinking block show/hide：快捷键切换 reasoning 展示。
+- [ ] Startup loaded resources：展示 loaded skills/prompts/extensions 诊断。
+- [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
+- [ ] 自举验收：用 `npm run tau -- --tui` 日常开发 tau 至少一轮，记录发现的问题。
 
 P8A 验证记录：
 
