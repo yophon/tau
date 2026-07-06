@@ -140,7 +140,7 @@ class TuiUiCapability implements UiCapability {
 | 重载/资源 | Done | `/reload` host-node 扩展热重载 | 空闲时重载全局/项目扩展 registry，刷新 commands/shortcuts/renderers/widgets/header/footer/tools，处理 project trust 与 session_shutdown/session_start |
 | 重载/资源 | Done | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources prompt commands |
 | 主题/打磨 | Later | Themes | 引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
-| 主题/打磨 | Later | `/help` polish | 可滚动组件、命令详情、扩展命令来源 |
+| 主题/打磨 | Done | `/help` polish | 可滚动 overlay、命令详情、扩展来源/分组和 renderer/surface 诊断 |
 | 主题/打磨 | Done | footer polish | footer 分层展示运行状态、context/usage/cost/reload、自定义 footer 区，并做窄屏裁剪 |
 | 主题/打磨 | Done | tool collapse/expand | `Ctrl+T` 全局折叠/展开 fallback 工具输出，`/tools <id>` 支持单项覆盖 |
 | 主题/打磨 | Done | thinking block show/hide | `Ctrl+R` 切换后续 reasoning delta 展示，footer 显示 shown/hidden 状态 |
@@ -207,12 +207,12 @@ class TuiUiCapability implements UiCapability {
 
 ### P8D-3：Help Polish
 
-- [ ] 把 `/help` 从纯文本列表升级为 TUI 组件或可滚动视图，内容超屏时可浏览且不挤压 editor。
-- [ ] 内置命令显示详情：用法、参数、是否可在 busy 状态执行、关联快捷键、是否来自 built-in。
-- [ ] 扩展命令显示来源：extension id/name、group/category、命令描述、prompt command/action command 区分。
-- [ ] 快捷键分组显示：built-in shortcut 与 extension shortcut 分区，冲突或被覆盖时可诊断。
-- [ ] renderer/widget/header/footer/tool surfaces 显示精简诊断，保留当前 `/help` 对扩展 surface 的排障价值。
-- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖长 help 滚动、扩展命令来源、快捷键分组和 renderer/widget 诊断。
+- [x] 把 `/help` 从纯文本列表升级为 TUI 组件或可滚动视图，内容超屏时可浏览且不挤压 editor。
+- [x] 内置命令显示详情：用法、参数、是否可在 busy 状态执行、关联快捷键、是否来自 built-in。
+- [x] 扩展命令显示来源：extension id/name、group/category、命令描述、prompt command/action command 区分。
+- [x] 快捷键分组显示：built-in shortcut 与 extension shortcut 分区，冲突或被覆盖时可诊断。
+- [x] renderer/widget/header/footer/tool surfaces 显示精简诊断，保留当前 `/help` 对扩展 surface 的排障价值。
+- [x] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖长 help 滚动、扩展命令来源、快捷键分组和 renderer/widget 诊断。
 
 ### P8D-4：Footer Polish
 
@@ -316,8 +316,8 @@ class TuiUiCapability implements UiCapability {
 - [x] thinking level：`/thinking [default|none|minimal|low|medium|high|xhigh]` 设置/清除 `extraBody.reasoning_effort` 覆盖。
 - [x] `thinking_level_select` 事件。
 - [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
-- [x] `/help`：TUI 文本版内置命令列表 + 扩展 commands。
-- [x] `/help` extension diagnostics：显示扩展 commands/shortcuts/renderers/widgets/header/footer。
+- [x] `/help`：可滚动 overlay，显示内置命令详情和扩展 commands。
+- [x] `/help` extension diagnostics：显示扩展 commands/shortcuts/renderers/widgets/header/footer/diagnostics 来源和分组。
 - [x] Autocomplete：slash commands、文件路径基础补全。
 - [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
 - [x] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区，并按终端宽度裁剪低优先级信息。
@@ -357,6 +357,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI tool collapse/expand 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认长 bash 工具运行中按 `Ctrl+T` 后显示折叠摘要与 footer `tools collapsed`，完成后 `/tools` 列出工具 id，`/tools <id>` 可在全局 collapsed 下单项展开，运行中 Ctrl+C 后保留折叠态错误/中断摘要并显示 `Turn aborted.`。
 - TUI startup diagnostics 已实现；新增 extension diagnostic surface 与 `/diagnostics`，`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认启动时显示 host surfaces、resources 诊断和自定义 diagnostic，新增 skill/prompt 后 `/reload` 显示 `session_start: reload` 且 resources 从 `1 skills, 1 prompts` 刷新到 `2 skills, 2 prompts`，手动 `/diagnostics` 可重复查看。
 - TUI footer polish 已实现；`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认 idle footer 分两行显示 status/model/session 与 context/usage/cost/reload，自定义 footer item 进入低优先级裁剪区，bash 运行时显示 `status bash`，慢流式 turn 中 steering/follow-up 后显示 `status working · steering 1 · follow-up 1`，78 列窄屏下 footer 使用 `+N more`/ellipsis 裁剪且不挤爆输入区域。
+- TUI `/help` polish 已实现；`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认 `/help` 打开全宽可滚动 overlay，PageDown/Down 可浏览长 help，Esc 关闭后恢复 editor/footer；help 内容显示 built-in command 的 source/busy/shortcut 详情，扩展 command/shortcut 分组显示 source/group/name，message/entry/tool renderer 与 widget/header/footer/diagnostic surface 诊断均可见。
 
 ## 风险与开放问题
 

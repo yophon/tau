@@ -17,6 +17,7 @@ import {
 	TUI,
 	truncateToWidth,
 	visibleWidth,
+	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import {
 	type Agent,
@@ -299,6 +300,23 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			list.onSelect = (item) => finish(item);
 			list.onCancel = () => finish(undefined);
 			handle = tui.showOverlay(overlay, { width: "90%", minWidth: 50, maxHeight: "70%", anchor: "center", margin: 2 });
+			tui.requestRender();
+		});
+
+	const showScrollableText = (title: string, text: string): Promise<void> =>
+		new Promise((resolve) => {
+			const overlay = new ScrollableTextOverlay(title, text, () => finish());
+			let done = false;
+			let handle: ReturnType<TUI["showOverlay"]> | undefined;
+			const finish = (): void => {
+				if (done) return;
+				done = true;
+				handle?.hide();
+				tui.setFocus(editor);
+				tui.requestRender();
+				resolve();
+			};
+			handle = tui.showOverlay(overlay, { width: "100%", minWidth: 56, maxHeight: "78%", anchor: "center", margin: 0 });
 			tui.requestRender();
 		});
 
@@ -714,7 +732,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 		const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
 		if (name === "help") {
-			appendText(formatHelp(extensions));
+			await showScrollableText("tau help", formatHelp(extensions));
 			return true;
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
@@ -1284,6 +1302,76 @@ function promptStartupTui(lines: string[]): Promise<string> {
 	});
 }
 
+class ScrollableTextOverlay implements Component {
+	private offset = 0;
+	private cachedWidth = 0;
+	private cachedLines: string[] = [];
+	private readonly title: string;
+	private readonly text: string;
+	private readonly close: () => void;
+
+	constructor(title: string, text: string, close: () => void) {
+		this.title = title;
+		this.text = text;
+		this.close = close;
+	}
+
+	invalidate(): void {
+		this.cachedWidth = 0;
+		this.cachedLines = [];
+	}
+
+	handleInput(data: string): void {
+		if (matchesKey(data, Key.escape) || matchesKey(data, "q")) {
+			this.close();
+			return;
+		}
+		if (matchesKey(data, Key.up)) this.scrollBy(-1);
+		else if (matchesKey(data, Key.down)) this.scrollBy(1);
+		else if (matchesKey(data, Key.pageUp)) this.scrollBy(-8);
+		else if (matchesKey(data, Key.pageDown)) this.scrollBy(8);
+		else if (matchesKey(data, Key.home)) this.offset = 0;
+		else if (matchesKey(data, Key.end)) this.offset = Number.MAX_SAFE_INTEGER;
+	}
+
+	render(width: number): string[] {
+		const contentWidth = Math.max(24, width - 2);
+		const lines = this.linesForWidth(contentWidth);
+		const maxBodyLines = 18;
+		const maxOffset = Math.max(0, lines.length - maxBodyLines);
+		this.offset = Math.min(Math.max(0, this.offset), maxOffset);
+		const visible = lines.slice(this.offset, this.offset + maxBodyLines);
+		return [
+			padOverlayLine(bold(this.title), contentWidth),
+			...visible.map((line) => padOverlayLine(line, contentWidth)),
+			padOverlayLine(
+				dim(`${this.offset + visible.length}/${lines.length} · ↑/↓ scroll · PgUp/PgDn · Home/End · Esc close`),
+				contentWidth,
+			),
+		];
+	}
+
+	private scrollBy(delta: number): void {
+		this.offset = Math.max(0, this.offset + delta);
+	}
+
+	private linesForWidth(width: number): string[] {
+		if (this.cachedWidth === width) return this.cachedLines;
+		this.cachedWidth = width;
+		this.cachedLines = this.text.split("\n").flatMap((line) => wrapHelpLine(line, width));
+		return this.cachedLines;
+	}
+}
+
+function wrapHelpLine(line: string, width: number): string[] {
+	if (line === "") return [""];
+	return wrapTextWithAnsi(line, width);
+}
+
+function padOverlayLine(line: string, width: number): string {
+	return `${line}${" ".repeat(Math.max(0, width - visibleWidth(line)))}`;
+}
+
 function firstLine(text: string, max = 120): string {
 	const line = text.split("\n")[0] ?? "";
 	return line.length > max ? `${line.slice(0, max)}...` : line;
@@ -1309,15 +1397,14 @@ function parseFollowUpCommand(input: string): string | undefined {
 function formatHelp(extensions: ExtensionRegistry): string {
 	const lines = [
 		bold("Built-in commands"),
-		...builtInCommands.map((command) => `${cyan(formatCommandUsage(command))}  ${command.description ?? ""}`),
+		...builtInCommands.map(formatBuiltInHelpLine),
 		"",
-		bold("Shortcuts"),
-		`${cyan("Enter")}  Submit input`,
-		`${cyan("Ctrl+C")}  Abort the current turn/compaction, or exit while idle`,
-		`${cyan("Esc")}  Abort compaction`,
-		`${cyan("Ctrl+R")}  Show/hide reasoning deltas`,
+		bold("Built-in shortcuts"),
+		`${cyan("Enter")}  Submit input · idle/running prompt input`,
+		`${cyan("Ctrl+C")}  Abort turn/compaction/bash · exits while idle`,
+		`${cyan("Esc")}  Abort compaction · close overlays/selectors`,
+		`${cyan("Ctrl+R")}  Show/hide future reasoning deltas`,
 		`${cyan("Ctrl+T")}  Collapse/expand fallback tool output`,
-		`${cyan("/tools [id]")}  List fallback tools or toggle one by id prefix`,
 		"",
 		bold("User bash"),
 		`${cyan("! <command>")}  Run bash and add output to context`,
@@ -1326,13 +1413,17 @@ function formatHelp(extensions: ExtensionRegistry): string {
 	pushHelpSection(
 		lines,
 		"Extension commands",
-		[...extensions.commands.values()].map((command) => `${cyan(`/${command.name}`)}  ${command.description}`),
+		[...extensions.commands.values()].map(
+			(command) => `${cyan(`/${command.name}`)}  source=extension · group=commands · ${command.description}`,
+		),
 		"No extension commands registered.",
 	);
 	pushHelpSection(
 		lines,
 		"Extension shortcuts",
-		[...extensions.shortcuts.values()].map((shortcut) => `${cyan(shortcut.key)}  ${shortcut.description}`),
+		[...extensions.shortcuts.values()].map(
+			(shortcut) => `${cyan(shortcut.key)}  source=extension · ${shortcut.name} · ${shortcut.description}`,
+		),
 		"No extension shortcuts registered.",
 	);
 	pushHelpSection(
@@ -1341,19 +1432,19 @@ function formatHelp(extensions: ExtensionRegistry): string {
 		[
 			...[...extensions.messageRenderers.values()].map(
 				(renderer) =>
-					`${cyan(renderer.name)}  message${renderer.roles ? ` roles=${renderer.roles.join(",")}` : ""}${
+					`${cyan(renderer.name)}  source=extension · message renderer${renderer.roles ? ` roles=${renderer.roles.join(",")}` : ""}${
 						renderer.customTypes ? ` customTypes=${renderer.customTypes.join(",")}` : ""
 					}${renderer.description ? ` · ${renderer.description}` : ""}`,
 			),
 			...[...extensions.entryRenderers.values()].map(
 				(renderer) =>
-					`${cyan(renderer.name)}  entry${renderer.entryTypes ? ` types=${renderer.entryTypes.join(",")}` : ""}${
+					`${cyan(renderer.name)}  source=extension · entry renderer${renderer.entryTypes ? ` types=${renderer.entryTypes.join(",")}` : ""}${
 						renderer.customTypes ? ` customTypes=${renderer.customTypes.join(",")}` : ""
 					}${renderer.description ? ` · ${renderer.description}` : ""}`,
 			),
 			...[...extensions.toolRenderers.values()].map(
 				(renderer) =>
-					`${cyan(renderer.name)}  tool${renderer.toolNames ? ` names=${renderer.toolNames.join(",")}` : ""}${
+					`${cyan(renderer.name)}  source=extension · tool renderer${renderer.toolNames ? ` names=${renderer.toolNames.join(",")}` : ""}${
 						renderer.phases ? ` phases=${renderer.phases.join(",")}` : ""
 					}${renderer.description ? ` · ${renderer.description}` : ""}`,
 			),
@@ -1366,24 +1457,44 @@ function formatHelp(extensions: ExtensionRegistry): string {
 		[
 			...[...extensions.widgets.values()].map(
 				(widget) =>
-					`${cyan(widget.name)}  widget placement=${widget.placement ?? "above-editor"}${
+					`${cyan(widget.name)}  source=extension · widget placement=${widget.placement ?? "above-editor"}${
 						widget.description ? ` · ${widget.description}` : ""
 					}`,
 			),
 			...[...extensions.headerItems.values()].map(
-				(item) => `${cyan(item.name)}  header item${item.description ? ` · ${item.description}` : ""}`,
+				(item) =>
+					`${cyan(item.name)}  source=extension · header item${item.description ? ` · ${item.description}` : ""}`,
 			),
 			...[...extensions.footerItems.values()].map(
-				(item) => `${cyan(item.name)}  footer item${item.description ? ` · ${item.description}` : ""}`,
+				(item) =>
+					`${cyan(item.name)}  source=extension · footer item${item.description ? ` · ${item.description}` : ""}`,
 			),
 			...[...extensions.diagnostics.values()].map(
 				(diagnostic) =>
-					`${cyan(diagnostic.name)}  diagnostic${diagnostic.description ? ` · ${diagnostic.description}` : ""}`,
+					`${cyan(diagnostic.name)}  source=extension · diagnostic${diagnostic.description ? ` · ${diagnostic.description}` : ""}`,
 			),
 		],
 		"No extension surfaces registered.",
 	);
 	return lines.join("\n");
+}
+
+function formatBuiltInHelpLine(command: SlashCommand): string {
+	const usage = formatCommandUsage(command);
+	const busy = busyModeForCommand(command.name);
+	const shortcut = shortcutForCommand(command.name);
+	return `${cyan(usage)}  source=built-in · busy=${busy}${shortcut ? ` · shortcut=${shortcut}` : ""} · ${command.description ?? ""}`;
+}
+
+function busyModeForCommand(name: string): string {
+	if (name === "follow") return "turn-only";
+	if (name === "quit") return "idle-or-abort-shortcut";
+	return "idle";
+}
+
+function shortcutForCommand(name: string): string | undefined {
+	if (name === "tools") return "Ctrl+T";
+	return undefined;
 }
 
 function formatDiagnosticResult(name: string, result: RegisteredDiagnosticResult): string[] {
