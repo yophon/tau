@@ -1,6 +1,6 @@
 # Phase 8：TUI 宿主规格书
 
-> 状态：进行中（2026-07-06，P8A 基础 `--tui` 已落地）
+> 状态：进行中（2026-07-06，P8A 已落地；P8B/P8D 局部落地）
 > 对应 roadmap 阶段：Phase 8
 
 ## 目标
@@ -81,14 +81,72 @@ class TuiUiCapability implements UiCapability {
 - TUI `UiCapability`：confirm/input/select/notify。
 - 至少一个自动化 e2e：TUI 模式跑 mock provider，展示流式文本和工具更新并退出。
 
-## 范围外
+## MVP 后续范围
 
 - 完整 themes 与 theme loader。
 - `registerShortcut`、`registerMessageRenderer`、`registerEntryRenderer`。
-- `/model` selector、thinking level selector。
-- `!` / `!!` user bash 与 `user_bash` 事件（可在 P8 后半段继续做）。
+- model selector、thinking level selector。
 - `/reload` 热重载。
 - 图片渲染与自定义 tool renderer。
+
+## 阶段 8 任务总表
+
+任务总表是阶段 8 的唯一执行索引；roadmap 只保留高层目标和入口链接。状态含义：
+
+- `Done`：已实现、已提交，至少跑过 `npm run check` / `npm test`，TUI 行为改动需有 tmux 冒烟或自动化测试。
+- `Next`：下一批优先做，完成后单独提交和 push。
+- `Later`：阶段 8 内需要完成，但不阻塞下一轮核心交互。
+- `Acceptance`：阶段 8 收尾验收。
+
+| 分组 | 状态 | 任务 | 交付物 / 验收 |
+|---|---|---|---|
+| 基础宿主 | Done | `--tui` TTY 模式、非 TTY 拒绝、保留 `-p`/readline | CLI 可进入 TUI；headless 和 REPL 测试不回退 |
+| 基础宿主 | Done | 引入 `@earendil-works/pi-tui`，Node engine 提升到 `>=22.19.0` | install/check/test 全绿 |
+| 基础宿主 | Done | 基础布局：header、chat log、status、editor、footer | TUI 首屏可用，普通对话可持续渲染 |
+| 基础宿主 | Done | assistant markdown/text 流式渲染、reasoning dim | mock provider 流式冒烟通过 |
+| 基础宿主 | Done | tool_start/tool_update/tool_result 文本 fallback | 工具调用过程可见，失败结果可见 |
+| 基础宿主 | Done | Ctrl+C：运行中 abort，空闲时退出 | abort 后 TUI 不中断；空闲退出正常 |
+| 基础宿主 | Done | TUI `UiCapability` facade：confirm/input/select/notify | 运行中扩展可调用 UI 能力 |
+| 核心交互 | Next | 启动期 project trust 使用 TUI confirm | 首次进入含项目扩展目录时不落回 readline/no-UI |
+| 核心交互 | Done | `/help` 文本命令列表 + 扩展 commands | 内置命令和扩展命令都能显示 |
+| 核心交互 | Done | autocomplete：slash commands + 文件路径基础补全 | Tab 补全命令和本地路径 |
+| 核心交互 | Done | `/name` session 命名 | `/sessions` 可看到新名称 |
+| 核心交互 | Done | `/sessions` 文本列表与 `/resume <id|path|timestamp|name>` | 支持精确匹配和唯一前缀匹配后恢复 |
+| 核心交互 | Next | `/sessions` selector | 裸 `/sessions` 或新命令可选择并恢复历史 session |
+| 核心交互 | Done | `/tree` 文本列表与 `/tree <id>` 跳转 | user-message jump points 可列出和跳转 |
+| 核心交互 | Next | `/tree` selector | 列表选择 jump point 后调用 `Agent.navigateTo()` |
+| 核心交互 | Done | `/fork [<id>]` 文本命令 | 裸 `/fork` 全量复制；`/fork <id>` 从目标前分叉 |
+| 核心交互 | Next | `/fork` selector | 可从 jump point 列表选择 fork target |
+| 核心交互 | Done | `/compact [instructions]` start/end/aborted 状态 | compact 可见，Ctrl+C 可 abort |
+| 核心交互 | Done | compaction Esc abort | Esc 能取消进行中的 compaction |
+| 核心交互 | Later | compaction polish | 展示更细的阶段、耗时、summary/kept 粗略结果 |
+| 核心交互 | Done | 运行中普通输入作为 steering message | 长 turn 期间输入不丢失 |
+| 核心交互 | Done | `/follow <text>` follow-up 队列 | 当前 turn 结束后自动追加下一轮 |
+| 核心交互 | Done | abort 后 pending tool 标记 | 被中断的工具组件明确显示 aborted |
+| 用户 bash | Done | `!` / `!!` 用户 bash | `!` 结果进上下文；`!!` 只显示不记录 |
+| 用户 bash | Done | `user_bash` 扩展事件 | 扩展可改写、取消、调整是否记录 |
+| 用户 bash | Next | bash stdout/stderr 增量 renderer | 长命令期间 stdout/stderr 持续刷新，可区分 stream |
+| 模型/思考 | Done | `/model [model]` 最小文本切换 | 无参数显示当前模型；有参数切换后下一请求使用新模型 |
+| 模型/思考 | Next | `model_select` 事件 | 模型切换前后通知扩展，可拦截或记录 |
+| 模型/思考 | Later | model selector | 在有 provider/model registry 后提供选择 UI |
+| 模型/思考 | Next | thinking level 命令 | 若 config/模型支持，提供 `/thinking` 或快捷键切换 |
+| 模型/思考 | Next | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
+| 扩展 API | Next | `registerShortcut` | 扩展可注册快捷键，TUI 退出/重载时清理 |
+| 扩展 API | Next | `registerMessageRenderer` | 扩展可覆盖或追加消息渲染组件 |
+| 扩展 API | Next | `registerEntryRenderer` | 扩展可渲染自定义 session entry |
+| 扩展 API | Next | 自定义 tool renderer | tool call/result 支持组件 renderer，fallback 仍可用 |
+| 扩展 API | Later | extension widgets | editor 上方/下方可挂临时组件 |
+| 扩展 API | Later | custom header/footer | 扩展可追加 header/footer 状态区 |
+| 重载/资源 | Next | `/reload` | 重载 host-node 扩展、resources、themes，并处理生命周期事件 |
+| 重载/资源 | Next | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources |
+| 主题/打磨 | Later | Themes | 引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
+| 主题/打磨 | Later | `/help` polish | 可滚动组件、命令详情、扩展命令来源 |
+| 主题/打磨 | Later | footer polish | 更完整 token usage/cost、session 状态、自定义 footer 区 |
+| 主题/打磨 | Later | tool collapse/expand | 快捷键展开/折叠所有工具输出 |
+| 主题/打磨 | Later | thinking block show/hide | 快捷键切换 reasoning 展示 |
+| 主题/打磨 | Later | startup diagnostics | 展示 loaded skills/prompts/extensions/resources 诊断 |
+| 验收 | Acceptance | TTY e2e 覆盖扩展 | tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径 |
+| 验收 | Acceptance | 自举验收 | 用 `npm run tau -- --tui` 开发 tau 至少一轮，记录并修复阻塞问题 |
 
 ## 验收清单
 
@@ -150,14 +208,15 @@ class TuiUiCapability implements UiCapability {
 - [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
 - [ ] 自举验收：用 `npm run tau -- --tui` 日常开发 tau 至少一轮，记录发现的问题。
 
-P8A 验证记录：
+P8A/P8B/P8D 验证记录：
 
 - `npm run check` 全绿。
-- `npm test` 69 测试全绿。
+- `npm test` 70 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。启动期 project trust 仍使用旧路径，待后续重排。
 - TUI `/name <name>` 与 `/sessions` 文本列表已实现；tmux 冒烟确认 session 命名和列表显示。
 - TUI `/tree` 文本列表与 `/tree <id>` 跳转已实现；tmux 冒烟确认列表展示 user message jump points。
+- TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
 
 ## 风险与开放问题
 
