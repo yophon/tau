@@ -141,7 +141,7 @@ class TuiUiCapability implements UiCapability {
 | 重载/资源 | Done | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources prompt commands |
 | 主题/打磨 | Later | Themes | 引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
 | 主题/打磨 | Later | `/help` polish | 可滚动组件、命令详情、扩展命令来源 |
-| 主题/打磨 | Later | footer polish | 更完整 token usage/cost、session 状态、自定义 footer 区 |
+| 主题/打磨 | Done | footer polish | footer 分层展示运行状态、context/usage/cost/reload、自定义 footer 区，并做窄屏裁剪 |
 | 主题/打磨 | Done | tool collapse/expand | `Ctrl+T` 全局折叠/展开 fallback 工具输出，`/tools <id>` 支持单项覆盖 |
 | 主题/打磨 | Done | thinking block show/hide | `Ctrl+R` 切换后续 reasoning delta 展示，footer 显示 shown/hidden 状态 |
 | 主题/打磨 | Done | startup diagnostics | 启动和 `/diagnostics` 展示 extensions/resources 诊断，`/reload` 后刷新 |
@@ -216,12 +216,12 @@ class TuiUiCapability implements UiCapability {
 
 ### P8D-4：Footer Polish
 
-- [ ] 梳理 footer 信息层级：固定展示 model、thinking、reasoning、session、cwd；动态展示 busy/reload/compact/follow-up/steering 状态。
-- [ ] token/context 展示升级：区分 estimated prompt tokens、trailing context source、context window 百分比和 compact 前后变化。
-- [ ] 预留 cost/usage 字段：当前没有真实 provider cost 时显示为 unknown/estimated，不伪造价格。
-- [ ] 自定义 footer 区打磨：限制宽度、稳定排序、错误隔离、reload 后来源刷新。
-- [ ] 小屏适配：窄宽度下按优先级裁剪，避免 footer 挤爆输入区域或出现无意义换行。
-- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖普通 idle、running、compact、reload 后 extension footer、窄屏 footer。
+- [x] 梳理 footer 信息层级：固定展示 model、thinking、reasoning、session、cwd；动态展示 busy/reload/compact/follow-up/steering 状态。
+- [x] token/context 展示升级：区分 estimated prompt tokens、trailing context source、context window 百分比和 compact 前后变化。
+- [x] 预留 cost/usage 字段：当前没有真实 provider cost 时显示为 unknown/estimated，不伪造价格。
+- [x] 自定义 footer 区打磨：限制宽度、稳定排序、错误隔离、reload 后来源刷新。
+- [x] 小屏适配：窄宽度下按优先级裁剪，避免 footer 挤爆输入区域或出现无意义换行。
+- [x] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖普通 idle、running、bash、steering/follow-up、extension footer、窄屏 footer。
 
 ### P8D-5：Tool Collapse / Expand
 
@@ -320,7 +320,7 @@ class TuiUiCapability implements UiCapability {
 - [x] `/help` extension diagnostics：显示扩展 commands/shortcuts/renderers/widgets/header/footer。
 - [x] Autocomplete：slash commands、文件路径基础补全。
 - [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
-- [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
+- [x] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区，并按终端宽度裁剪低优先级信息。
 - [x] Tool collapse/expand：`Ctrl+T` 展开/折叠 fallback 工具输出，`/tools` 查看工具 id 并用 `/tools <id>` 单项覆盖。
 - [x] Thinking block show/hide：`Ctrl+R` 切换 reasoning 展示，状态反映到 footer。
 - [x] Startup loaded resources：启动和 `/diagnostics` 展示 loaded extensions/resources 诊断，`/reload` 后刷新 skills/prompts 计数和 reason。
@@ -356,6 +356,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `/compact` polish 已实现；tmux 冒烟确认手动 compact 输出 `Compacting conversation (...)`，完成后显示 tokens before/after、kept messages、summary chars 与耗时。
 - TUI tool collapse/expand 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认长 bash 工具运行中按 `Ctrl+T` 后显示折叠摘要与 footer `tools collapsed`，完成后 `/tools` 列出工具 id，`/tools <id>` 可在全局 collapsed 下单项展开，运行中 Ctrl+C 后保留折叠态错误/中断摘要并显示 `Turn aborted.`。
 - TUI startup diagnostics 已实现；新增 extension diagnostic surface 与 `/diagnostics`，`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认启动时显示 host surfaces、resources 诊断和自定义 diagnostic，新增 skill/prompt 后 `/reload` 显示 `session_start: reload` 且 resources 从 `1 skills, 1 prompts` 刷新到 `2 skills, 2 prompts`，手动 `/diagnostics` 可重复查看。
+- TUI footer polish 已实现；`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认 idle footer 分两行显示 status/model/session 与 context/usage/cost/reload，自定义 footer item 进入低优先级裁剪区，bash 运行时显示 `status bash`，慢流式 turn 中 steering/follow-up 后显示 `status working · steering 1 · follow-up 1`，78 列窄屏下 footer 使用 `+N more`/ellipsis 裁剪且不挤爆输入区域。
 
 ## 风险与开放问题
 

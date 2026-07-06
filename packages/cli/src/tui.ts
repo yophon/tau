@@ -15,6 +15,8 @@ import {
 	type SlashCommand,
 	Text,
 	TUI,
+	truncateToWidth,
+	visibleWidth,
 } from "@earendil-works/pi-tui";
 import {
 	type Agent,
@@ -176,6 +178,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const fallbackToolDisplays = new Map<string, ToolDisplayState>();
 	let lastSessionStartReason: "startup" | "resume" | "reload" = "startup";
 	let lastReloadStatus = "not run";
+	let activeStatus: string | undefined;
+	let steeringCount = 0;
+	let followUpCount = 0;
+	let lastCompactionStats: FooterCompactionStats | undefined;
 	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd, headerStatusItems), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
@@ -222,16 +228,22 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 
 	const setFooter = (): void => {
 		footer.setText(
-			formatFooter(
+			formatFooter({
 				agent,
-				currentModel,
-				currentThinkingLevel,
+				model: currentModel,
+				thinkingLevel: currentThinkingLevel,
 				showReasoning,
 				toolsCollapsed,
-				options.cwd,
+				cwd: options.cwd,
 				sessionLabel,
+				activeStatus,
+				steeringCount,
+				followUpCount,
+				lastReloadStatus,
+				lastCompactionStats,
 				footerStatusItems,
-			),
+				width: terminal.columns,
+			}),
 		);
 		tui.requestRender();
 	};
@@ -543,6 +555,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(dim("Reload is unavailable while waiting for UI input."));
 			return;
 		}
+		activeStatus = "reloading";
+		setFooter();
 		setStatus(cyan("Reloading extensions..."));
 		const previousExtensions = extensions;
 		const previousAgent = agent;
@@ -588,7 +602,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(red(`Reload failed: ${error instanceof Error ? error.message : String(error)}`));
 			appendText(await formatDiagnostics());
 		} finally {
+			activeStatus = undefined;
 			setStatus(dim("Ready"));
+			setFooter();
 		}
 	}
 
@@ -653,11 +669,15 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				if (followUp === "") appendText(red("Usage: /follow <text>"));
 				else {
 					agent.followUp(followUp);
+					followUpCount += 1;
+					setFooter();
 					appendText(dim(`↳ follow-up queued: ${followUp}`));
 				}
 				return;
 			}
 			agent.steer(input);
+			steeringCount += 1;
+			setFooter();
 			appendText(dim(`↳ steered: ${input}`));
 			return;
 		}
@@ -1050,7 +1070,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 		const effectiveRecordInContext = decision.recordInContext;
 		runningTask = "bash";
+		activeStatus = "bash";
 		controller = new AbortController();
+		setFooter();
 		setStatus(cyan("Running bash..."));
 		const liveOutput: LiveStreamOutput = createLiveStreamOutput();
 		const component = new Text(
@@ -1101,15 +1123,19 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			);
 		} finally {
 			runningTask = undefined;
+			activeStatus = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
+			setFooter();
 			void refreshExtensionSurfaces();
 		}
 	}
 
 	async function runCompact(instructions: string | undefined): Promise<void> {
 		runningTask = "compaction";
+		activeStatus = "compacting";
 		controller = new AbortController();
+		setFooter();
 		setStatus(cyan("Compacting..."));
 		const startedAt = Date.now();
 		const messagesBefore = agent.messages.length;
@@ -1137,6 +1163,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 						}),
 					),
 				);
+				lastCompactionStats = {
+					beforeTokens: result.tokensBefore,
+					afterTokens: tokensAfterEstimate,
+					elapsedMs,
+				};
 			} else {
 				appendText(dim(`Nothing to compact (${formatElapsed(Date.now() - startedAt)}).`));
 			}
@@ -1148,15 +1179,21 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			);
 		} finally {
 			runningTask = undefined;
+			activeStatus = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
+			setFooter();
 			void refreshExtensionSurfaces();
 		}
 	}
 
 	async function runPrompt(input: string): Promise<void> {
 		runningTask = "turn";
+		activeStatus = "working";
+		steeringCount = 0;
+		followUpCount = 0;
 		controller = new AbortController();
+		setFooter();
 		setStatus(cyan("Working..."));
 		appendText(bold(`> ${input}`));
 		let assistantComponent: Markdown | undefined;
@@ -1200,8 +1237,12 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 		} finally {
 			runningTask = undefined;
+			activeStatus = undefined;
+			steeringCount = 0;
+			followUpCount = 0;
 			controller = undefined;
 			setStatus(dim("Ready"));
+			setFooter();
 			void refreshExtensionSurfaces();
 		}
 	}
@@ -1377,41 +1418,111 @@ function formatCommandUsage(command: SlashCommand): string {
 	return `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
 }
 
-function formatFooter(
-	agent: Agent,
-	model: string,
-	thinkingLevel: ThinkingLevel | undefined,
-	showReasoning: boolean,
-	toolsCollapsed: boolean,
-	cwd: string,
-	sessionLabel: string,
-	statusItems: string[],
-): string {
-	const usage = agent.getContextUsage();
-	const context =
-		usage.contextWindow === undefined
-			? `context ${formatNumber(usage.tokens)} tokens`
-			: `context ${formatNumber(usage.tokens)}/${formatNumber(usage.contextWindow)} tokens`;
-	const usageSource =
-		usage.usageTokens > 0
-			? `usage ${formatNumber(usage.usageTokens)} + trailing ${formatNumber(usage.trailingTokens)}`
-			: "usage estimated";
-	return dim(
-		[
-			`model ${model}`,
-			`thinking ${formatThinkingLevel(thinkingLevel)}`,
-			`reasoning ${showReasoning ? "shown" : "hidden"}`,
-			`tools ${toolsCollapsed ? "collapsed" : "expanded"}`,
-			`session ${sessionLabel}`,
-			context,
-			usageSource,
-			`cwd ${cwd}`,
-			...statusItems,
-			"Enter submit",
-			"Ctrl+C abort/exit",
-			"Esc compact abort",
-		].join(" · "),
-	);
+interface FooterCompactionStats {
+	beforeTokens: number;
+	afterTokens: number;
+	elapsedMs: number;
+}
+
+interface FooterState {
+	agent: Agent;
+	model: string;
+	thinkingLevel: ThinkingLevel | undefined;
+	showReasoning: boolean;
+	toolsCollapsed: boolean;
+	cwd: string;
+	sessionLabel: string;
+	activeStatus?: string;
+	steeringCount: number;
+	followUpCount: number;
+	lastReloadStatus: string;
+	lastCompactionStats?: FooterCompactionStats;
+	footerStatusItems: string[];
+	width: number;
+}
+
+function formatFooter(state: FooterState): string {
+	const usage = state.agent.getContextUsage();
+	const context = formatFooterContext(usage.tokens, usage.contextWindow);
+	const usageSource = formatFooterUsageSource(usage.usageTokens, usage.trailingTokens);
+	const cost = formatFooterCost(state.agent.messages);
+	const activity = [
+		state.activeStatus ? `status ${state.activeStatus}` : "status idle",
+		state.steeringCount > 0 ? `steering ${state.steeringCount}` : undefined,
+		state.followUpCount > 0 ? `follow-up ${state.followUpCount}` : undefined,
+	].filter((part): part is string => Boolean(part));
+	const primary = [
+		...activity,
+		`model ${state.model}`,
+		`thinking ${formatThinkingLevel(state.thinkingLevel)}`,
+		`reasoning ${state.showReasoning ? "shown" : "hidden"}`,
+		`tools ${state.toolsCollapsed ? "collapsed" : "expanded"}`,
+		`session ${state.sessionLabel}`,
+	];
+	const secondary = [
+		context,
+		usageSource,
+		cost,
+		`reload ${formatReloadFooterStatus(state.lastReloadStatus)}`,
+		state.lastCompactionStats ? formatFooterCompaction(state.lastCompactionStats) : undefined,
+		`cwd ${state.cwd}`,
+		...state.footerStatusItems.map((item) => `ext ${compactFooterItem(item)}`),
+		"Enter submit",
+		"Ctrl+C abort/exit",
+		"Esc compact abort",
+	].filter((part): part is string => Boolean(part));
+	return dim([fitFooterLine(primary, state.width), fitFooterLine(secondary, state.width)].join("\n"));
+}
+
+function formatFooterContext(tokens: number, contextWindow: number | undefined): string {
+	if (contextWindow === undefined) return `context ~${formatNumber(tokens)} tokens`;
+	const percent = contextWindow <= 0 ? 0 : Math.min(999, (tokens / contextWindow) * 100);
+	return `context ~${formatNumber(tokens)}/${formatNumber(contextWindow)} (${percent.toFixed(percent < 10 ? 1 : 0)}%)`;
+}
+
+function formatFooterUsageSource(usageTokens: number, trailingTokens: number): string {
+	if (usageTokens <= 0) return "usage estimated";
+	return `usage observed ${formatNumber(usageTokens)} + trailing ~${formatNumber(trailingTokens)}`;
+}
+
+function formatFooterCost(messages: readonly AgentMessage[]): string {
+	const total = messages.reduce((sum, message) => {
+		if (message.role !== "assistant") return sum;
+		return sum + (message.usage.cost?.total ?? 0);
+	}, 0);
+	return total > 0 ? `cost $${total.toFixed(4)}` : "cost unknown";
+}
+
+function formatReloadFooterStatus(status: string): string {
+	if (status === "not run") return "not run";
+	const [state, timestamp] = status.split(" ", 2);
+	return timestamp ? `${state} ${timestamp.slice(11, 19)}` : status;
+}
+
+function formatFooterCompaction(stats: FooterCompactionStats): string {
+	return `compact ~${formatNumber(stats.beforeTokens)}→~${formatNumber(stats.afterTokens)} ${formatElapsed(stats.elapsedMs)}`;
+}
+
+function compactFooterItem(item: string): string {
+	return truncateToWidth(item.replace(/\s+/g, " ").trim(), 42);
+}
+
+function fitFooterLine(parts: string[], width: number): string {
+	const separator = " · ";
+	const maxWidth = Math.max(24, width - 2);
+	const kept: string[] = [];
+	let omitted = 0;
+	for (const part of parts) {
+		const candidate = [...kept, part].join(separator);
+		if (visibleWidth(candidate) <= maxWidth) {
+			kept.push(part);
+			continue;
+		}
+		omitted += 1;
+	}
+	const suffix = omitted > 0 ? `+${omitted} more` : undefined;
+	const line = [...kept, suffix].filter((part): part is string => Boolean(part)).join(separator);
+	return truncateToWidth(line, maxWidth);
 }
 
 function parseThinkingLevel(input: string): ThinkingLevel | undefined | "invalid" {
