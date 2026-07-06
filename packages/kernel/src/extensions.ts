@@ -1,7 +1,7 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError } from "./errors.ts";
-import type { AgentMessage, AssistantMessage, ToolResultMessage } from "./messages.ts";
+import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { SessionEntry } from "./session.ts";
@@ -414,6 +414,34 @@ export interface RegisteredEntryRenderer {
 	) => Promise<RegisteredEntryRenderResult> | RegisteredEntryRenderResult;
 }
 
+export type ToolRenderPhase = "start" | "update" | "result";
+
+export interface RegisteredToolRenderEvent {
+	phase: ToolRenderPhase;
+	toolCall: ToolCall;
+	partialOutput?: string;
+	stream?: "stdout" | "stderr";
+	result?: ToolResult;
+	liveOutput?: string;
+}
+
+export type RegisteredToolRenderResult =
+	| string
+	| { text: string; format?: "text" | "markdown" }
+	| ExtensionRenderComponent
+	| undefined;
+
+export interface RegisteredToolRenderer {
+	name: string;
+	description?: string;
+	toolNames?: string[];
+	phases?: ToolRenderPhase[];
+	handler: (
+		event: RegisteredToolRenderEvent,
+		ctx: ExtensionContext,
+	) => Promise<RegisteredToolRenderResult> | RegisteredToolRenderResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -483,6 +511,9 @@ export interface ExtensionAPI {
 	/** Register a custom TUI session-entry renderer. Hosts that do not support renderers may ignore it. */
 	registerEntryRenderer(name: string, options: Omit<RegisteredEntryRenderer, "name">): void;
 
+	/** Register a custom TUI tool renderer. Hosts that do not support renderers may ignore it. */
+	registerToolRenderer(name: string, options: Omit<RegisteredToolRenderer, "name">): void;
+
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
 
@@ -547,6 +578,7 @@ export class ExtensionRegistry {
 	readonly shortcuts = new Map<string, RegisteredShortcut>();
 	readonly messageRenderers = new Map<string, RegisteredMessageRenderer>();
 	readonly entryRenderers = new Map<string, RegisteredEntryRenderer>();
+	readonly toolRenderers = new Map<string, RegisteredToolRenderer>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -608,6 +640,9 @@ export class ExtensionRegistry {
 			},
 			registerEntryRenderer: (name, options) => {
 				this.entryRenderers.set(name, { name, ...options });
+			},
+			registerToolRenderer: (name, options) => {
+				this.toolRenderers.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });

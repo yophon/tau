@@ -263,6 +263,12 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			description: "Ping entry renderer",
 			handler: (entry) => `entry:${entry.type}`,
 		});
+		api.registerToolRenderer("ping-tool-renderer", {
+			toolNames: ["ping-tool"],
+			phases: ["result"],
+			description: "Ping tool renderer",
+			handler: (event) => `tool:${event.phase}:${event.toolCall.name}`,
+		});
 	};
 	const second: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-b` }));
@@ -307,6 +313,21 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			{ messages: [] },
 		),
 		"entry:custom",
+	);
+	const toolRenderer = registry.toolRenderers.get("ping-tool-renderer");
+	assert.deepEqual(toolRenderer?.toolNames, ["ping-tool"]);
+	assert.deepEqual(toolRenderer?.phases, ["result"]);
+	assert.equal(
+		await toolRenderer?.handler(
+			{
+				phase: "result",
+				toolCall: { type: "toolCall", id: "call_1", name: "ping-tool", arguments: { ok: true } },
+				result: { output: "pong" },
+				liveOutput: "stdout\npong",
+			},
+			{ messages: [] },
+		),
+		"tool:result:ping-tool",
 	);
 });
 

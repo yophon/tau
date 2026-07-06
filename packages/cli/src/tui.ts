@@ -28,6 +28,9 @@ import {
 	type RegisteredEntryRenderResult,
 	type RegisteredMessageRenderer,
 	type RegisteredMessageRenderResult,
+	type RegisteredToolRenderEvent,
+	type RegisteredToolRenderer,
+	type RegisteredToolRenderResult,
 	restoreSession,
 	type SessionEntry,
 	type SessionMetadata,
@@ -348,6 +351,26 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 		}
 		return fallback;
+	};
+
+	const renderToolWithExtensions = async (
+		event: RegisteredToolRenderEvent,
+		target?: Text,
+	): Promise<Component | undefined> => {
+		for (const renderer of options.extensions.toolRenderers.values()) {
+			if (!toolRendererMatches(renderer, event)) continue;
+			try {
+				const result = await renderer.handler(event, agent.extensionContext());
+				const component = toolRenderResultToComponent(result, target);
+				if (component) return component;
+			} catch (error) {
+				appendText(
+					red(`Tool renderer ${renderer.name} failed: ${error instanceof Error ? error.message : String(error)}`),
+				);
+				return undefined;
+			}
+		}
+		return undefined;
 	};
 
 	tui.addInputListener((data) => {
@@ -826,7 +849,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		appendText(bold(`> ${input}`));
 		let assistantComponent: Markdown | undefined;
 		let assistantText = "";
-		const toolComponents = new Map<string, Text>();
+		const toolComponents = new Map<string, Component>();
 		const toolOutputs = new Map<string, LiveStreamOutput>();
 		const pendingTools = new Map<string, string>();
 		try {
@@ -848,6 +871,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					pendingTools,
 					addComponent: (component) => chat.addChild(component),
 					renderMessage: renderMessageWithExtensions,
+					renderTool: renderToolWithExtensions,
 				});
 				tui.requestRender();
 			}
@@ -1094,10 +1118,10 @@ function isAbortError(error: unknown): boolean {
 	return "code" in error && error.code === "aborted";
 }
 
-function markPendingToolsAborted(toolComponents: Map<string, Text>, pendingTools: Map<string, string>): void {
+function markPendingToolsAborted(toolComponents: Map<string, Component>, pendingTools: Map<string, string>): void {
 	for (const [id, name] of pendingTools) {
 		const component = toolComponents.get(id);
-		if (component) component.setText(`${red("✗")} ${dim(name)}\n${dim("aborted")}`);
+		if (component && isTextComponent(component)) component.setText(`${red("✗")} ${dim(name)}\n${dim("aborted")}`);
 	}
 	pendingTools.clear();
 }
@@ -1106,11 +1130,12 @@ interface RenderState {
 	getAssistant(): Markdown;
 	getAssistantText(): string;
 	setAssistantText(text: string): void;
-	toolComponents: Map<string, Text>;
+	toolComponents: Map<string, Component>;
 	toolOutputs: Map<string, LiveStreamOutput>;
 	pendingTools: Map<string, string>;
-	addComponent(component: Text): void;
+	addComponent(component: Component): void;
 	renderMessage(message: AgentMessage, target?: Markdown): Promise<boolean>;
+	renderTool(event: RegisteredToolRenderEvent, target?: Text): Promise<Component | undefined>;
 }
 
 interface EntrySelectPresentation {
@@ -1174,6 +1199,12 @@ function entryCustomType(entry: SessionEntry): string | undefined {
 	return undefined;
 }
 
+function toolRendererMatches(renderer: RegisteredToolRenderer, event: RegisteredToolRenderEvent): boolean {
+	if (renderer.toolNames && !renderer.toolNames.includes(event.toolCall.name)) return false;
+	if (renderer.phases && !renderer.phases.includes(event.phase)) return false;
+	return true;
+}
+
 function entryRenderResultToPresentation(
 	result: RegisteredEntryRenderResult,
 	fallback?: EntrySelectPresentation,
@@ -1189,6 +1220,24 @@ function entryRenderResultToPresentation(
 		};
 	}
 	return result;
+}
+
+function toolRenderResultToComponent(result: RegisteredToolRenderResult, target?: Text): Component | undefined {
+	if (result === undefined) return undefined;
+	if (typeof result === "string") {
+		if (target) {
+			target.setText(result);
+			return target;
+		}
+		return new Text(result, 1, 0);
+	}
+	if (isComponent(result)) return result;
+	const text = result.text;
+	if (target) {
+		target.setText(text);
+		return target;
+	}
+	return result.format === "markdown" ? new Markdown(text, 1, 0, markdownTheme) : new Text(text, 1, 0);
 }
 
 function messageRenderResultToComponent(
@@ -1214,6 +1263,14 @@ function messageRenderResultToComponent(
 
 function isComponent(value: unknown): value is Component {
 	return typeof value === "object" && value !== null && "render" in value && typeof value.render === "function";
+}
+
+function isTextComponent(component: Component): component is Text {
+	return component instanceof Text;
+}
+
+function isTextComponentOrUndefined(component: Component | undefined): component is Text | undefined {
+	return component === undefined || isTextComponent(component);
 }
 
 async function renderEvent(event: AgentEvent, state: RenderState): Promise<void> {
@@ -1244,6 +1301,13 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			await state.renderMessage(event.message);
 			break;
 		case "tool_start": {
+			const rendered = await state.renderTool({ phase: "start", toolCall: event.toolCall });
+			if (rendered) {
+				state.toolComponents.set(event.toolCall.id, rendered);
+				state.pendingTools.set(event.toolCall.id, event.toolCall.name);
+				state.addComponent(rendered);
+				break;
+			}
 			const component = new Text(
 				`${cyan(`⚙ ${event.toolCall.name}`)} ${dim(JSON.stringify(event.toolCall.arguments))}`,
 				1,
@@ -1255,32 +1319,60 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			break;
 		}
 		case "tool_update": {
-			let component = state.toolComponents.get(event.toolCall.id);
+			const output = state.toolOutputs.get(event.toolCall.id) ?? createLiveStreamOutput();
+			state.toolOutputs.set(event.toolCall.id, output);
+			appendLiveStreamOutput(output, event.partialOutput, event.stream);
+			const existing = state.toolComponents.get(event.toolCall.id);
+			const rendered = await state.renderTool(
+				{
+					phase: "update",
+					toolCall: event.toolCall,
+					partialOutput: event.partialOutput,
+					stream: event.stream,
+					liveOutput: formatLiveStreamOutput(output),
+				},
+				isTextComponentOrUndefined(existing) ? existing : undefined,
+			);
+			if (rendered) {
+				if (!existing || rendered !== existing) state.addComponent(rendered);
+				state.toolComponents.set(event.toolCall.id, rendered);
+				state.pendingTools.set(event.toolCall.id, event.toolCall.name);
+				break;
+			}
+			let component = existing && isTextComponent(existing) ? existing : undefined;
 			if (!component) {
 				component = new Text(cyan(`⚙ ${event.toolCall.name}`), 1, 0);
 				state.toolComponents.set(event.toolCall.id, component);
 				state.addComponent(component);
 			}
 			state.pendingTools.set(event.toolCall.id, event.toolCall.name);
-			const output = state.toolOutputs.get(event.toolCall.id) ?? createLiveStreamOutput();
-			state.toolOutputs.set(event.toolCall.id, output);
-			appendLiveStreamOutput(output, event.partialOutput, event.stream);
-			component.setText(`${cyan(`⚙ ${event.toolCall.name}`)}\n${formatLiveStreamOutput(output)}`);
+			if (isTextComponent(component))
+				component.setText(`${cyan(`⚙ ${event.toolCall.name}`)}\n${formatLiveStreamOutput(output)}`);
 			break;
 		}
 		case "tool_result": {
 			const marker = event.result.isError ? red("✗") : dim("✓");
-			let component = state.toolComponents.get(event.toolCall.id);
+			const existing = state.toolComponents.get(event.toolCall.id);
+			state.pendingTools.delete(event.toolCall.id);
+			const liveOutput = state.toolOutputs.get(event.toolCall.id);
+			state.toolOutputs.delete(event.toolCall.id);
+			const output = liveOutput ? formatLiveStreamOutput(liveOutput) || event.result.output : event.result.output;
+			const rendered = await state.renderTool(
+				{ phase: "result", toolCall: event.toolCall, result: event.result, liveOutput: output },
+				isTextComponentOrUndefined(existing) ? existing : undefined,
+			);
+			if (rendered) {
+				if (!existing || rendered !== existing) state.addComponent(rendered);
+				state.toolComponents.set(event.toolCall.id, rendered);
+				break;
+			}
+			let component = existing && isTextComponent(existing) ? existing : undefined;
 			if (!component) {
 				component = new Text("", 1, 0);
 				state.toolComponents.set(event.toolCall.id, component);
 				state.addComponent(component);
 			}
-			state.pendingTools.delete(event.toolCall.id);
-			const liveOutput = state.toolOutputs.get(event.toolCall.id);
-			state.toolOutputs.delete(event.toolCall.id);
-			const output = liveOutput ? formatLiveStreamOutput(liveOutput) || event.result.output : event.result.output;
-			component.setText(`${marker} ${dim(event.toolCall.name)}\n${output}`);
+			if (isTextComponent(component)) component.setText(`${marker} ${dim(event.toolCall.name)}\n${output}`);
 			break;
 		}
 		case "compaction":

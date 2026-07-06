@@ -134,7 +134,7 @@ class TuiUiCapability implements UiCapability {
 | 扩展 API | Done | `registerShortcut` | 扩展可注册快捷键；TUI 空闲且无 UI prompt 时触发；`/help` 显示快捷键 |
 | 扩展 API | Done | `registerMessageRenderer` | 扩展可按 role/customType 渲染 user/assistant/custom message，未命中走 fallback |
 | 扩展 API | Done | `registerEntryRenderer` | 扩展可按 entry type/customType 渲染 `/tree`/`/fork` selector 中的 session entry |
-| 扩展 API | Next | 自定义 tool renderer | tool call/result 支持组件 renderer，fallback 仍可用 |
+| 扩展 API | Done | 自定义 tool renderer | tool start/update/result 支持组件 renderer，fallback 仍可用 |
 | 扩展 API | Later | extension widgets | editor 上方/下方可挂临时组件 |
 | 扩展 API | Later | custom header/footer | 扩展可追加 header/footer 状态区 |
 | 重载/资源 | Next | `/reload` | 重载 host-node 扩展、resources、themes，并处理生命周期事件 |
@@ -168,10 +168,10 @@ class TuiUiCapability implements UiCapability {
 
 ### P8C-3：Tool Renderer API
 
-- [ ] 设计 tool renderer API：按 tool name/tool result status 匹配，支持 start/update/end/result 四类输入。
-- [ ] TUI tool item 接入自定义 renderer；bash stdout/stderr 现有增量 renderer 继续作为内置 fallback。
-- [ ] 支持 renderer 请求折叠/展开初始状态，但不允许扩展直接持有 TUI 实例。
-- [ ] 单测覆盖 registry；tmux 冒烟覆盖一个 mock tool 的自定义 start/result 展示。
+- [x] 设计 tool renderer API：按 tool name/phase 匹配，支持 start/update/result 三类输入。
+- [x] TUI tool item 接入自定义 renderer；bash stdout/stderr 现有增量 renderer 继续作为内置 fallback。
+- [x] 支持 renderer 返回结构化组件，但不允许扩展直接持有 TUI 实例。
+- [x] 单测覆盖 registry；tmux 冒烟覆盖一个 mock tool 的自定义 start/update/result 展示。
 
 ### P8C-4：Runtime Extension Surfaces
 
@@ -242,7 +242,7 @@ class TuiUiCapability implements UiCapability {
 - [x] `registerShortcut`：扩展注册快捷键，TUI 空闲且无 UI prompt 时触发；`/help` 显示扩展快捷键。
 - [x] `registerMessageRenderer`：扩展自定义消息渲染组件。
 - [x] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
-- [ ] 自定义 tool renderer：tool call/result 支持扩展提供组件；无 renderer 时走文本 fallback。
+- [x] 自定义 tool renderer：tool start/update/result 支持扩展提供组件；无 renderer 时走文本 fallback。
 - [ ] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
 - [ ] TUI custom header/footer：允许扩展覆盖或追加 header/footer 状态。
 - [ ] `/reload`：重载 host-node 扩展、resources、themes；处理 project trust 与 session_shutdown/session_start。
@@ -284,6 +284,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `registerShortcut` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展注册 `ctrl+g` 后 TUI 显示 `shortcut-ok`。
 - TUI `registerMessageRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 assistant renderer 可覆盖流式回复为 `rendered:tui-renderer-ok`，custom renderer 可把 `/emit` 注入的 custom message 显示为 `rendered:custom:smoke`，user renderer 可把运行中 steering message 显示为 `rendered:user`。
 - TUI `registerEntryRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展 `/mark` 写入 custom entry 后，`/tree` selector 显示 `rendered-entry:mark`，选择该信息项不会误触导航。
+- TUI 自定义 tool renderer 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展 tool renderer 可显示 `tool-render:start`、`tool-render:update:stream-chunk`、`tool-render:result:tool-final:stdout`。
 
 ## 风险与开放问题
 
