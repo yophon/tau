@@ -142,7 +142,7 @@ class TuiUiCapability implements UiCapability {
 | 主题/打磨 | Later | Themes | 引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
 | 主题/打磨 | Later | `/help` polish | 可滚动组件、命令详情、扩展命令来源 |
 | 主题/打磨 | Later | footer polish | 更完整 token usage/cost、session 状态、自定义 footer 区 |
-| 主题/打磨 | Later | tool collapse/expand | 快捷键展开/折叠所有工具输出 |
+| 主题/打磨 | Done | tool collapse/expand | `Ctrl+T` 全局折叠/展开 fallback 工具输出，`/tools <id>` 支持单项覆盖 |
 | 主题/打磨 | Done | thinking block show/hide | `Ctrl+R` 切换后续 reasoning delta 展示，footer 显示 shown/hidden 状态 |
 | 主题/打磨 | Later | startup diagnostics | 展示 loaded skills/prompts/extensions/resources 诊断 |
 | 验收 | Acceptance | TTY e2e 覆盖扩展 | tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径 |
@@ -225,12 +225,12 @@ class TuiUiCapability implements UiCapability {
 
 ### P8D-5：Tool Collapse / Expand
 
-- [ ] 设计全局折叠状态与单个 tool item 折叠状态：全局快捷键切换全部工具，单项状态可覆盖全局默认。
-- [ ] 为 fallback tool UI 保存最小结构化状态：tool name、args 摘要、phase、stdout/stderr/live chunks、result/error/aborted 标记。
-- [ ] 折叠态展示稳定摘要：工具名、状态、耗时/输出行数或字节数、错误/abort 标记；展开态保留现有实时输出。
-- [ ] 自定义 tool renderer 默认不被破坏；若扩展 renderer 不支持折叠，host 仍能显示外层摘要或保持当前行为并记录限制。
-- [ ] Footer 与 `/help` 增加快捷键说明；折叠状态在运行中 tool_update 到来时不丢失。
-- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖长输出工具、运行中折叠/展开、完成后折叠、abort 后 pending tool 摘要。
+- [x] 设计全局折叠状态与单个 tool item 折叠状态：全局快捷键切换全部工具，单项状态可覆盖全局默认。
+- [x] 为 fallback tool UI 保存最小结构化状态：tool name、args 摘要、phase、stdout/stderr/live chunks、result/error/aborted 标记。
+- [x] 折叠态展示稳定摘要：工具名、状态、耗时/输出行数或字节数、错误/abort 标记；展开态保留现有实时输出。
+- [x] 自定义 tool renderer 默认不被破坏；若扩展 renderer 不支持折叠，host 保持 renderer 组件行为，fallback 工具由 host 折叠。
+- [x] Footer 与 `/help` 增加快捷键说明；折叠状态在运行中 tool_update 到来时不丢失。
+- [x] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖长输出工具、运行中折叠/展开、完成后单项折叠、abort 后 pending tool 摘要。
 
 ### P8D-6：Startup Diagnostics
 
@@ -321,7 +321,7 @@ class TuiUiCapability implements UiCapability {
 - [x] Autocomplete：slash commands、文件路径基础补全。
 - [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
 - [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
-- [ ] Tool collapse/expand：快捷键展开/折叠所有工具输出。
+- [x] Tool collapse/expand：`Ctrl+T` 展开/折叠 fallback 工具输出，`/tools` 查看工具 id 并用 `/tools <id>` 单项覆盖。
 - [x] Thinking block show/hide：`Ctrl+R` 切换 reasoning 展示，状态反映到 footer。
 - [ ] Startup loaded resources：展示 loaded skills/prompts/extensions 诊断。
 - [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
@@ -354,6 +354,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `/reload` host-node 扩展热重载已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认同一 TUI 会话中全局扩展文件从 `before-reload` 改为 `after-reload` 后，执行 `/reload` 会刷新 header item 为 `reload-smoke-after`，`/ping` 命令输出变为 `after-reload`。
 - TUI `/reload` resources reload 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认 `resources_discover` header 从 `resources:startup` 变为 `resources:reload`，reload-only prompt command `/hello world` 展开为 `Reload hello world` 并完成 mock provider 回复。
 - TUI `/compact` polish 已实现；tmux 冒烟确认手动 compact 输出 `Compacting conversation (...)`，完成后显示 tokens before/after、kept messages、summary chars 与耗时。
+- TUI tool collapse/expand 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认长 bash 工具运行中按 `Ctrl+T` 后显示折叠摘要与 footer `tools collapsed`，完成后 `/tools` 列出工具 id，`/tools <id>` 可在全局 collapsed 下单项展开，运行中 Ctrl+C 后保留折叠态错误/中断摘要并显示 `Turn aborted.`。
 
 ## 风险与开放问题
 

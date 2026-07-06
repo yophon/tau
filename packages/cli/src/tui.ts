@@ -65,6 +65,7 @@ const builtInCommands: SlashCommand[] = [
 		argumentHint: "[default|none|minimal|low|medium|high|xhigh]",
 		description: "Show or set reasoning effort.",
 	},
+	{ name: "tools", argumentHint: "[all|collapse|expand|reset|<id>]", description: "Inspect or fold tool output." },
 	{ name: "reload", description: "Reload extensions and extension-provided UI surfaces." },
 	{ name: "quit", description: "Exit the TUI." },
 ];
@@ -166,9 +167,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	let modelChoices = uniqueModelChoices([currentModel, ...(options.modelChoices ?? [])]);
 	let currentThinkingLevel = options.thinkingLevel;
 	let showReasoning = true;
+	let toolsCollapsed = false;
 	let extensions = options.extensions;
 	let headerStatusItems: string[] = [];
 	let footerStatusItems: string[] = [];
+	const fallbackToolDisplays = new Map<string, ToolDisplayState>();
 	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd, headerStatusItems), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
@@ -220,6 +223,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				currentModel,
 				currentThinkingLevel,
 				showReasoning,
+				toolsCollapsed,
 				options.cwd,
 				sessionLabel,
 				footerStatusItems,
@@ -532,6 +536,13 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			setStatus(dim("Aborting compaction..."));
 			return { consume: true };
 		}
+		if (matchesKey(data, "ctrl+t") && !pendingUiPrompt) {
+			toolsCollapsed = !toolsCollapsed;
+			refreshFallbackToolDisplays(fallbackToolDisplays, toolsCollapsed);
+			setFooter();
+			appendText(dim(`Tool output ${toolsCollapsed ? "collapsed" : "expanded"}.`));
+			return { consume: true };
+		}
 		if (matchesKey(data, "ctrl+r") && !pendingUiPrompt) {
 			showReasoning = !showReasoning;
 			setFooter();
@@ -676,6 +687,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				agent.extensionContext(),
 			);
 			appendText(dim(`Thinking level set to ${formatThinkingLevel(decision.level)}.`));
+			return true;
+		}
+		if (name === "tools") {
+			handleToolsCommand(args);
 			return true;
 		}
 		if (name === "reload") {
@@ -902,6 +917,56 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		return true;
 	}
 
+	function handleToolsCommand(args: string): void {
+		if (args === "") {
+			appendText(formatToolsStatus(fallbackToolDisplays, toolsCollapsed));
+			return;
+		}
+		if (args === "collapse") {
+			toolsCollapsed = true;
+			refreshFallbackToolDisplays(fallbackToolDisplays, toolsCollapsed);
+			setFooter();
+			appendText(dim("Tool output collapsed."));
+			return;
+		}
+		if (args === "expand") {
+			toolsCollapsed = false;
+			refreshFallbackToolDisplays(fallbackToolDisplays, toolsCollapsed);
+			setFooter();
+			appendText(dim("Tool output expanded."));
+			return;
+		}
+		if (args === "all") {
+			toolsCollapsed = !toolsCollapsed;
+			refreshFallbackToolDisplays(fallbackToolDisplays, toolsCollapsed);
+			setFooter();
+			appendText(dim(`Tool output ${toolsCollapsed ? "collapsed" : "expanded"}.`));
+			return;
+		}
+		if (args === "reset") {
+			for (const tool of fallbackToolDisplays.values()) {
+				tool.collapsedOverride = undefined;
+				updateFallbackToolDisplay(tool, toolsCollapsed);
+			}
+			appendText(dim("Tool item overrides reset."));
+			return;
+		}
+		const matches = [...fallbackToolDisplays.values()].filter((tool) => tool.id.startsWith(args));
+		if (matches.length === 0) {
+			appendText(red(`No fallback tool id matches "${args}". Use /tools to list tool ids.`));
+			return;
+		}
+		if (matches.length > 1) {
+			appendText(red(`Multiple fallback tool ids match "${args}". Use a longer id prefix.`));
+			return;
+		}
+		const tool = matches[0];
+		const nextCollapsed = !isToolDisplayCollapsed(tool, toolsCollapsed);
+		tool.collapsedOverride = nextCollapsed;
+		updateFallbackToolDisplay(tool, toolsCollapsed);
+		appendText(dim(`Tool ${shortToolId(tool.id)} ${nextCollapsed ? "collapsed" : "expanded"}.`));
+	}
+
 	async function runUserBash(command: string, recordInContext: boolean): Promise<void> {
 		if (command === "") {
 			appendText(red(recordInContext ? "Usage: ! <command>" : "Usage: !! <command>"));
@@ -1048,9 +1113,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 						assistantText = text;
 					},
 					shouldRenderReasoning: () => showReasoning,
+					areToolsCollapsed: () => toolsCollapsed,
 					toolComponents,
 					toolOutputs,
 					pendingTools,
+					fallbackToolDisplays,
 					addComponent: (component) => chat.addChild(component),
 					renderMessage: renderMessageWithExtensions,
 					renderTool: renderToolWithExtensions,
@@ -1060,7 +1127,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (isAbortError(error)) {
-				markPendingToolsAborted(toolComponents, pendingTools);
+				markPendingToolsAborted(toolComponents, pendingTools, fallbackToolDisplays, toolsCollapsed);
 				appendText(dim("Turn aborted."));
 			} else {
 				appendText(red(`Error: ${message}`));
@@ -1141,6 +1208,8 @@ function formatHelp(extensions: ExtensionRegistry): string {
 		`${cyan("Ctrl+C")}  Abort the current turn/compaction, or exit while idle`,
 		`${cyan("Esc")}  Abort compaction`,
 		`${cyan("Ctrl+R")}  Show/hide reasoning deltas`,
+		`${cyan("Ctrl+T")}  Collapse/expand fallback tool output`,
+		`${cyan("/tools [id]")}  List fallback tools or toggle one by id prefix`,
 		"",
 		bold("User bash"),
 		`${cyan("! <command>")}  Run bash and add output to context`,
@@ -1232,6 +1301,7 @@ function formatFooter(
 	model: string,
 	thinkingLevel: ThinkingLevel | undefined,
 	showReasoning: boolean,
+	toolsCollapsed: boolean,
 	cwd: string,
 	sessionLabel: string,
 	statusItems: string[],
@@ -1250,6 +1320,7 @@ function formatFooter(
 			`model ${model}`,
 			`thinking ${formatThinkingLevel(thinkingLevel)}`,
 			`reasoning ${showReasoning ? "shown" : "hidden"}`,
+			`tools ${toolsCollapsed ? "collapsed" : "expanded"}`,
 			`session ${sessionLabel}`,
 			context,
 			usageSource,
@@ -1375,8 +1446,20 @@ function isAbortError(error: unknown): boolean {
 	return "code" in error && error.code === "aborted";
 }
 
-function markPendingToolsAborted(toolComponents: Map<string, Component>, pendingTools: Map<string, string>): void {
+function markPendingToolsAborted(
+	toolComponents: Map<string, Component>,
+	pendingTools: Map<string, string>,
+	fallbackToolDisplays: Map<string, ToolDisplayState>,
+	toolsCollapsed: boolean,
+): void {
 	for (const [id, name] of pendingTools) {
+		const fallback = fallbackToolDisplays.get(id);
+		if (fallback) {
+			fallback.phase = "aborted";
+			fallback.endedAt = Date.now();
+			updateFallbackToolDisplay(fallback, toolsCollapsed);
+			continue;
+		}
 		const component = toolComponents.get(id);
 		if (component && isTextComponent(component)) component.setText(`${red("✗")} ${dim(name)}\n${dim("aborted")}`);
 	}
@@ -1388,9 +1471,11 @@ interface RenderState {
 	getAssistantText(): string;
 	setAssistantText(text: string): void;
 	shouldRenderReasoning(): boolean;
+	areToolsCollapsed(): boolean;
 	toolComponents: Map<string, Component>;
 	toolOutputs: Map<string, LiveStreamOutput>;
 	pendingTools: Map<string, string>;
+	fallbackToolDisplays: Map<string, ToolDisplayState>;
 	addComponent(component: Component): void;
 	renderMessage(message: AgentMessage, target?: Markdown): Promise<boolean>;
 	renderTool(event: RegisteredToolRenderEvent, target?: Text): Promise<Component | undefined>;
@@ -1405,6 +1490,21 @@ interface LiveStreamOutput {
 	stdout: string;
 	stderr: string;
 	fallback: string;
+}
+
+type ToolDisplayPhase = "running" | "done" | "error" | "aborted";
+
+interface ToolDisplayState {
+	id: string;
+	name: string;
+	args: unknown;
+	startedAt: number;
+	endedAt?: number;
+	phase: ToolDisplayPhase;
+	liveOutput: LiveStreamOutput;
+	resultOutput?: string;
+	collapsedOverride?: boolean;
+	component: Text;
 }
 
 function createLiveStreamOutput(): LiveStreamOutput {
@@ -1423,6 +1523,115 @@ function formatLiveStreamOutput(output: LiveStreamOutput): string {
 	if (output.stderr !== "") sections.push(`${dim("stderr")}\n${red(output.stderr.trimEnd())}`);
 	if (output.fallback !== "") sections.push(dim(output.fallback.trimEnd()));
 	return sections.join("\n");
+}
+
+function createToolDisplay(toolCall: AgentEvent & { type: "tool_start" }): ToolDisplayState {
+	const state: ToolDisplayState = {
+		id: toolCall.toolCall.id,
+		name: toolCall.toolCall.name,
+		args: toolCall.toolCall.arguments,
+		startedAt: Date.now(),
+		phase: "running",
+		liveOutput: createLiveStreamOutput(),
+		component: new Text("", 1, 0),
+	};
+	return state;
+}
+
+function isToolDisplayCollapsed(tool: ToolDisplayState, toolsCollapsed: boolean): boolean {
+	return tool.collapsedOverride ?? toolsCollapsed;
+}
+
+function refreshFallbackToolDisplays(tools: Map<string, ToolDisplayState>, toolsCollapsed: boolean): void {
+	for (const tool of tools.values()) updateFallbackToolDisplay(tool, toolsCollapsed);
+}
+
+function updateFallbackToolDisplay(tool: ToolDisplayState, toolsCollapsed: boolean): void {
+	tool.component.setText(formatFallbackToolDisplay(tool, toolsCollapsed));
+}
+
+function formatFallbackToolDisplay(tool: ToolDisplayState, toolsCollapsed: boolean): string {
+	if (isToolDisplayCollapsed(tool, toolsCollapsed)) return formatCollapsedToolDisplay(tool);
+	if (tool.phase === "running") {
+		const output = formatLiveStreamOutput(tool.liveOutput);
+		return output === ""
+			? `${cyan(`⚙ ${tool.name}`)} ${dim(safeJson(tool.args))}`
+			: `${cyan(`⚙ ${tool.name}`)}\n${output}`;
+	}
+	const marker = tool.phase === "done" ? dim("✓") : red("✗");
+	const output = tool.phase === "aborted" ? dim("aborted") : (tool.resultOutput ?? "(no output)");
+	return `${marker} ${dim(tool.name)}\n${output}`;
+}
+
+function formatCollapsedToolDisplay(tool: ToolDisplayState): string {
+	const marker = tool.phase === "running" ? cyan("⚙") : tool.phase === "done" ? dim("✓") : red("✗");
+	const parts = [
+		`${marker} ${tool.name} ${dim(shortToolId(tool.id))}`,
+		tool.phase,
+		formatToolDuration(tool),
+		formatToolOutputSummary(tool),
+	];
+	return parts.filter((part) => part !== "").join(dim(" · "));
+}
+
+function formatToolsStatus(tools: Map<string, ToolDisplayState>, toolsCollapsed: boolean): string {
+	const lines = [
+		bold("Fallback tools"),
+		dim(`Global: ${toolsCollapsed ? "collapsed" : "expanded"} · Ctrl+T toggles all · /tools <id> toggles one`),
+	];
+	const recentTools = [...tools.values()].slice(-20);
+	if (recentTools.length === 0) {
+		lines.push(dim("No fallback tool output yet."));
+		return lines.join("\n");
+	}
+	for (const tool of recentTools) {
+		lines.push(
+			[
+				cyan(shortToolId(tool.id)),
+				tool.name,
+				tool.phase,
+				isToolDisplayCollapsed(tool, toolsCollapsed) ? "collapsed" : "expanded",
+				formatToolDuration(tool),
+				formatToolOutputSummary(tool),
+			]
+				.filter((part) => part !== "")
+				.join("  "),
+		);
+	}
+	return lines.join("\n");
+}
+
+function shortToolId(id: string): string {
+	return id.slice(0, 8);
+}
+
+function formatToolDuration(tool: ToolDisplayState): string {
+	const endedAt = tool.endedAt ?? Date.now();
+	return formatElapsed(Math.max(0, endedAt - tool.startedAt));
+}
+
+function formatToolOutputSummary(tool: ToolDisplayState): string {
+	const text =
+		tool.phase === "aborted"
+			? ""
+			: tool.resultOutput !== undefined
+				? stripAnsi(tool.resultOutput)
+				: [tool.liveOutput.stdout, tool.liveOutput.stderr, tool.liveOutput.fallback].join("");
+	if (text === "") return tool.phase === "running" ? "no output yet" : "no output";
+	const lines = text.trimEnd() === "" ? 0 : text.trimEnd().split("\n").length;
+	return `${formatNumber(lines)} lines, ${formatNumber(text.length)} chars`;
+}
+
+function safeJson(value: unknown): string {
+	try {
+		return JSON.stringify(value);
+	} catch {
+		return "[unserializable arguments]";
+	}
+}
+
+function stripAnsi(value: string): string {
+	return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g"), "");
 }
 
 function entryInfoValue(id: string): string {
@@ -1569,25 +1778,28 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 		case "tool_start": {
 			const rendered = await state.renderTool({ phase: "start", toolCall: event.toolCall });
 			if (rendered) {
+				state.fallbackToolDisplays.delete(event.toolCall.id);
 				state.toolComponents.set(event.toolCall.id, rendered);
 				state.pendingTools.set(event.toolCall.id, event.toolCall.name);
 				state.addComponent(rendered);
 				break;
 			}
-			const component = new Text(
-				`${cyan(`⚙ ${event.toolCall.name}`)} ${dim(JSON.stringify(event.toolCall.arguments))}`,
-				1,
-				0,
-			);
-			state.toolComponents.set(event.toolCall.id, component);
+			const display = createToolDisplay(event);
+			updateFallbackToolDisplay(display, state.areToolsCollapsed());
+			state.fallbackToolDisplays.set(event.toolCall.id, display);
+			state.toolComponents.set(event.toolCall.id, display.component);
 			state.pendingTools.set(event.toolCall.id, event.toolCall.name);
-			state.addComponent(component);
+			state.addComponent(display.component);
 			break;
 		}
 		case "tool_update": {
 			const output = state.toolOutputs.get(event.toolCall.id) ?? createLiveStreamOutput();
 			state.toolOutputs.set(event.toolCall.id, output);
 			appendLiveStreamOutput(output, event.partialOutput, event.stream);
+			const display = state.fallbackToolDisplays.get(event.toolCall.id);
+			if (display) {
+				display.liveOutput = output;
+			}
 			const existing = state.toolComponents.get(event.toolCall.id);
 			const rendered = await state.renderTool(
 				{
@@ -1600,24 +1812,32 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 				isTextComponentOrUndefined(existing) ? existing : undefined,
 			);
 			if (rendered) {
+				state.fallbackToolDisplays.delete(event.toolCall.id);
 				if (!existing || rendered !== existing) state.addComponent(rendered);
 				state.toolComponents.set(event.toolCall.id, rendered);
 				state.pendingTools.set(event.toolCall.id, event.toolCall.name);
 				break;
 			}
-			let component = existing && isTextComponent(existing) ? existing : undefined;
-			if (!component) {
-				component = new Text(cyan(`⚙ ${event.toolCall.name}`), 1, 0);
-				state.toolComponents.set(event.toolCall.id, component);
-				state.addComponent(component);
+			let fallback = display;
+			if (!fallback) {
+				fallback = {
+					id: event.toolCall.id,
+					name: event.toolCall.name,
+					args: event.toolCall.arguments,
+					startedAt: Date.now(),
+					phase: "running",
+					liveOutput: output,
+					component: new Text("", 1, 0),
+				};
+				state.fallbackToolDisplays.set(event.toolCall.id, fallback);
+				state.toolComponents.set(event.toolCall.id, fallback.component);
+				state.addComponent(fallback.component);
 			}
 			state.pendingTools.set(event.toolCall.id, event.toolCall.name);
-			if (isTextComponent(component))
-				component.setText(`${cyan(`⚙ ${event.toolCall.name}`)}\n${formatLiveStreamOutput(output)}`);
+			updateFallbackToolDisplay(fallback, state.areToolsCollapsed());
 			break;
 		}
 		case "tool_result": {
-			const marker = event.result.isError ? red("✗") : dim("✓");
 			const existing = state.toolComponents.get(event.toolCall.id);
 			state.pendingTools.delete(event.toolCall.id);
 			const liveOutput = state.toolOutputs.get(event.toolCall.id);
@@ -1628,17 +1848,30 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 				isTextComponentOrUndefined(existing) ? existing : undefined,
 			);
 			if (rendered) {
+				state.fallbackToolDisplays.delete(event.toolCall.id);
 				if (!existing || rendered !== existing) state.addComponent(rendered);
 				state.toolComponents.set(event.toolCall.id, rendered);
 				break;
 			}
-			let component = existing && isTextComponent(existing) ? existing : undefined;
-			if (!component) {
-				component = new Text("", 1, 0);
-				state.toolComponents.set(event.toolCall.id, component);
-				state.addComponent(component);
+			let fallback = state.fallbackToolDisplays.get(event.toolCall.id);
+			if (!fallback) {
+				fallback = {
+					id: event.toolCall.id,
+					name: event.toolCall.name,
+					args: event.toolCall.arguments,
+					startedAt: Date.now(),
+					phase: "running",
+					liveOutput: liveOutput ?? createLiveStreamOutput(),
+					component: new Text("", 1, 0),
+				};
+				state.fallbackToolDisplays.set(event.toolCall.id, fallback);
+				state.toolComponents.set(event.toolCall.id, fallback.component);
+				state.addComponent(fallback.component);
 			}
-			if (isTextComponent(component)) component.setText(`${marker} ${dim(event.toolCall.name)}\n${output}`);
+			fallback.phase = event.result.isError ? "error" : "done";
+			fallback.endedAt = Date.now();
+			fallback.resultOutput = output;
+			updateFallbackToolDisplay(fallback, state.areToolsCollapsed());
 			break;
 		}
 		case "compaction":
