@@ -190,22 +190,81 @@ class TuiUiCapability implements UiCapability {
 - [x] tmux 冒烟覆盖全局扩展命令与 header item 在 `/reload` 后可用。
 - [x] 单测覆盖 `resources_discover("reload")`；tmux 冒烟覆盖新增 prompt/resource 在 `/reload` 后可用。
 
-### P8D：Model / Theme / Polish
+### P8D-1：Model / Thinking / Compaction Polish
 
 - [x] model selector：在有 provider/model registry 之前，先做历史/配置 model 列表 selector；保留 `/model <id>` 文本路径。
-- [ ] Themes：决定 tau theme JSON 还是 pi theme schema；实现默认 light/dark 与资源加载入口。
-- [ ] `/help` polish：可滚动组件、命令详情、扩展来源、快捷键分组。
-- [ ] footer polish：更完整 token usage/cost、session 状态、reload 状态、自定义 footer 区。
-- [ ] tool collapse/expand：全局快捷键与单个 tool item 折叠状态。
 - [x] thinking block show/hide：快捷键切换 reasoning 展示，状态反映到 footer。
-- [ ] startup diagnostics：展示 loaded extensions/skills/prompts/themes/resources，便于自举排障。
 - [x] compaction polish：展示阶段、耗时、summary/kept 粗略结果。
 
-### P8E：Acceptance / Self-Dogfood
+### P8D-2：Themes
 
-- [ ] 把关键 tmux 冒烟沉淀成自动化或半自动脚本：普通 prompt、tool_update、abort、TUI confirm、tree/fork、shortcut、renderer、reload。
-- [ ] 用 `npm run tau -- --tui` 自举开发 tau 至少一轮；把阻塞点登记在本文件并修完或明确延期。
-- [ ] 收尾时更新 roadmap 完成记录、pi parity 表、技术债登记；确保 `npm run check`、`npm test` 与关键 TTY 冒烟全绿。
+- [ ] 设计主题格式：明确选择 tau theme JSON 还是复用/适配 pi theme schema；写清字段、默认值、版本字段和未知字段处理。
+- [ ] 实现内置 `light` / `dark` 主题，覆盖 header、chat role、markdown、reasoning、tool、selector、status、footer、error/warning/success 等语义色。
+- [ ] 增加主题加载入口：支持 CLI/env/config/resource 至少一种稳定入口；加载失败时显示诊断并回退默认主题。
+- [ ] `/reload` 后刷新主题资源，不破坏当前 session、扩展 registry 和已注册 UI surfaces。
+- [ ] 将主题状态写入 footer 或 startup diagnostics，便于确认当前主题来源。
+- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖默认主题、外部主题加载、坏主题回退、reload 后主题刷新。
+
+### P8D-3：Help Polish
+
+- [ ] 把 `/help` 从纯文本列表升级为 TUI 组件或可滚动视图，内容超屏时可浏览且不挤压 editor。
+- [ ] 内置命令显示详情：用法、参数、是否可在 busy 状态执行、关联快捷键、是否来自 built-in。
+- [ ] 扩展命令显示来源：extension id/name、group/category、命令描述、prompt command/action command 区分。
+- [ ] 快捷键分组显示：built-in shortcut 与 extension shortcut 分区，冲突或被覆盖时可诊断。
+- [ ] renderer/widget/header/footer/tool surfaces 显示精简诊断，保留当前 `/help` 对扩展 surface 的排障价值。
+- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖长 help 滚动、扩展命令来源、快捷键分组和 renderer/widget 诊断。
+
+### P8D-4：Footer Polish
+
+- [ ] 梳理 footer 信息层级：固定展示 model、thinking、reasoning、session、cwd；动态展示 busy/reload/compact/follow-up/steering 状态。
+- [ ] token/context 展示升级：区分 estimated prompt tokens、trailing context source、context window 百分比和 compact 前后变化。
+- [ ] 预留 cost/usage 字段：当前没有真实 provider cost 时显示为 unknown/estimated，不伪造价格。
+- [ ] 自定义 footer 区打磨：限制宽度、稳定排序、错误隔离、reload 后来源刷新。
+- [ ] 小屏适配：窄宽度下按优先级裁剪，避免 footer 挤爆输入区域或出现无意义换行。
+- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖普通 idle、running、compact、reload 后 extension footer、窄屏 footer。
+
+### P8D-5：Tool Collapse / Expand
+
+- [ ] 设计全局折叠状态与单个 tool item 折叠状态：全局快捷键切换全部工具，单项状态可覆盖全局默认。
+- [ ] 为 fallback tool UI 保存最小结构化状态：tool name、args 摘要、phase、stdout/stderr/live chunks、result/error/aborted 标记。
+- [ ] 折叠态展示稳定摘要：工具名、状态、耗时/输出行数或字节数、错误/abort 标记；展开态保留现有实时输出。
+- [ ] 自定义 tool renderer 默认不被破坏；若扩展 renderer 不支持折叠，host 仍能显示外层摘要或保持当前行为并记录限制。
+- [ ] Footer 与 `/help` 增加快捷键说明；折叠状态在运行中 tool_update 到来时不丢失。
+- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖长输出工具、运行中折叠/展开、完成后折叠、abort 后 pending tool 摘要。
+
+### P8D-6：Startup Diagnostics
+
+- [ ] 启动后显示或可展开 loaded diagnostics：extensions、commands、shortcuts、message/entry/tool renderers、widgets、header/footer items。
+- [ ] 纳入资源发现结果：skills、prompts、themes/resources 的数量、来源和失败项；没有对应能力时明确显示 unavailable 而不是空白。
+- [ ] 诊断信息支持 `/reload` 后刷新，并显示 startup/resume/reload reason 与最近一次 reload 成功/失败时间。
+- [ ] 失败诊断不阻塞 TUI 启动；错误要可读、可复制，避免吞掉 extension/resource 加载异常。
+- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖干净启动、有全局扩展、有 resources、reload 后诊断变化、加载失败诊断。
+
+### P8E-1：TTY Smoke Automation
+
+- [ ] 新增自动化或半自动脚本，沉淀当前手工 tmux 流程；脚本需要创建隔离临时目录、mock provider、临时扩展，并清理 tmux session。
+- [ ] 覆盖普通 prompt 和 assistant stream：输入后能观察到最终文本并正常退出。
+- [ ] 覆盖 tool_update：长 bash/tool 输出在执行中可见，完成后 stdout/stderr/result 保留。
+- [ ] 覆盖 abort：运行中 Ctrl+C 后 TUI 保持可用，pending tool 被标记 aborted。
+- [ ] 覆盖 TUI confirm：project trust 或扩展 UI confirm 使用 TUI overlay，而非 readline。
+- [ ] 覆盖 tree/fork/session selector：至少一条 selector 路径可选择并改变 session 状态。
+- [ ] 覆盖 extension shortcut、message/entry/tool renderer、widgets、header/footer、reload/resources reload 的关键路径。
+- [ ] 验收：脚本可在本机重复运行；`npm run check`、`npm test` 不回退；文档记录脚本入口与已知限制。
+
+### P8E-2：Self-Dogfood
+
+- [ ] 用 `npm run tau -- --tui` 开发 tau 至少一轮，完成一个真实小改动或文档改动，不只启动空跑。
+- [ ] 记录自举过程中遇到的阻塞：输入、滚动、工具输出、abort、reload、session 恢复、长上下文、extension diagnostics。
+- [ ] 对阻塞问题现场修复；不能在 Phase 8 内修的，必须写进技术债并说明绕过方式。
+- [ ] 验收：本文件记录自举日期、使用的命令、完成的任务、发现/修复的问题；最终 `npm run check`、`npm test` 和关键 TTY smoke 通过。
+
+### P8E-3：Closeout
+
+- [ ] 更新 roadmap：Phase 8 状态、最终完成范围、验证摘要、剩余延期项。
+- [ ] 更新 pi parity：标记 themes/reload/TUI surfaces/help/footer/tool collapse 等对应状态，未对齐项写明原因。
+- [ ] 技术债登记：TUI 自动化、theme schema 稳定性、provider cost 数据、renderer API 限制、session/context 估算误差。
+- [ ] 全量验收：`npm run check`、`npm test`、关键 TTY smoke 全绿；工作区干净。
+- [ ] 最终提交并 push，阶段 8 文档中所有 Done/延期/技术债状态一致。
 
 ## 验收清单
 
