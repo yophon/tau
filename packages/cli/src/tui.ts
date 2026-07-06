@@ -40,6 +40,7 @@ const builtInCommands: SlashCommand[] = [
 	{ name: "resume", argumentHint: "<id|path|timestamp|name>", description: "Switch to a saved session." },
 	{ name: "tree", argumentHint: "[id]", description: "List jump points or navigate to one." },
 	{ name: "fork", argumentHint: "[id]", description: "Copy this session and switch to the fork." },
+	{ name: "follow", argumentHint: "<text>", description: "Queue a follow-up after the current turn." },
 	{ name: "quit", description: "Exit the TUI." },
 ];
 
@@ -220,6 +221,15 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			return;
 		}
 		if (runningTask === "turn") {
+			const followUp = parseFollowUpCommand(input);
+			if (followUp !== undefined) {
+				if (followUp === "") appendText(red("Usage: /follow <text>"));
+				else {
+					agent.followUp(followUp);
+					appendText(dim(`↳ follow-up queued: ${followUp}`));
+				}
+				return;
+			}
 			agent.steer(input);
 			appendText(dim(`↳ steered: ${input}`));
 			return;
@@ -253,6 +263,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
 			await runCompact(args === "" ? undefined : args);
+			return true;
+		}
+		if (name === "follow") {
+			appendText(red("No running turn. Send a prompt normally, or use /follow <text> while a turn is running."));
 			return true;
 		}
 		if (name === "name") {
@@ -461,6 +475,12 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 function firstLine(text: string, max = 120): string {
 	const line = text.split("\n")[0] ?? "";
 	return line.length > max ? `${line.slice(0, max)}...` : line;
+}
+
+function parseFollowUpCommand(input: string): string | undefined {
+	if (input === "/follow") return "";
+	if (!input.startsWith("/follow ")) return undefined;
+	return input.slice("/follow ".length).trim();
 }
 
 function formatHelp(extensionCommands: { name: string; description: string }[]): string {

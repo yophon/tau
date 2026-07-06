@@ -117,7 +117,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [ ] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
 - [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
-- [ ] Steering/follow-up：运行中输入默认 steer；增加一个快捷键或命令把输入排为 followUp。
+- [x] Steering/follow-up：运行中输入默认 steer；`/follow <text>` 把输入排为 followUp。
 - [x] Abort UX：运行中 Ctrl+C abort 后保留 TUI，明确显示 turn/compaction aborted 状态。
 - [x] Abort UX polish：abort 后标记 pending tool 组件。
 
