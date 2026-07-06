@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Extension } from "@tau/kernel";
@@ -22,7 +22,8 @@ export async function loadExtensionsFromDir(dir: string): Promise<Extension[]> {
 	for (const entry of entries.sort()) {
 		if (!/\.(ts|js|mjs)$/.test(entry) || entry.endsWith(".d.ts")) continue;
 		const path = join(resolved, entry);
-		const module = (await import(pathToFileURL(path).href)) as { default?: unknown };
+		const modifiedAt = (await stat(path)).mtimeMs;
+		const module = (await import(`${pathToFileURL(path).href}?mtime=${modifiedAt}`)) as { default?: unknown };
 		if (typeof module.default !== "function") {
 			throw new Error(`Extension ${path} must default-export a setup function`);
 		}

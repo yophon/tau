@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut / renderer API / widgets / header-footer items 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut / renderer API / widgets / header-footer items / `/reload` 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -45,7 +45,7 @@
 | Extension widgets | editor 周边扩展组件 | ✅ P8（editor 上方/下方；文本/Component） |
 | Header/footer items | header/footer 状态区扩展 | ✅ P8（短文本状态段；host 控制刷新频率） |
 | Themes | TUI 主题系统 | 📍P8（TUI） |
-| `/reload` 热重载扩展 | 运行时重载 | 📍P8（host-node 便利；小程序宿主原理性无此功能） |
+| `/reload` 热重载扩展 | 运行时重载 | ✅ P8（host-node 扩展 registry；resources/theme reload 仍在 Phase 8 清单） |
 | `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ❌ D3（OpenAI 兼容 only；如需求出现走扩展层协议适配再议） |
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
 | 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@tau/ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |

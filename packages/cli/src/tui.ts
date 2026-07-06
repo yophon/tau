@@ -64,6 +64,7 @@ const builtInCommands: SlashCommand[] = [
 		argumentHint: "[default|none|minimal|low|medium|high|xhigh]",
 		description: "Show or set reasoning effort.",
 	},
+	{ name: "reload", description: "Reload extensions and extension-provided UI surfaces." },
 	{ name: "quit", description: "Exit the TUI." },
 ];
 
@@ -114,7 +115,12 @@ export interface RunTuiOptions {
 	thinkingLevel?: ThinkingLevel;
 	setModel(model: string): void;
 	setThinkingLevel(level: ThinkingLevel | undefined): void;
-	buildAgent(messages: AgentMessage[] | undefined, session: SessionRecorder | undefined): Agent;
+	buildAgent(
+		messages: AgentMessage[] | undefined,
+		session: SessionRecorder | undefined,
+		extensions: ExtensionRegistry,
+	): Agent;
+	reloadExtensions(ui: UiCapability | undefined): Promise<ExtensionRegistry>;
 }
 
 export function createStartupTuiUi(): UiCapability {
@@ -156,6 +162,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const tui = new TUI(terminal);
 	let currentModel = options.model;
 	let currentThinkingLevel = options.thinkingLevel;
+	let extensions = options.extensions;
 	let headerStatusItems: string[] = [];
 	let footerStatusItems: string[] = [];
 	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd, headerStatusItems), 1, 0);
@@ -165,9 +172,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const belowEditorWidgets = new Container();
 	const footer = new Text("", 1, 0);
 	const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
-	editor.setAutocompleteProvider(
-		new CombinedAutocompleteProvider(buildAutocompleteCommands(options.extensions), options.cwd),
-	);
+	editor.setAutocompleteProvider(new CombinedAutocompleteProvider(buildAutocompleteCommands(extensions), options.cwd));
 	tui.addChild(header);
 	tui.addChild(chat);
 	tui.addChild(status);
@@ -227,9 +232,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const restored = await restoreSession(newStore);
 		store = newStore;
 		recorder = await SessionRecorder.open(newStore);
-		agent = options.buildAgent(restored.messages, recorder);
+		agent = options.buildAgent(restored.messages, recorder, extensions);
 		agent.setUi(uiCapability);
-		await options.extensions.notifySessionStart("resume", agent.extensionContext());
+		await extensions.notifySessionStart("resume", agent.extensionContext());
 		const metadata = await newStore.getMetadata();
 		await refreshFooterSession(metadata);
 		await refreshStatusItems();
@@ -265,7 +270,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		});
 
 	const stop = async (): Promise<void> => {
-		await options.extensions.notifySessionShutdown("quit", agent.extensionContext());
+		await extensions.notifySessionShutdown("quit", agent.extensionContext());
 		tui.stop();
 		resolveDone?.();
 	};
@@ -303,7 +308,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	agent.setUi(uiCapability);
 
 	const runShortcut = async (name: string): Promise<void> => {
-		const shortcut = options.extensions.shortcuts.get(name);
+		const shortcut = extensions.shortcuts.get(name);
 		if (!shortcut) return;
 		try {
 			const messageStart = agent.messages.length;
@@ -318,7 +323,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	};
 
 	const renderMessageWithExtensions = async (message: AgentMessage, target?: Markdown): Promise<boolean> => {
-		for (const renderer of options.extensions.messageRenderers.values()) {
+		for (const renderer of extensions.messageRenderers.values()) {
 			if (!messageRendererMatches(renderer, message)) continue;
 			try {
 				const result = await renderer.handler(message, agent.extensionContext());
@@ -349,7 +354,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		entry: SessionEntry,
 		fallback?: EntrySelectPresentation,
 	): Promise<EntrySelectPresentation | undefined> => {
-		for (const renderer of options.extensions.entryRenderers.values()) {
+		for (const renderer of extensions.entryRenderers.values()) {
 			if (!entryRendererMatches(renderer, entry)) continue;
 			try {
 				const result = await renderer.handler(entry, agent.extensionContext());
@@ -369,7 +374,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		event: RegisteredToolRenderEvent,
 		target?: Text,
 	): Promise<Component | undefined> => {
-		for (const renderer of options.extensions.toolRenderers.values()) {
+		for (const renderer of extensions.toolRenderers.values()) {
 			if (!toolRendererMatches(renderer, event)) continue;
 			try {
 				const result = await renderer.handler(event, agent.extensionContext());
@@ -388,7 +393,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const refreshExtensionWidgets = async (): Promise<void> => {
 		aboveEditorWidgets.clear();
 		belowEditorWidgets.clear();
-		for (const widget of options.extensions.widgets.values()) {
+		for (const widget of extensions.widgets.values()) {
 			const target = widget.placement === "below-editor" ? belowEditorWidgets : aboveEditorWidgets;
 			try {
 				const result = await widget.handler(agent.extensionContext());
@@ -406,7 +411,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const refreshStatusItems = async (): Promise<void> => {
 		const nextHeaderItems: string[] = [];
 		const nextFooterItems: string[] = [];
-		for (const item of options.extensions.headerItems.values()) {
+		for (const item of extensions.headerItems.values()) {
 			try {
 				const result = await item.handler(agent.extensionContext());
 				if (result) nextHeaderItems.push(result);
@@ -414,7 +419,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				nextHeaderItems.push(`header ${item.name} failed: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}
-		for (const item of options.extensions.footerItems.values()) {
+		for (const item of extensions.footerItems.values()) {
 			try {
 				const result = await item.handler(agent.extensionContext());
 				if (result) nextFooterItems.push(result);
@@ -433,6 +438,59 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await refreshStatusItems();
 		await refreshExtensionWidgets();
 	};
+
+	async function reloadExtensions(): Promise<void> {
+		if (runningTask) {
+			appendText(dim("Reload is unavailable while a task is running."));
+			return;
+		}
+		if (pendingUiPrompt) {
+			appendText(dim("Reload is unavailable while waiting for UI input."));
+			return;
+		}
+		setStatus(cyan("Reloading extensions..."));
+		const previousExtensions = extensions;
+		const previousAgent = agent;
+		let previousShutdown = false;
+		try {
+			await previousExtensions.notifySessionShutdown("quit", previousAgent.extensionContext());
+			previousShutdown = true;
+			const nextExtensions = await options.reloadExtensions(uiCapability);
+			const nextAgent = options.buildAgent([...previousAgent.messages], recorder, nextExtensions);
+			nextAgent.setUi(uiCapability);
+			await nextExtensions.notifySessionStart("resume", nextAgent.extensionContext());
+			extensions = nextExtensions;
+			agent = nextAgent;
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(buildAutocompleteCommands(extensions), options.cwd),
+			);
+			await refreshExtensionSurfaces();
+			appendText(dim("Extensions reloaded."));
+		} catch (error) {
+			extensions = previousExtensions;
+			agent = previousAgent;
+			agent.setUi(uiCapability);
+			editor.setAutocompleteProvider(
+				new CombinedAutocompleteProvider(buildAutocompleteCommands(extensions), options.cwd),
+			);
+			if (previousShutdown) {
+				try {
+					await previousExtensions.notifySessionStart("resume", previousAgent.extensionContext());
+				} catch {
+					// The visible reload error below is the actionable failure.
+				}
+			}
+			try {
+				await refreshExtensionSurfaces();
+			} catch {
+				setHeader();
+				setFooter();
+			}
+			appendText(red(`Reload failed: ${error instanceof Error ? error.message : String(error)}`));
+		} finally {
+			setStatus(dim("Ready"));
+		}
+	}
 
 	tui.addInputListener((data) => {
 		if (matchesKey(data, Key.escape) && runningTask === "compaction" && controller) {
@@ -458,7 +516,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			return { consume: true };
 		}
 		if (!runningTask && !pendingUiPrompt) {
-			for (const shortcut of options.extensions.shortcuts.values()) {
+			for (const shortcut of extensions.shortcuts.values()) {
 				if (matchesKey(data, shortcut.key as TuiKey)) {
 					void runShortcut(shortcut.name);
 					return { consume: true };
@@ -523,7 +581,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 		const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
 		if (name === "help") {
-			appendText(formatHelp(options.extensions));
+			appendText(formatHelp(extensions));
 			return true;
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
@@ -540,7 +598,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				return true;
 			}
 			const previousModel = currentModel;
-			const decision = await options.extensions.runModelSelectBefore(
+			const decision = await extensions.runModelSelectBefore(
 				{ currentModel: previousModel, requestedModel: args },
 				agent.extensionContext(),
 			);
@@ -552,7 +610,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			options.setModel(decision.model);
 			setHeader();
 			setFooter();
-			await options.extensions.notifyModelSelected(
+			await extensions.notifyModelSelected(
 				{ previousModel, requestedModel: args, selectedModel: decision.model },
 				agent.extensionContext(),
 			);
@@ -570,7 +628,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				return true;
 			}
 			const previousLevel = currentThinkingLevel;
-			const decision = await options.extensions.runThinkingLevelSelectBefore(
+			const decision = await extensions.runThinkingLevelSelectBefore(
 				{ currentLevel: previousLevel, requestedLevel },
 				agent.extensionContext(),
 			);
@@ -581,11 +639,15 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			currentThinkingLevel = decision.level;
 			options.setThinkingLevel(decision.level);
 			setFooter();
-			await options.extensions.notifyThinkingLevelSelected(
+			await extensions.notifyThinkingLevelSelected(
 				{ previousLevel, requestedLevel, selectedLevel: decision.level },
 				agent.extensionContext(),
 			);
 			appendText(dim(`Thinking level set to ${formatThinkingLevel(decision.level)}.`));
+			return true;
+		}
+		if (name === "reload") {
+			await reloadExtensions();
 			return true;
 		}
 		if (name === "name") {
@@ -598,7 +660,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				return true;
 			}
 			await recorder.setName(args);
-			await options.extensions.notifySessionInfoChanged(args, agent.extensionContext());
+			await extensions.notifySessionInfoChanged(args, agent.extensionContext());
 			await refreshExtensionSurfaces();
 			appendText(dim(`Session named "${args}".`));
 			return true;
@@ -770,7 +832,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					targetEntryId = selected.value === fullForkValue ? "" : selected.value;
 				}
 				if (targetEntryId !== "") {
-					const decision = await options.extensions.runSessionBeforeFork(
+					const decision = await extensions.runSessionBeforeFork(
 						{ entryId: targetEntryId, position: "before" },
 						agent.extensionContext(),
 					);
@@ -793,7 +855,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 			return true;
 		}
-		const command = options.extensions.commands.get(name);
+		const command = extensions.commands.get(name);
 		if (!command) return false;
 		try {
 			const messageStart = agent.messages.length;
@@ -813,7 +875,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(red(recordInContext ? "Usage: ! <command>" : "Usage: !! <command>"));
 			return;
 		}
-		const decision = await options.extensions.runUserBash({ command, recordInContext }, agent.extensionContext());
+		const decision = await extensions.runUserBash({ command, recordInContext }, agent.extensionContext());
 		if (decision.cancel) {
 			appendText(dim(`Bash cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
 			return;

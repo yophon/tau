@@ -430,6 +430,11 @@ async function main(): Promise<void> {
 				: undefined;
 	const extensions = await loadExtensionRegistry(cwd, ui);
 	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
+	const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
+		const nextExtensions = await loadExtensionRegistry(cwd, reloadUi);
+		nextExtensions.setFlagValues(resolveExtensionFlags(nextExtensions, options.extras));
+		return nextExtensions;
+	};
 
 	const platform = defaultPlatform();
 	const sessionRepo = new JsonlSessionRepo(
@@ -466,13 +471,17 @@ async function main(): Promise<void> {
 
 	const fs = new NodeFileSystem(cwd);
 	const shell = new NodeShell(cwd);
-	const buildAgent = (messages: typeof initialMessages, session: SessionRecorder | undefined): Agent =>
+	const buildAgent = (
+		messages: typeof initialMessages,
+		session: SessionRecorder | undefined,
+		agentExtensions = extensions,
+	): Agent =>
 		new Agent({
 			config,
 			platform,
 			systemPrompt: options.system ?? defaultSystemPrompt(cwd),
 			tools: createCodingTools({ fs, shell }),
-			extensions,
+			extensions: agentExtensions,
 			ui,
 			capabilities: {
 				fs,
@@ -518,6 +527,7 @@ async function main(): Promise<void> {
 				setThinkingLevelInConfig(config, nextLevel);
 			},
 			buildAgent,
+			reloadExtensions,
 		});
 		return;
 	}
