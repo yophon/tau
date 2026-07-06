@@ -107,9 +107,9 @@ class TuiUiCapability implements UiCapability {
 - [ ] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
 - [ ] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。
 - [ ] TUI `/fork`：列表选择 fork target；裸 `/fork` 仍全量复制。
-- [ ] TUI `/sessions` / `/resume`：选择历史 session 并切换/恢复。
+- [ ] TUI `/sessions` / `/resume`：选择历史 session 并切换/恢复。（`/sessions` 文本列表已落地；selector resume 待做）
 - [ ] TUI `/compact [instructions]`：显示 compaction start/end 状态，支持 Esc/Ctrl+C abort compaction。
-- [ ] TUI `/name`：inline input 或 command 参数设置 session name。
+- [x] TUI `/name`：inline input 或 command 参数设置 session name。
 - [ ] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [ ] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
 - [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
@@ -149,6 +149,7 @@ P8A 验证记录：
 - `npm test` 69 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。启动期 project trust 仍使用旧路径，待后续重排。
+- TUI `/name <name>` 与 `/sessions` 文本列表已实现；tmux 冒烟确认 session 命名和列表显示。
 
 ## 风险与开放问题
 

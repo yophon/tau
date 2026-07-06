@@ -482,6 +482,8 @@ async function main(): Promise<void> {
 			baseUrl,
 			cwd,
 			contextWindow,
+			sessionRepo,
+			recorder,
 		});
 		return;
 	}

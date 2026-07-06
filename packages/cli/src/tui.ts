@@ -10,7 +10,15 @@ import {
 	Text,
 	TUI,
 } from "@earendil-works/pi-tui";
-import { type Agent, type AgentEvent, type ExtensionRegistry, messageText, type UiCapability } from "@tau/kernel";
+import {
+	type Agent,
+	type AgentEvent,
+	type ExtensionRegistry,
+	type JsonlSessionRepo,
+	messageText,
+	type SessionRecorder,
+	type UiCapability,
+} from "@tau/kernel";
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
 const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
@@ -54,6 +62,8 @@ export interface RunTuiOptions {
 	baseUrl: string;
 	cwd: string;
 	contextWindow?: number;
+	sessionRepo: JsonlSessionRepo;
+	recorder?: SessionRecorder;
 }
 
 export async function runTui(options: RunTuiOptions): Promise<void> {
@@ -193,6 +203,33 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				appendText(result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."));
 			} catch (error) {
 				appendText(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
+			}
+			return true;
+		}
+		if (name === "name") {
+			if (!options.recorder) {
+				appendText(red("No active session (--no-session)."));
+				return true;
+			}
+			if (args === "") {
+				appendText(red("Usage: /name <name>"));
+				return true;
+			}
+			await options.recorder.setName(args);
+			await options.extensions.notifySessionInfoChanged(args, options.agent.extensionContext());
+			appendText(dim(`Session named "${args}".`));
+			return true;
+		}
+		if (name === "sessions") {
+			const sessions = await options.sessionRepo.list();
+			if (sessions.length === 0) {
+				appendText(dim("No sessions found."));
+			} else {
+				appendText(
+					sessions
+						.map((session) => `${session.timestamp}  ${session.name ?? "(unnamed)"}  ${dim(session.filePath ?? "")}`)
+						.join("\n"),
+				);
 			}
 			return true;
 		}
