@@ -18,6 +18,8 @@ inject a small adapter instead of polyfilling globals.
 | `@tau/kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, capability interfaces | **No** — enforced by `npm run check:purity` |
 | `@tau/host-node` | `FileSystem` + `Shell` capability providers for Node.js | Yes |
 | `@tau/cli` | Minimal terminal frontend | Yes |
+| `@tau/ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
+| `@tau/ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
 
 ## Design rules
 

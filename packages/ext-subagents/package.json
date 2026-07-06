@@ -1,0 +1,14 @@
+{
+	"name": "@tau/ext-subagents",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "Subagent task delegation extension for tau",
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@tau/kernel": "0.0.1"
+	}
+}

@@ -1,10 +1,10 @@
 # tau 路线图
 
-> 最后更新：2026-07-06（Phase 7 规格启动；Phase 6 搁置内容并入/紧跟 Phase 7）
+> 最后更新：2026-07-06（Phase 7 扩展生态标杆包完成）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
-**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；**P6 已搁置并入 P7**（skills/prompts 改做扩展包，依赖 P2 的 `before_agent_start`/`registerCommand` + P7 要补的「向扩展暴露 fs」钩子）；P7 依赖 P1+P2（扩展表达力压力测试）——**当前工作**；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核（可与 P7–P8 并行推进）；P11 收尾。
+**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；**P6 已搁置并入 P7**（skills/prompts 改做扩展包，依赖 P2 的 `before_agent_start`/`registerCommand` + P7 要补的「向扩展暴露 fs」钩子）；P8 依赖 P2 的 steering 与 tool_execution_update——**当前工作**；P9/P10 只依赖内核（可与 P8 并行推进）；P11 收尾。
 
 ## Phase 0 ✅ 内核种子（2026-07-04）
 
@@ -57,17 +57,19 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 - `resources_discover` 事件（扩展提供额外资源路径）
 - **验收**：把 pi 仓库的一个真实 skill 原样放入 `.tau/skills` 可用
 
-## Phase 7 🚧 扩展生态标杆包：子 agent 与 MCP
+## Phase 7 ✅ 扩展生态标杆包：子 agent 与 MCP
 
 **目标**：用两个高价值扩展包验证扩展 API 的表达力（遵循 pi 哲学：不进内核）。发现表达力缺口就回头补内核钩子——这正是把它排在 TUI 之前的原因，内核 API 要在 TUI 依赖它之前定型。
 
-规格书：[specs/phase-7-extension-ecosystem.md](specs/phase-7-extension-ecosystem.md)（草拟中）。
+规格书：[specs/phase-7-extension-ecosystem.md](specs/phase-7-extension-ecosystem.md)。
 
 - `@tau/ext-subagents`：注册 `task` 工具，spawn 子 Agent 实例（同进程复用内核，天然运行时无关）；结果汇总回主对话
 - `@tau/ext-mcp`：注册 MCP client 工具桥（stdio/HTTP transport 属宿主能力——stdio 版依赖 Shell/host-node，HTTP 版可纯内核）
 - 顺带验证：扩展作为带 npm 依赖的完整包（pi 的 with-deps 模式）
 - 先读 pi：pi 无内置实现（刻意），读其哲学章节 + 社区 pi packages 的做法；MCP 读官方 spec
 - **验收**：子 agent 完成一个委派任务的 e2e；MCP 连接一个真实 server（如 filesystem server）调用工具
+
+**完成记录**：62 测试全绿。内核补 `ExtensionContext.capabilities`（fs/shell/platform facade）、`Tool.execute(..., ctx)`、`ctx.runSubagent()`、`resources_discover`、Agent 动态合并 extension tools；CLI 向扩展暴露 Node fs/shell capabilities。新增 `@tau/ext-subagents`（默认 `task` 工具）与 `@tau/ext-mcp`（官方 SDK stdio/Streamable HTTP client，测试覆盖 stdio tools/list + tools/call）。e2e：CLI 项目扩展加载 subagents 并完成父/子 Agent 三请求链路；MCP e2e 用官方 SDK stdio server fixture 暴露 `echo` 工具并通过 tau tool 调用成功。与规格偏差：MCP e2e 未额外安装 filesystem server，改用本仓库内真实 MCP stdio fixture；HTTP transport 实现保留但未做 e2e 覆盖。
 
 ## Phase 8 ⬜ TUI 宿主
 

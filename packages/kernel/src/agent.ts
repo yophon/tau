@@ -11,6 +11,9 @@ import {
 } from "./compaction.ts";
 import { SessionError, TauError } from "./errors.ts";
 import type {
+	AgentRunResult,
+	AgentSpawnOptions,
+	ExtensionCapabilities,
 	ExtensionContext,
 	ExtensionRegistry,
 	ToolCallEvent,
@@ -22,6 +25,7 @@ import {
 	type AssistantMessage,
 	type CustomMessage,
 	emptyUsage,
+	messageText,
 	type ToolCall,
 	type ToolResultMessage,
 	toolCallsOf,
@@ -73,6 +77,8 @@ export interface AgentOptions {
 	extensions?: ExtensionRegistry;
 	/** Host UI capability, exposed to extensions via ctx.ui. */
 	ui?: UiCapability;
+	/** Host capabilities exposed to extensions through ctx.capabilities. */
+	capabilities?: Omit<ExtensionCapabilities, "platform"> & { platform?: Platform };
 	/** Seed conversation state, e.g. restored from a session. */
 	initialMessages?: AgentMessage[];
 	/** Session recorder; when present, conversation messages are persisted as they happen. */
@@ -115,9 +121,10 @@ export class Agent {
 	private readonly platform: Platform;
 	private readonly config: OpenAICompatConfig;
 	private readonly systemPrompt: string | undefined;
-	private readonly tools: Map<string, Tool>;
+	private readonly baseTools: Tool[];
 	private readonly extensions: ExtensionRegistry | undefined;
 	private readonly ui: UiCapability | undefined;
+	private readonly capabilities: ExtensionCapabilities;
 	private readonly maxTurnsPerPrompt: number;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
@@ -134,10 +141,10 @@ export class Agent {
 		this.platform = options.platform ?? defaultPlatform();
 		this.config = options.config;
 		this.systemPrompt = options.systemPrompt;
-		this.tools = new Map((options.tools ?? []).map((tool) => [tool.name, tool]));
-		for (const [name, tool] of options.extensions?.tools ?? []) this.tools.set(name, tool);
+		this.baseTools = [...(options.tools ?? [])];
 		this.extensions = options.extensions;
 		this.ui = options.ui;
+		this.capabilities = { ...options.capabilities, platform: this.platform };
 		if (options.initialMessages) this.messages.push(...options.initialMessages);
 		this.maxTurnsPerPrompt = options.maxTurnsPerPrompt ?? DEFAULT_MAX_TURNS;
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
@@ -168,6 +175,12 @@ export class Agent {
 		});
 	}
 
+	private currentTools(): Map<string, Tool> {
+		const tools = new Map(this.baseTools.map((tool) => [tool.name, tool]));
+		for (const [name, tool] of this.extensions?.tools ?? []) tools.set(name, tool);
+		return tools;
+	}
+
 	/** Persist a message, after any queued extension-triggered writes. */
 	private async recordMessage(message: AgentMessage): Promise<void> {
 		if (!this.session) return;
@@ -192,11 +205,40 @@ export class Agent {
 		return {
 			ui: this.ui,
 			messages: this.messages,
+			capabilities: this.capabilities,
 			getContextUsage: () => this.getContextUsage(),
 			compact: (customInstructions) => {
 				this.pendingCompaction = customInstructions ?? "";
 			},
+			runSubagent: (prompt, options, signal) => this.runSubagent(prompt, options, signal),
 		};
+	}
+
+	private async runSubagent(
+		prompt: string,
+		options: AgentSpawnOptions = {},
+		signal?: TauAbortSignal,
+	): Promise<AgentRunResult> {
+		const child = new Agent({
+			config: this.config,
+			platform: this.platform,
+			systemPrompt: options.systemPrompt ?? this.systemPrompt,
+			tools: options.tools ?? this.baseTools,
+			ui: this.ui,
+			capabilities: this.capabilities,
+			initialMessages: options.initialMessages,
+			maxTurnsPerPrompt: options.maxTurnsPerPrompt ?? this.maxTurnsPerPrompt,
+			steeringMode: this.steeringQueue.mode,
+			followUpMode: this.followUpQueue.mode,
+			compaction: this.compactionSettings,
+		});
+		let text = "";
+		let lastAssistantText = "";
+		for await (const event of child.prompt(prompt, signal)) {
+			if (event.type === "text_delta") text += event.delta;
+			if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
+		}
+		return { text: text === "" ? lastAssistantText : text, messages: [...child.messages] };
 	}
 
 	/** Current context-token estimate (pi semantics: last assistant usage + trailing heuristic). */
@@ -431,9 +473,10 @@ export class Agent {
 			await this.extensions?.notifyMessageStart(partial, ctx);
 
 			let assistantMessage: AssistantMessage | undefined;
+			const tools = this.currentTools();
 			const stream = streamChatCompletion(this.platform, this.config, request, {
 				systemPrompt: systemPrompt === "" ? undefined : systemPrompt,
-				tools: this.tools.size > 0 ? [...this.tools.values()] : undefined,
+				tools: tools.size > 0 ? [...tools.values()] : undefined,
 				signal,
 			});
 			for await (const event of stream) {
@@ -526,7 +569,7 @@ export class Agent {
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 	): Promise<{ result: ToolResult; updates: string[] }> {
-		const tool = this.tools.get(toolCall.name);
+		const tool = this.currentTools().get(toolCall.name);
 		if (!tool) {
 			return { result: { output: `Unknown tool: ${toolCall.name}`, isError: true }, updates: [] };
 		}
@@ -567,7 +610,7 @@ export class Agent {
 
 		let result: ToolResult;
 		try {
-			result = await tool.execute(args, signal, onUpdate);
+			result = await tool.execute(args, signal, onUpdate, ctx);
 		} catch (cause) {
 			result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
 		}

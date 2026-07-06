@@ -1,3 +1,4 @@
+import type { ExtensionContext } from "./extensions.ts";
 import type { ToolDefinition } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
 
@@ -11,6 +12,7 @@ export interface Tool extends ToolDefinition {
 		args: Record<string, unknown>,
 		signal?: TauAbortSignal,
 		onUpdate?: (partialOutput: string) => void,
+		ctx?: ExtensionContext,
 	): Promise<ToolResult>;
 }
 

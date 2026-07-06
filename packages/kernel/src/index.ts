@@ -49,6 +49,8 @@ export {
 } from "./errors.ts";
 export {
 	type AgentEndEvent,
+	type AgentRunResult,
+	type AgentSpawnOptions,
 	type AgentStartEvent,
 	type BeforeAgentStartEvent,
 	type BeforeAgentStartEventResult,
@@ -58,6 +60,7 @@ export {
 	type CustomMessageInput,
 	type Extension,
 	type ExtensionAPI,
+	type ExtensionCapabilities,
 	type ExtensionContext,
 	type ExtensionHandler,
 	type ExtensionHostActions,
@@ -72,6 +75,8 @@ export {
 	type ProjectTrustEventResult,
 	type RegisteredCommand,
 	type RegisteredFlag,
+	type ResourcesDiscoverEvent,
+	type ResourcesDiscoverResult,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeCompactResult,
 	type SessionBeforeForkEvent,

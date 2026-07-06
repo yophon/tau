@@ -1,0 +1,15 @@
+{
+	"name": "@tau/ext-mcp",
+	"version": "0.0.1",
+	"type": "module",
+	"private": true,
+	"description": "MCP tool bridge extension for tau",
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "1.29.0",
+		"@tau/kernel": "0.0.1"
+	}
+}

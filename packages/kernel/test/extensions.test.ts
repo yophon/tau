@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
-import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
+import type { FileInfo, FileSystem } from "../src/capabilities.ts";
+import { type Extension, type ExtensionAPI, ExtensionRegistry } from "../src/extensions.ts";
 import { messageText } from "../src/messages.ts";
 import type { Tool } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
@@ -145,4 +146,109 @@ test("handlers chain in registration order and commands are exposed to hosts", a
 	const registry = await ExtensionRegistry.load([first, second]);
 	assert.deepEqual(await registry.runInput("x", { messages: [] }), { handled: false, text: "x-a-b" });
 	assert.equal(await registry.commands.get("ping")?.handler("", { messages: [] }), "pong");
+});
+
+test("extension tools receive context capabilities", async () => {
+	const fs: FileSystem = {
+		cwd: "/project",
+		readTextFile: async (path) => `read:${path}`,
+		writeTextFile: async () => undefined,
+		appendFile: async () => undefined,
+		listDir: async () => [],
+		stat: async (path): Promise<FileInfo> => ({
+			path,
+			name: path,
+			kind: "file",
+			size: 0,
+			mtimeMs: 0,
+		}),
+		remove: async () => undefined,
+	};
+	const extension: Extension = (api) => {
+		api.registerTool({
+			name: "ctx_read",
+			description: "Read through ctx fs",
+			parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+			execute: async (args, _signal, _onUpdate, ctx) => {
+				const content = await ctx?.capabilities?.fs?.readTextFile(String(args.path));
+				return { output: content ?? "missing fs", isError: content === undefined };
+			},
+		});
+	};
+	const registry = await ExtensionRegistry.load([extension]);
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake" },
+		platform: fakePlatform([
+			makeSseResponse(toolCallTurn("ctx_read", { path: "note.txt" })),
+			makeSseResponse(textTurn("done")),
+		]),
+		extensions: registry,
+		capabilities: { fs },
+	});
+
+	for await (const _event of agent.prompt("read")) {
+		// drain
+	}
+
+	const toolResult = agent.messages.find((message) => message.role === "toolResult");
+	assert.ok(toolResult?.role === "toolResult");
+	assert.equal(messageText(toolResult), "read:note.txt");
+});
+
+test("resources_discover handlers merge paths in registration order", async () => {
+	const first: Extension = (api) => {
+		api.on("resources_discover", (event) => ({
+			skillPaths: [`${event.cwd}/skills-a`],
+			promptPaths: ["prompts-a"],
+		}));
+	};
+	const second: Extension = (api) => {
+		api.on("resources_discover", () => ({
+			skillPaths: ["skills-b"],
+			themePaths: ["themes-b"],
+		}));
+	};
+	const registry = await ExtensionRegistry.load([first, second]);
+
+	assert.deepEqual(await registry.runResourcesDiscover("/repo", "startup", { messages: [] }), {
+		skillPaths: ["/repo/skills-a", "skills-b"],
+		promptPaths: ["prompts-a"],
+		themePaths: ["themes-b"],
+	});
+});
+
+test("tools registered after agent construction are visible to later turns", async () => {
+	let capturedApi: ExtensionAPI | undefined;
+	const extension: Extension = (api) => {
+		capturedApi = api;
+	};
+	const registry = await ExtensionRegistry.load([extension]);
+	const requests: unknown[] = [];
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake" },
+		platform: fakePlatform(
+			[makeSseResponse(toolCallTurn("late_tool", {})), makeSseResponse(textTurn("done"))],
+			requests,
+		),
+		extensions: registry,
+	});
+	capturedApi?.registerTool({
+		name: "late_tool",
+		description: "Registered after construction",
+		parameters: { type: "object", properties: {} },
+		execute: async () => ({ output: "late ok" }),
+	});
+
+	for await (const _event of agent.prompt("go")) {
+		// drain
+	}
+
+	const firstRequest = requests[0] as { tools?: { function: { name: string } }[] };
+	assert.ok(
+		firstRequest.tools?.some((tool) => tool.function.name === "late_tool"),
+		JSON.stringify(firstRequest.tools),
+	);
+	const toolResult = agent.messages.find((message) => message.role === "toolResult");
+	assert.ok(toolResult?.role === "toolResult");
+	assert.equal(messageText(toolResult), "late ok");
 });

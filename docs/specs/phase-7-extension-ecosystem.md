@@ -1,6 +1,6 @@
 # Phase 7：扩展生态标杆包（Subagents 与 MCP）规格书
 
-> 状态：草拟（2026-07-06）
+> 状态：已完成（2026-07-06）
 > 对应 roadmap 阶段：Phase 7
 
 ## 目标
@@ -167,15 +167,19 @@ export function createMcpExtension(options: McpExtensionOptions): Extension;
 
 ## 验收清单
 
-- [ ] kernel 单测：扩展注册的工具 execute 能收到 `ctx.capabilities.fs`，并能读取测试文件。
-- [ ] kernel 单测：`resources_discover` 多 handler 路径汇总顺序稳定。
-- [ ] kernel 单测：`ctx.runSubagent()` 使用同一 mock provider 完成子 Agent 调用，父 Agent messages 只新增 assistant/toolResult，不混入子 Agent 内部消息。
-- [ ] `@tau/ext-subagents` 单测：模型调用 `task` 后，子 Agent 返回内容进入父工具结果，父 Agent 再用该结果完成回答。
-- [ ] `@tau/ext-mcp` e2e：连接一个 MCP server，发现至少一个 tool，并通过 tau tool 调用成功返回结果。
-- [ ] `npm run check` 全绿。
-- [ ] `npm test` 全绿；若当前 Node 24.2.0 仍触发 CLI e2e 原生崩溃，需用 Node 22.18+ LTS 复验并在完成记录写明环境。
-- [ ] 至少一条真 CLI e2e：加载 ext-subagents 或 ext-mcp 后从 prompt 触发工具链路。
-- [ ] DoD 通用项（见 development.md）。
+- [x] kernel 单测：扩展注册的工具 execute 能收到 `ctx.capabilities.fs`，并能读取测试文件。
+- [x] kernel 单测：`resources_discover` 多 handler 路径汇总顺序稳定。
+- [x] kernel 单测：`ctx.runSubagent()` 使用同一 mock provider 完成子 Agent 调用，父 Agent messages 只新增 assistant/toolResult，不混入子 Agent 内部消息。
+- [x] `@tau/ext-subagents` 单测：模型调用 `task` 后，子 Agent 返回内容进入父工具结果，父 Agent 再用该结果完成回答。
+- [x] `@tau/ext-mcp` e2e：连接一个 MCP server，发现至少一个 tool，并通过 tau tool 调用成功返回结果。
+- [x] `npm run check` 全绿。
+- [x] `npm test` 全绿；Node 24.2.0 下 62 测试全绿，CLI e2e 原生崩溃未复现。
+- [x] 至少一条真 CLI e2e：加载 ext-subagents 后从 prompt 触发工具链路。
+- [x] DoD 通用项（见 development.md）。
+
+完成偏差：
+
+- MCP e2e 使用本仓库测试内的官方 SDK stdio server fixture（`McpServer` + `StdioServerTransport`）暴露 `echo` 工具，而不是额外安装官方 filesystem server。验证的是同一条真实 MCP stdio `initialize` / `tools/list` / `tools/call` 链路。
 
 ## 风险与开放问题
 

@@ -144,6 +144,41 @@ test("project extensions are skipped in headless mode until trusted", async () =
 	});
 });
 
+test("project extension package can register the subagent task tool", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await mkdir(join(cwd, ".tau", "extensions"), { recursive: true });
+		const subagentsUrl = new URL("../../ext-subagents/src/index.ts", import.meta.url).href;
+		await writeFile(
+			join(cwd, ".tau", "extensions", "subagents.ts"),
+			`export { default } from ${JSON.stringify(subagentsUrl)};\n`,
+		);
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(join(home, ".tau", "trust.json"), JSON.stringify({ trusted: { [cwd]: true } }));
+
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("task", { description: "delegate", prompt: "child prompt" }),
+			() => mockTextTurn("child result"),
+			(request) => {
+				const messages = request.messages as { role: string; content: string | null }[];
+				const toolMessage = messages.find((m) => m.role === "tool");
+				return mockTextTurn(`parent saw: ${(toolMessage?.content ?? "").trim()}`);
+			},
+		]);
+		try {
+			const cli = startCli(["-p", "delegate it"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("parent saw: child result"), cli.output());
+			assert.equal(mock.requests.length, 3);
+			const childRequest = mock.requests[1] as { messages: { role: string; content: string | null }[] };
+			const childWire = childRequest.messages.map((m) => `${m.role}:${m.content ?? ""}`);
+			assert.ok(childWire[0]?.startsWith("system:You are tau"), JSON.stringify(childWire));
+			assert.ok(childWire.includes("user:child prompt"), JSON.stringify(childWire));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("lines typed during a running turn become steering messages", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([

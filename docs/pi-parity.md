@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-06（Phase 6 搁置后，resources_discover 重定位到 P7）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-06（P7 resources_discover 与扩展包依赖验证完成）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -22,7 +22,7 @@
 | `session_before_compact` / `session_compact` | 压缩前（可取消/**可完全接管压缩**）/压缩后 | ✅ P4（reason 取子集 manual/threshold，overflow 📍P8 前视） |
 | `session_before_fork` | 分叉前（可取消） | ✅ P5（entry-targeted /fork 触发；全量复制无分叉点故不触发） |
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | ✅ P5（before_tree 可取消/可接管摘要；tree 携带 summaryEntry；preparation 取 tau 子集，label 属 P8） |
-| `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | 📍P7（P6 skills/prompts 改做扩展包后，作为扩展能力缺口补齐） |
+| `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | ✅ P7（registry 汇总路径；skills/prompts 加载器仍属扩展包后续） |
 | `user_bash` | 用户 `!`/`!!` 直接执行 bash 的拦截 | 📍P8（TUI/CLI 先要有 `!` 功能） |
 | `model_select` / `thinking_level_select` | 运行时切换模型/思考等级 | 📍P8（tau 暂单模型配置） |
 | `project_trust` | **首次在目录运行的信任门**（决定是否加载项目扩展） | ✅ P2（事件 + CLI 信任门 + trust.json） |
@@ -33,6 +33,8 @@
 |---|---|---|
 | **steering / follow-up 队列** | `Agent` 支持流式中插话（steer）与排队追问（followUp），`sendUserMessage(deliverAs)` | ✅ P2（steer/followUp/QueueMode；`sendUserMessage` 扩展动作形态 📍P3） |
 | `sendMessage` / `appendEntry` | 扩展注入自定义消息 / 持久化自定义 entry（不进 LLM 上下文） | ✅ P3（sendMessage 的 triggerTurn/deliverAs 📍P8） |
+| Tool execute context / capabilities facade | pi 工具执行可拿 ctx；tau 暴露 `ctx.capabilities.fs/shell/platform`，并给 `Tool.execute` 第四参传 ctx | ✅ P7（facade 子集；无 raw Agent 暴露） |
+| `ctx.runSubagent()` facade | 子 Agent 委派，不污染父会话 | ✅ P7（tau 扩展 API，pi 无内置 subagent） |
 | `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | ✅ P4（getContextUsage/compact；abort 走宿主 AbortController，ctx.abort 📍P8） |
 | `registerFlag` / `getFlag` | 扩展注册 CLI flag | ✅ P2 |
 | `registerShortcut` | 键盘快捷键 | 📍P8（TUI） |
@@ -41,7 +43,7 @@
 | `/reload` 热重载扩展 | 运行时重载 | 📍P8（host-node 便利；小程序宿主原理性无此功能） |
 | `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ❌ D3（OpenAI 兼容 only；如需求出现走扩展层协议适配再议） |
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
-| 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | 📍P7 顺带验证（host-node 的 import 天然支持） |
+| 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@tau/ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |
 
 ## 安全缺口（已修复）
 

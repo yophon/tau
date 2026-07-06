@@ -175,12 +175,69 @@ test("steering messages are consumed after the turn's tools, follow-ups when the
 	assert.equal(messageText(agent.messages.at(-1) as AssistantMessage), "follow-up answer");
 });
 
+test("runSubagent facade completes a child run without polluting parent messages", async () => {
+	const taskTool: Tool = {
+		name: "task",
+		description: "Delegate to a child agent",
+		parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
+		execute: async (args, signal, _onUpdate, ctx) => {
+			const result = await ctx?.runSubagent?.(String(args.prompt), { maxTurnsPerPrompt: 3 }, signal);
+			return { output: result?.text ?? "missing subagent", isError: result === undefined };
+		},
+	};
+	const requests: unknown[] = [];
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake-model" },
+		platform: fakePlatform(
+			[
+				makeSseResponse(toolCallTurnForArgs("task", { prompt: "child work" })),
+				makeSseResponse(textTurn("child answer")),
+				makeSseResponse(textTurn("parent final")),
+			],
+			requests,
+		),
+		tools: [taskTool],
+	});
+
+	for await (const _event of agent.prompt("parent work")) {
+		// drain
+	}
+
+	assert.deepEqual(
+		agent.messages.map((message) => message.role),
+		["user", "assistant", "toolResult", "assistant"],
+	);
+	assert.equal(messageText(agent.messages[2]), "child answer");
+	assert.equal(messageText(agent.messages.at(-1) as AssistantMessage), "parent final");
+	assert.equal(requests.length, 3);
+	const childRequest = requests[1] as { messages: { role: string; content: string | null }[] };
+	assert.deepEqual(
+		childRequest.messages.map((message) => `${message.role}:${message.content ?? ""}`),
+		["user:child work"],
+	);
+});
+
 function toolCallTurnFor(name: string): unknown[] {
 	return [
 		{
 			choices: [
 				{
 					delta: { tool_calls: [{ index: 0, id: "call_1", function: { name, arguments: '{"text":"x"}' } }] },
+					finish_reason: "tool_calls",
+				},
+			],
+		},
+	];
+}
+
+function toolCallTurnForArgs(name: string, args: Record<string, unknown>): unknown[] {
+	return [
+		{
+			choices: [
+				{
+					delta: {
+						tool_calls: [{ index: 0, id: "call_1", function: { name, arguments: JSON.stringify(args) } }],
+					},
 					finish_reason: "tool_calls",
 				},
 			],

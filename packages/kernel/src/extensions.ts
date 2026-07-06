@@ -1,8 +1,9 @@
+import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError } from "./errors.ts";
 import type { AgentMessage, AssistantMessage, ToolResultMessage } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
-import type { TauAbortSignal } from "./platform.ts";
+import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { SessionEntry } from "./session.ts";
 import type { Tool, ToolResult } from "./tools.ts";
 
@@ -27,14 +28,36 @@ export interface UiCapability {
 	notify(message: string, level?: "info" | "warning" | "error"): void;
 }
 
+/** Host capabilities exposed to extensions through a facade. Every host capability is optional. */
+export interface ExtensionCapabilities {
+	fs?: FileSystem;
+	shell?: Shell;
+	platform: Platform;
+}
+
+export interface AgentSpawnOptions {
+	systemPrompt?: string;
+	tools?: Tool[];
+	initialMessages?: AgentMessage[];
+	maxTurnsPerPrompt?: number;
+}
+
+export interface AgentRunResult {
+	text: string;
+	messages: AgentMessage[];
+}
+
 /** Context passed to every extension handler. */
 export interface ExtensionContext {
 	ui?: UiCapability;
 	messages: readonly AgentMessage[];
+	capabilities?: ExtensionCapabilities;
 	/** Current context-token estimate (present when an Agent backs this context). */
 	getContextUsage?: () => ContextUsageEstimate & { contextWindow?: number };
 	/** Request a compaction before the next LLM call. */
 	compact?: (customInstructions?: string) => void;
+	/** Run a child agent with a facade that does not expose the parent Agent internals. */
+	runSubagent?: (prompt: string, options?: AgentSpawnOptions, signal?: TauAbortSignal) => Promise<AgentRunResult>;
 }
 
 /** Handler signature, as in pi: returning undefined/void means "no opinion". */
@@ -151,6 +174,19 @@ export interface ProjectTrustEvent {
 }
 
 export type ProjectTrustEventResult = { trusted: "yes" | "no" | "undecided"; remember?: boolean } | undefined;
+
+/** Fired after session_start so extensions can contribute resource directories. */
+export interface ResourcesDiscoverEvent {
+	type: "resources_discover";
+	cwd: string;
+	reason: "startup" | "reload";
+}
+
+export interface ResourcesDiscoverResult {
+	skillPaths?: string[];
+	promptPaths?: string[];
+	themePaths?: string[];
+}
 
 /** Fired when a session is started or resumed. */
 export interface SessionStartEvent {
@@ -308,6 +344,7 @@ export interface ExtensionAPI {
 	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
+	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
 	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
 	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
@@ -367,6 +404,7 @@ interface HandlerLists {
 	tool_execution_end: ExtensionHandler<ToolExecutionEndEvent>[];
 	tool_result: ExtensionHandler<ToolResultEvent, ToolResultEventResult>[];
 	project_trust: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>[];
+	resources_discover: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>[];
 	session_start: ExtensionHandler<SessionStartEvent>[];
 	session_shutdown: ExtensionHandler<SessionShutdownEvent>[];
 	session_info_changed: ExtensionHandler<SessionInfoChangedEvent>[];
@@ -412,6 +450,7 @@ export class ExtensionRegistry {
 		tool_execution_end: [],
 		tool_result: [],
 		project_trust: [],
+		resources_discover: [],
 		session_start: [],
 		session_shutdown: [],
 		session_info_changed: [],
@@ -578,6 +617,22 @@ export class ExtensionRegistry {
 			if (result && result.trusted !== "undecided") return result;
 		}
 		return { trusted: "undecided" };
+	}
+
+	async runResourcesDiscover(
+		cwd: string,
+		reason: ResourcesDiscoverEvent["reason"],
+		ctx: ExtensionContext,
+	): Promise<Required<ResourcesDiscoverResult>> {
+		const discovered: Required<ResourcesDiscoverResult> = { skillPaths: [], promptPaths: [], themePaths: [] };
+		for (const handler of this.handlers.resources_discover) {
+			const result = await handler({ type: "resources_discover", cwd, reason }, ctx);
+			if (!result) continue;
+			if (result.skillPaths) discovered.skillPaths.push(...result.skillPaths);
+			if (result.promptPaths) discovered.promptPaths.push(...result.promptPaths);
+			if (result.themePaths) discovered.themePaths.push(...result.themePaths);
+		}
+		return discovered;
 	}
 
 	async notifySessionStart(reason: SessionStartEvent["reason"], ctx: ExtensionContext): Promise<void> {

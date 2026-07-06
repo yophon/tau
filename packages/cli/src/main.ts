@@ -419,14 +419,17 @@ async function main(): Promise<void> {
 	}
 	let recorder = store ? await SessionRecorder.open(store) : undefined;
 
+	const fs = new NodeFileSystem(cwd);
+	const shell = new NodeShell(cwd);
 	const buildAgent = (messages: typeof initialMessages, session: SessionRecorder | undefined): Agent =>
 		new Agent({
 			config,
 			platform,
 			systemPrompt: options.system ?? defaultSystemPrompt(cwd),
-			tools: createCodingTools({ fs: new NodeFileSystem(cwd), shell: new NodeShell(cwd) }),
+			tools: createCodingTools({ fs, shell }),
 			extensions,
 			ui,
+			capabilities: { fs, shell },
 			initialMessages: messages,
 			session,
 		});
