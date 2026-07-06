@@ -164,6 +164,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	let currentModel = options.model;
 	let modelChoices = uniqueModelChoices([currentModel, ...(options.modelChoices ?? [])]);
 	let currentThinkingLevel = options.thinkingLevel;
+	let showReasoning = true;
 	let extensions = options.extensions;
 	let headerStatusItems: string[] = [];
 	let footerStatusItems: string[] = [];
@@ -213,7 +214,15 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 
 	const setFooter = (): void => {
 		footer.setText(
-			formatFooter(agent, currentModel, currentThinkingLevel, options.cwd, sessionLabel, footerStatusItems),
+			formatFooter(
+				agent,
+				currentModel,
+				currentThinkingLevel,
+				showReasoning,
+				options.cwd,
+				sessionLabel,
+				footerStatusItems,
+			),
 		);
 		tui.requestRender();
 	};
@@ -520,6 +529,12 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		if (matchesKey(data, Key.escape) && runningTask === "compaction" && controller) {
 			controller.abort();
 			setStatus(dim("Aborting compaction..."));
+			return { consume: true };
+		}
+		if (matchesKey(data, "ctrl+r") && !pendingUiPrompt) {
+			showReasoning = !showReasoning;
+			setFooter();
+			appendText(dim(`Reasoning ${showReasoning ? "shown" : "hidden"}.`));
 			return { consume: true };
 		}
 		if (matchesKey(data, "ctrl+c")) {
@@ -1006,6 +1021,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					setAssistantText: (text) => {
 						assistantText = text;
 					},
+					shouldRenderReasoning: () => showReasoning,
 					toolComponents,
 					toolOutputs,
 					pendingTools,
@@ -1098,6 +1114,7 @@ function formatHelp(extensions: ExtensionRegistry): string {
 		`${cyan("Enter")}  Submit input`,
 		`${cyan("Ctrl+C")}  Abort the current turn/compaction, or exit while idle`,
 		`${cyan("Esc")}  Abort compaction`,
+		`${cyan("Ctrl+R")}  Show/hide reasoning deltas`,
 		"",
 		bold("User bash"),
 		`${cyan("! <command>")}  Run bash and add output to context`,
@@ -1188,6 +1205,7 @@ function formatFooter(
 	agent: Agent,
 	model: string,
 	thinkingLevel: ThinkingLevel | undefined,
+	showReasoning: boolean,
 	cwd: string,
 	sessionLabel: string,
 	statusItems: string[],
@@ -1205,6 +1223,7 @@ function formatFooter(
 		[
 			`model ${model}`,
 			`thinking ${formatThinkingLevel(thinkingLevel)}`,
+			`reasoning ${showReasoning ? "shown" : "hidden"}`,
 			`session ${sessionLabel}`,
 			context,
 			usageSource,
@@ -1316,6 +1335,7 @@ interface RenderState {
 	getAssistant(): Markdown;
 	getAssistantText(): string;
 	setAssistantText(text: string): void;
+	shouldRenderReasoning(): boolean;
 	toolComponents: Map<string, Component>;
 	toolOutputs: Map<string, LiveStreamOutput>;
 	pendingTools: Map<string, string>;
@@ -1475,6 +1495,7 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			break;
 		}
 		case "reasoning_delta": {
+			if (!state.shouldRenderReasoning()) break;
 			const next = state.getAssistantText() + dim(event.delta);
 			state.setAssistantText(next);
 			state.getAssistant().setText(next);

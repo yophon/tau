@@ -143,7 +143,7 @@ class TuiUiCapability implements UiCapability {
 | 主题/打磨 | Later | `/help` polish | 可滚动组件、命令详情、扩展命令来源 |
 | 主题/打磨 | Later | footer polish | 更完整 token usage/cost、session 状态、自定义 footer 区 |
 | 主题/打磨 | Later | tool collapse/expand | 快捷键展开/折叠所有工具输出 |
-| 主题/打磨 | Later | thinking block show/hide | 快捷键切换 reasoning 展示 |
+| 主题/打磨 | Done | thinking block show/hide | `Ctrl+R` 切换后续 reasoning delta 展示，footer 显示 shown/hidden 状态 |
 | 主题/打磨 | Later | startup diagnostics | 展示 loaded skills/prompts/extensions/resources 诊断 |
 | 验收 | Acceptance | TTY e2e 覆盖扩展 | tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径 |
 | 验收 | Acceptance | 自举验收 | 用 `npm run tau -- --tui` 开发 tau 至少一轮，记录并修复阻塞问题 |
@@ -197,7 +197,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] `/help` polish：可滚动组件、命令详情、扩展来源、快捷键分组。
 - [ ] footer polish：更完整 token usage/cost、session 状态、reload 状态、自定义 footer 区。
 - [ ] tool collapse/expand：全局快捷键与单个 tool item 折叠状态。
-- [ ] thinking block show/hide：快捷键切换 reasoning 展示，状态反映到 footer。
+- [x] thinking block show/hide：快捷键切换 reasoning 展示，状态反映到 footer。
 - [ ] startup diagnostics：展示 loaded extensions/skills/prompts/themes/resources，便于自举排障。
 - [ ] compaction polish：展示阶段、耗时、summary/kept 粗略结果。
 
@@ -263,7 +263,7 @@ class TuiUiCapability implements UiCapability {
 - [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
 - [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
 - [ ] Tool collapse/expand：快捷键展开/折叠所有工具输出。
-- [ ] Thinking block show/hide：快捷键切换 reasoning 展示。
+- [x] Thinking block show/hide：`Ctrl+R` 切换 reasoning 展示，状态反映到 footer。
 - [ ] Startup loaded resources：展示 loaded skills/prompts/extensions 诊断。
 - [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
 - [ ] 自举验收：用 `npm run tau -- --tui` 日常开发 tau 至少一轮，记录发现的问题。
@@ -283,6 +283,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `/model` selector 已实现；`TAU_MODELS=mock-model,selector-model` 时裸 `/model` 打开 selector，tmux 冒烟确认选择 `selector-model` 后 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `selector-model`。
 - `model_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/model requested-model` 改写为 `rewritten-model` 且下一请求使用改写后的模型。
 - TUI `/thinking` 与 `thinking_level_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/thinking low` 改写为 `high` 且下一请求 body 带 `reasoning_effort: "high"`。
+- TUI thinking block show/hide 已实现；tmux 冒烟确认按 `Ctrl+R` 后 footer 显示 `reasoning hidden`，mock provider 返回的 `reasoning_content` 不出现在 TUI 中，正文 `visible-answer` 正常显示。
 - TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
 - TUI `registerShortcut` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展注册 `ctrl+g` 后 TUI 显示 `shortcut-ok`。
 - TUI `registerMessageRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 assistant renderer 可覆盖流式回复为 `rendered:tui-renderer-ok`，custom renderer 可把 `/emit` 注入的 custom message 显示为 `rendered:custom:smoke`，user renderer 可把运行中 steering message 显示为 `rendered:user`。
