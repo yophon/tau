@@ -24,7 +24,8 @@
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | ✅ P5（before_tree 可取消/可接管摘要；tree 携带 summaryEntry；preparation 取 tau 子集，label 属 P8） |
 | `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | ✅ P7（registry 汇总路径；skills/prompts 加载器仍属扩展包后续） |
 | `user_bash` | 用户 `!`/`!!` 直接执行 bash 的拦截 | 📍P8（TUI/CLI 先要有 `!` 功能） |
-| `model_select` / `thinking_level_select` | 运行时切换模型/思考等级 | 📍P8（tau 暂单模型配置） |
+| `model_select` | 运行时切换模型 | ✅ P8（before 可改写/取消，after 可记录） |
+| `thinking_level_select` | 运行时切换思考等级 | 📍P8（tau 暂单模型配置） |
 | `project_trust` | **首次在目录运行的信任门**（决定是否加载项目扩展） | ✅ P2（事件 + CLI 信任门 + trust.json） |
 
 ## 事件之外的生命周期/API 面

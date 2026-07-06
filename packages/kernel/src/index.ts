@@ -72,6 +72,8 @@ export {
 	type MessageEndEventResult,
 	type MessageStartEvent,
 	type MessageUpdateEvent,
+	type ModelSelectEvent,
+	type ModelSelectEventResult,
 	type ProjectTrustEvent,
 	type ProjectTrustEventResult,
 	type RegisteredCommand,

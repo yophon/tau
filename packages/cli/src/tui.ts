@@ -369,11 +369,24 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				appendText(dim(`Current model: ${currentModel}`));
 				return true;
 			}
-			currentModel = args;
-			options.setModel(args);
+			const previousModel = currentModel;
+			const decision = await options.extensions.runModelSelectBefore(
+				{ currentModel: previousModel, requestedModel: args },
+				agent.extensionContext(),
+			);
+			if (decision.cancel) {
+				appendText(dim(`Model switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
+				return true;
+			}
+			currentModel = decision.model;
+			options.setModel(decision.model);
 			setHeader();
 			setFooter();
-			appendText(dim(`Model set to ${args}.`));
+			await options.extensions.notifyModelSelected(
+				{ previousModel, requestedModel: args, selectedModel: decision.model },
+				agent.extensionContext(),
+			);
+			appendText(dim(`Model set to ${decision.model}.`));
 			return true;
 		}
 		if (name === "name") {

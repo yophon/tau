@@ -164,6 +164,41 @@ test("user_bash handlers can rewrite, change recording, or cancel", async () => 
 	assert.deepEqual(seen, ["echo hi:true", "echo hi rewritten:false", "blocked:true"]);
 });
 
+test("model_select handlers can rewrite, cancel, and observe after selection", async () => {
+	const seen: string[] = [];
+	const extension: Extension = (api) => {
+		api.on("model_select", (event) => {
+			seen.push(`${event.phase}:${event.currentModel}:${event.requestedModel}:${event.selectedModel}`);
+			if (event.phase === "after") return undefined;
+			if (event.requestedModel === "blocked") return { cancel: true, reason: "denied" };
+			return { model: `${event.selectedModel}-rewritten` };
+		});
+		api.on("model_select", (event) => {
+			seen.push(`second:${event.phase}:${event.selectedModel}`);
+			return undefined;
+		});
+	};
+
+	const registry = await ExtensionRegistry.load([extension]);
+	const ctx = { messages: [], capabilities: { platform: fakePlatform([]) } };
+	const rewritten = await registry.runModelSelectBefore({ currentModel: "old", requestedModel: "next" }, ctx);
+	await registry.notifyModelSelected(
+		{ previousModel: "old", requestedModel: "next", selectedModel: rewritten.model },
+		ctx,
+	);
+	const blocked = await registry.runModelSelectBefore({ currentModel: "old", requestedModel: "blocked" }, ctx);
+
+	assert.deepEqual(rewritten, { model: "next-rewritten" });
+	assert.deepEqual(blocked, { cancel: true, reason: "denied", model: "blocked" });
+	assert.deepEqual(seen, [
+		"before:old:next:next",
+		"second:before:next-rewritten",
+		"after:old:next:next-rewritten",
+		"second:after:next-rewritten",
+		"before:old:blocked:blocked",
+	]);
+});
+
 test("handlers chain in registration order and commands are exposed to hosts", async () => {
 	const first: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-a` }));

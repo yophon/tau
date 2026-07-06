@@ -333,6 +333,17 @@ export type UserBashEventResult =
 	| { cancel?: boolean; reason?: string; command?: string; recordInContext?: boolean }
 	| undefined;
 
+/** Fired when an interactive host switches models. */
+export interface ModelSelectEvent {
+	type: "model_select";
+	phase: "before" | "after";
+	currentModel: string;
+	requestedModel: string;
+	selectedModel: string;
+}
+
+export type ModelSelectEventResult = { cancel?: boolean; reason?: string; model?: string } | undefined;
+
 /** Host-invocable command (e.g. "/checkpoint" in a REPL). Dispatch is up to the host. */
 export type RegisteredCommandResult = string | { action: "prompt"; text: string } | undefined;
 
@@ -368,6 +379,7 @@ export interface ExtensionAPI {
 	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
+	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent, ModelSelectEventResult>): void;
 	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
@@ -429,6 +441,7 @@ interface HandlerLists {
 	tool_execution_end: ExtensionHandler<ToolExecutionEndEvent>[];
 	tool_result: ExtensionHandler<ToolResultEvent, ToolResultEventResult>[];
 	user_bash: ExtensionHandler<UserBashEvent, UserBashEventResult>[];
+	model_select: ExtensionHandler<ModelSelectEvent, ModelSelectEventResult>[];
 	project_trust: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>[];
 	resources_discover: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>[];
 	session_start: ExtensionHandler<SessionStartEvent>[];
@@ -476,6 +489,7 @@ export class ExtensionRegistry {
 		tool_execution_end: [],
 		tool_result: [],
 		user_bash: [],
+		model_select: [],
 		project_trust: [],
 		resources_discover: [],
 		session_start: [],
@@ -593,6 +607,45 @@ export class ExtensionRegistry {
 			if (result.recordInContext !== undefined) current.recordInContext = result.recordInContext;
 		}
 		return { command: current.command, recordInContext: current.recordInContext };
+	}
+
+	/** Run model_select before handlers. Rewrites chain; cancel short-circuits. */
+	async runModelSelectBefore(
+		event: { currentModel: string; requestedModel: string },
+		ctx: ExtensionContext,
+	): Promise<NonNullable<ModelSelectEventResult> & { model: string }> {
+		const current: ModelSelectEvent = {
+			type: "model_select",
+			phase: "before",
+			currentModel: event.currentModel,
+			requestedModel: event.requestedModel,
+			selectedModel: event.requestedModel,
+		};
+		for (const handler of this.handlers.model_select) {
+			const result = await handler(current, ctx);
+			if (!result) continue;
+			if (result.cancel) return { cancel: true, reason: result.reason, model: current.selectedModel };
+			if (result.model !== undefined) current.selectedModel = result.model;
+		}
+		return { model: current.selectedModel };
+	}
+
+	async notifyModelSelected(
+		event: { previousModel: string; requestedModel: string; selectedModel: string },
+		ctx: ExtensionContext,
+	): Promise<void> {
+		for (const handler of this.handlers.model_select) {
+			await handler(
+				{
+					type: "model_select",
+					phase: "after",
+					currentModel: event.previousModel,
+					requestedModel: event.requestedModel,
+					selectedModel: event.selectedModel,
+				},
+				ctx,
+			);
+		}
 	}
 
 	/** Run context handlers. Replacements chain: each handler sees the previous replacement. */

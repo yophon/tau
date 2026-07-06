@@ -127,7 +127,7 @@ class TuiUiCapability implements UiCapability {
 | 用户 bash | Done | `user_bash` 扩展事件 | 扩展可改写、取消、调整是否记录 |
 | 用户 bash | Done | bash stdout/stderr 增量 renderer | 长命令期间 stdout/stderr 持续刷新，可区分 stream |
 | 模型/思考 | Done | `/model [model]` 最小文本切换 | 无参数显示当前模型；有参数切换后下一请求使用新模型 |
-| 模型/思考 | Next | `model_select` 事件 | 模型切换前后通知扩展，可拦截或记录 |
+| 模型/思考 | Done | `model_select` 事件 | 模型切换前后通知扩展，可拦截或记录 |
 | 模型/思考 | Later | model selector | 在有 provider/model registry 后提供选择 UI |
 | 模型/思考 | Next | thinking level 命令 | 若 config/模型支持，提供 `/thinking` 或快捷键切换 |
 | 模型/思考 | Next | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
@@ -193,7 +193,7 @@ class TuiUiCapability implements UiCapability {
 ### P8D：模型/主题/产品打磨
 
 - [x] `/model`：最小模型切换命令（用户输入 model id，不做 provider registry）。
-- [ ] `model_select` 事件：模型切换前后通知扩展。
+- [x] `model_select` 事件：模型切换前后通知扩展。
 - [ ] thinking level：若 config/模型支持，提供 `/thinking` 或快捷键切换。
 - [ ] `thinking_level_select` 事件。
 - [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
@@ -211,7 +211,7 @@ class TuiUiCapability implements UiCapability {
 P8A/P8B/P8D 验证记录：
 
 - `npm run check` 全绿。
-- `npm test` 70 测试全绿。
+- `npm test` 71 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。
 - TUI 启动期 project trust 已使用 `createStartupTuiUi()`，不再经过 readline；tmux 冒烟确认首次信任 prompt、项目扩展命令加载、`trust.json` 持久化均正常。
@@ -220,6 +220,7 @@ P8A/P8B/P8D 验证记录：
 - TUI `/tree` selector 与 `/tree <id>` 跳转已实现；tmux 冒烟确认 selector 展示 user message jump points，Enter 选择后调用 navigate 并移动上下文。
 - TUI `/fork` selector 已实现；tmux 冒烟确认 selector 展示 full session 与 user message targets，选择 user target 后从该 entry 前分叉并切换 session。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
+- `model_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/model requested-model` 改写为 `rewritten-model` 且下一请求使用改写后的模型。
 - TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
 
 ## 风险与开放问题
