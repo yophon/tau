@@ -321,6 +321,17 @@ export interface ToolResultEventResult {
 	isError?: boolean;
 }
 
+/** Fired by interactive hosts before running a user-entered bash command. */
+export interface UserBashEvent {
+	type: "user_bash";
+	command: string;
+	recordInContext: boolean;
+}
+
+export type UserBashEventResult =
+	| { cancel?: boolean; reason?: string; command?: string; recordInContext?: boolean }
+	| undefined;
+
 /** Host-invocable command (e.g. "/checkpoint" in a REPL). Dispatch is up to the host. */
 export type RegisteredCommandResult = string | { action: "prompt"; text: string } | undefined;
 
@@ -355,6 +366,7 @@ export interface ExtensionAPI {
 	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): void;
 	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
+	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
@@ -415,6 +427,7 @@ interface HandlerLists {
 	tool_execution_update: ExtensionHandler<ToolExecutionUpdateEvent>[];
 	tool_execution_end: ExtensionHandler<ToolExecutionEndEvent>[];
 	tool_result: ExtensionHandler<ToolResultEvent, ToolResultEventResult>[];
+	user_bash: ExtensionHandler<UserBashEvent, UserBashEventResult>[];
 	project_trust: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>[];
 	resources_discover: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>[];
 	session_start: ExtensionHandler<SessionStartEvent>[];
@@ -461,6 +474,7 @@ export class ExtensionRegistry {
 		tool_execution_update: [],
 		tool_execution_end: [],
 		tool_result: [],
+		user_bash: [],
 		project_trust: [],
 		resources_discover: [],
 		session_start: [],
@@ -556,6 +570,28 @@ export class ExtensionRegistry {
 			if (result.isError !== undefined) event.isError = result.isError;
 		}
 		return { output: event.output, isError: event.isError };
+	}
+
+	/** Run user_bash handlers. Rewrites chain; cancel short-circuits. */
+	async runUserBash(
+		event: Omit<UserBashEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<NonNullable<UserBashEventResult> & { command: string; recordInContext: boolean }> {
+		const current: UserBashEvent = { type: "user_bash", ...event };
+		for (const handler of this.handlers.user_bash) {
+			const result = await handler(current, ctx);
+			if (!result) continue;
+			if (result.cancel)
+				return {
+					cancel: true,
+					reason: result.reason,
+					command: current.command,
+					recordInContext: current.recordInContext,
+				};
+			if (result.command !== undefined) current.command = result.command;
+			if (result.recordInContext !== undefined) current.recordInContext = result.recordInContext;
+		}
+		return { command: current.command, recordInContext: current.recordInContext };
 	}
 
 	/** Run context handlers. Replacements chain: each handler sees the previous replacement. */

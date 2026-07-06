@@ -101,6 +101,8 @@ export {
 	type TurnEndEvent,
 	type TurnStartEvent,
 	type UiCapability,
+	type UserBashEvent,
+	type UserBashEventResult,
 } from "./extensions.ts";
 export {
 	type AgentMessage,

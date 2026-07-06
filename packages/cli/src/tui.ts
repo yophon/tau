@@ -425,18 +425,35 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(red(recordInContext ? "Usage: ! <command>" : "Usage: !! <command>"));
 			return;
 		}
+		const decision = await options.extensions.runUserBash({ command, recordInContext }, agent.extensionContext());
+		if (decision.cancel) {
+			appendText(dim(`Bash cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
+			return;
+		}
+		const effectiveCommand = decision.command.trim();
+		if (effectiveCommand === "") {
+			appendText(dim("Bash cancelled: empty command."));
+			return;
+		}
+		const effectiveRecordInContext = decision.recordInContext;
 		runningTask = "bash";
 		controller = new AbortController();
 		setStatus(cyan("Running bash..."));
 		let liveOutput = "";
-		const component = new Text(`${cyan(`${recordInContext ? "!" : "!!"} ${command}`)}\n${dim("running...")}`, 1, 0);
+		const component = new Text(
+			`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${dim("running...")}`,
+			1,
+			0,
+		);
 		chat.addChild(component);
 		const updateLiveOutput = (): void => {
-			component.setText(`${cyan(`${recordInContext ? "!" : "!!"} ${command}`)}\n${liveOutput || dim("running...")}`);
+			component.setText(
+				`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${liveOutput || dim("running...")}`,
+			);
 			tui.requestRender();
 		};
 		try {
-			const result = await options.shell.exec(command, {
+			const result = await options.shell.exec(effectiveCommand, {
 				signal: controller.signal,
 				onStdout: (chunk) => {
 					liveOutput += chunk;
@@ -448,9 +465,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				},
 			});
 			const output = formatShellOutput(result);
-			component.setText(`${cyan(`${recordInContext ? "!" : "!!"} ${command}`)}\n${output}`);
-			if (recordInContext) {
-				const message = createUserBashMessage(command, result, output);
+			component.setText(`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${output}`);
+			if (effectiveRecordInContext) {
+				const message = createUserBashMessage(effectiveCommand, result, output);
 				agent.messages.push(message);
 				await recorder?.recordMessage(message);
 				appendText(dim("Bash output added to context."));
@@ -458,8 +475,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		} catch (error) {
 			component.setText(
 				isAbortError(error)
-					? `${red("✗")} ${dim(command)}\n${dim("aborted")}`
-					: `${red("✗")} ${dim(command)}\n${error instanceof Error ? error.message : String(error)}`,
+					? `${red("✗")} ${dim(effectiveCommand)}\n${dim("aborted")}`
+					: `${red("✗")} ${dim(effectiveCommand)}\n${error instanceof Error ? error.message : String(error)}`,
 			);
 			appendText(
 				isAbortError(error)

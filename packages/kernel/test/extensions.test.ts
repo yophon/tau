@@ -135,6 +135,35 @@ test("tool_call can block or mutate input in place; tool_result can override fie
 	assert.deepEqual(executedWith, { text: "rewritten" });
 });
 
+test("user_bash handlers can rewrite, change recording, or cancel", async () => {
+	const seen: string[] = [];
+	const extension: Extension = (api) => {
+		api.on("user_bash", (event) => {
+			seen.push(`${event.command}:${event.recordInContext}`);
+			if (event.command === "blocked") return { cancel: true, reason: "denied" };
+			return { command: `${event.command} rewritten`, recordInContext: false };
+		});
+		api.on("user_bash", (event) => {
+			seen.push(`${event.command}:${event.recordInContext}`);
+			return undefined;
+		});
+	};
+
+	const registry = await ExtensionRegistry.load([extension]);
+	const rewritten = await registry.runUserBash(
+		{ command: "echo hi", recordInContext: true },
+		{ messages: [], capabilities: { platform: fakePlatform([]) } },
+	);
+	const blocked = await registry.runUserBash(
+		{ command: "blocked", recordInContext: true },
+		{ messages: [], capabilities: { platform: fakePlatform([]) } },
+	);
+
+	assert.deepEqual(rewritten, { command: "echo hi rewritten", recordInContext: false });
+	assert.deepEqual(blocked, { cancel: true, reason: "denied", command: "blocked", recordInContext: true });
+	assert.deepEqual(seen, ["echo hi:true", "echo hi rewritten:false", "blocked:true"]);
+});
+
 test("handlers chain in registration order and commands are exposed to hosts", async () => {
 	const first: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-a` }));
