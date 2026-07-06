@@ -138,7 +138,8 @@ class TuiUiCapability implements UiCapability {
 - [ ] thinking level：若 config/模型支持，提供 `/thinking` 或快捷键切换。
 - [ ] `thinking_level_select` 事件。
 - [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
-- [ ] `/help`：TUI 内置命令列表 + 扩展 commands，按可滚动组件展示。
+- [x] `/help`：TUI 文本版内置命令列表 + 扩展 commands。
+- [ ] `/help` polish：按可滚动组件展示，支持命令详情。
 - [ ] Autocomplete：slash commands、文件路径基础补全。
 - [ ] Footer：cwd、session name、model、context usage、token usage。
 - [ ] Tool collapse/expand：快捷键展开/折叠所有工具输出。

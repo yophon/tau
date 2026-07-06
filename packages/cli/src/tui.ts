@@ -29,6 +29,17 @@ const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
 const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
 const bold = (text: string): string => `\x1b[1m${text}\x1b[0m`;
 
+const builtInCommands = [
+	["/help", "Show built-in and extension commands."],
+	["/compact [instructions]", "Summarize older conversation context."],
+	["/name <name>", "Name the current session."],
+	["/sessions", "List saved sessions."],
+	["/resume <id|path|timestamp|name>", "Switch to a saved session."],
+	["/tree [id]", "List jump points or navigate to one."],
+	["/fork [id]", "Copy this session and switch to the fork."],
+	["/quit", "Exit the TUI."],
+] as const;
+
 const selectListTheme: SelectListTheme = {
 	selectedPrefix: cyan,
 	selectedText: bold,
@@ -214,12 +225,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 		const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
 		if (name === "help") {
-			const commands = [...options.extensions.commands.values()];
-			appendText(
-				commands.length === 0
-					? dim("No extension commands registered.")
-					: commands.map((c) => `/${c.name} - ${c.description}`).join("\n"),
-			);
+			appendText(formatHelp([...options.extensions.commands.values()]));
 			return true;
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
@@ -421,6 +427,27 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 function firstLine(text: string, max = 120): string {
 	const line = text.split("\n")[0] ?? "";
 	return line.length > max ? `${line.slice(0, max)}...` : line;
+}
+
+function formatHelp(extensionCommands: { name: string; description: string }[]): string {
+	const lines = [
+		bold("Built-in commands"),
+		...builtInCommands.map(([command, description]) => `${cyan(command)}  ${description}`),
+		"",
+		bold("Shortcuts"),
+		`${cyan("Enter")}  Submit input`,
+		`${cyan("Ctrl+C")}  Abort the current turn/compaction, or exit while idle`,
+	];
+	if (extensionCommands.length === 0) {
+		lines.push("", bold("Extension commands"), dim("No extension commands registered."));
+	} else {
+		lines.push(
+			"",
+			bold("Extension commands"),
+			...extensionCommands.map((command) => `${cyan(`/${command.name}`)}  ${command.description}`),
+		);
+	}
+	return lines.join("\n");
 }
 
 function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
