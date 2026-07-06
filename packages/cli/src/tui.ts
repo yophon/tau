@@ -1,4 +1,5 @@
 import {
+	CombinedAutocompleteProvider,
 	Container,
 	Editor,
 	type EditorTheme,
@@ -8,6 +9,7 @@ import {
 	matchesKey,
 	ProcessTerminal,
 	type SelectListTheme,
+	type SlashCommand,
 	Text,
 	TUI,
 } from "@earendil-works/pi-tui";
@@ -30,16 +32,16 @@ const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
 const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
 const bold = (text: string): string => `\x1b[1m${text}\x1b[0m`;
 
-const builtInCommands = [
-	["/help", "Show built-in and extension commands."],
-	["/compact [instructions]", "Summarize older conversation context."],
-	["/name <name>", "Name the current session."],
-	["/sessions", "List saved sessions."],
-	["/resume <id|path|timestamp|name>", "Switch to a saved session."],
-	["/tree [id]", "List jump points or navigate to one."],
-	["/fork [id]", "Copy this session and switch to the fork."],
-	["/quit", "Exit the TUI."],
-] as const;
+const builtInCommands: SlashCommand[] = [
+	{ name: "help", description: "Show built-in and extension commands." },
+	{ name: "compact", argumentHint: "[instructions]", description: "Summarize older conversation context." },
+	{ name: "name", argumentHint: "<name>", description: "Name the current session." },
+	{ name: "sessions", description: "List saved sessions." },
+	{ name: "resume", argumentHint: "<id|path|timestamp|name>", description: "Switch to a saved session." },
+	{ name: "tree", argumentHint: "[id]", description: "List jump points or navigate to one." },
+	{ name: "fork", argumentHint: "[id]", description: "Copy this session and switch to the fork." },
+	{ name: "quit", description: "Exit the TUI." },
+];
 
 const selectListTheme: SelectListTheme = {
 	selectedPrefix: cyan,
@@ -92,6 +94,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const status = new Text(dim("Ready"), 1, 0);
 	const footer = new Text("", 1, 0);
 	const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
+	editor.setAutocompleteProvider(
+		new CombinedAutocompleteProvider(buildAutocompleteCommands(options.extensions), options.cwd),
+	);
 	tui.addChild(header);
 	tui.addChild(chat);
 	tui.addChild(status);
@@ -454,7 +459,7 @@ function firstLine(text: string, max = 120): string {
 function formatHelp(extensionCommands: { name: string; description: string }[]): string {
 	const lines = [
 		bold("Built-in commands"),
-		...builtInCommands.map(([command, description]) => `${cyan(command)}  ${description}`),
+		...builtInCommands.map((command) => `${cyan(formatCommandUsage(command))}  ${command.description ?? ""}`),
 		"",
 		bold("Shortcuts"),
 		`${cyan("Enter")}  Submit input`,
@@ -471,6 +476,20 @@ function formatHelp(extensionCommands: { name: string; description: string }[]):
 		);
 	}
 	return lines.join("\n");
+}
+
+function buildAutocompleteCommands(extensions: ExtensionRegistry): SlashCommand[] {
+	return [
+		...builtInCommands,
+		...[...extensions.commands.values()].map((command) => ({
+			name: command.name,
+			description: command.description,
+		})),
+	];
+}
+
+function formatCommandUsage(command: SlashCommand): string {
+	return `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
 }
 
 function formatFooter(agent: Agent, model: string, cwd: string, sessionLabel: string): string {

@@ -141,7 +141,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
 - [x] `/help`：TUI 文本版内置命令列表 + 扩展 commands。
 - [ ] `/help` polish：按可滚动组件展示，支持命令详情。
-- [ ] Autocomplete：slash commands、文件路径基础补全。
+- [x] Autocomplete：slash commands、文件路径基础补全。
 - [x] Footer basic：显示 cwd、session name/id、model、context usage 估算与 usage/trailing 来源。
 - [ ] Footer polish：显示更完整的 token usage/cost、session 状态与自定义 footer 扩展区。
 - [ ] Tool collapse/expand：快捷键展开/折叠所有工具输出。
