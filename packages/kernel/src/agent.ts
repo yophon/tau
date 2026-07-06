@@ -211,6 +211,13 @@ export class Agent {
 				this.pendingCompaction = customInstructions ?? "";
 			},
 			runSubagent: (prompt, options, signal) => this.runSubagent(prompt, options, signal),
+			discoverResources: (reason) => {
+				const cwd = this.capabilities.paths?.cwd ?? this.capabilities.fs?.cwd ?? "";
+				return (
+					this.extensions?.runResourcesDiscover(cwd, reason, this.extensionContext()) ??
+					Promise.resolve({ skillPaths: [], promptPaths: [], themePaths: [] })
+				);
+			},
 		};
 	}
 

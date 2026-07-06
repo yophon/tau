@@ -217,6 +217,28 @@ test("resources_discover handlers merge paths in registration order", async () =
 	});
 });
 
+test("extension context exposes discoverResources facade", async () => {
+	const extension: Extension = (api) => {
+		api.on("resources_discover", (event) => ({
+			skillPaths: [`${event.cwd}/skills`],
+			promptPaths: ["prompts"],
+		}));
+	};
+	const registry = await ExtensionRegistry.load([extension]);
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake" },
+		platform: fakePlatform([]),
+		extensions: registry,
+		capabilities: { paths: { cwd: "/repo" } },
+	});
+
+	assert.deepEqual(await agent.extensionContext().discoverResources?.("startup"), {
+		skillPaths: ["/repo/skills"],
+		promptPaths: ["prompts"],
+		themePaths: [],
+	});
+});
+
 test("tools registered after agent construction are visible to later turns", async () => {
 	let capturedApi: ExtensionAPI | undefined;
 	const extension: Extension = (api) => {

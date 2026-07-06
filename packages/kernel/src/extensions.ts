@@ -29,10 +29,18 @@ export interface UiCapability {
 }
 
 /** Host capabilities exposed to extensions through a facade. Every host capability is optional. */
+export interface ExtensionPaths {
+	cwd: string;
+	userTauDir?: string;
+	projectTauDir?: string;
+	projectPiDir?: string;
+}
+
 export interface ExtensionCapabilities {
 	fs?: FileSystem;
 	shell?: Shell;
 	platform: Platform;
+	paths?: ExtensionPaths;
 }
 
 export interface AgentSpawnOptions {
@@ -58,6 +66,8 @@ export interface ExtensionContext {
 	compact?: (customInstructions?: string) => void;
 	/** Run a child agent with a facade that does not expose the parent Agent internals. */
 	runSubagent?: (prompt: string, options?: AgentSpawnOptions, signal?: TauAbortSignal) => Promise<AgentRunResult>;
+	/** Collect resource paths contributed by extensions. */
+	discoverResources?: (reason: ResourcesDiscoverEvent["reason"]) => Promise<Required<ResourcesDiscoverResult>>;
 }
 
 /** Handler signature, as in pi: returning undefined/void means "no opinion". */
@@ -312,10 +322,12 @@ export interface ToolResultEventResult {
 }
 
 /** Host-invocable command (e.g. "/checkpoint" in a REPL). Dispatch is up to the host. */
+export type RegisteredCommandResult = string | { action: "prompt"; text: string } | undefined;
+
 export interface RegisteredCommand {
 	name: string;
 	description: string;
-	handler: (args: string, ctx: ExtensionContext) => Promise<string | undefined> | string | undefined;
+	handler: (args: string, ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
 }
 
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */

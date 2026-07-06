@@ -336,7 +336,12 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 	}
 }
 
-async function runCommand(agent: Agent, extensions: ExtensionRegistry, input: string): Promise<void> {
+async function runCommand(
+	agent: Agent,
+	extensions: ExtensionRegistry,
+	input: string,
+	readline: Readline,
+): Promise<void> {
 	const spaceIndex = input.indexOf(" ");
 	const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 	const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
@@ -353,7 +358,11 @@ async function runCommand(agent: Agent, extensions: ExtensionRegistry, input: st
 	}
 	try {
 		const output = await command.handler(args, agent.extensionContext());
-		if (output !== undefined) console.log(output);
+		if (typeof output === "string") {
+			console.log(output);
+		} else if (output?.action === "prompt") {
+			await runTurn(agent, output.text, readline);
+		}
 	} catch (error) {
 		console.log(red(`Command failed: ${error instanceof Error ? error.message : String(error)}`));
 	}
@@ -429,7 +438,16 @@ async function main(): Promise<void> {
 			tools: createCodingTools({ fs, shell }),
 			extensions,
 			ui,
-			capabilities: { fs, shell },
+			capabilities: {
+				fs,
+				shell,
+				paths: {
+					cwd,
+					userTauDir: join(homedir(), ".tau"),
+					projectTauDir: join(cwd, ".tau"),
+					projectPiDir: join(cwd, ".pi"),
+				},
+			},
 			initialMessages: messages,
 			session,
 		});
@@ -565,7 +583,7 @@ async function main(): Promise<void> {
 				}
 				continue;
 			}
-			await runCommand(agent, extensions, input);
+			await runCommand(agent, extensions, input, readline);
 			continue;
 		}
 		await runTurn(agent, input, readline);

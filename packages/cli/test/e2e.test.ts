@@ -179,6 +179,64 @@ test("project extension package can register the subagent task tool", async () =
 	});
 });
 
+test("resources extension injects skills and runs prompt templates", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const resourcesUrl = new URL("../../ext-resources/src/index.ts", import.meta.url).href;
+		await mkdir(join(cwd, ".tau", "extensions"), { recursive: true });
+		await writeFile(
+			join(cwd, ".tau", "extensions", "resources.ts"),
+			`export { default } from ${JSON.stringify(resourcesUrl)};\n`,
+		);
+		await mkdir(join(cwd, ".tau", "skills", "demo"), { recursive: true });
+		await writeFile(
+			join(cwd, ".tau", "skills", "demo", "SKILL.md"),
+			"---\ndescription: Demo skill\n---\nFull demo instructions\n",
+		);
+		await mkdir(join(cwd, ".pi", "skills", "compat"), { recursive: true });
+		await writeFile(
+			join(cwd, ".pi", "skills", "compat", "SKILL.md"),
+			"---\ndescription: Compat skill\n---\nFull compat instructions\n",
+		);
+		await mkdir(join(cwd, ".tau", "prompts"), { recursive: true });
+		await writeFile(join(cwd, ".tau", "prompts", "greet.md"), "---\ndescription: Greet\n---\nSay hi to $1");
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(join(home, ".tau", "trust.json"), JSON.stringify({ trusted: { [cwd]: true } }));
+
+		let mock = await startMockOpenAI([() => mockTextTurn("skill seen")]);
+		try {
+			const cli = startCli(["-p", "use skills"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			const firstRequest = mock.requests[0] as { messages: { role: string; content: string | null }[] };
+			const system = firstRequest.messages.find((message) => message.role === "system")?.content ?? "";
+			assert.ok(system.includes("<available_skills>"), system);
+			assert.ok(system.includes("<name>demo</name>"), system);
+			assert.ok(system.includes("<description>Demo skill</description>"), system);
+			assert.ok(system.includes("<name>compat</name>"), system);
+			assert.ok(system.includes("<description>Compat skill</description>"), system);
+		} finally {
+			await mock.close();
+		}
+
+		mock = await startMockOpenAI([
+			(request) => {
+				const messages = request.messages as { role: string; content: string | null }[];
+				assert.ok(messages.some((message) => message.role === "user" && message.content === "Say hi to world"));
+				return mockTextTurn("template ran");
+			},
+		]);
+		try {
+			const cli = startCli([], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitFor("tau> ");
+			cli.child.stdin?.write("/greet world\n");
+			await cli.waitFor("template ran");
+			cli.child.stdin?.write("exit\n");
+			await cli.waitForExit();
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("lines typed during a running turn become steering messages", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([

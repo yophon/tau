@@ -20,6 +20,7 @@ inject a small adapter instead of polyfilling globals.
 | `@tau/cli` | Minimal terminal frontend | Yes |
 | `@tau/ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
 | `@tau/ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
+| `@tau/ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 
 ## Design rules
 

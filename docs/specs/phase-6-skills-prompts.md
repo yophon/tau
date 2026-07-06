@@ -1,121 +1,108 @@
-# Phase 6：Skills 与 Prompt Templates（pi 文件格式兼容）规格书
+# Phase 6：Resources 扩展包（Skills 与 Prompt Templates）规格书
 
-> 状态：**搁置 / 待重定位为扩展包（2026-07-05，用户裁决）**——不作为内核+CLI 特性实现。
-> 对应 roadmap 阶段：Phase 6（拟并入/紧跟 Phase 7 扩展生态）
->
-> **裁决与理由**：skills/prompts 本质是「读文件 → 注入 systemPrompt + 注册命令」，应由扩展表达而非进内核——契合 tau/pi「能被扩展表达的就别进内核」哲学，且避免给零依赖内核背 `yaml`/`ignore`。
-> - **host-node 扩展包今天即可行**：扩展在 Node 进程内被 import，可直接用 `node:fs`+`yaml` 读 skill 目录，经 `before_agent_start` 注入 `<available_skills>`、经 `registerCommand` 落地 prompt 模板。内核零改动、保持纯净。
-> - **表达力缺口（Phase 7 要补的钩子）**：`ExtensionAPI` 不向扩展暴露 FileSystem，故**运行时无关**（浏览器/小程序）的 skills 扩展做不出——需内核加「向扩展暴露 fs 能力」的钩子。这正是 Phase 7「发现缺口回头补内核」要处理的。
-> - 下方 pi 调研（加载器/注入格式/展开语法/发现路径）仍是实现扩展包时的照抄依据，**予以保留**。重启时以「扩展包」重写接口草案（`resources.ts` 的纯函数可仍放内核供扩展 import，或直接放扩展包内——届时定）。
+> 状态：已完成（2026-07-06，P7 后重写）
+> 对应 roadmap 阶段：Phase 6（搁置后重定位为扩展包，紧跟 Phase 7 落地）
 
 ## 目标
 
-用户把 pi 社区的一个真实 skill（`SKILL.md` + frontmatter）原样丢进 `.tau/skills/<name>/` 就能被 tau 用上：模型在 system prompt 里看到 `<available_skills>` 清单，按描述自行 read 全文。prompt template（`.tau/prompts/*.md`）以 `/<name> args` 调用并做 `$1/$@` 展开成一轮 prompt。全局 `~/.tau/` 与只读兼容 `.pi/` 目录同样被发现。扩展可经 `resources_discover` 事件追加资源路径。
+把 pi-compatible skills/prompts 做成扩展包，而不是 kernel/CLI 内置特性。用户加载 `@tau/ext-resources` 后，可以把 pi 社区 skill 原样放进 `.tau/skills/<name>/SKILL.md` 或兼容目录 `.pi/skills`，模型会在 system prompt 里看到 `<available_skills>`；把 prompt template 放进 `.tau/prompts/*.md` 后，可以用 `/<name> args` 触发模板展开。
 
 ## pi 参照
 
 | pi 文件（快照 v0.80.3） | 读后结论（抄什么、偏离什么、为什么） |
 |---|---|
-| `agent/src/harness/skills.ts` | **核心照抄对象**（纯函数，仅依赖 FileSystem 抽象）。`loadSkills(env, dirs)`：递归遍历目录，每目录**优先** `SKILL.md`（命中即整目录只收它、return），否则收根层直接 `.md`（`includeRootFiles`）+ 递归子目录；honor `.gitignore/.ignore/.fdignore`；`loadSkillFromFile` 解析 frontmatter（`name`/`description`/`disable-model-invocation`），name 缺省取父目录名，校验 name（`^[a-z0-9-]+$`、≤64、不 `--`/首尾 `-`、须等于父目录名）与 description（必填、≤1024），description 空则丢弃该 skill。偏离：pi 的 env 方法返回 `Result`，tau 的 FileSystem **抛** FileError——需把加载器改写成 try/catch 风格（同 branch.ts/compaction.ts 的适配惯例，非逐字节拷贝） |
-| `agent/src/harness/skills.ts` `formatSkillInvocation` | 照抄：`<skill name=".." location="..">\nReferences are relative to <dir>.\n\n<content>\n</skill>`（+ 可选追加指令）。显式调用 skill 时用（P8 TUI 才需要交互显式调用；P6 可先只做 system-prompt 列表 + 模型自行 read） |
-| `agent/src/harness/system-prompt.ts` `formatSkillsForSystemPrompt` | **逐字照抄**：过滤 `disableModelInvocation`；空则返回 ""；否则输出固定三行说明 + `<available_skills>` 内每 skill `<name>/<description>/<location>`（`escapeXml`）。这是注入 system prompt 的唯一格式 |
-| `agent/src/harness/prompt-templates.ts` | **核心照抄对象**。`loadPromptTemplates(env, paths)`：目录只收**直接** `.md` 子文件（非递归），文件输入取显式 `.md`。`loadTemplateFromFile`：frontmatter `description`/`argument-hint`，description 缺省取 body 首行前 60 字；name = 文件名去 `.md`。`parseCommandArgs`（shell 式单双引号分词）+ `substituteArgs`（`$1`、`${@:N}`、`${@:N:L}`、`$ARGUMENTS`、`$@`）+ `formatPromptTemplateInvocation`——全部逐字照抄。同样偏离：Result→throw 适配 |
-| `coding-agent/src/core/skills.ts` `loadSkills` 发现层 | 参照发现路径与碰撞策略：`<agentDir>/skills`（source=user）+ `<cwd>/.pi/skills`（source=project）；同名 skill 先到先得、后到出 collision 诊断；symlink realpath 去重。tau 对应：`~/.tau/skills`（user）、`<cwd>/.tau/skills`（project）、只读兼容 `<cwd>/.pi/skills`。此层属 host/CLI wiring，不进内核 |
-| `coding-agent/src/config.ts` `CONFIG_DIR_NAME` | pi 默认 `.pi`；tau 已用 `.tau`（extensions/sessions/trust 均在此）。prompts 目录 `<cwd>/.pi/prompts` → tau `<cwd>/.tau/prompts` |
-| `coding-agent/src/core/extensions/types.ts` `ResourcesDiscoverEvent` | 照抄：`{ type:"resources_discover", cwd, reason:"startup"|"reload" }`；结果 `{ skillPaths?, promptPaths?, themePaths? }`（themePaths 属 P8，扩展包实现时先透传字段但不消费）。pi 于 session_start 后触发 |
+| `packages/agent/src/harness/skills.ts` | 照抄 skill 元数据形状、`SKILL.md` 优先、name/description 校验、`disable-model-invocation`、`formatSkillInvocation` 与 `formatSkillsForSystemPrompt` 输出格式。偏离：tau 扩展包用 `FileSystem` 抛错风格，不引 pi Result 类型。 |
+| `packages/agent/src/harness/prompt-templates.ts` | 照抄 prompt template frontmatter 字段、`$1`/`$@`/`${@:N}`/`${@:N:L}`/`$ARGUMENTS` 展开语法、shell-like 引号分词。 |
+| `packages/coding-agent/docs/skills.md` / `prompt-templates.md` | 文件格式兼容 pi；`.pi` 目录只读兼容。 |
+| `packages/coding-agent/docs/extensions.md` `resources_discover` | P7 已补事件。P6 资源扩展会调用 `ctx.discoverResources("startup")`，把其它扩展贡献路径并入加载列表。 |
 
 ## 接口草案
 
-### 内核（纯函数，新文件 `packages/kernel/src/resources.ts`）
+### kernel facade 小补丁
 
 ```ts
-// 照抄 pi Skill / PromptTemplate 形状（harness/types.ts）
-export interface Skill {
-	name: string;
-	description: string;
-	content: string;
-	filePath: string;            // 绝对路径；模型可见 location + 解析相对引用
-	disableModelInvocation?: boolean;
-}
-export interface PromptTemplate {
-	name: string;
-	description?: string;
-	content: string;
+export interface ExtensionPaths {
+	cwd: string;
+	userTauDir?: string;      // ~/.tau
+	projectTauDir?: string;   // <cwd>/.tau
+	projectPiDir?: string;    // <cwd>/.pi
 }
 
-export type ResourceDiagnosticCode =
-	| "file_info_failed" | "list_failed" | "read_failed" | "parse_failed" | "invalid_metadata";
-export interface ResourceDiagnostic { type: "warning"; code: ResourceDiagnosticCode; message: string; path: string; }
+export interface ExtensionCapabilities {
+	fs?: FileSystem;
+	shell?: Shell;
+	platform: Platform;
+	paths?: ExtensionPaths;
+}
 
-// FileSystem 能力足够（tau 版：抛错而非 Result，内部 try/catch 适配）
-export async function loadSkills(fs: FileSystem, dirs: string | string[]):
-	Promise<{ skills: Skill[]; diagnostics: ResourceDiagnostic[] }>;
-export async function loadPromptTemplates(fs: FileSystem, paths: string | string[]):
-	Promise<{ promptTemplates: PromptTemplate[]; diagnostics: ResourceDiagnostic[] }>;
-
-// system prompt 注入格式（逐字照抄 formatSkillsForSystemPrompt）
-export function formatSkillsForSystemPrompt(skills: Skill[]): string;
-export function formatSkillInvocation(skill: Skill, additionalInstructions?: string): string;
-
-// prompt template 展开（逐字照抄）
-export function parseCommandArgs(argsString: string): string[];
-export function substituteArgs(content: string, args: string[]): string;
-export function formatPromptTemplateInvocation(t: PromptTemplate, args?: string[]): string;
+export interface ExtensionContext {
+	// ...
+	discoverResources?: (reason: "startup" | "reload") => Promise<Required<ResourcesDiscoverResult>>;
+}
 ```
 
-内部辅助（照抄 pi）：`parseFrontmatter`（`---\n…\n---` 切割 + YAML 解析）、name/description 校验、路径 basename/dirname 工具（tau FileSystem 路径为 POSIX 风格字符串）。
+CLI 负责传入 paths；Agent 的 `discoverResources` facade 调 `ExtensionRegistry.runResourcesDiscover()`。
 
-### 事件（`extensions.ts`）
+### `@tau/ext-resources`
 
 ```ts
-export interface ResourcesDiscoverEvent { type: "resources_discover"; cwd: string; reason: "startup" | "reload"; }
-export interface ResourcesDiscoverResult { skillPaths?: string[]; promptPaths?: string[]; themePaths?: string[]; }
-// api.on("resources_discover", h)；ExtensionRegistry.runResourcesDiscover(cwd, reason, ctx) 汇总各扩展路径
+export interface ResourcesExtensionOptions {
+	skillPaths?: string[];
+	promptPaths?: string[];
+	includeDefaults?: boolean; // default true
+}
+
+export function createResourcesExtension(options?: ResourcesExtensionOptions): Extension;
 ```
 
-### CLI / host（wiring，`cli/src/main.ts`）
+默认路径（按优先级加载，后者同名覆盖前者并诊断）：
 
-- 启动时（session_start 后）收集资源路径并加载：
-  - skills：`~/.tau/skills`（user）、`<cwd>/.tau/skills`（project）、只读兼容 `<cwd>/.pi/skills` + `resources_discover` 追加的 `skillPaths`
-  - prompts：`~/.tau/prompts`、`<cwd>/.tau/prompts`、`<cwd>/.pi/prompts` + `promptPaths`
-  - 同名碰撞：先到先得（user < project < 追加路径，顺序即优先级），冲突打 dim 诊断
-- **skills 注入**：CLI 注册一个 `before_agent_start` handler，把 `formatSkillsForSystemPrompt(skills)` 追加到 systemPrompt（走 Phase 2 既有的 systemPrompt 链式替换；动态、支持后续 `/reload`）
-- **prompt template 调用**：REPL 里 `/<name> args` 若不匹配已注册 command，则查 prompt 模板；命中则 `parseCommandArgs` 分词 → `formatPromptTemplateInvocation` 展开 → 作为一轮 prompt 提交（`runTurn`）。诊断在启动时以 dim 输出
-- 诊断：加载告警统一 dim 打印，不阻断启动
+- skills：`~/.tau/skills`、`<cwd>/.tau/skills`、`<cwd>/.pi/skills`
+- prompts：`~/.tau/prompts`、`<cwd>/.tau/prompts`、`<cwd>/.pi/prompts`
+- `ctx.discoverResources("startup")` 返回的 `skillPaths` / `promptPaths`
+- `options.skillPaths` / `options.promptPaths`
+
+行为：
+
+- `session_start` 时加载资源并缓存诊断。
+- `before_agent_start` 时把 `formatSkillsForSystemPrompt(skills)` 追加到 system prompt。
+- prompt templates 在加载后动态 `registerCommand(name, ...)`；命中 command 时解析 args、展开模板，返回展开后的 prompt 文本。CLI 现有 command handler 只打印返回值，不会自动发起 prompt；P6 先把 handler 输出作为命令结果，真正“命令返回即发 prompt”若需要改 CLI 命令协议，另行补。
+
+> P6 实现中已补命令结果协议：`RegisteredCommand.handler` 可返回 `{ action: "prompt"; text }`，CLI 收到后直接调用 `runTurn()`。
 
 ## 数据/格式
 
-- skill：`<dir>/<name>/SKILL.md`，frontmatter `name`（可省，取目录名）/`description`（必填）/`disable-model-invocation`。与 pi **格式完全兼容**（同一文件在 pi/tau 通用）。
-- prompt template：`<dir>/<name>.md`，frontmatter `description`/`argument-hint` 可选。与 pi 兼容。
-- `.pi/` 目录只读发现（不写入），实现 D9 的"文件格式兼容"层。
+- skill：`<dir>/<name>/SKILL.md`，frontmatter 支持 `name`、`description`、`disable-model-invocation`。`description` 必填；name 缺省取父目录名。
+- prompt template：`<dir>/<name>.md`，frontmatter 支持 `description`、`argument-hint`；body 是模板内容。
+- frontmatter 解析先实现最小 YAML 子集：`key: value` 和 boolean。暂不引 `yaml`。
+- ignore 文件（`.gitignore/.ignore/.fdignore`）本期不实现，登记为偏离；后续需要 byte parity 再引依赖或补 parser。
 
 ## 范围内
 
-- 内核 `resources.ts`：loadSkills/loadPromptTemplates/formatSkillsForSystemPrompt/formatSkillInvocation/parseCommandArgs/substituteArgs/formatPromptTemplateInvocation + frontmatter/校验/路径工具
-- `resources_discover` 事件 + registry 汇总
-- CLI：资源发现（3 类目录 + 事件路径）、skills 经 before_agent_start 注入、prompt template `/name args` 展开与提交、碰撞/加载诊断
-- 测试：frontmatter 解析（有/无/畸形）、name/description 校验、SKILL.md 优先与根 `.md` 收集、prompts 非递归、`$1/$@/${@:N:L}/$ARGUMENTS` 展开、parseCommandArgs 引号分词、formatSkillsForSystemPrompt 快照、碰撞诊断；CLI e2e：**把一个真实 pi skill 放进 `.tau/skills` → 请求里 system 含 `<available_skills>` 该 skill**；prompt template `/greet world` 展开进 wire 的 e2e
+- kernel/CLI：补 `ExtensionCapabilities.paths`、`ctx.discoverResources()`，以及 prompt command 触发一轮 prompt 所需的最小命令结果协议。
+- `@tau/ext-resources`：加载 skills/prompts、格式化 skills system prompt、注册 prompt template commands、诊断。
+- 测试：loader 单测、prompt args 展开单测、system prompt 注入 e2e、prompt command e2e、`.pi` 兼容路径。
 
-## 范围外（明确不做，防蔓延）
+## 范围外
 
-- Themes（`themePaths` 字段收下但不消费）——P8
-- 显式交互式 skill 调用 UI（选择器）、`registerMessageRenderer` 等——P8
-- `.pi/settings.json` / `SYSTEM.md` / `APPEND_SYSTEM.md` 等 pi 其它资源——非本阶段（可 Backlog）
-- symlink realpath 去重（见开放问题）——若跳过则遇 symlink entry 忽略
-- `/reload` 热重载命令本身——P8（本阶段注入机制为 reload 预留，但不做命令）
+- 完整 YAML、ignore 文件、symlink canonicalPath。
+- themes。
+- `/reload` 热重载。
+- package installer。
+- 显式 skill 选择 UI。
 
 ## 验收清单
 
-- [ ] 真实 pi skill 原样放入 `.tau/skills/<name>/SKILL.md` → CLI e2e 断言 provider 请求的 system 含该 skill 的 `<available_skills>` 条目
-- [ ] prompt template `.tau/prompts/greet.md` → `/greet world` 展开（`$1`）为一轮 prompt，wire 断言
-- [ ] frontmatter/校验/展开/分词单测全绿（含畸形 frontmatter 降级为诊断不崩）
-- [ ] 只读兼容：`.pi/skills` 下 skill 同样被发现
-- [ ] 同名碰撞：project 覆盖 user 顺序 + 诊断
-- [ ] 纯度门禁（resources.ts 不碰宿主 API）+ DoD 通用项（见 development.md）
+- [x] `.tau/skills/demo/SKILL.md` 被加载，provider 请求 system prompt 含 `<available_skills>` 与 demo 描述。
+- [x] `.pi/skills/demo/SKILL.md` 只读兼容路径同样被加载。
+- [x] `disable-model-invocation: true` 的 skill 不出现在 `<available_skills>`。
+- [x] `.tau/prompts/greet.md` 通过 `/greet world` 展开为一轮 prompt，provider wire 里有展开文本。
+- [x] `$1` / `$@` / `${@:N}` / `${@:N:L}` / `$ARGUMENTS` 展开单测。
+- [x] `resources_discover` 贡献的路径被加载。
+- [x] `npm run check` 与 `npm test` 全绿。
 
 ## 风险与开放问题
 
-1. **依赖策略（需用户拍板）**：pi 用 `yaml`（frontmatter）+ `ignore`（skill 目录 ignore 文件）两个 npm 纯 JS 库。tau 目前**零运行时依赖**。选项：(A) 引入这两个依赖换 byte-parity；(B) 手写最小 frontmatter（YAML 子集：`key: value` + bool，够 skill/prompt 用）并**本期不支持 ignore 文件**（偏离 pi，但保持零依赖）。倾向 (B)——skill frontmatter 只有 name/description/bool，ignore 文件对 skill 目录是边缘特性；若日后需要完整 YAML 再引依赖。
-2. **canonicalPath / symlink**：pi 内核 loader 的 `resolveKind` 对 `kind==="symlink"` 的 entry 调 `canonicalPath` 再判类型；tau FileSystem 无 `canonicalPath`。倾向本期 **symlink entry 直接忽略**（scope-out），不给 FileSystem 加能力；host-node 的 realpath 去重也不做（属 coding-agent 层）。
-3. **注入走 before_agent_start vs CLI 组装**：本规格采 before_agent_start（roadmap 指定，支持动态 reload）。若认为 skills 静态、直接在 buildAgent 时拼 systemPrompt 更简，可改——但会失去 reload 弹性。
-4. **prompt template 与 registerCommand 冲突**：`/<name>` 先匹配已注册 command，再落到 prompt 模板。若两者同名，command 优先（与 pi 一致，需确认）。
+1. **命令协议缺口**：prompt template 要触发 prompt，而不是打印字符串。需要把 `RegisteredCommand.handler` 返回值扩展为字符串或 `{ action: "prompt"; text }`，CLI 看到 prompt action 后调用 `runTurn()`。
+2. **路径 facade 命名**：`paths.userTauDir/projectTauDir/projectPiDir` 是 tau product 层概念，但只作为字符串由 host 注入，不污染 kernel 运行时纯度。
+3. **依赖策略**：本期不引 YAML/ignore 依赖，保持扩展包轻量；与 pi 的 ignore 行为存在偏离。
