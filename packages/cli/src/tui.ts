@@ -105,6 +105,7 @@ export interface RunTuiOptions {
 	agent: Agent;
 	extensions: ExtensionRegistry;
 	model: string;
+	modelChoices?: string[];
 	baseUrl: string;
 	cwd: string;
 	contextWindow?: number;
@@ -161,6 +162,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
 	let currentModel = options.model;
+	let modelChoices = uniqueModelChoices([currentModel, ...(options.modelChoices ?? [])]);
 	let currentThinkingLevel = options.thinkingLevel;
 	let extensions = options.extensions;
 	let headerStatusItems: string[] = [];
@@ -439,6 +441,28 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await refreshExtensionWidgets();
 	};
 
+	async function switchModel(requestedModel: string): Promise<void> {
+		const previousModel = currentModel;
+		const decision = await extensions.runModelSelectBefore(
+			{ currentModel: previousModel, requestedModel },
+			agent.extensionContext(),
+		);
+		if (decision.cancel) {
+			appendText(dim(`Model switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
+			return;
+		}
+		currentModel = decision.model;
+		modelChoices = uniqueModelChoices([decision.model, ...modelChoices]);
+		options.setModel(decision.model);
+		setHeader();
+		setFooter();
+		await extensions.notifyModelSelected(
+			{ previousModel, requestedModel, selectedModel: decision.model },
+			agent.extensionContext(),
+		);
+		appendText(dim(`Model set to ${decision.model}.`));
+	}
+
 	async function reloadExtensions(): Promise<void> {
 		if (runningTask) {
 			appendText(dim("Reload is unavailable while a task is running."));
@@ -594,27 +618,19 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 		if (name === "model") {
 			if (args === "") {
-				appendText(dim(`Current model: ${currentModel}`));
+				const selected = await selectItem(
+					`Select model (current: ${currentModel})`,
+					modelChoices.map((model) => ({
+						value: model,
+						label: model === currentModel ? `● ${model}` : `○ ${model}`,
+						description: model === currentModel ? "Current model" : "Switch to this model.",
+					})),
+				);
+				if (!selected) appendText(dim("Model selection cancelled."));
+				else await switchModel(selected.value);
 				return true;
 			}
-			const previousModel = currentModel;
-			const decision = await extensions.runModelSelectBefore(
-				{ currentModel: previousModel, requestedModel: args },
-				agent.extensionContext(),
-			);
-			if (decision.cancel) {
-				appendText(dim(`Model switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
-				return true;
-			}
-			currentModel = decision.model;
-			options.setModel(decision.model);
-			setHeader();
-			setFooter();
-			await extensions.notifyModelSelected(
-				{ previousModel, requestedModel: args, selectedModel: decision.model },
-				agent.extensionContext(),
-			);
-			appendText(dim(`Model set to ${decision.model}.`));
+			await switchModel(args);
 			return true;
 		}
 		if (name === "thinking") {
@@ -1158,6 +1174,10 @@ function buildAutocompleteCommands(extensions: ExtensionRegistry): SlashCommand[
 			description: command.description,
 		})),
 	];
+}
+
+function uniqueModelChoices(values: string[]): string[] {
+	return [...new Set(values.map((value) => value.trim()).filter((value) => value !== ""))];
 }
 
 function formatCommandUsage(command: SlashCommand): string {

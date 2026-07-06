@@ -30,6 +30,7 @@ Options:
   -b, --base-url <url>   API base URL (env: TAU_BASE_URL, OPENAI_BASE_URL)
   -k, --api-key <key>    API key (env: TAU_API_KEY, OPENAI_API_KEY)
   -m, --model <model>    Model id (env: TAU_MODEL)
+      --models <list>    Comma-separated TUI model selector candidates (env: TAU_MODELS)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
       --tui              Use the TUI interactive mode
@@ -53,6 +54,7 @@ interface CliOptions {
 	baseUrl?: string;
 	apiKey?: string;
 	model?: string;
+	models?: string[];
 	system?: string;
 	print?: string;
 	tui: boolean;
@@ -89,6 +91,9 @@ function parseArgs(argv: string[]): CliOptions {
 			case "-m":
 			case "--model":
 				options.model = next();
+				break;
+			case "--models":
+				options.models = splitList(next());
 				break;
 			case "-s":
 			case "--system":
@@ -130,6 +135,17 @@ function parseArgs(argv: string[]): CliOptions {
 		}
 	}
 	return options;
+}
+
+function splitList(value: string | undefined): string[] {
+	return (value ?? "")
+		.split(",")
+		.map((item) => item.trim())
+		.filter((item) => item !== "");
+}
+
+function uniqueStrings(values: string[]): string[] {
+	return [...new Set(values)];
 }
 
 function resolveExtensionFlags(registry: ExtensionRegistry, extras: string[]): Record<string, boolean | string> {
@@ -410,6 +426,7 @@ async function main(): Promise<void> {
 
 	const envWindow = Number.parseInt(process.env.TAU_CONTEXT_WINDOW ?? "", 10);
 	const contextWindow = options.contextWindow ?? (Number.isFinite(envWindow) && envWindow > 0 ? envWindow : undefined);
+	const modelChoices = uniqueStrings([model, ...(options.models ?? []), ...splitList(process.env.TAU_MODELS)]);
 	const config: OpenAICompatConfig = { baseUrl, apiKey, model, contextWindow };
 	const cwd = resolve(process.cwd());
 	if (options.tui && options.print === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
@@ -512,6 +529,7 @@ async function main(): Promise<void> {
 			agent,
 			extensions,
 			model,
+			modelChoices,
 			baseUrl,
 			cwd,
 			contextWindow,
