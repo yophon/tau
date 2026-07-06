@@ -139,13 +139,13 @@ class TuiUiCapability implements UiCapability {
 | 扩展 API | Done | custom header/footer | 扩展可追加 header/footer 状态段，并由 host 控制刷新频率 |
 | 重载/资源 | Done | `/reload` host-node 扩展热重载 | 空闲时重载全局/项目扩展 registry，刷新 commands/shortcuts/renderers/widgets/header/footer/tools，处理 project trust 与 session_shutdown/session_start |
 | 重载/资源 | Done | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources prompt commands |
-| 主题/打磨 | Later | Themes | 引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
+| 主题/打磨 | Later | Themes | Phase 8 后续延期：引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
 | 主题/打磨 | Done | `/help` polish | 可滚动 overlay、命令详情、扩展来源/分组和 renderer/surface 诊断 |
 | 主题/打磨 | Done | footer polish | footer 分层展示运行状态、context/usage/cost/reload、自定义 footer 区，并做窄屏裁剪 |
 | 主题/打磨 | Done | tool collapse/expand | `Ctrl+T` 全局折叠/展开 fallback 工具输出，`/tools <id>` 支持单项覆盖 |
 | 主题/打磨 | Done | thinking block show/hide | `Ctrl+R` 切换后续 reasoning delta 展示，footer 显示 shown/hidden 状态 |
 | 主题/打磨 | Done | startup diagnostics | 启动和 `/diagnostics` 展示 extensions/resources 诊断，`/reload` 后刷新 |
-| 验收 | Acceptance | TTY e2e 覆盖扩展 | tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径 |
+| 验收 | Done | TTY e2e 覆盖扩展 | `npm run smoke:tui` tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 路径 |
 | 验收 | Acceptance | 自举验收 | 用 `npm run tau -- --tui` 开发 tau 至少一轮，记录并修复阻塞问题 |
 
 ## 阶段 8 剩余执行清单
@@ -198,12 +198,12 @@ class TuiUiCapability implements UiCapability {
 
 ### P8D-2：Themes
 
-- [ ] 设计主题格式：明确选择 tau theme JSON 还是复用/适配 pi theme schema；写清字段、默认值、版本字段和未知字段处理。
-- [ ] 实现内置 `light` / `dark` 主题，覆盖 header、chat role、markdown、reasoning、tool、selector、status、footer、error/warning/success 等语义色。
-- [ ] 增加主题加载入口：支持 CLI/env/config/resource 至少一种稳定入口；加载失败时显示诊断并回退默认主题。
-- [ ] `/reload` 后刷新主题资源，不破坏当前 session、扩展 registry 和已注册 UI surfaces。
-- [ ] 将主题状态写入 footer 或 startup diagnostics，便于确认当前主题来源。
-- [ ] 验收：`npm run check`、`npm test`；tmux 冒烟覆盖默认主题、外部主题加载、坏主题回退、reload 后主题刷新。
+- [ ] Phase 8 后续延期：设计主题格式，明确选择 tau theme JSON 还是复用/适配 pi theme schema；写清字段、默认值、版本字段和未知字段处理。
+- [ ] Phase 8 后续延期：实现内置 `light` / `dark` 主题，覆盖 header、chat role、markdown、reasoning、tool、selector、status、footer、error/warning/success 等语义色。
+- [ ] Phase 8 后续延期：增加主题加载入口，支持 CLI/env/config/resource 至少一种稳定入口；加载失败时显示诊断并回退默认主题。
+- [ ] Phase 8 后续延期：`/reload` 后刷新主题资源，不破坏当前 session、扩展 registry 和已注册 UI surfaces。
+- [ ] Phase 8 后续延期：将主题状态写入 footer 或 startup diagnostics，便于确认当前主题来源。
+- [ ] Phase 8 后续延期验收：`npm run check`、`npm test`；tmux 冒烟覆盖默认主题、外部主题加载、坏主题回退、reload 后主题刷新。
 
 ### P8D-3：Help Polish
 
@@ -242,14 +242,14 @@ class TuiUiCapability implements UiCapability {
 
 ### P8E-1：TTY Smoke Automation
 
-- [ ] 新增自动化或半自动脚本，沉淀当前手工 tmux 流程；脚本需要创建隔离临时目录、mock provider、临时扩展，并清理 tmux session。
-- [ ] 覆盖普通 prompt 和 assistant stream：输入后能观察到最终文本并正常退出。
-- [ ] 覆盖 tool_update：长 bash/tool 输出在执行中可见，完成后 stdout/stderr/result 保留。
-- [ ] 覆盖 abort：运行中 Ctrl+C 后 TUI 保持可用，pending tool 被标记 aborted。
-- [ ] 覆盖 TUI confirm：project trust 或扩展 UI confirm 使用 TUI overlay，而非 readline。
-- [ ] 覆盖 tree/fork/session selector：至少一条 selector 路径可选择并改变 session 状态。
-- [ ] 覆盖 extension shortcut、message/entry/tool renderer、widgets、header/footer、reload/resources reload 的关键路径。
-- [ ] 验收：脚本可在本机重复运行；`npm run check`、`npm test` 不回退；文档记录脚本入口与已知限制。
+- [x] 新增 `npm run smoke:tui`，沉淀当前手工 tmux 流程；脚本创建隔离临时目录、mock provider、临时扩展，并清理 tmux session。
+- [x] 覆盖普通 prompt 和 assistant stream：输入后能观察到最终文本并正常退出。
+- [x] 覆盖 tool_update：长 bash 输出在执行中可见，完成后 stdout/stderr/result 保留；自定义 tool renderer 覆盖 result 路径。
+- [x] 覆盖 abort：运行中 Ctrl+C 后 TUI 保持可用，并显示 `Turn aborted.`。
+- [x] 覆盖 TUI confirm：startup project trust 和运行中扩展 `ctx.ui.confirm` 均使用 TUI 输入路径。
+- [x] 覆盖 tree/fork/session selector：`/tree` selector 展示 custom entry renderer，`/fork` selector 选择 full session 后切换到 fork session。
+- [x] 覆盖 extension shortcut、message/entry/tool renderer、widgets、header/footer、reload/resources reload 的关键路径。
+- [x] 验收：脚本可在本机重复运行；`npm run check`、`npm test` 不回退；文档记录脚本入口与已知限制。
 
 ### P8E-2：Self-Dogfood
 
@@ -315,7 +315,7 @@ class TuiUiCapability implements UiCapability {
 - [x] `model_select` 事件：模型切换前后通知扩展。
 - [x] thinking level：`/thinking [default|none|minimal|low|medium|high|xhigh]` 设置/清除 `extraBody.reasoning_effort` 覆盖。
 - [x] `thinking_level_select` 事件。
-- [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
+- [ ] Themes：Phase 8 后续延期，引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
 - [x] `/help`：可滚动 overlay，显示内置命令详情和扩展 commands。
 - [x] `/help` extension diagnostics：显示扩展 commands/shortcuts/renderers/widgets/header/footer/diagnostics 来源和分组。
 - [x] Autocomplete：slash commands、文件路径基础补全。
@@ -324,13 +324,13 @@ class TuiUiCapability implements UiCapability {
 - [x] Tool collapse/expand：`Ctrl+T` 展开/折叠 fallback 工具输出，`/tools` 查看工具 id 并用 `/tools <id>` 单项覆盖。
 - [x] Thinking block show/hide：`Ctrl+R` 切换 reasoning 展示，状态反映到 footer。
 - [x] Startup loaded resources：启动和 `/diagnostics` 展示 loaded extensions/resources 诊断，`/reload` 后刷新 skills/prompts 计数和 reason。
-- [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
+- [x] TTY e2e：`npm run smoke:tui` tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
 - [ ] 自举验收：用 `npm run tau -- --tui` 日常开发 tau 至少一轮，记录发现的问题。
 
-P8A/P8B/P8C/P8D 验证记录：
+P8A/P8B/P8C/P8D/P8E 验证记录：
 
 - `npm run check` 全绿。
-- `npm test` 72 测试全绿。
+- `npm test` 74 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。
 - TUI 启动期 project trust 已使用 `createStartupTuiUi()`，不再经过 readline；tmux 冒烟确认首次信任 prompt、项目扩展命令加载、`trust.json` 持久化均正常。
@@ -358,6 +358,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI startup diagnostics 已实现；新增 extension diagnostic surface 与 `/diagnostics`，`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认启动时显示 host surfaces、resources 诊断和自定义 diagnostic，新增 skill/prompt 后 `/reload` 显示 `session_start: reload` 且 resources 从 `1 skills, 1 prompts` 刷新到 `2 skills, 2 prompts`，手动 `/diagnostics` 可重复查看。
 - TUI footer polish 已实现；`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认 idle footer 分两行显示 status/model/session 与 context/usage/cost/reload，自定义 footer item 进入低优先级裁剪区，bash 运行时显示 `status bash`，慢流式 turn 中 steering/follow-up 后显示 `status working · steering 1 · follow-up 1`，78 列窄屏下 footer 使用 `+N more`/ellipsis 裁剪且不挤爆输入区域。
 - TUI `/help` polish 已实现；`npm run check` 全绿、`npm test` 74 测试全绿，tmux 冒烟确认 `/help` 打开全宽可滚动 overlay，PageDown/Down 可浏览长 help，Esc 关闭后恢复 editor/footer；help 内容显示 built-in command 的 source/busy/shortcut 详情，扩展 command/shortcut 分组显示 source/group/name，message/entry/tool renderer 与 widget/header/footer/diagnostic surface 诊断均可见。
+- TTY smoke automation 已实现；`npm run smoke:tui` 会启动 mock OpenAI provider 与多个隔离 tmux TUI 会话，覆盖 startup trust confirm、assistant stream、bash tool_update、Ctrl+C abort、扩展 UI confirm、shortcut、message/entry/tool renderer、widget/header/footer、`/reload` resources prompt、`/tree` 和 `/fork` selector。已知限制：脚本依赖本机 `tmux`，作为显式 smoke 命令运行，不并入默认 `npm test`。
 
 ## 风险与开放问题
 
