@@ -119,7 +119,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
 - [ ] Steering/follow-up：运行中输入默认 steer；增加一个快捷键或命令把输入排为 followUp。
 - [x] Abort UX：运行中 Ctrl+C abort 后保留 TUI，明确显示 turn/compaction aborted 状态。
-- [ ] Abort UX polish：abort 后清理或标记 pending tool 组件。
+- [x] Abort UX polish：abort 后标记 pending tool 组件。
 
 ### P8C：扩展 API / pi parity
 

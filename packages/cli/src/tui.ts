@@ -415,6 +415,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		let assistantComponent: Markdown | undefined;
 		let assistantText = "";
 		const toolComponents = new Map<string, Text>();
+		const pendingTools = new Map<string, string>();
 		try {
 			for await (const event of agent.prompt(input, controller.signal)) {
 				renderEvent(event, {
@@ -430,13 +431,19 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 						assistantText = text;
 					},
 					toolComponents,
+					pendingTools,
 					addComponent: (component) => chat.addChild(component),
 				});
 				tui.requestRender();
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			appendText(isAbortError(error) ? dim("Turn aborted.") : red(`Error: ${message}`));
+			if (isAbortError(error)) {
+				markPendingToolsAborted(toolComponents, pendingTools);
+				appendText(dim("Turn aborted."));
+			} else {
+				appendText(red(`Error: ${message}`));
+			}
 		} finally {
 			runningTask = undefined;
 			controller = undefined;
@@ -550,11 +557,20 @@ function isAbortError(error: unknown): boolean {
 	return "code" in error && error.code === "aborted";
 }
 
+function markPendingToolsAborted(toolComponents: Map<string, Text>, pendingTools: Map<string, string>): void {
+	for (const [id, name] of pendingTools) {
+		const component = toolComponents.get(id);
+		if (component) component.setText(`${red("✗")} ${dim(name)}\n${dim("aborted")}`);
+	}
+	pendingTools.clear();
+}
+
 interface RenderState {
 	getAssistant(): Markdown;
 	getAssistantText(): string;
 	setAssistantText(text: string): void;
 	toolComponents: Map<string, Text>;
+	pendingTools: Map<string, string>;
 	addComponent(component: Text): void;
 }
 
@@ -589,6 +605,7 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 				0,
 			);
 			state.toolComponents.set(event.toolCall.id, component);
+			state.pendingTools.set(event.toolCall.id, event.toolCall.name);
 			state.addComponent(component);
 			break;
 		}
@@ -599,6 +616,7 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 				state.toolComponents.set(event.toolCall.id, component);
 				state.addComponent(component);
 			}
+			state.pendingTools.set(event.toolCall.id, event.toolCall.name);
 			component.setText(`${cyan(`⚙ ${event.toolCall.name}`)}\n${dim(event.partialOutput)}`);
 			break;
 		}
@@ -610,6 +628,7 @@ function renderEvent(event: AgentEvent, state: RenderState): void {
 				state.toolComponents.set(event.toolCall.id, component);
 				state.addComponent(component);
 			}
+			state.pendingTools.delete(event.toolCall.id);
 			component.setText(`${marker} ${dim(event.toolCall.name)}\n${event.result.output}`);
 			break;
 		}
