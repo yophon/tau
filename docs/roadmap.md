@@ -1,10 +1,10 @@
 # tau 路线图
 
-> 最后更新：2026-07-05（Phase 5 会话分支完成归档，补齐 /tree //fork CLI e2e）
-> 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始
+> 最后更新：2026-07-06（Phase 7 规格启动；Phase 6 搁置内容并入/紧跟 Phase 7）
+> 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
-**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 依赖 P2 的 `before_agent_start`；P7 依赖 P1+P2（扩展表达力压力测试）；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核（可与 P6–P8 并行推进）；P11 收尾。
+**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；**P6 已搁置并入 P7**（skills/prompts 改做扩展包，依赖 P2 的 `before_agent_start`/`registerCommand` + P7 要补的「向扩展暴露 fs」钩子）；P7 依赖 P1+P2（扩展表达力压力测试）——**当前工作**；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核（可与 P7–P8 并行推进）；P11 收尾。
 
 ## Phase 0 ✅ 内核种子（2026-07-04）
 
@@ -42,20 +42,26 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：55 测试全绿（新增 branch.test.ts 10 用例——公共祖先收集、prepareBranchEntries 预算/文件清单继承、navigateTo 摘要/取消/接管/守卫；session.test.ts fork 三语义 + parentSession lineage；2 个 CLI e2e——/tree 列表+跳转后上下文含 branchSummary、/fork 双分支各自 --session 续写互不污染）。与规格偏差：无。范围外项（/clone、label entry、树可视化、before_tree 的 userWantsSummary/label 字段）按计划推迟 P8。备注：分支代码本已在提交 ef83282 落地，但当时漏归档（roadmap/pi-parity 未更新、规格验收清单的两条 CLI e2e 未落实）——本次补齐 e2e 并完成文档闭环。
 
-## Phase 6 ⬜ Skills 与 Prompt Templates（pi 文件格式兼容）
+## Phase 6 ⏸ Skills 与 Prompt Templates（搁置：重定位为扩展包，并入/紧跟 Phase 7）
 
 **目标**：直接复用 pi 社区的 skills/prompts 内容（D9 的"文件格式兼容"层）。
 
-- 先读 pi：`packages/agent/src/harness/skills.ts`、`prompt-templates.ts`、`packages/coding-agent/docs/skills.md`、`prompt-templates.md`
+> **2026-07-05 裁决（用户）**：不作为内核+CLI 特性做，改做**扩展包**（`@tau/ext-skills`/`ext-prompts`）——契合「能被扩展表达的就别进内核」，且不给零依赖内核背 `yaml`/`ignore`。规格调研已完成并保留在 [specs/phase-6-skills-prompts.md](specs/phase-6-skills-prompts.md)。
+> - host-node 扩展包**今天即可行**：扩展在 Node 进程内被 import，可直接 `node:fs`+`yaml` 读目录，经 `before_agent_start` 注入 `<available_skills>`、`registerCommand` 落地 `/name args`。
+> - **表达力缺口**：`ExtensionAPI` 不向扩展暴露 FileSystem → 运行时无关版（浏览器/小程序）做不出，需 Phase 7 补「向扩展暴露 fs」的内核钩子。故本阶段与 Phase 7 一起推进（Phase 7 正是为压测扩展 API、发现缺口补内核而设）。
+
+- 先读 pi：`packages/agent/src/harness/skills.ts`、`prompt-templates.ts`、`packages/coding-agent/docs/skills.md`、`prompt-templates.md`（✅ 已读，见规格书 pi 参照表）
 - 发现路径：`.tau/skills`、`.tau/prompts` + 全局 `~/.tau/`，同时识别 `.pi/` 对应目录（只读兼容）
 - skills 注入 system prompt 的格式照抄 pi（formatSkillsForSystemPrompt），走 Phase 2 的 `before_agent_start` 机制
 - prompt templates：`/name args` 展开（$1 $@ 语法照抄 pi 的 parseCommandArgs/formatPromptTemplateInvocation）
 - `resources_discover` 事件（扩展提供额外资源路径）
 - **验收**：把 pi 仓库的一个真实 skill 原样放入 `.tau/skills` 可用
 
-## Phase 7 ⬜ 扩展生态标杆包：子 agent 与 MCP
+## Phase 7 🚧 扩展生态标杆包：子 agent 与 MCP
 
 **目标**：用两个高价值扩展包验证扩展 API 的表达力（遵循 pi 哲学：不进内核）。发现表达力缺口就回头补内核钩子——这正是把它排在 TUI 之前的原因，内核 API 要在 TUI 依赖它之前定型。
+
+规格书：[specs/phase-7-extension-ecosystem.md](specs/phase-7-extension-ecosystem.md)（草拟中）。
 
 - `@tau/ext-subagents`：注册 `task` 工具，spawn 子 Agent 实例（同进程复用内核，天然运行时无关）；结果汇总回主对话
 - `@tau/ext-mcp`：注册 MCP client 工具桥（stdio/HTTP transport 属宿主能力——stdio 版依赖 Shell/host-node，HTTP 版可纯内核）
