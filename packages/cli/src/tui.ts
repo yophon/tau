@@ -31,6 +31,7 @@ import {
 	type RegisteredToolRenderEvent,
 	type RegisteredToolRenderer,
 	type RegisteredToolRenderResult,
+	type RegisteredWidgetRenderResult,
 	restoreSession,
 	type SessionEntry,
 	type SessionMetadata,
@@ -158,6 +159,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
+	const aboveEditorWidgets = new Container();
+	const belowEditorWidgets = new Container();
 	const footer = new Text("", 1, 0);
 	const editor = new Editor(tui, editorTheme, { paddingX: 1, autocompleteMaxVisible: 8 });
 	editor.setAutocompleteProvider(
@@ -166,7 +169,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	tui.addChild(header);
 	tui.addChild(chat);
 	tui.addChild(status);
+	tui.addChild(aboveEditorWidgets);
 	tui.addChild(editor);
+	tui.addChild(belowEditorWidgets);
 	tui.addChild(footer);
 	tui.setFocus(editor);
 
@@ -223,6 +228,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await options.extensions.notifySessionStart("resume", agent.extensionContext());
 		const metadata = await newStore.getMetadata();
 		await refreshFooterSession(metadata);
+		await refreshExtensionWidgets();
 		return { metadata, messageCount: restored.messages.length };
 	};
 
@@ -298,6 +304,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const messageStart = agent.messages.length;
 			const output = await shortcut.handler(agent.extensionContext());
 			await renderNewMessages(messageStart);
+			await refreshExtensionWidgets();
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
@@ -371,6 +378,29 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 		}
 		return undefined;
+	};
+
+	const refreshExtensionWidgets = async (): Promise<void> => {
+		aboveEditorWidgets.clear();
+		belowEditorWidgets.clear();
+		for (const widget of options.extensions.widgets.values()) {
+			const target = widget.placement === "below-editor" ? belowEditorWidgets : aboveEditorWidgets;
+			try {
+				const result = await widget.handler(agent.extensionContext());
+				const component = widgetRenderResultToComponent(result);
+				if (component) target.addChild(component);
+			} catch (error) {
+				target.addChild(
+					new Text(`Widget ${widget.name} failed: ${error instanceof Error ? error.message : String(error)}`, 1, 0),
+				);
+			}
+		}
+		tui.requestRender();
+	};
+
+	const refreshFooterAndWidgets = async (): Promise<void> => {
+		await refreshFooterSession();
+		await refreshExtensionWidgets();
 	};
 
 	tui.addInputListener((data) => {
@@ -539,6 +569,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			await recorder.setName(args);
 			await options.extensions.notifySessionInfoChanged(args, agent.extensionContext());
 			await refreshFooterSession();
+			await refreshExtensionWidgets();
 			appendText(dim(`Session named "${args}".`));
 			return true;
 		}
@@ -738,6 +769,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const messageStart = agent.messages.length;
 			const output = await command.handler(args, agent.extensionContext());
 			await renderNewMessages(messageStart);
+			await refreshExtensionWidgets();
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
@@ -816,7 +848,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
-			void refreshFooterSession();
+			void refreshFooterAndWidgets();
 		}
 	}
 
@@ -838,7 +870,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
-			void refreshFooterSession();
+			void refreshFooterAndWidgets();
 		}
 	}
 
@@ -887,11 +919,12 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			runningTask = undefined;
 			controller = undefined;
 			setStatus(dim("Ready"));
-			void refreshFooterSession();
+			void refreshFooterAndWidgets();
 		}
 	}
 
 	await refreshFooterSession();
+	await refreshExtensionWidgets();
 	tui.start();
 	tui.requestRender();
 	await done;
@@ -1238,6 +1271,13 @@ function toolRenderResultToComponent(result: RegisteredToolRenderResult, target?
 		return target;
 	}
 	return result.format === "markdown" ? new Markdown(text, 1, 0, markdownTheme) : new Text(text, 1, 0);
+}
+
+function widgetRenderResultToComponent(result: RegisteredWidgetRenderResult): Component | undefined {
+	if (result === undefined) return undefined;
+	if (typeof result === "string") return new Text(result, 1, 0);
+	if (isComponent(result)) return result;
+	return result.format === "markdown" ? new Markdown(result.text, 1, 0, markdownTheme) : new Text(result.text, 1, 0);
 }
 
 function messageRenderResultToComponent(

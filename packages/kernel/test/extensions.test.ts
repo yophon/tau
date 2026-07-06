@@ -269,6 +269,11 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			description: "Ping tool renderer",
 			handler: (event) => `tool:${event.phase}:${event.toolCall.name}`,
 		});
+		api.registerWidget("ping-widget", {
+			placement: "below-editor",
+			description: "Ping widget",
+			handler: (ctx) => `widget:${ctx.messages.length}`,
+		});
 	};
 	const second: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-b` }));
@@ -329,6 +334,9 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 		),
 		"tool:result:ping-tool",
 	);
+	const widget = registry.widgets.get("ping-widget");
+	assert.equal(widget?.placement, "below-editor");
+	assert.equal(await widget?.handler({ messages: [] }), "widget:0");
 });
 
 test("extension tools receive context capabilities", async () => {

@@ -88,6 +88,8 @@ export {
 	type RegisteredToolRenderEvent,
 	type RegisteredToolRenderer,
 	type RegisteredToolRenderResult,
+	type RegisteredWidget,
+	type RegisteredWidgetRenderResult,
 	type ResourcesDiscoverEvent,
 	type ResourcesDiscoverResult,
 	type SessionBeforeCompactEvent,
@@ -118,6 +120,7 @@ export {
 	type UiCapability,
 	type UserBashEvent,
 	type UserBashEventResult,
+	type WidgetPlacement,
 } from "./extensions.ts";
 export {
 	type AgentMessage,

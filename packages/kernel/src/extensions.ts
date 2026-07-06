@@ -442,6 +442,21 @@ export interface RegisteredToolRenderer {
 	) => Promise<RegisteredToolRenderResult> | RegisteredToolRenderResult;
 }
 
+export type WidgetPlacement = "above-editor" | "below-editor";
+
+export type RegisteredWidgetRenderResult =
+	| string
+	| { text: string; format?: "text" | "markdown" }
+	| ExtensionRenderComponent
+	| undefined;
+
+export interface RegisteredWidget {
+	name: string;
+	description?: string;
+	placement?: WidgetPlacement;
+	handler: (ctx: ExtensionContext) => Promise<RegisteredWidgetRenderResult> | RegisteredWidgetRenderResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -514,6 +529,9 @@ export interface ExtensionAPI {
 	/** Register a custom TUI tool renderer. Hosts that do not support renderers may ignore it. */
 	registerToolRenderer(name: string, options: Omit<RegisteredToolRenderer, "name">): void;
 
+	/** Register a TUI widget. Hosts that do not support widgets may ignore it. */
+	registerWidget(name: string, options: Omit<RegisteredWidget, "name">): void;
+
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
 
@@ -579,6 +597,7 @@ export class ExtensionRegistry {
 	readonly messageRenderers = new Map<string, RegisteredMessageRenderer>();
 	readonly entryRenderers = new Map<string, RegisteredEntryRenderer>();
 	readonly toolRenderers = new Map<string, RegisteredToolRenderer>();
+	readonly widgets = new Map<string, RegisteredWidget>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -643,6 +662,9 @@ export class ExtensionRegistry {
 			},
 			registerToolRenderer: (name, options) => {
 				this.toolRenderers.set(name, { name, ...options });
+			},
+			registerWidget: (name, options) => {
+				this.widgets.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });

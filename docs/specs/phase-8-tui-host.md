@@ -135,7 +135,7 @@ class TuiUiCapability implements UiCapability {
 | 扩展 API | Done | `registerMessageRenderer` | 扩展可按 role/customType 渲染 user/assistant/custom message，未命中走 fallback |
 | 扩展 API | Done | `registerEntryRenderer` | 扩展可按 entry type/customType 渲染 `/tree`/`/fork` selector 中的 session entry |
 | 扩展 API | Done | 自定义 tool renderer | tool start/update/result 支持组件 renderer，fallback 仍可用 |
-| 扩展 API | Later | extension widgets | editor 上方/下方可挂临时组件 |
+| 扩展 API | Done | extension widgets | 扩展可在 editor 上方/下方挂文本或组件 widget，并在运行后刷新 |
 | 扩展 API | Later | custom header/footer | 扩展可追加 header/footer 状态区 |
 | 重载/资源 | Next | `/reload` | 重载 host-node 扩展、resources、themes，并处理生命周期事件 |
 | 重载/资源 | Next | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources |
@@ -175,7 +175,7 @@ class TuiUiCapability implements UiCapability {
 
 ### P8C-4：Runtime Extension Surfaces
 
-- [ ] `extension widgets`：定义 editor 上方/下方临时组件注册与清理语义；先支持文本/简单 Component。
+- [x] `extension widgets`：定义 editor 上方/下方临时组件注册与清理语义；先支持文本/简单 Component。
 - [ ] `custom header/footer`：允许扩展追加状态段，更新频率由 host 控制，避免每帧调用扩展。
 - [ ] 为 `registerShortcut` 增加重载清理语义：配合 `/reload` 后 registry 替换即可移除旧快捷键。
 - [ ] `/help` 显示 renderer/widget/header/footer/shortcut 来源，便于诊断加载结果。
@@ -243,7 +243,7 @@ class TuiUiCapability implements UiCapability {
 - [x] `registerMessageRenderer`：扩展自定义消息渲染组件。
 - [x] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
 - [x] 自定义 tool renderer：tool start/update/result 支持扩展提供组件；无 renderer 时走文本 fallback。
-- [ ] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
+- [x] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
 - [ ] TUI custom header/footer：允许扩展覆盖或追加 header/footer 状态。
 - [ ] `/reload`：重载 host-node 扩展、resources、themes；处理 project trust 与 session_shutdown/session_start。
 - [ ] `resources_discover` reload reason：`/reload` 时触发 `reason:"reload"` 并刷新 ext-resources。
@@ -285,6 +285,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI `registerMessageRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 assistant renderer 可覆盖流式回复为 `rendered:tui-renderer-ok`，custom renderer 可把 `/emit` 注入的 custom message 显示为 `rendered:custom:smoke`，user renderer 可把运行中 steering message 显示为 `rendered:user`。
 - TUI `registerEntryRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展 `/mark` 写入 custom entry 后，`/tree` selector 显示 `rendered-entry:mark`，选择该信息项不会误触导航。
 - TUI 自定义 tool renderer 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展 tool renderer 可显示 `tool-render:start`、`tool-render:update:stream-chunk`、`tool-render:result:tool-final:stdout`。
+- TUI extension widgets 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展可在 editor 上方显示 `widget-above:0`、下方显示 `widget-below:0`，执行 `/bump` 后刷新为 `widget-above:1` / `widget-below:1`。
 
 ## 风险与开放问题
 
