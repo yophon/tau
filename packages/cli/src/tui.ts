@@ -13,10 +13,12 @@ import {
 import {
 	type Agent,
 	type AgentEvent,
+	type AgentMessage,
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
 	messageText,
-	type SessionRecorder,
+	restoreSession,
+	SessionRecorder,
 	type SessionStore,
 	type UiCapability,
 } from "@tau/kernel";
@@ -66,6 +68,7 @@ export interface RunTuiOptions {
 	sessionRepo: JsonlSessionRepo;
 	store?: SessionStore;
 	recorder?: SessionRecorder;
+	buildAgent(messages: AgentMessage[] | undefined, session: SessionRecorder | undefined): Agent;
 }
 
 export async function runTui(options: RunTuiOptions): Promise<void> {
@@ -91,6 +94,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 
 	let running = false;
 	let controller: AbortController | undefined;
+	let agent = options.agent;
+	let store = options.store;
+	let recorder = options.recorder;
 	let pendingUiPrompt: ((input: string) => void) | undefined;
 	let resolveDone: (() => void) | undefined;
 	const done = new Promise<void>((resolve) => {
@@ -108,7 +114,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	};
 
 	const stop = async (): Promise<void> => {
-		await options.extensions.notifySessionShutdown("quit", options.agent.extensionContext());
+		await options.extensions.notifySessionShutdown("quit", agent.extensionContext());
 		tui.stop();
 		resolveDone?.();
 	};
@@ -143,7 +149,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(level === "error" ? red(message) : level === "warning" ? cyan(message) : dim(message));
 		},
 	};
-	options.agent.setUi(uiCapability);
+	agent.setUi(uiCapability);
 
 	tui.addInputListener((data) => {
 		if (matchesKey(data, "ctrl+c")) {
@@ -167,7 +173,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			return;
 		}
 		if (running) {
-			options.agent.steer(input);
+			agent.steer(input);
 			appendText(dim(`↳ steered: ${input}`));
 			return;
 		}
@@ -201,7 +207,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
 			try {
-				const result = await options.agent.compact(args === "" ? undefined : args);
+				const result = await agent.compact(args === "" ? undefined : args);
 				appendText(result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."));
 			} catch (error) {
 				appendText(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -209,7 +215,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			return true;
 		}
 		if (name === "name") {
-			if (!options.recorder) {
+			if (!recorder) {
 				appendText(red("No active session (--no-session)."));
 				return true;
 			}
@@ -217,8 +223,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				appendText(red("Usage: /name <name>"));
 				return true;
 			}
-			await options.recorder.setName(args);
-			await options.extensions.notifySessionInfoChanged(args, options.agent.extensionContext());
+			await recorder.setName(args);
+			await options.extensions.notifySessionInfoChanged(args, agent.extensionContext());
 			appendText(dim(`Session named "${args}".`));
 			return true;
 		}
@@ -236,13 +242,13 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			return true;
 		}
 		if (name === "tree") {
-			if (!options.store) {
+			if (!store) {
 				appendText(red("No active session (--no-session)."));
 				return true;
 			}
 			if (args === "") {
-				const entries = await options.store.getEntries();
-				const path = await options.store.getPathToRoot(await options.store.getLeafId());
+				const entries = await store.getEntries();
+				const path = await store.getPathToRoot(await store.getLeafId());
 				const onPath = new Set(path.map((entry) => entry.id));
 				const lines: string[] = [];
 				for (const entry of entries) {
@@ -254,21 +260,52 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				return true;
 			}
 			try {
-				const result = await options.agent.navigateTo(args);
+				const result = await agent.navigateTo(args);
 				appendText(
 					result.cancelled
 						? dim("Navigation cancelled.")
-						: dim(`Moved to ${args} (${options.agent.messages.length} messages in context).`),
+						: dim(`Moved to ${args} (${agent.messages.length} messages in context).`),
 				);
 			} catch (error) {
 				appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
 			}
 			return true;
 		}
+		if (name === "fork") {
+			if (!store) {
+				appendText(red("No active session (--no-session)."));
+				return true;
+			}
+			try {
+				if (args !== "") {
+					const decision = await options.extensions.runSessionBeforeFork(
+						{ entryId: args, position: "before" },
+						agent.extensionContext(),
+					);
+					if (decision.cancel) {
+						appendText(dim("Fork cancelled."));
+						return true;
+					}
+				}
+				const source = await store.getMetadata();
+				const newStore = await options.sessionRepo.fork(source, args === "" ? undefined : { entryId: args });
+				const restored = await restoreSession(newStore);
+				store = newStore;
+				recorder = await SessionRecorder.open(newStore);
+				agent = options.buildAgent(restored.messages, recorder);
+				agent.setUi(uiCapability);
+				await options.extensions.notifySessionStart("resume", agent.extensionContext());
+				const meta = await newStore.getMetadata();
+				appendText(dim(`Forked to ${meta.filePath ?? meta.id} (${restored.messages.length} messages).`));
+			} catch (error) {
+				appendText(red(`/fork failed: ${error instanceof Error ? error.message : String(error)}`));
+			}
+			return true;
+		}
 		const command = options.extensions.commands.get(name);
 		if (!command) return false;
 		try {
-			const output = await command.handler(args, options.agent.extensionContext());
+			const output = await command.handler(args, agent.extensionContext());
 			if (typeof output === "string") appendText(output);
 			else if (output?.action === "prompt") await runPrompt(output.text);
 		} catch (error) {
@@ -286,7 +323,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		let assistantText = "";
 		const toolComponents = new Map<string, Text>();
 		try {
-			for await (const event of options.agent.prompt(input, controller.signal)) {
+			for await (const event of agent.prompt(input, controller.signal)) {
 				renderEvent(event, {
 					getAssistant: () => {
 						if (!assistantComponent) {

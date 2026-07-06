@@ -106,7 +106,8 @@ class TuiUiCapability implements UiCapability {
 
 - [ ] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
 - [ ] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。（文本列表与 `/tree <id>` 跳转已落地；selector 待做）
-- [ ] TUI `/fork`：列表选择 fork target；裸 `/fork` 仍全量复制。
+- [x] TUI `/fork [<id>]`：文本命令复用 REPL 语义，裸 `/fork` 全量复制，`/fork <id>` 从指定 user entry 前分叉并切换到新 session。
+- [ ] TUI `/fork` selector：列表选择 fork target。
 - [ ] TUI `/sessions` / `/resume`：选择历史 session 并切换/恢复。（`/sessions` 文本列表已落地；selector resume 待做）
 - [ ] TUI `/compact [instructions]`：显示 compaction start/end 状态，支持 Esc/Ctrl+C abort compaction。
 - [x] TUI `/name`：inline input 或 command 参数设置 session name。

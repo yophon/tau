@@ -485,6 +485,7 @@ async function main(): Promise<void> {
 			sessionRepo,
 			store,
 			recorder,
+			buildAgent,
 		});
 		return;
 	}
