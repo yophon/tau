@@ -35,6 +35,8 @@ interface LoadedResources {
 	diagnostics: ResourceDiagnostic[];
 }
 
+type ResourceDiscoverReason = "startup" | "reload";
+
 interface FrontmatterResult {
 	metadata: Record<string, string | boolean>;
 	body: string;
@@ -332,8 +334,8 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 	return (api) => {
 		let loaded: Promise<LoadedResources> | undefined;
 
-		api.on("session_start", async (_event, ctx) => {
-			await load(ctx);
+		api.on("session_start", async (event, ctx) => {
+			await load(ctx, event.reason === "reload" ? "reload" : "startup");
 		});
 
 		api.on("before_agent_start", async (event, ctx) => {
@@ -342,14 +344,14 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 			return block === "" ? undefined : { systemPrompt: `${event.systemPrompt}\n\n${block}`.trim() };
 		});
 
-		async function load(ctx: ExtensionContext): Promise<LoadedResources> {
-			if (loaded) return loaded;
+		async function load(ctx: ExtensionContext, reason: ResourceDiscoverReason = "startup"): Promise<LoadedResources> {
+			if (loaded && reason !== "reload") return loaded;
 			loaded = (async () => {
 				const fs = ctx.capabilities?.fs;
 				if (!fs) return { skills: [], promptTemplates: [], diagnostics: [] };
 				const paths = ctx.capabilities?.paths;
 				const defaultsEnabled = options.includeDefaults !== false;
-				const discovered = await ctx.discoverResources?.("startup");
+				const discovered = await ctx.discoverResources?.(reason);
 				const skillPaths = unique([
 					...(defaultsEnabled && paths?.userTauDir ? [joinPath(paths.userTauDir, "skills")] : []),
 					...(defaultsEnabled && paths?.projectTauDir ? [joinPath(paths.projectTauDir, "skills")] : []),

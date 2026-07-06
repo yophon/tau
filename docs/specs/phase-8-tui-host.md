@@ -138,7 +138,7 @@ class TuiUiCapability implements UiCapability {
 | 扩展 API | Done | extension widgets | 扩展可在 editor 上方/下方挂文本或组件 widget，并在运行后刷新 |
 | 扩展 API | Done | custom header/footer | 扩展可追加 header/footer 状态段，并由 host 控制刷新频率 |
 | 重载/资源 | Done | `/reload` host-node 扩展热重载 | 空闲时重载全局/项目扩展 registry，刷新 commands/shortcuts/renderers/widgets/header/footer/tools，处理 project trust 与 session_shutdown/session_start |
-| 重载/资源 | Next | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources |
+| 重载/资源 | Done | `resources_discover` reload reason | `/reload` 时触发 `reason:"reload"` 并刷新 ext-resources prompt commands |
 | 主题/打磨 | Later | Themes | 引入 tau theme JSON 或复用 pi theme schema；提供默认 light/dark |
 | 主题/打磨 | Later | `/help` polish | 可滚动组件、命令详情、扩展命令来源 |
 | 主题/打磨 | Later | footer polish | 更完整 token usage/cost、session 状态、自定义 footer 区 |
@@ -185,10 +185,10 @@ class TuiUiCapability implements UiCapability {
 - [x] `/reload` 命令：空闲时触发旧 registry 的 `session_shutdown`，重新加载全局/项目扩展；有 turn/compaction/bash 或 UI prompt 时拒绝。
 - [x] `/reload` 走 project trust：项目扩展新增或 trust 状态变化时仍需 TUI confirm。
 - [x] `/reload` 后触发新 registry 的 `session_start`，重新 attach host actions、flags、tools、commands、shortcuts/renderers/widgets。
-- [ ] `resources_discover` 使用 `reason:"reload"`：刷新 skills/prompts/themes 贡献路径，并让 ext-resources 重建动态 prompt commands。
+- [x] `resources_discover` 使用 `reason:"reload"`：刷新 skills/prompts 贡献路径，并让 ext-resources 重建动态 prompt commands。
 - [x] reload 失败时保留旧 registry 与 agent；错误展示在 TUI，不能直接退出。
 - [x] tmux 冒烟覆盖全局扩展命令与 header item 在 `/reload` 后可用。
-- [ ] 单测覆盖 `resources_discover("reload")`；tmux 冒烟覆盖新增 prompt/resource 在 `/reload` 后可用。
+- [x] 单测覆盖 `resources_discover("reload")`；tmux 冒烟覆盖新增 prompt/resource 在 `/reload` 后可用。
 
 ### P8D：Model / Theme / Polish
 
@@ -247,7 +247,7 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
 - [x] TUI custom header/footer：允许扩展追加 header/footer 状态。
 - [x] `/reload`：重载 host-node 扩展 registry；处理 project trust 与 session_shutdown/session_start，并刷新扩展 UI surfaces。
-- [ ] `resources_discover` reload reason：`/reload` 时触发 `reason:"reload"` 并刷新 ext-resources。
+- [x] `resources_discover` reload reason：`/reload` 时触发 `reason:"reload"` 并刷新 ext-resources prompt commands。
 
 ### P8D：模型/主题/产品打磨
 
@@ -290,6 +290,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI custom header/footer 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展可显示 `header-status:0` / `footer-status:0`，执行 `/bump` 后刷新为 `header-status:1` / `footer-status:1`。
 - TUI `/help` 扩展诊断已增强；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 `/help` 显示扩展 command、shortcut、message/entry/tool renderer、widget、header item、footer item。
 - TUI `/reload` host-node 扩展热重载已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认同一 TUI 会话中全局扩展文件从 `before-reload` 改为 `after-reload` 后，执行 `/reload` 会刷新 header item 为 `reload-smoke-after`，`/ping` 命令输出变为 `after-reload`。
+- TUI `/reload` resources reload 已实现；`npm run check` 全绿、`npm test` 73 测试全绿，tmux 冒烟确认 `resources_discover` header 从 `resources:startup` 变为 `resources:reload`，reload-only prompt command `/hello world` 展开为 `Reload hello world` 并完成 mock provider 回复。
 
 ## 风险与开放问题
 

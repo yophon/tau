@@ -458,7 +458,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const nextExtensions = await options.reloadExtensions(uiCapability);
 			const nextAgent = options.buildAgent([...previousAgent.messages], recorder, nextExtensions);
 			nextAgent.setUi(uiCapability);
-			await nextExtensions.notifySessionStart("resume", nextAgent.extensionContext());
+			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
 			extensions = nextExtensions;
 			agent = nextAgent;
 			editor.setAutocompleteProvider(

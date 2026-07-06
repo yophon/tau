@@ -100,3 +100,35 @@ test("resources extension consumes resources_discover skill paths", async () => 
 		assert.ok(system.includes("<name>extra</name>"), system);
 	});
 });
+
+test("resources extension reloads prompt commands with resources_discover reload reason", async () => {
+	await withTempDir(async (dir) => {
+		const discoveredPrompts = join(dir, "discovered-prompts");
+		await mkdir(discoveredPrompts, { recursive: true });
+		await writeFile(join(discoveredPrompts, "hello.md"), "---\ndescription: Reload hello\n---\nReload hello $1");
+
+		const reasons: string[] = [];
+		const provider: Extension = (api) => {
+			api.on("resources_discover", (event) => {
+				reasons.push(event.reason);
+				return event.reason === "reload" ? { promptPaths: [discoveredPrompts] } : {};
+			});
+		};
+		const registry = await ExtensionRegistry.load([provider, createResourcesExtension({ includeDefaults: false })]);
+		const agent = new Agent({
+			config: { baseUrl: "https://fake.test/v1", model: "fake" },
+			platform: fakePlatform([]),
+			extensions: registry,
+			capabilities: { fs: new NodeFileSystem(dir), paths: { cwd: dir } },
+		});
+
+		await registry.notifySessionStart("reload", agent.extensionContext());
+		const command = registry.commands.get("hello");
+		assert.ok(command);
+		assert.deepEqual(reasons, ["reload"]);
+		assert.deepEqual(await command.handler("world", agent.extensionContext()), {
+			action: "prompt",
+			text: "Reload hello world",
+		});
+	});
+});

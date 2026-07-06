@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut / renderer API / widgets / header-footer items / `/reload` 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut / renderer API / widgets / header-footer items / `/reload` / resources reload 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -17,12 +17,12 @@
 | `before_agent_start` | prompt 后、循环前：注入消息/**替换 system prompt** | ✅ P2+P3（systemPrompt 替换 + message 注入） |
 | `message_start` / `message_update` / `message_end` | 消息级流式观察；message_end 可替换消息 | ✅ P2+P3（全消息角色；update 仅 assistant 流式，携带 tau ChatStreamEvent 而非 pi AssistantMessageEvent） |
 | `tool_execution_start` / `update` / `end` | 工具执行过程观察（update 携带流式部分输出） | ✅ P2 |
-| `session_start` / `session_info_changed` / `session_shutdown` | 会话生命周期 | ✅ P3（reason 取子集：startup/resume/quit） |
+| `session_start` / `session_info_changed` / `session_shutdown` | 会话生命周期 | ✅ P3/P8（session_start: startup/resume/reload；shutdown: quit） |
 | `session_before_switch` | 切换会话前（可取消） | 📍P8（tau 暂无运行中切换会话；/resume 交互属 TUI） |
 | `session_before_compact` / `session_compact` | 压缩前（可取消/**可完全接管压缩**）/压缩后 | ✅ P4（reason 取子集 manual/threshold，overflow 📍P8 前视） |
 | `session_before_fork` | 分叉前（可取消） | ✅ P5（entry-targeted /fork 触发；全量复制无分叉点故不触发） |
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | ✅ P5（before_tree 可取消/可接管摘要；tree 携带 summaryEntry；preparation 取 tau 子集，label 属 P8） |
-| `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | ✅ P7（registry 汇总路径；skills/prompts 加载器仍属扩展包后续） |
+| `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | ✅ P7/P8（startup/reload reason；ext-resources 重建 prompt commands） |
 | `user_bash` | 用户 `!`/`!!` 直接执行 bash 的拦截 | ✅ P8（TUI `!`/`!!` + before/after 拦截） |
 | `model_select` | 运行时切换模型 | ✅ P8（before 可改写/取消，after 可记录） |
 | `thinking_level_select` | 运行时切换思考等级 | ✅ P8（`/thinking` 写入 `reasoning_effort` 覆盖） |
@@ -45,7 +45,7 @@
 | Extension widgets | editor 周边扩展组件 | ✅ P8（editor 上方/下方；文本/Component） |
 | Header/footer items | header/footer 状态区扩展 | ✅ P8（短文本状态段；host 控制刷新频率） |
 | Themes | TUI 主题系统 | 📍P8（TUI） |
-| `/reload` 热重载扩展 | 运行时重载 | ✅ P8（host-node 扩展 registry；resources/theme reload 仍在 Phase 8 清单） |
+| `/reload` 热重载扩展 | 运行时重载 | ✅ P8（host-node 扩展 registry 与 resources reload；theme reload 仍在 Phase 8 清单） |
 | `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ❌ D3（OpenAI 兼容 only；如需求出现走扩展层协议适配再议） |
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
 | 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@tau/ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |

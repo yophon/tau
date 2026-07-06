@@ -202,7 +202,7 @@ export interface ResourcesDiscoverResult {
 /** Fired when a session is started or resumed. */
 export interface SessionStartEvent {
 	type: "session_start";
-	reason: "startup" | "resume";
+	reason: "startup" | "resume" | "reload";
 }
 
 /** Fired before the extension runtime is torn down. */

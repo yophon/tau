@@ -70,14 +70,14 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - `registerTool(tool)`（同名后注册者覆盖）、`registerCommand(name, options)`、`registerFlag(name, options)`/`getFlag(name)`（值由宿主 `setFlagValues` 提供）。
 - `ExtensionContext.capabilities` 暴露宿主 facade：`fs?` / `shell?` / `platform`；`Tool.execute` 第四参收到同一个 ctx。Agent 每次请求与工具执行动态合并当前 extension tools，因此 `session_start` 等异步初始化后注册的工具也能参与后续 turn。
 - `ExtensionContext.runSubagent(prompt, options?, signal?)` 运行不共享父 session 的子 Agent，默认复用父 Agent 的 config/platform/base tools；子 Agent 消息不混入父 messages，结果通过工具结果回到父对话。
-- 动作（P3，经 Agent 的 `attachHostActions` 支撑）：`sendMessage`（custom 消息进上下文，user 角色发送，同 pi convertToLlm）、`appendEntry`（持久化不进上下文）、`setSessionName`；会话事件 `session_start` / `session_shutdown` / `session_info_changed`。`before_agent_start` 可注入 custom 消息；`message_start/end` 覆盖全部消息角色（update 仍仅 assistant 流式）。
+- 动作（P3/P8，经 Agent 的 `attachHostActions` 支撑）：`sendMessage`（custom 消息进上下文，user 角色发送，同 pi convertToLlm）、`appendEntry`（持久化不进上下文）、`setSessionName`；会话事件 `session_start`（startup/resume/reload）/ `session_shutdown` / `session_info_changed`。`before_agent_start` 可注入 custom 消息；`message_start/end` 覆盖全部消息角色（update 仍仅 assistant 流式）。
 - UI 走可选 `UiCapability`（confirm/input/select/notify）：宿主提供则扩展可交互，不提供（headless）则扩展走降级路径。CLI 在非 TTY stdin 时故意不提供。
 
 ## 标杆扩展包（P7）
 
 - `@tau/ext-subagents`：默认导出可直接加载的扩展，同时导出 `createSubagentsExtension(options)`；注册 `task` 工具，调用 `ctx.runSubagent()` 完成委派，父会话只记录 task 工具调用与结果。
 - `@tau/ext-mcp`：导出 `createMcpExtension({ servers })`；使用官方 `@modelcontextprotocol/sdk` Client 连接 stdio 或 Streamable HTTP MCP server，`tools/list` 结果动态注册为 tau tools，`tools/call` 结果转换成文本工具结果。stdio 路径是 Node-only，依赖 SDK 的子进程 transport。
-- `@tau/ext-resources`：导出 `createResourcesExtension(options)`；通过 `ctx.capabilities.fs/paths` 加载 `.tau` / `.pi` skills 与 prompt templates，skills 走 `before_agent_start` 注入 `<available_skills>`，prompt templates 动态注册 slash commands 并通过 `{ action:"prompt" }` 触发一轮 prompt。
+- `@tau/ext-resources`：导出 `createResourcesExtension(options)`；通过 `ctx.capabilities.fs/paths` 加载 `.tau` / `.pi` skills 与 prompt templates，skills 走 `before_agent_start` 注入 `<available_skills>`，prompt templates 动态注册 slash commands 并通过 `{ action:"prompt" }` 触发一轮 prompt；TUI `/reload` 时使用 `resources_discover("reload")` 重建 prompt commands。
 
 ## 扩展加载与信任（host 层）
 
