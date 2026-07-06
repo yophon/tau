@@ -243,10 +243,15 @@ test("thinking_level_select handlers can rewrite, cancel, and observe after sele
 	]);
 });
 
-test("handlers chain in registration order and commands are exposed to hosts", async () => {
+test("handlers chain in registration order and commands/shortcuts are exposed to hosts", async () => {
 	const first: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-a` }));
 		api.registerCommand("ping", { description: "Ping", handler: () => "pong" });
+		api.registerShortcut("ping-shortcut", {
+			key: "ctrl+g",
+			description: "Ping shortcut",
+			handler: () => "shortcut pong",
+		});
 	};
 	const second: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-b` }));
@@ -254,6 +259,9 @@ test("handlers chain in registration order and commands are exposed to hosts", a
 	const registry = await ExtensionRegistry.load([first, second]);
 	assert.deepEqual(await registry.runInput("x", { messages: [] }), { handled: false, text: "x-a-b" });
 	assert.equal(await registry.commands.get("ping")?.handler("", { messages: [] }), "pong");
+	const shortcut = registry.shortcuts.get("ping-shortcut");
+	assert.equal(shortcut?.key, "ctrl+g");
+	assert.equal(await shortcut?.handler({ messages: [] }), "shortcut pong");
 });
 
 test("extension tools receive context capabilities", async () => {

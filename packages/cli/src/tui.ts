@@ -38,6 +38,7 @@ const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
 const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
 const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
 const bold = (text: string): string => `\x1b[1m${text}\x1b[0m`;
+type TuiKey = Parameters<typeof matchesKey>[1];
 
 const builtInCommands: SlashCommand[] = [
 	{ name: "help", description: "Show built-in and extension commands." },
@@ -281,6 +282,18 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	};
 	agent.setUi(uiCapability);
 
+	const runShortcut = async (name: string): Promise<void> => {
+		const shortcut = options.extensions.shortcuts.get(name);
+		if (!shortcut) return;
+		try {
+			const output = await shortcut.handler(agent.extensionContext());
+			if (typeof output === "string") appendText(output);
+			else if (output?.action === "prompt") await runPrompt(output.text);
+		} catch (error) {
+			appendText(red(`Shortcut failed: ${error instanceof Error ? error.message : String(error)}`));
+		}
+	};
+
 	tui.addInputListener((data) => {
 		if (matchesKey(data, Key.escape) && runningTask === "compaction" && controller) {
 			controller.abort();
@@ -303,6 +316,14 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				void stop();
 			}
 			return { consume: true };
+		}
+		if (!runningTask && !pendingUiPrompt) {
+			for (const shortcut of options.extensions.shortcuts.values()) {
+				if (matchesKey(data, shortcut.key as TuiKey)) {
+					void runShortcut(shortcut.name);
+					return { consume: true };
+				}
+			}
 		}
 		return undefined;
 	});
@@ -362,7 +383,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 		const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
 		if (name === "help") {
-			appendText(formatHelp([...options.extensions.commands.values()]));
+			appendText(formatHelp([...options.extensions.commands.values()], [...options.extensions.shortcuts.values()]));
 			return true;
 		}
 		if (name === "compact" || input.startsWith("/compact ")) {
@@ -828,7 +849,10 @@ function parseFollowUpCommand(input: string): string | undefined {
 	return input.slice("/follow ".length).trim();
 }
 
-function formatHelp(extensionCommands: { name: string; description: string }[]): string {
+function formatHelp(
+	extensionCommands: { name: string; description: string }[],
+	extensionShortcuts: { key: string; description: string }[],
+): string {
 	const lines = [
 		bold("Built-in commands"),
 		...builtInCommands.map((command) => `${cyan(formatCommandUsage(command))}  ${command.description ?? ""}`),
@@ -849,6 +873,15 @@ function formatHelp(extensionCommands: { name: string; description: string }[]):
 			"",
 			bold("Extension commands"),
 			...extensionCommands.map((command) => `${cyan(`/${command.name}`)}  ${command.description}`),
+		);
+	}
+	if (extensionShortcuts.length === 0) {
+		lines.push("", bold("Extension shortcuts"), dim("No extension shortcuts registered."));
+	} else {
+		lines.push(
+			"",
+			bold("Extension shortcuts"),
+			...extensionShortcuts.map((shortcut) => `${cyan(shortcut.key)}  ${shortcut.description}`),
 		);
 	}
 	return lines.join("\n");

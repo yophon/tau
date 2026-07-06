@@ -79,6 +79,7 @@ export {
 	type RegisteredCommand,
 	type RegisteredCommandResult,
 	type RegisteredFlag,
+	type RegisteredShortcut,
 	type ResourcesDiscoverEvent,
 	type ResourcesDiscoverResult,
 	type SessionBeforeCompactEvent,

@@ -366,6 +366,13 @@ export interface RegisteredCommand {
 	handler: (args: string, ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
 }
 
+export interface RegisteredShortcut {
+	name: string;
+	key: string;
+	description: string;
+	handler: (ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -425,6 +432,9 @@ export interface ExtensionAPI {
 
 	/** Register a custom command. */
 	registerCommand(name: string, options: Omit<RegisteredCommand, "name">): void;
+
+	/** Register a TUI keyboard shortcut. Hosts that do not support shortcuts may ignore it. */
+	registerShortcut(name: string, options: Omit<RegisteredShortcut, "name">): void;
 
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
@@ -487,6 +497,7 @@ export interface ExtensionHostActions {
 export class ExtensionRegistry {
 	readonly tools = new Map<string, Tool>();
 	readonly commands = new Map<string, RegisteredCommand>();
+	readonly shortcuts = new Map<string, RegisteredShortcut>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -539,6 +550,9 @@ export class ExtensionRegistry {
 			},
 			registerCommand: (name, options) => {
 				this.commands.set(name, { name, ...options });
+			},
+			registerShortcut: (name, options) => {
+				this.shortcuts.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });
