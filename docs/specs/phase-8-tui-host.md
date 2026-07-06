@@ -129,8 +129,8 @@ class TuiUiCapability implements UiCapability {
 | 模型/思考 | Done | `/model [model]` 最小文本切换 | 无参数显示当前模型；有参数切换后下一请求使用新模型 |
 | 模型/思考 | Done | `model_select` 事件 | 模型切换前后通知扩展，可拦截或记录 |
 | 模型/思考 | Later | model selector | 在有 provider/model registry 后提供选择 UI |
-| 模型/思考 | Next | thinking level 命令 | 若 config/模型支持，提供 `/thinking` 或快捷键切换 |
-| 模型/思考 | Next | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
+| 模型/思考 | Done | thinking level 命令 | `/thinking` 设置/清除 `extraBody.reasoning_effort` 覆盖 |
+| 模型/思考 | Done | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
 | 扩展 API | Next | `registerShortcut` | 扩展可注册快捷键，TUI 退出/重载时清理 |
 | 扩展 API | Next | `registerMessageRenderer` | 扩展可覆盖或追加消息渲染组件 |
 | 扩展 API | Next | `registerEntryRenderer` | 扩展可渲染自定义 session entry |
@@ -194,8 +194,8 @@ class TuiUiCapability implements UiCapability {
 
 - [x] `/model`：最小模型切换命令（用户输入 model id，不做 provider registry）。
 - [x] `model_select` 事件：模型切换前后通知扩展。
-- [ ] thinking level：若 config/模型支持，提供 `/thinking` 或快捷键切换。
-- [ ] `thinking_level_select` 事件。
+- [x] thinking level：`/thinking [default|none|minimal|low|medium|high|xhigh]` 设置/清除 `extraBody.reasoning_effort` 覆盖。
+- [x] `thinking_level_select` 事件。
 - [ ] Themes：引入 tau theme JSON 格式或复用 pi theme schema；默认 light/dark。
 - [x] `/help`：TUI 文本版内置命令列表 + 扩展 commands。
 - [ ] `/help` polish：按可滚动组件展示，支持命令详情。
@@ -211,7 +211,7 @@ class TuiUiCapability implements UiCapability {
 P8A/P8B/P8D 验证记录：
 
 - `npm run check` 全绿。
-- `npm test` 71 测试全绿。
+- `npm test` 72 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
 - TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。
 - TUI 启动期 project trust 已使用 `createStartupTuiUi()`，不再经过 readline；tmux 冒烟确认首次信任 prompt、项目扩展命令加载、`trust.json` 持久化均正常。
@@ -221,6 +221,7 @@ P8A/P8B/P8D 验证记录：
 - TUI `/fork` selector 已实现；tmux 冒烟确认 selector 展示 full session 与 user message targets，选择 user target 后从该 entry 前分叉并切换 session。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
 - `model_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/model requested-model` 改写为 `rewritten-model` 且下一请求使用改写后的模型。
+- TUI `/thinking` 与 `thinking_level_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/thinking low` 改写为 `high` 且下一请求 body 带 `reasoning_effort: "high"`。
 - TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
 
 ## 风险与开放问题

@@ -344,6 +344,19 @@ export interface ModelSelectEvent {
 
 export type ModelSelectEventResult = { cancel?: boolean; reason?: string; model?: string } | undefined;
 
+export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+/** Fired when an interactive host changes the model thinking/reasoning effort override. */
+export interface ThinkingLevelSelectEvent {
+	type: "thinking_level_select";
+	phase: "before" | "after";
+	currentLevel?: ThinkingLevel;
+	requestedLevel?: ThinkingLevel;
+	selectedLevel?: ThinkingLevel;
+}
+
+export type ThinkingLevelSelectEventResult = { cancel?: boolean; reason?: string; level?: ThinkingLevel } | undefined;
+
 /** Host-invocable command (e.g. "/checkpoint" in a REPL). Dispatch is up to the host. */
 export type RegisteredCommandResult = string | { action: "prompt"; text: string } | undefined;
 
@@ -380,6 +393,10 @@ export interface ExtensionAPI {
 	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
 	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
 	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent, ModelSelectEventResult>): void;
+	on(
+		event: "thinking_level_select",
+		handler: ExtensionHandler<ThinkingLevelSelectEvent, ThinkingLevelSelectEventResult>,
+	): void;
 	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
 	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
 	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
@@ -442,6 +459,7 @@ interface HandlerLists {
 	tool_result: ExtensionHandler<ToolResultEvent, ToolResultEventResult>[];
 	user_bash: ExtensionHandler<UserBashEvent, UserBashEventResult>[];
 	model_select: ExtensionHandler<ModelSelectEvent, ModelSelectEventResult>[];
+	thinking_level_select: ExtensionHandler<ThinkingLevelSelectEvent, ThinkingLevelSelectEventResult>[];
 	project_trust: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>[];
 	resources_discover: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>[];
 	session_start: ExtensionHandler<SessionStartEvent>[];
@@ -490,6 +508,7 @@ export class ExtensionRegistry {
 		tool_result: [],
 		user_bash: [],
 		model_select: [],
+		thinking_level_select: [],
 		project_trust: [],
 		resources_discover: [],
 		session_start: [],
@@ -642,6 +661,45 @@ export class ExtensionRegistry {
 					currentModel: event.previousModel,
 					requestedModel: event.requestedModel,
 					selectedModel: event.selectedModel,
+				},
+				ctx,
+			);
+		}
+	}
+
+	/** Run thinking_level_select before handlers. Rewrites chain; cancel short-circuits. */
+	async runThinkingLevelSelectBefore(
+		event: { currentLevel?: ThinkingLevel; requestedLevel?: ThinkingLevel },
+		ctx: ExtensionContext,
+	): Promise<NonNullable<ThinkingLevelSelectEventResult> & { level?: ThinkingLevel }> {
+		const current: ThinkingLevelSelectEvent = {
+			type: "thinking_level_select",
+			phase: "before",
+			currentLevel: event.currentLevel,
+			requestedLevel: event.requestedLevel,
+			selectedLevel: event.requestedLevel,
+		};
+		for (const handler of this.handlers.thinking_level_select) {
+			const result = await handler(current, ctx);
+			if (!result) continue;
+			if (result.cancel) return { cancel: true, reason: result.reason, level: current.selectedLevel };
+			if (result.level !== undefined) current.selectedLevel = result.level;
+		}
+		return { level: current.selectedLevel };
+	}
+
+	async notifyThinkingLevelSelected(
+		event: { previousLevel?: ThinkingLevel; requestedLevel?: ThinkingLevel; selectedLevel?: ThinkingLevel },
+		ctx: ExtensionContext,
+	): Promise<void> {
+		for (const handler of this.handlers.thinking_level_select) {
+			await handler(
+				{
+					type: "thinking_level_select",
+					phase: "after",
+					currentLevel: event.previousLevel,
+					requestedLevel: event.requestedLevel,
+					selectedLevel: event.selectedLevel,
 				},
 				ctx,
 			);

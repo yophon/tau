@@ -199,6 +199,50 @@ test("model_select handlers can rewrite, cancel, and observe after selection", a
 	]);
 });
 
+test("thinking_level_select handlers can rewrite, cancel, and observe after selection", async () => {
+	const seen: string[] = [];
+	const extension: Extension = (api) => {
+		api.on("thinking_level_select", (event) => {
+			seen.push(
+				`${event.phase}:${event.currentLevel ?? "default"}:${event.requestedLevel ?? "default"}:${event.selectedLevel ?? "default"}`,
+			);
+			if (event.phase === "after") return undefined;
+			if (event.requestedLevel === "xhigh") return { cancel: true, reason: "too expensive" };
+			return { level: event.selectedLevel === "low" ? "medium" : event.selectedLevel };
+		});
+		api.on("thinking_level_select", (event) => {
+			seen.push(`second:${event.phase}:${event.selectedLevel ?? "default"}`);
+			return undefined;
+		});
+	};
+
+	const registry = await ExtensionRegistry.load([extension]);
+	const ctx = { messages: [], capabilities: { platform: fakePlatform([]) } };
+	const rewritten = await registry.runThinkingLevelSelectBefore(
+		{ currentLevel: undefined, requestedLevel: "low" },
+		ctx,
+	);
+	await registry.notifyThinkingLevelSelected(
+		{
+			previousLevel: undefined,
+			requestedLevel: "low",
+			selectedLevel: rewritten.level,
+		},
+		ctx,
+	);
+	const blocked = await registry.runThinkingLevelSelectBefore({ currentLevel: "medium", requestedLevel: "xhigh" }, ctx);
+
+	assert.deepEqual(rewritten, { level: "medium" });
+	assert.deepEqual(blocked, { cancel: true, reason: "too expensive", level: "xhigh" });
+	assert.deepEqual(seen, [
+		"before:default:low:low",
+		"second:before:medium",
+		"after:default:low:medium",
+		"second:after:medium",
+		"before:medium:xhigh:xhigh",
+	]);
+});
+
 test("handlers chain in registration order and commands are exposed to hosts", async () => {
 	const first: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-a` }));

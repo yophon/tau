@@ -16,6 +16,7 @@ import {
 	SessionRecorder,
 	type SessionStore,
 	sessionDirSlug,
+	type ThinkingLevel,
 	thinkingText,
 	type UiCapability,
 } from "@tau/kernel";
@@ -271,6 +272,23 @@ function firstLine(text: string, max = 120): string {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+function thinkingLevelFromExtraBody(extraBody: OpenAICompatConfig["extraBody"]): ThinkingLevel | undefined {
+	const value = extraBody?.reasoning_effort;
+	return typeof value === "string" && ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value)
+		? (value as ThinkingLevel)
+		: undefined;
+}
+
+function setThinkingLevelInConfig(config: OpenAICompatConfig, level: ThinkingLevel | undefined): void {
+	if (level === undefined) {
+		if (!config.extraBody) return;
+		const { reasoning_effort: _reasoningEffort, ...rest } = config.extraBody;
+		config.extraBody = Object.keys(rest).length === 0 ? undefined : rest;
+		return;
+	}
+	config.extraBody = { ...config.extraBody, reasoning_effort: level };
+}
+
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
 
@@ -492,8 +510,12 @@ async function main(): Promise<void> {
 			shell,
 			store,
 			recorder,
+			thinkingLevel: thinkingLevelFromExtraBody(config.extraBody),
 			setModel: (nextModel) => {
 				config.model = nextModel;
+			},
+			setThinkingLevel: (nextLevel) => {
+				setThinkingLevelInConfig(config, nextLevel);
 			},
 			buildAgent,
 		});

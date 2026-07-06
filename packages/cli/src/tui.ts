@@ -30,6 +30,7 @@ import {
 	type SessionStore,
 	type Shell,
 	type ShellExecResult,
+	type ThinkingLevel,
 	type UiCapability,
 } from "@tau/kernel";
 
@@ -48,6 +49,11 @@ const builtInCommands: SlashCommand[] = [
 	{ name: "fork", argumentHint: "[id]", description: "Copy this session and switch to the fork." },
 	{ name: "follow", argumentHint: "<text>", description: "Queue a follow-up after the current turn." },
 	{ name: "model", argumentHint: "[model]", description: "Show or switch the model id." },
+	{
+		name: "thinking",
+		argumentHint: "[default|none|minimal|low|medium|high|xhigh]",
+		description: "Show or set reasoning effort.",
+	},
 	{ name: "quit", description: "Exit the TUI." },
 ];
 
@@ -94,7 +100,9 @@ export interface RunTuiOptions {
 	shell: Shell;
 	store?: SessionStore;
 	recorder?: SessionRecorder;
+	thinkingLevel?: ThinkingLevel;
 	setModel(model: string): void;
+	setThinkingLevel(level: ThinkingLevel | undefined): void;
 	buildAgent(messages: AgentMessage[] | undefined, session: SessionRecorder | undefined): Agent;
 }
 
@@ -136,6 +144,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const terminal = new ProcessTerminal();
 	const tui = new TUI(terminal);
 	let currentModel = options.model;
+	let currentThinkingLevel = options.thinkingLevel;
 	const header = new Text(formatHeader(currentModel, options.baseUrl, options.cwd), 1, 0);
 	const chat = new Container();
 	const status = new Text(dim("Ready"), 1, 0);
@@ -179,7 +188,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	};
 
 	const setFooter = (): void => {
-		footer.setText(formatFooter(agent, currentModel, options.cwd, sessionLabel));
+		footer.setText(formatFooter(agent, currentModel, currentThinkingLevel, options.cwd, sessionLabel));
 		tui.requestRender();
 	};
 
@@ -387,6 +396,35 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				agent.extensionContext(),
 			);
 			appendText(dim(`Model set to ${decision.model}.`));
+			return true;
+		}
+		if (name === "thinking") {
+			if (args === "") {
+				appendText(dim(`Current thinking level: ${formatThinkingLevel(currentThinkingLevel)}`));
+				return true;
+			}
+			const requestedLevel = parseThinkingLevel(args);
+			if (requestedLevel === "invalid") {
+				appendText(red("Usage: /thinking [default|none|minimal|low|medium|high|xhigh]"));
+				return true;
+			}
+			const previousLevel = currentThinkingLevel;
+			const decision = await options.extensions.runThinkingLevelSelectBefore(
+				{ currentLevel: previousLevel, requestedLevel },
+				agent.extensionContext(),
+			);
+			if (decision.cancel) {
+				appendText(dim(`Thinking level switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
+				return true;
+			}
+			currentThinkingLevel = decision.level;
+			options.setThinkingLevel(decision.level);
+			setFooter();
+			await options.extensions.notifyThinkingLevelSelected(
+				{ previousLevel, requestedLevel, selectedLevel: decision.level },
+				agent.extensionContext(),
+			);
+			appendText(dim(`Thinking level set to ${formatThinkingLevel(decision.level)}.`));
 			return true;
 		}
 		if (name === "name") {
@@ -830,7 +868,13 @@ function formatCommandUsage(command: SlashCommand): string {
 	return `/${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
 }
 
-function formatFooter(agent: Agent, model: string, cwd: string, sessionLabel: string): string {
+function formatFooter(
+	agent: Agent,
+	model: string,
+	thinkingLevel: ThinkingLevel | undefined,
+	cwd: string,
+	sessionLabel: string,
+): string {
 	const usage = agent.getContextUsage();
 	const context =
 		usage.contextWindow === undefined
@@ -843,6 +887,7 @@ function formatFooter(agent: Agent, model: string, cwd: string, sessionLabel: st
 	return dim(
 		[
 			`model ${model}`,
+			`thinking ${formatThinkingLevel(thinkingLevel)}`,
 			`session ${sessionLabel}`,
 			context,
 			usageSource,
@@ -852,6 +897,21 @@ function formatFooter(agent: Agent, model: string, cwd: string, sessionLabel: st
 			"Esc compact abort",
 		].join(" · "),
 	);
+}
+
+function parseThinkingLevel(input: string): ThinkingLevel | undefined | "invalid" {
+	const normalized = input.trim().toLowerCase();
+	if (normalized === "default" || normalized === "auto" || normalized === "off") return undefined;
+	if (isThinkingLevel(normalized)) return normalized;
+	return "invalid";
+}
+
+function isThinkingLevel(value: string): value is ThinkingLevel {
+	return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value);
+}
+
+function formatThinkingLevel(level: ThinkingLevel | undefined): string {
+	return level ?? "default";
 }
 
 function formatNumber(value: number): string {
