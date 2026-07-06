@@ -115,8 +115,8 @@ class TuiUiCapability implements UiCapability {
 | 核心交互 | Done | `/sessions` selector | 裸 `/sessions` 或新命令可选择并恢复历史 session |
 | 核心交互 | Done | `/tree` 文本列表与 `/tree <id>` 跳转 | user-message jump points 可列出和跳转 |
 | 核心交互 | Done | `/tree` selector | 列表选择 jump point 后调用 `Agent.navigateTo()` |
-| 核心交互 | Done | `/fork [<id>]` 文本命令 | 裸 `/fork` 全量复制；`/fork <id>` 从目标前分叉 |
-| 核心交互 | Next | `/fork` selector | 可从 jump point 列表选择 fork target |
+| 核心交互 | Done | `/fork [<id>]` 命令 | 裸 `/fork` 通过 selector 默认全量复制；`/fork <id>` 从目标前分叉 |
+| 核心交互 | Done | `/fork` selector | 可从 jump point 列表选择 fork target |
 | 核心交互 | Done | `/compact [instructions]` start/end/aborted 状态 | compact 可见，Ctrl+C 可 abort |
 | 核心交互 | Done | compaction Esc abort | Esc 能取消进行中的 compaction |
 | 核心交互 | Later | compaction polish | 展示更细的阶段、耗时、summary/kept 粗略结果 |
@@ -164,8 +164,8 @@ class TuiUiCapability implements UiCapability {
 
 - [x] 启动期 project trust 使用 TUI confirm，而不是启动前 readline/no-UI 路径。
 - [x] TUI `/tree`：列表用 selector 呈现 user-message jump points，选择后调用 `Agent.navigateTo()`。
-- [x] TUI `/fork [<id>]`：文本命令复用 REPL 语义，裸 `/fork` 全量复制，`/fork <id>` 从指定 user entry 前分叉并切换到新 session。
-- [ ] TUI `/fork` selector：列表选择 fork target。
+- [x] TUI `/fork [<id>]`：裸 `/fork` 通过 selector 默认全量复制，`/fork <id>` 从指定 user entry 前分叉并切换到新 session。
+- [x] TUI `/fork` selector：列表选择 fork target。
 - [x] TUI `/resume <id|path|timestamp|name>`：命令支持精确匹配和唯一前缀匹配后切换/恢复。
 - [x] TUI `/sessions` selector：选择历史 session 并切换/恢复。
 - [x] TUI `/compact [instructions]`：显示 compaction start/end/aborted 状态，支持 Ctrl+C abort compaction。
@@ -218,6 +218,7 @@ P8A/P8B/P8D 验证记录：
 - TUI `/name <name>` 已实现；tmux 冒烟确认 session 命名和列表显示。
 - TUI `/sessions` selector 已实现；tmux 冒烟确认 selector 展示历史 session，Enter 选择后恢复 session 并刷新 footer/context。
 - TUI `/tree` selector 与 `/tree <id>` 跳转已实现；tmux 冒烟确认 selector 展示 user message jump points，Enter 选择后调用 navigate 并移动上下文。
+- TUI `/fork` selector 已实现；tmux 冒烟确认 selector 展示 full session 与 user message targets，选择 user target 后从该 entry 前分叉并切换 session。
 - TUI `/model switched-model` 已实现；tmux 冒烟确认 header/footer 更新，mock provider 收到下一请求的 `request.model` 为 `switched-model`。
 
 ## 风险与开放问题

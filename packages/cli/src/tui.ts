@@ -51,6 +51,8 @@ const builtInCommands: SlashCommand[] = [
 	{ name: "quit", description: "Exit the TUI." },
 ];
 
+const fullForkValue = "__tau_full_session__";
+
 const selectListTheme: SelectListTheme = {
 	selectedPrefix: cyan,
 	selectedText: bold,
@@ -514,9 +516,34 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				return true;
 			}
 			try {
-				if (args !== "") {
+				let targetEntryId = args;
+				if (targetEntryId === "") {
+					const entries = await store.getEntries();
+					const items: SelectItem[] = [
+						{
+							value: fullForkValue,
+							label: "● full session",
+							description: "Copy the entire current session.",
+						},
+					];
+					for (const entry of entries) {
+						if (entry.type !== "message" || entry.message.role !== "user") continue;
+						items.push({
+							value: entry.id,
+							label: `○ ${entry.id}`,
+							description: firstLine(messageText(entry.message), 80),
+						});
+					}
+					const selected = await selectItem("Fork from", items);
+					if (!selected) {
+						appendText(dim("Fork cancelled."));
+						return true;
+					}
+					targetEntryId = selected.value === fullForkValue ? "" : selected.value;
+				}
+				if (targetEntryId !== "") {
 					const decision = await options.extensions.runSessionBeforeFork(
-						{ entryId: args, position: "before" },
+						{ entryId: targetEntryId, position: "before" },
 						agent.extensionContext(),
 					);
 					if (decision.cancel) {
@@ -525,7 +552,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					}
 				}
 				const source = await store.getMetadata();
-				const newStore = await options.sessionRepo.fork(source, args === "" ? undefined : { entryId: args });
+				const newStore = await options.sessionRepo.fork(
+					source,
+					targetEntryId === "" ? undefined : { entryId: targetEntryId },
+				);
 				const result = await switchSession(newStore);
 				appendText(
 					dim(`Forked to ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages).`),
