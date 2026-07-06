@@ -10,7 +10,7 @@ import {
 	Text,
 	TUI,
 } from "@earendil-works/pi-tui";
-import { type Agent, type AgentEvent, type ExtensionRegistry, messageText } from "@tau/kernel";
+import { type Agent, type AgentEvent, type ExtensionRegistry, messageText, type UiCapability } from "@tau/kernel";
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
 const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
@@ -79,6 +79,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 
 	let running = false;
 	let controller: AbortController | undefined;
+	let pendingUiPrompt: ((input: string) => void) | undefined;
 	let resolveDone: (() => void) | undefined;
 	const done = new Promise<void>((resolve) => {
 		resolveDone = resolve;
@@ -100,6 +101,38 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		resolveDone?.();
 	};
 
+	const uiCapability: UiCapability = {
+		confirm: async (title, message) =>
+			new Promise<boolean>((resolve) => {
+				appendText(`${bold(title)}${message ? `\n${message}` : ""}\n${dim("[y/N]")}`);
+				pendingUiPrompt = (input) => {
+					pendingUiPrompt = undefined;
+					resolve(/^y(es)?$/i.test(input.trim()));
+				};
+			}),
+		input: async (title, placeholder) =>
+			new Promise<string | undefined>((resolve) => {
+				appendText(`${bold(title)}${placeholder ? `\n${dim(placeholder)}` : ""}`);
+				pendingUiPrompt = (input) => {
+					pendingUiPrompt = undefined;
+					resolve(input.trim() === "" ? undefined : input);
+				};
+			}),
+		select: async (title, values) =>
+			new Promise<string | undefined>((resolve) => {
+				appendText([bold(title), ...values.map((value, index) => `${index + 1}. ${value}`)].join("\n"));
+				pendingUiPrompt = (input) => {
+					pendingUiPrompt = undefined;
+					const index = Number.parseInt(input.trim(), 10) - 1;
+					resolve(values[index] ?? values.find((value) => value === input.trim()));
+				};
+			}),
+		notify: (message, level) => {
+			appendText(level === "error" ? red(message) : level === "warning" ? cyan(message) : dim(message));
+		},
+	};
+	options.agent.setUi(uiCapability);
+
 	tui.addInputListener((data) => {
 		if (matchesKey(data, "ctrl+c")) {
 			if (running && controller) {
@@ -117,6 +150,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const input = text.trim();
 		if (input === "") return;
 		editor.setText("");
+		if (pendingUiPrompt) {
+			pendingUiPrompt(input);
+			return;
+		}
 		if (running) {
 			options.agent.steer(input);
 			appendText(dim(`↳ steered: ${input}`));

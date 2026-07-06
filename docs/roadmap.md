@@ -75,7 +75,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 - 补齐产品层 pi 特性：`!`/`!!` 用户 bash + `user_bash` 事件、`/model` 切换 + `model_select` / `thinking_level_select` 事件、`registerShortcut`、`registerMessageRenderer` / `registerEntryRenderer`、Themes、`/reload` 热重载
 - **验收**：日常开发可用 tau 自举（用 tau 开发 tau）
 
-**进展记录（P8A，2026-07-06）**：引入 `@earendil-works/pi-tui@0.80.3`，Node engine 提升到 `>=22.19.0`；新增可选 `--tui` 模式，保留 `-p` 与 readline REPL；基础 TUI 支持 editor 提交、assistant markdown/text 流式、tool_start/tool_update/tool_result 文本渲染、`/help`/`/compact`/扩展 command prompt action、Ctrl+C abort/退出。验证：`npm run check` 全绿、`npm test` 69 测试全绿、tmux TTY 冒烟（mock provider 返回 `tui smoke ok`，TUI 显示响应并可 Ctrl+C 退出）。未完成：TUI `UiCapability` overlay、`/tree`/`/fork` TUI 化、`!`/`!!`、model/thinking selector、themes、renderer/shortcut API、`/reload`。
+**进展记录（P8A，2026-07-06）**：引入 `@earendil-works/pi-tui@0.80.3`，Node engine 提升到 `>=22.19.0`；新增可选 `--tui` 模式，保留 `-p` 与 readline REPL；基础 TUI 支持 editor 提交、assistant markdown/text 流式、tool_start/tool_update/tool_result 文本渲染、`/help`/`/compact`/扩展 command prompt action、Ctrl+C abort/退出；运行中 Agent 注入 TUI `UiCapability` facade（confirm/input/select/notify）。验证：`npm run check` 全绿、`npm test` 69 测试全绿、tmux TTY 冒烟（mock provider 返回 `tui smoke ok`，TUI 显示响应并可 Ctrl+C 退出）。未完成：启动期 project trust 的 TUI 化、`/tree`/`/fork` TUI 化、`!`/`!!`、model/thinking selector、themes、renderer/shortcut API、`/reload`。
 
 ## Phase 9 ⬜ 浏览器宿主（可移植性证明 #1）
 

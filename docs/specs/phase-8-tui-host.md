@@ -96,7 +96,7 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI 可发送普通 prompt，流式显示 assistant markdown/text。
 - [ ] TUI 可显示 tool_start/tool_update/tool_result，bash 流式输出不再不可见。
 - [ ] Ctrl+C 可 abort 当前 turn，TUI 不退出。
-- [ ] TUI 版 `UiCapability.confirm` 能驱动 project trust 或测试扩展确认。
+- [ ] TUI 版 `UiCapability.confirm` 能驱动 project trust 或测试扩展确认。（运行中 Agent 已注入 TUI UI facade；project trust 仍需重排启动顺序）
 - [x] `-p`、headless、readline REPL 现有 e2e 不回退。
 - [x] `npm run check` 与 `npm test` 全绿。
 
@@ -105,6 +105,7 @@ P8A 验证记录：
 - `npm run check` 全绿。
 - `npm test` 69 测试全绿。
 - tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
+- TUI runtime `UiCapability` 已实现并通过 `Agent.setUi()` 注入；支持运行中扩展的 `confirm/input/select/notify`。启动期 project trust 仍使用旧路径，待后续重排。
 
 ## 风险与开放问题
 

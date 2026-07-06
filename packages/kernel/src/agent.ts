@@ -123,7 +123,7 @@ export class Agent {
 	private readonly systemPrompt: string | undefined;
 	private readonly baseTools: Tool[];
 	private readonly extensions: ExtensionRegistry | undefined;
-	private readonly ui: UiCapability | undefined;
+	private ui: UiCapability | undefined;
 	private readonly capabilities: ExtensionCapabilities;
 	private readonly maxTurnsPerPrompt: number;
 	private readonly steeringQueue: PendingMessageQueue;
@@ -219,6 +219,10 @@ export class Agent {
 				);
 			},
 		};
+	}
+
+	setUi(ui: UiCapability | undefined): void {
+		this.ui = ui;
 	}
 
 	private async runSubagent(
