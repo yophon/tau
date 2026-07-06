@@ -1,6 +1,6 @@
 # Phase 8：TUI 宿主规格书
 
-> 状态：进行中（2026-07-06，P8A 已落地；P8B/P8D 局部落地）
+> 状态：进行中（2026-07-06，P8A/P8B 已落地；P8C/P8D 局部落地）
 > 对应 roadmap 阶段：Phase 8
 
 ## 目标
@@ -84,7 +84,7 @@ class TuiUiCapability implements UiCapability {
 ## MVP 后续范围
 
 - 完整 themes 与 theme loader。
-- `registerShortcut`、`registerMessageRenderer`、`registerEntryRenderer`。
+- `registerMessageRenderer`、`registerEntryRenderer`。
 - model selector、thinking level selector。
 - `/reload` 热重载。
 - 图片渲染与自定义 tool renderer。
@@ -131,7 +131,7 @@ class TuiUiCapability implements UiCapability {
 | 模型/思考 | Later | model selector | 在有 provider/model registry 后提供选择 UI |
 | 模型/思考 | Done | thinking level 命令 | `/thinking` 设置/清除 `extraBody.reasoning_effort` 覆盖 |
 | 模型/思考 | Done | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
-| 扩展 API | Next | `registerShortcut` | 扩展可注册快捷键，TUI 退出/重载时清理 |
+| 扩展 API | Done | `registerShortcut` | 扩展可注册快捷键；TUI 空闲且无 UI prompt 时触发；`/help` 显示快捷键 |
 | 扩展 API | Next | `registerMessageRenderer` | 扩展可覆盖或追加消息渲染组件 |
 | 扩展 API | Next | `registerEntryRenderer` | 扩展可渲染自定义 session entry |
 | 扩展 API | Next | 自定义 tool renderer | tool call/result 支持组件 renderer，fallback 仍可用 |
@@ -147,6 +147,64 @@ class TuiUiCapability implements UiCapability {
 | 主题/打磨 | Later | startup diagnostics | 展示 loaded skills/prompts/extensions/resources 诊断 |
 | 验收 | Acceptance | TTY e2e 覆盖扩展 | tmux 自动化覆盖 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径 |
 | 验收 | Acceptance | 自举验收 | 用 `npm run tau -- --tui` 开发 tau 至少一轮，记录并修复阻塞问题 |
+
+## 阶段 8 剩余执行清单
+
+这份清单按建议实施顺序排列。每个条目完成后都要更新上面的任务总表、验收清单和验证记录，并单独提交/push。
+
+### P8C-1：Renderer API
+
+- [ ] 设计 `registerMessageRenderer` kernel API：注册名、支持的 message role/customType、优先级/注册顺序、renderer 输入上下文、返回值与 fallback 约定。
+- [ ] 在 TUI 增加 message renderer 调度：先尝试扩展 renderer，未命中或返回空时走现有 markdown/text/tool fallback。
+- [ ] 覆盖 assistant/user/custom message 的最小路径；renderer 抛错时显示可诊断错误，但不打断 TUI。
+- [ ] 单测覆盖 registry 暴露与注册顺序；tmux 冒烟覆盖一个扩展把 custom message 渲染为可见文本。
+
+### P8C-2：Entry Renderer API
+
+- [ ] 设计 `registerEntryRenderer` kernel API：面向 `SessionEntry`，支持 custom entry 与内置 entry 的可选覆盖。
+- [ ] `/tree`、`/sessions` 或未来 session entry 展示路径接入 entry renderer；未命中时保留当前文本 fallback。
+- [ ] 明确 renderer 不改变 session 数据，只负责展示；错误时降级为 fallback。
+- [ ] 单测覆盖 registry 注册；tmux 冒烟覆盖扩展渲染一个 custom session entry。
+
+### P8C-3：Tool Renderer API
+
+- [ ] 设计 tool renderer API：按 tool name/tool result status 匹配，支持 start/update/end/result 四类输入。
+- [ ] TUI tool item 接入自定义 renderer；bash stdout/stderr 现有增量 renderer 继续作为内置 fallback。
+- [ ] 支持 renderer 请求折叠/展开初始状态，但不允许扩展直接持有 TUI 实例。
+- [ ] 单测覆盖 registry；tmux 冒烟覆盖一个 mock tool 的自定义 start/result 展示。
+
+### P8C-4：Runtime Extension Surfaces
+
+- [ ] `extension widgets`：定义 editor 上方/下方临时组件注册与清理语义；先支持文本/简单 Component。
+- [ ] `custom header/footer`：允许扩展追加状态段，更新频率由 host 控制，避免每帧调用扩展。
+- [ ] 为 `registerShortcut` 增加重载清理语义：配合 `/reload` 后 registry 替换即可移除旧快捷键。
+- [ ] `/help` 显示 renderer/widget/header/footer/shortcut 来源，便于诊断加载结果。
+
+### P8R：Reload / Resources
+
+- [ ] `/reload` 命令：停止当前可重载动作、触发旧 registry 的 `session_shutdown`，重新加载全局/项目扩展。
+- [ ] `/reload` 走 project trust：项目扩展新增或 trust 状态变化时仍需 TUI confirm。
+- [ ] `/reload` 后触发新 registry 的 `session_start`，重新 attach host actions、flags、tools、commands、shortcuts/renderers/widgets。
+- [ ] `resources_discover` 使用 `reason:"reload"`：刷新 skills/prompts/themes 贡献路径，并让 ext-resources 重建动态 prompt commands。
+- [ ] reload 失败时保留旧 registry 或明确进入降级状态；错误展示在 TUI，不能直接退出。
+- [ ] 单测覆盖 `resources_discover("reload")`；tmux 冒烟覆盖新增扩展命令或 prompt 在 `/reload` 后可用。
+
+### P8D：Model / Theme / Polish
+
+- [ ] model selector：在有 provider/model registry 之前，先做历史/配置 model 列表 selector；保留 `/model <id>` 文本路径。
+- [ ] Themes：决定 tau theme JSON 还是 pi theme schema；实现默认 light/dark 与资源加载入口。
+- [ ] `/help` polish：可滚动组件、命令详情、扩展来源、快捷键分组。
+- [ ] footer polish：更完整 token usage/cost、session 状态、reload 状态、自定义 footer 区。
+- [ ] tool collapse/expand：全局快捷键与单个 tool item 折叠状态。
+- [ ] thinking block show/hide：快捷键切换 reasoning 展示，状态反映到 footer。
+- [ ] startup diagnostics：展示 loaded extensions/skills/prompts/themes/resources，便于自举排障。
+- [ ] compaction polish：展示阶段、耗时、summary/kept 粗略结果。
+
+### P8E：Acceptance / Self-Dogfood
+
+- [ ] 把关键 tmux 冒烟沉淀成自动化或半自动脚本：普通 prompt、tool_update、abort、TUI confirm、tree/fork、shortcut、renderer、reload。
+- [ ] 用 `npm run tau -- --tui` 自举开发 tau 至少一轮；把阻塞点登记在本文件并修完或明确延期。
+- [ ] 收尾时更新 roadmap 完成记录、pi parity 表、技术债登记；确保 `npm run check`、`npm test` 与关键 TTY 冒烟全绿。
 
 ## 验收清单
 
@@ -181,7 +239,7 @@ class TuiUiCapability implements UiCapability {
 
 ### P8C：扩展 API / pi parity
 
-- [ ] `registerShortcut`：扩展注册快捷键，TUI 绑定并在退出/重载时清理。
+- [x] `registerShortcut`：扩展注册快捷键，TUI 空闲且无 UI prompt 时触发；`/help` 显示扩展快捷键。
 - [ ] `registerMessageRenderer`：扩展自定义消息渲染组件。
 - [ ] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
 - [ ] 自定义 tool renderer：tool call/result 支持扩展提供组件；无 renderer 时走文本 fallback。
@@ -208,7 +266,7 @@ class TuiUiCapability implements UiCapability {
 - [ ] TTY e2e：tmux 自动化覆盖普通 prompt、tool_update、abort、TUI confirm、tree/fork 至少一条路径。
 - [ ] 自举验收：用 `npm run tau -- --tui` 日常开发 tau 至少一轮，记录发现的问题。
 
-P8A/P8B/P8D 验证记录：
+P8A/P8B/P8C/P8D 验证记录：
 
 - `npm run check` 全绿。
 - `npm test` 72 测试全绿。
@@ -223,6 +281,7 @@ P8A/P8B/P8D 验证记录：
 - `model_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/model requested-model` 改写为 `rewritten-model` 且下一请求使用改写后的模型。
 - TUI `/thinking` 与 `thinking_level_select` 扩展事件已实现；单测覆盖 before 改写/取消与 after 通知，tmux 冒烟确认全局扩展可把 `/thinking low` 改写为 `high` 且下一请求 body 带 `reasoning_effort: "high"`。
 - TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
+- TUI `registerShortcut` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展注册 `ctrl+g` 后 TUI 显示 `shortcut-ok`。
 
 ## 风险与开放问题
 

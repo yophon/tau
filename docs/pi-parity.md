@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-06（P7 resources_discover 与扩展包依赖验证完成）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-06（P8 TUI user_bash / model_select / thinking_level_select / registerShortcut 已验证）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -23,7 +23,7 @@
 | `session_before_fork` | 分叉前（可取消） | ✅ P5（entry-targeted /fork 触发；全量复制无分叉点故不触发） |
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | ✅ P5（before_tree 可取消/可接管摘要；tree 携带 summaryEntry；preparation 取 tau 子集，label 属 P8） |
 | `resources_discover` | 扩展提供额外 skills/prompts/themes 路径 | ✅ P7（registry 汇总路径；skills/prompts 加载器仍属扩展包后续） |
-| `user_bash` | 用户 `!`/`!!` 直接执行 bash 的拦截 | 📍P8（TUI/CLI 先要有 `!` 功能） |
+| `user_bash` | 用户 `!`/`!!` 直接执行 bash 的拦截 | ✅ P8（TUI `!`/`!!` + before/after 拦截） |
 | `model_select` | 运行时切换模型 | ✅ P8（before 可改写/取消，after 可记录） |
 | `thinking_level_select` | 运行时切换思考等级 | ✅ P8（`/thinking` 写入 `reasoning_effort` 覆盖） |
 | `project_trust` | **首次在目录运行的信任门**（决定是否加载项目扩展） | ✅ P2（事件 + CLI 信任门 + trust.json） |
@@ -38,7 +38,7 @@
 | `ctx.runSubagent()` facade | 子 Agent 委派，不污染父会话 | ✅ P7（tau 扩展 API，pi 无内置 subagent） |
 | `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | ✅ P4（getContextUsage/compact；abort 走宿主 AbortController，ctx.abort 📍P8） |
 | `registerFlag` / `getFlag` | 扩展注册 CLI flag | ✅ P2 |
-| `registerShortcut` | 键盘快捷键 | 📍P8（TUI） |
+| `registerShortcut` | 键盘快捷键 | ✅ P8（TUI 空闲快捷键；`/help` 显示） |
 | `registerMessageRenderer` / `registerEntryRenderer` | 自定义消息/entry 的 TUI 渲染 | 📍P8（TUI） |
 | Themes | TUI 主题系统 | 📍P8（TUI） |
 | `/reload` 热重载扩展 | 运行时重载 | 📍P8（host-node 便利；小程序宿主原理性无此功能） |
