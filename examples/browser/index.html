@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>tau browser host demo</title>
+		<link rel="stylesheet" href="./styles.css" />
+	</head>
+	<body>
+		<main class="shell">
+			<section class="workspace">
+				<header>
+					<div>
+						<h1>tau browser host</h1>
+						<p id="storage-status">Checking storage…</p>
+					</div>
+					<button id="refresh-files" type="button">Refresh</button>
+				</header>
+				<form id="config-form" class="config">
+					<label>
+						Base URL
+						<input id="base-url" name="baseUrl" placeholder="https://api.example.com/v1" required />
+					</label>
+					<label>
+						API key
+						<input id="api-key" name="apiKey" type="password" autocomplete="off" />
+					</label>
+					<label>
+						Model
+						<input id="model" name="model" placeholder="model-id" required />
+					</label>
+				</form>
+				<form id="prompt-form" class="prompt">
+					<textarea
+						id="prompt"
+						name="prompt"
+						rows="5"
+						placeholder="Ask the model to create or inspect files in /workspace."
+						required
+					></textarea>
+					<button id="run" type="submit">Run</button>
+				</form>
+			</section>
+			<section class="panes">
+				<div class="pane">
+					<h2>Conversation</h2>
+					<pre id="transcript"></pre>
+				</div>
+				<div class="pane">
+					<h2>Files</h2>
+					<ul id="files"></ul>
+				</div>
+			</section>
+		</main>
+		<script type="module" src="./dist/app.js"></script>
+	</body>
+</html>

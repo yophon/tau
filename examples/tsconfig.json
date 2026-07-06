@@ -1,8 +1,8 @@
 {
 	"extends": "../tsconfig.base.json",
 	"compilerOptions": {
-		"lib": ["ES2023"],
+		"lib": ["ES2023", "DOM", "DOM.Iterable"],
 		"types": []
 	},
-	"include": ["extensions"]
+	"include": ["extensions", "browser/src"]
 }

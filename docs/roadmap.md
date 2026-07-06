@@ -4,7 +4,7 @@
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
-**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update——**当前工作**；P9/P10 只依赖内核（可与 P8 并行推进）；P11 收尾。
+**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核（可与 P8 并行推进）；P10 为下一个未完成适配阶段；P11 收尾。
 
 ## Phase 0 ✅ 内核种子（2026-07-04）
 
@@ -79,14 +79,15 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **剩余任务索引**：Phase 8 不再靠 roadmap 粗粒度 bullet 追踪，详细任务总表与剩余执行清单以 [specs/phase-8-tui-host.md](specs/phase-8-tui-host.md) 为准，分为 renderer API、runtime extension surfaces、重载/资源、模型/主题/打磨、验收/自举。
 
-## Phase 9 ⬜ 浏览器宿主（可移植性证明 #1）
+## Phase 9 ✅ 浏览器宿主（可移植性证明 #1）
 
 **目标**：内核在浏览器跑通完整 agent 循环，验证架构主张。
 
-- `@tau/host-browser`：OPFS（或内存）FileSystem；无 Shell（工具自动降级）；SessionStore 用 OPFS/IndexedDB
-- key 安全：直连（用户自担）+ 可选 proxy 模式（参考 pi 的 streamProxy 思路，读 `packages/agent/src/proxy.ts`）
-- 一个最小演示页（静态 HTML + esbuild 打包）
-- **验收**：浏览器中对话 + read/write 工具操作 OPFS 文件
+规格书：[specs/phase-9-browser-host.md](specs/phase-9-browser-host.md)。
+
+**完成记录**：新增 `@tau/host-browser`：`BrowserMemoryFileSystem`、`OpfsFileSystem`、`hasOpfsSupport()`、`createBrowserSessionRepo()`；无 Shell 时默认工具只注册 read/write/edit。会话通过 `JsonlSessionRepo + FileSystem` 继续写 pi v3 JSONL。新增 `examples/browser/` 静态 demo（endpoint/key/model 表单、prompt、conversation、files 面板），优先 OPFS，降级内存 FS；新增 `npm run smoke:browser` 用 esbuild `platform: "browser"` 打包验证；新增 `npm run smoke:browser:runtime` 用 headless Chromium/Edge 在真浏览器里跑 OPFS + agent write/read 链路。验证：`npm run check` 全绿；`node --test packages/host-browser/test/*.test.ts` 5 测试全绿；`npm run smoke:browser` 通过（browser demo bundle ok）；`npm run smoke:browser:runtime` 通过（browser runtime smoke ok）；`npm test` 79 测试全绿（需允许 CLI e2e 绑定本地 mock HTTP server）。
+
+与规格偏差：未新增 Playwright/Puppeteer 真浏览器自动化依赖；以 browser bundle smoke + host capability agent-loop 测试覆盖核心链路。key 安全 proxy 模式按规格范围外推迟。
 
 ## Phase 10 ⬜ 小程序/RN 平台适配（可移植性证明 #2）
 

@@ -17,6 +17,7 @@ inject a small adapter instead of polyfilling globals.
 |---------|------|------------------------|
 | `@tau/kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, capability interfaces | **No** — enforced by `npm run check:purity` |
 | `@tau/host-node` | `FileSystem` + `Shell` capability providers for Node.js | Yes |
+| `@tau/host-browser` | OPFS + in-memory `FileSystem` capability providers and browser session repo helper | Yes |
 | `@tau/cli` | Minimal terminal frontend | Yes |
 | `@tau/ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
 | `@tau/ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
@@ -54,6 +55,7 @@ export TAU_MODEL=deepseek-chat
 npm run tau                       # interactive REPL
 npm run tau -- --tui              # experimental TUI mode
 npm run tau -- -p "list the files here and summarize"
+npm run smoke:browser             # bundle the browser host demo
 ```
 
 ## Embedding the kernel
