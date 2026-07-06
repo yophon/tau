@@ -483,6 +483,7 @@ async function main(): Promise<void> {
 			cwd,
 			contextWindow,
 			sessionRepo,
+			shell,
 			store,
 			recorder,
 			buildAgent,

@@ -114,7 +114,7 @@ class TuiUiCapability implements UiCapability {
 - [x] TUI compaction Esc：支持 Esc abort compaction。
 - [ ] TUI compaction polish：展示更细的 compaction 进度/阶段。
 - [x] TUI `/name`：inline input 或 command 参数设置 session name。
-- [ ] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
+- [x] TUI `!` / `!!`：直接执行用户 bash，`!` 结果进上下文，`!!` 只显示不进上下文。
 - [ ] 新增 `user_bash` 扩展事件，可拦截/取消/改写用户 bash。
 - [ ] tool_update 专门渲染 bash stdout/stderr 增量，长命令期间持续可见。
 - [x] Steering/follow-up：运行中输入默认 steer；`/follow <text>` 把输入排为 followUp。

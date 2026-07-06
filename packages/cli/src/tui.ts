@@ -17,6 +17,7 @@ import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
+	type CustomMessage,
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
 	messageText,
@@ -24,6 +25,8 @@ import {
 	type SessionMetadata,
 	SessionRecorder,
 	type SessionStore,
+	type Shell,
+	type ShellExecResult,
 	type UiCapability,
 } from "@tau/kernel";
 
@@ -82,6 +85,7 @@ export interface RunTuiOptions {
 	cwd: string;
 	contextWindow?: number;
 	sessionRepo: JsonlSessionRepo;
+	shell: Shell;
 	store?: SessionStore;
 	recorder?: SessionRecorder;
 	buildAgent(messages: AgentMessage[] | undefined, session: SessionRecorder | undefined): Agent;
@@ -105,7 +109,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	tui.addChild(footer);
 	tui.setFocus(editor);
 
-	let runningTask: "turn" | "compaction" | undefined;
+	let runningTask: "turn" | "compaction" | "bash" | undefined;
 	let controller: AbortController | undefined;
 	let agent = options.agent;
 	let store = options.store;
@@ -203,7 +207,15 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		if (matchesKey(data, "ctrl+c")) {
 			if (runningTask && controller) {
 				controller.abort();
-				setStatus(dim(runningTask === "compaction" ? "Aborting compaction..." : "Aborting current turn..."));
+				setStatus(
+					dim(
+						runningTask === "compaction"
+							? "Aborting compaction..."
+							: runningTask === "bash"
+								? "Aborting bash..."
+								: "Aborting current turn...",
+					),
+				);
 			} else {
 				void stop();
 			}
@@ -238,6 +250,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(dim("Compaction is running. Press Ctrl+C to abort it."));
 			return;
 		}
+		if (runningTask === "bash") {
+			appendText(dim("Bash is running. Press Ctrl+C to abort it."));
+			return;
+		}
 		void handleInput(input);
 	};
 
@@ -249,6 +265,11 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		if (input.startsWith("/")) {
 			const handled = await handleCommand(input);
 			if (handled) return;
+		}
+		const userBash = parseUserBash(input);
+		if (userBash) {
+			await runUserBash(userBash.command, userBash.record);
+			return;
 		}
 		await runPrompt(input);
 	}
@@ -399,6 +420,60 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		return true;
 	}
 
+	async function runUserBash(command: string, recordInContext: boolean): Promise<void> {
+		if (command === "") {
+			appendText(red(recordInContext ? "Usage: ! <command>" : "Usage: !! <command>"));
+			return;
+		}
+		runningTask = "bash";
+		controller = new AbortController();
+		setStatus(cyan("Running bash..."));
+		let liveOutput = "";
+		const component = new Text(`${cyan(`${recordInContext ? "!" : "!!"} ${command}`)}\n${dim("running...")}`, 1, 0);
+		chat.addChild(component);
+		const updateLiveOutput = (): void => {
+			component.setText(`${cyan(`${recordInContext ? "!" : "!!"} ${command}`)}\n${liveOutput || dim("running...")}`);
+			tui.requestRender();
+		};
+		try {
+			const result = await options.shell.exec(command, {
+				signal: controller.signal,
+				onStdout: (chunk) => {
+					liveOutput += chunk;
+					updateLiveOutput();
+				},
+				onStderr: (chunk) => {
+					liveOutput += chunk;
+					updateLiveOutput();
+				},
+			});
+			const output = formatShellOutput(result);
+			component.setText(`${cyan(`${recordInContext ? "!" : "!!"} ${command}`)}\n${output}`);
+			if (recordInContext) {
+				const message = createUserBashMessage(command, result, output);
+				agent.messages.push(message);
+				await recorder?.recordMessage(message);
+				appendText(dim("Bash output added to context."));
+			}
+		} catch (error) {
+			component.setText(
+				isAbortError(error)
+					? `${red("✗")} ${dim(command)}\n${dim("aborted")}`
+					: `${red("✗")} ${dim(command)}\n${error instanceof Error ? error.message : String(error)}`,
+			);
+			appendText(
+				isAbortError(error)
+					? dim("Bash aborted.")
+					: red(`Bash failed: ${error instanceof Error ? error.message : String(error)}`),
+			);
+		} finally {
+			runningTask = undefined;
+			controller = undefined;
+			setStatus(dim("Ready"));
+			void refreshFooterSession();
+		}
+	}
+
 	async function runCompact(instructions: string | undefined): Promise<void> {
 		runningTask = "compaction";
 		controller = new AbortController();
@@ -477,6 +552,12 @@ function firstLine(text: string, max = 120): string {
 	return line.length > max ? `${line.slice(0, max)}...` : line;
 }
 
+function parseUserBash(input: string): { command: string; record: boolean } | undefined {
+	if (input.startsWith("!!")) return { command: input.slice(2).trim(), record: false };
+	if (input.startsWith("!")) return { command: input.slice(1).trim(), record: true };
+	return undefined;
+}
+
 function parseFollowUpCommand(input: string): string | undefined {
 	if (input === "/follow") return "";
 	if (!input.startsWith("/follow ")) return undefined;
@@ -492,6 +573,10 @@ function formatHelp(extensionCommands: { name: string; description: string }[]):
 		`${cyan("Enter")}  Submit input`,
 		`${cyan("Ctrl+C")}  Abort the current turn/compaction, or exit while idle`,
 		`${cyan("Esc")}  Abort compaction`,
+		"",
+		bold("User bash"),
+		`${cyan("! <command>")}  Run bash and add output to context`,
+		`${cyan("!! <command>")}  Run bash and only show output`,
 	];
 	if (extensionCommands.length === 0) {
 		lines.push("", bold("Extension commands"), dim("No extension commands registered."));
@@ -549,6 +634,27 @@ function formatNumber(value: number): string {
 
 function formatSessionLabel(metadata: SessionMetadata): string {
 	return metadata.name ?? (metadata.id === "" ? "unnamed" : metadata.id.slice(0, 8));
+}
+
+function formatShellOutput(result: ShellExecResult): string {
+	const parts: string[] = [];
+	if (result.stdout !== "") parts.push(result.stdout.trimEnd());
+	if (result.stderr !== "") parts.push(result.stderr.trimEnd());
+	let output = parts.filter((part) => part !== "").join("\n");
+	if (output === "") output = "(no output)";
+	if (result.exitCode !== 0) output += `\nExit code ${result.exitCode}`;
+	return output;
+}
+
+function createUserBashMessage(command: string, result: ShellExecResult, output: string): CustomMessage {
+	return {
+		role: "custom",
+		customType: "user_bash",
+		content: [`$ ${command}`, output].join("\n\n"),
+		display: true,
+		details: { command, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
+		timestamp: Date.now(),
+	};
 }
 
 function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
