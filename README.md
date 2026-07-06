@@ -36,7 +36,7 @@ inject a small adapter instead of polyfilling globals.
    `PlatformResponse`, `TauAbortSignal` are minimal structural subsets. Real
    `fetch`/`AbortSignal` satisfy them; a `wx.request` adapter can too.
 4. **Zero build, zero kernel dependencies.** Everything runs from source on
-   Node ≥ 22.18 (native type stripping). The kernel has no npm dependencies.
+   Node ≥ 22.19 (native type stripping). The kernel has no npm dependencies.
 5. **Erasable TypeScript only** (`erasableSyntaxOnly`): no enums, namespaces,
    or parameter properties.
 
@@ -52,6 +52,7 @@ export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
 export TAU_MODEL=deepseek-chat
 npm run tau                       # interactive REPL
+npm run tau -- --tui              # experimental TUI mode
 npm run tau -- -p "list the files here and summarize"
 ```
 

@@ -64,15 +64,18 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：62 测试全绿。内核补 `ExtensionContext.capabilities`（fs/shell/platform facade）、`Tool.execute(..., ctx)`、`ctx.runSubagent()`、`resources_discover`、Agent 动态合并 extension tools；CLI 向扩展暴露 Node fs/shell capabilities。新增 `@tau/ext-subagents`（默认 `task` 工具）与 `@tau/ext-mcp`（官方 SDK stdio/Streamable HTTP client，测试覆盖 stdio tools/list + tools/call）。e2e：CLI 项目扩展加载 subagents 并完成父/子 Agent 三请求链路；MCP e2e 用官方 SDK stdio server fixture 暴露 `echo` 工具并通过 tau tool 调用成功。与规格偏差：MCP e2e 未额外安装 filesystem server，改用本仓库内真实 MCP stdio fixture；HTTP transport 实现保留但未做 e2e 覆盖。
 
-## Phase 8 ⬜ TUI 宿主
+## Phase 8 🚧 TUI 宿主
 
 **目标**：产品级终端体验，对齐 pi 的交互模式。
 
-- 先评估：直接依赖 `@earendil-works/pi-tui`（12k 行，MIT，npm 已发布，差分渲染）vs 自研最小 TUI。倾向前者——它本来就是独立库
+- 规格书：[specs/phase-8-tui-host.md](specs/phase-8-tui-host.md)（进行中，P8A 基础 `--tui` 已落地）
+- 先评估：直接依赖 `@earendil-works/pi-tui`（MIT，npm `0.80.3` 已发布，差分渲染）vs 自研最小 TUI。结论：直接依赖前者
 - 先读 pi：`packages/coding-agent/src/modes/interactive/` 的组织方式、`packages/tui` 的 README 和组件模型
 - 流式渲染、markdown、工具调用折叠展示、`UiCapability` 的 TUI 实现（对话框/选择器）、keybindings
 - 补齐产品层 pi 特性：`!`/`!!` 用户 bash + `user_bash` 事件、`/model` 切换 + `model_select` / `thinking_level_select` 事件、`registerShortcut`、`registerMessageRenderer` / `registerEntryRenderer`、Themes、`/reload` 热重载
 - **验收**：日常开发可用 tau 自举（用 tau 开发 tau）
+
+**进展记录（P8A，2026-07-06）**：引入 `@earendil-works/pi-tui@0.80.3`，Node engine 提升到 `>=22.19.0`；新增可选 `--tui` 模式，保留 `-p` 与 readline REPL；基础 TUI 支持 editor 提交、assistant markdown/text 流式、tool_start/tool_update/tool_result 文本渲染、`/help`/`/compact`/扩展 command prompt action、Ctrl+C abort/退出。验证：`npm run check` 全绿、`npm test` 69 测试全绿、tmux TTY 冒烟（mock provider 返回 `tui smoke ok`，TUI 显示响应并可 Ctrl+C 退出）。未完成：TUI `UiCapability` overlay、`/tree`/`/fork` TUI 化、`!`/`!!`、model/thinking selector、themes、renderer/shortcut API、`/reload`。
 
 ## Phase 9 ⬜ 浏览器宿主（可移植性证明 #1）
 

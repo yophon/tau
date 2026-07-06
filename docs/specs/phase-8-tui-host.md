@@ -1,0 +1,114 @@
+# Phase 8：TUI 宿主规格书
+
+> 状态：进行中（2026-07-06，P8A 基础 `--tui` 已落地）
+> 对应 roadmap 阶段：Phase 8
+
+## 目标
+
+新增产品级终端交互宿主，先作为 `--tui` 可选模式接入 CLI；保留现有 `-p` 与 readline REPL 路径。TUI 首版解决流式消息、markdown、工具调用状态、tool_update 实时输出、TUI 版 `UiCapability`、基础 slash commands 和 Ctrl+C abort，让 tau 可以进入日常开发可用状态。后续再补完整 pi product parity（themes、shortcuts、自定义 renderer、model selector、reload 等）。
+
+## pi 参照
+
+| pi 文件 / 包 | 读后结论 |
+|---|---|
+| `@earendil-works/pi-tui@0.80.3` | 独立 npm 包，MIT，依赖 `marked` 与 `get-east-asian-width`，提供 TUI/Editor/Markdown/SelectList/Input/Text/Container/Overlay 等组件。直接依赖，不自研底层差分渲染。 |
+| `../pi/packages/tui/README.md` | 组件接口简单：`render(width): string[]` + 可选 `handleInput`；TUI 管理 focus/overlay/差分渲染/IME。tau 只写产品组件和事件适配。 |
+| `../pi/packages/coding-agent/src/modes/interactive/interactive-mode.ts` | 不整文件搬。它强绑定 pi 的 model registry/settings/auth/package/theme/session-manager。只参考布局、事件处理、工具折叠、bash 模式、selector 交互。 |
+| `../pi/packages/coding-agent/src/modes/interactive/components/tool-execution.ts` | 工具 UI 的关键行为：tool call streaming 时先展示 pending，执行开始/更新/结束时更新组件；tau 首版先做文本 fallback，不做图片/自定义 renderer。 |
+| `../pi/packages/coding-agent/src/modes/interactive/components/footer.ts` | footer 展示 cwd、session、token/context。tau 首版做 cwd/model/context 简版。 |
+
+## 接口草案
+
+### CLI 参数
+
+```text
+--tui    Use the TUI interactive mode instead of the readline REPL.
+```
+
+- `-p/--print` 仍走现有 one-shot 模式。
+- 非 TTY stdin 时忽略/拒绝 `--tui`，避免 CI 卡住。
+- Node engine 提升到 `>=22.19.0`，匹配 `@earendil-works/pi-tui`。
+
+### 内部模块
+
+```ts
+// packages/cli/src/tui.ts
+export interface TuiRuntime {
+	config: OpenAICompatConfig;
+	cwd: string;
+	systemPrompt: string;
+	extensions: ExtensionRegistry;
+	sessionRepo: JsonlSessionRepo;
+	store?: SessionStore;
+	recorder?: SessionRecorder;
+	initialMessages?: AgentMessage[];
+	sessionReason: "startup" | "resume";
+	contextWindow?: number;
+}
+
+export async function runTui(runtime: TuiRuntime): Promise<void>;
+```
+
+TUI 内部可复用 CLI 已有的 Agent 构造逻辑；如代码重复明显，再抽 `buildAgentRuntime()`，但不先做大重构。
+
+### TUI 版 UiCapability
+
+```ts
+class TuiUiCapability implements UiCapability {
+	confirm(title: string, message?: string): Promise<boolean>;
+	input(title: string, placeholder?: string): Promise<string | undefined>;
+	select(title: string, options: string[]): Promise<string | undefined>;
+	notify(message: string, level?: "info" | "warning" | "error"): void;
+}
+```
+
+首版用 overlay + Input/SelectList；若 overlay 复杂度超预期，可先用 inline prompt component，但必须不退回 readline。
+
+## 数据/格式
+
+- 不新增 session 格式。
+- TUI 状态只在内存中维护：chat items、pending tool map、current AbortController。
+- 不新增 theme 文件格式；首版颜色写死为少量 ANSI/pi-tui Text style。
+
+## 范围内
+
+- 引入 `@earendil-works/pi-tui` 依赖，Node engine 提到 `>=22.19.0`。
+- `--tui` 可选交互模式。
+- 基础布局：header、chat log、status、editor、footer。
+- 渲染：user/assistant/tool result/compaction；assistant text streaming；reasoning dim；tool_start/tool_update/tool_result 实时更新。
+- Slash commands：复用现有 `/help`、扩展 commands、`/compact`、`/name`、`/sessions`、`/tree`、`/fork` 的行为；UI 可先以文本输出呈现列表。
+- Ctrl+C：有运行中 turn 时 abort；空闲时退出或清空输入。
+- TUI `UiCapability`：confirm/input/select/notify。
+- 至少一个自动化 e2e：TUI 模式跑 mock provider，展示流式文本和工具更新并退出。
+
+## 范围外
+
+- 完整 themes 与 theme loader。
+- `registerShortcut`、`registerMessageRenderer`、`registerEntryRenderer`。
+- `/model` selector、thinking level selector。
+- `!` / `!!` user bash 与 `user_bash` 事件（可在 P8 后半段继续做）。
+- `/reload` 热重载。
+- 图片渲染与自定义 tool renderer。
+
+## 验收清单
+
+- [x] `npm run tau -- --tui` 在 TTY 下进入 TUI。
+- [x] TUI 可发送普通 prompt，流式显示 assistant markdown/text。
+- [ ] TUI 可显示 tool_start/tool_update/tool_result，bash 流式输出不再不可见。
+- [ ] Ctrl+C 可 abort 当前 turn，TUI 不退出。
+- [ ] TUI 版 `UiCapability.confirm` 能驱动 project trust 或测试扩展确认。
+- [x] `-p`、headless、readline REPL 现有 e2e 不回退。
+- [x] `npm run check` 与 `npm test` 全绿。
+
+P8A 验证记录：
+
+- `npm run check` 全绿。
+- `npm test` 69 测试全绿。
+- tmux TTY 冒烟：`npm run tau -- --tui --no-session` 对接 mock provider，输入 prompt 后显示 `tui smoke ok`，空闲 Ctrl+C 正常退出。
+
+## 风险与开放问题
+
+1. **测试难度**：pi-tui 使用 raw terminal，e2e 可能需要 PTY/tmux。若 node:test 子进程 stdio 不够，TUI e2e 用 tmux 驱动。
+2. **范围膨胀**：pi interactive mode 功能很多。首版只做基础宿主，不一次性吃下 model/theme/renderer/reload。
+3. **engine 提升**：`@earendil-works/pi-tui` 要求 Node `>=22.19.0`，tau 当前 `>=22.18.0`，需要接受小版本提升。
+4. **CLI 重复逻辑**：首版可复制少量 command/session 逻辑；稳定后再抽 shared runtime，避免先重构再实现。

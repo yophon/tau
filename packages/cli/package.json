@@ -12,6 +12,7 @@
 		"./package.json": "./package.json"
 	},
 	"dependencies": {
+		"@earendil-works/pi-tui": "0.80.3",
 		"@tau/host-node": "0.0.1",
 		"@tau/kernel": "0.0.1"
 	}

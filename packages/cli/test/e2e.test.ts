@@ -237,6 +237,15 @@ test("resources extension injects skills and runs prompt templates", async () =>
 	});
 });
 
+test("--tui rejects non-TTY stdio instead of hanging", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const cli = startCli(["--tui"], { cwd, home, baseUrl: "http://127.0.0.1:9/v1" });
+		const code = await cli.waitForExit();
+		assert.equal(code, 1, cli.output());
+		assert.ok(cli.output().includes("--tui requires a TTY stdin/stdout"), cli.output());
+	});
+});
+
 test("lines typed during a running turn become steering messages", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([

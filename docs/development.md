@@ -4,7 +4,7 @@
 
 ## 环境与命令
 
-- Node ≥ 22.18（原生 type-stripping，零构建直接跑源码）
+- Node ≥ 22.19（原生 type-stripping，零构建直接跑源码；P8 引入 `@earendil-works/pi-tui` 后的最低版本）
 - `npm install --ignore-scripts` — 安装依赖
 - `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁**。改完代码必跑，全绿才算完
 - `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试）

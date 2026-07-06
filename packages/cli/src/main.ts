@@ -19,6 +19,7 @@ import {
 	thinkingText,
 	type UiCapability,
 } from "@tau/kernel";
+import { runTui } from "./tui.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -30,6 +31,7 @@ Options:
   -m, --model <model>    Model id (env: TAU_MODEL)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
+      --tui              Use the TUI interactive mode
   -w, --context-window <n>  Model context window in tokens; enables auto-compaction
                          (env: TAU_CONTEXT_WINDOW)
   -c, --continue         Resume the most recent session for this directory
@@ -52,6 +54,7 @@ interface CliOptions {
 	model?: string;
 	system?: string;
 	print?: string;
+	tui: boolean;
 	continue: boolean;
 	contextWindow?: number;
 	sessionPath?: string;
@@ -62,7 +65,7 @@ interface CliOptions {
 }
 
 function parseArgs(argv: string[]): CliOptions {
-	const options: CliOptions = { help: false, extras: [], continue: false, noSession: false };
+	const options: CliOptions = { help: false, extras: [], continue: false, noSession: false, tui: false };
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		const next = (): string => {
@@ -113,6 +116,9 @@ function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "--no-session":
 				options.noSession = true;
+				break;
+			case "--tui":
+				options.tui = true;
 				break;
 			case "-h":
 			case "--help":
@@ -458,6 +464,25 @@ async function main(): Promise<void> {
 		await runTurn(agent, options.print, readline);
 		await extensions.notifySessionShutdown("quit", agent.extensionContext());
 		readline.close();
+		return;
+	}
+
+	if (options.tui) {
+		if (!process.stdin.isTTY || !process.stdout.isTTY) {
+			console.error("--tui requires a TTY stdin/stdout");
+			await extensions.notifySessionShutdown("quit", agent.extensionContext());
+			readline.close();
+			process.exit(1);
+		}
+		readline.close();
+		await runTui({
+			agent,
+			extensions,
+			model,
+			baseUrl,
+			cwd,
+			contextWindow,
+		});
 		return;
 	}
 
