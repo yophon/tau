@@ -1,6 +1,6 @@
 # Phase 5：会话分支（Branching）规格书
 
-> 状态：已确认（2026-07-04，用户批准）
+> 状态：✅ 已完成（2026-07-05，验收全绿）
 > 对应 roadmap 阶段：Phase 5
 
 ## 目标
@@ -63,12 +63,12 @@ async navigateTo(entryId: string, options?: { summarize?: boolean; customInstruc
 
 ## 验收清单
 
-- [ ] fork 三语义单测 + invalid_fork_target 错误
-- [ ] 公共祖先与被放弃 entries 收集正确（含嵌套分支）
-- [ ] navigateTo：摘要生成用 pi 原文 prompt；branch_summary entry 挂新位置（parentId=targetId, fromId=旧 leaf）；重建后 messages 含 branchSummary 消息
-- [ ] session_before_tree 取消阻止导航；session_tree 事件携带 summaryEntry
-- [ ] fork：新文件 header.parentSession 正确；两分支各自 --continue 演进互不污染（CLI e2e）
-- [ ] /tree 列表与跳转 e2e；纯度门禁 + DoD
+- [x] fork 三语义单测 + invalid_fork_target 错误
+- [x] 公共祖先与被放弃 entries 收集正确（含嵌套分支）
+- [x] navigateTo：摘要生成用 pi 原文 prompt；branch_summary entry 挂新位置（parentId=targetId, fromId=旧 leaf）；重建后 messages 含 branchSummary 消息
+- [x] session_before_tree 取消阻止导航；session_tree 事件携带 summaryEntry
+- [x] fork：新文件 header.parentSession 正确；两分支各自 --session 续写演进互不污染（CLI e2e）
+- [x] /tree 列表与跳转 e2e；纯度门禁 + DoD
 
 ## 风险与开放问题
 

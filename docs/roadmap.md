@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-04（新增 Phase 2 内核钩子补全——来自 [pi-parity.md](pi-parity.md) 的缺口盘点；此前用户调序：分支提前；子agent/MCP 与 TUI 提到浏览器宿主之前）
+> 最后更新：2026-07-05（Phase 5 会话分支完成归档，补齐 /tree //fork CLI e2e）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -36,15 +36,11 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：40 测试全绿（估算/切点/split-turn/迭代摘要单测；自动触发集成测试断言摘要请求用 pi 原文 system prompt、后续请求为 summary+kept；取消/接管；InMemory 持久化恢复；CLI e2e 压缩后 --continue 恢复摘要）。与规格偏差：无。备注：keepRecentTokens 的切点保护意味着"usage 虚高但消息实际很小"时压缩后消息全保留——算法正确行为，e2e 初版断言想错已修正。
 
-## Phase 5 ⬜ 会话分支（Branching）
+## Phase 5 ✅ 会话分支（Branching）（2026-07-05）
 
-**目标**：从历史任意点分叉对话（pi 的 branching），依赖 Phase 3 的会话格式与 Phase 4 的摘要机制。
+规格书：[specs/phase-5-branching.md](specs/phase-5-branching.md)。pi 两种分支能力照抄：**/tree 原地树导航**（同文件跳到任意历史点继续，被放弃分支自动生成结构化摘要挂到新位置）与 **/fork 分叉新文件**（复制出独立会话，header 记 parentSession）。内核：`branch.ts`（collectEntriesForBranchSummary 走最深公共祖先、prepareBranchEntries 的 token 预算与嵌套摘要文件清单继承、generateBranchSummary + BRANCH_SUMMARY_PROMPT/PREAMBLE 逐字照抄）；新消息角色 `branchSummary`（wire 以 user 角色发 PREAMBLE+summary）；SessionEntry 并入 `branch_summary`；SessionRepo.fork（getEntriesToFork 三语义：全量/at/before，错误码 `invalid_fork_target`）双实现（InMemory + JSONL 写 parentSession header）；`Agent.navigateTo`（运行中防护、摘要生成被 abort = 取消导航、branch_summary 挂新位置后 messagesFromPath 重建）；事件 session_before_fork/session_before_tree（可取消）/session_tree。CLI：/tree（列 user 消息节点 + ●○ 当前路径标记）、/tree \<id\>（跳转）、/fork [\<id\>]（分叉切换）。
 
-- 先读 pi：`packages/agent/src/harness/compaction/branch-summarization.ts`（分支摘要就实现在 compaction 模块里，故排在其后）、`session/repo-utils.ts` 的 `getEntriesToFork`、`packages/coding-agent/docs/sessions.md` 的 Branching 节
-- SessionStore 增加 fork 语义（entry 级 parent 指针，照抄 pi 的 entry 结构）
-- 分支事件：`session_before_fork` / `session_before_tree` / `session_tree`
-- CLI：`/branch` 命令（选历史点分叉）+ 分支摘要注入
-- **验收**：分叉→两条分支独立演进→恢复各自正确的 e2e
+**完成记录**：55 测试全绿（新增 branch.test.ts 10 用例——公共祖先收集、prepareBranchEntries 预算/文件清单继承、navigateTo 摘要/取消/接管/守卫；session.test.ts fork 三语义 + parentSession lineage；2 个 CLI e2e——/tree 列表+跳转后上下文含 branchSummary、/fork 双分支各自 --session 续写互不污染）。与规格偏差：无。范围外项（/clone、label entry、树可视化、before_tree 的 userWantsSummary/label 字段）按计划推迟 P8。备注：分支代码本已在提交 ef83282 落地，但当时漏归档（roadmap/pi-parity 未更新、规格验收清单的两条 CLI e2e 未落实）——本次补齐 e2e 并完成文档闭环。
 
 ## Phase 6 ⬜ Skills 与 Prompt Templates（pi 文件格式兼容）
 

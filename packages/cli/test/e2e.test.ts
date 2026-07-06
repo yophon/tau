@@ -272,6 +272,145 @@ test("auto-compaction triggers via --context-window and --continue restores the 
 	});
 });
 
+test("/tree lists user-message jump points and navigating rewrites the context", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([
+			() => mockTextTurn("answer-one"),
+			() => mockTextTurn("answer-two"),
+			() => mockTextTurn("BRANCH-SUMMARY-ONE"),
+			() => mockTextTurn("nav-done"),
+		]);
+		try {
+			const cli = startCli([], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitFor("tau> ");
+			cli.child.stdin?.write("first topic\n");
+			await cli.waitFor("answer-one");
+			cli.child.stdin?.write("second topic\n");
+			await cli.waitFor("answer-two");
+
+			// /tree with no argument lists the user messages as jump points.
+			const beforeList = cli.output().length;
+			cli.child.stdin?.write("/tree\n");
+			await cli.waitFor("Jump with /tree");
+			const listing = cli.output().slice(beforeList);
+			assert.ok(listing.includes("first topic"), listing);
+			assert.ok(listing.includes("second topic"), listing);
+
+			// Pull the entry id printed next to "first topic" (strip ANSI first).
+			const esc = String.fromCharCode(27);
+			const plain = listing.replace(new RegExp(`${esc}\\[[0-9;]*m`, "g"), "");
+			const match = plain.match(/([0-9a-f]{4,})\s+first topic/);
+			assert.ok(match, `no entry id found in listing:\n${plain}`);
+			const firstTopicId = match[1];
+
+			// Navigating back to the first topic abandons the second-topic branch,
+			// summarizes it, and moves the leaf there.
+			cli.child.stdin?.write(`/tree ${firstTopicId}\n`);
+			await cli.waitFor("Moved to");
+			cli.child.stdin?.write("after nav\n");
+			await cli.waitFor("nav-done");
+			cli.child.stdin?.write("exit\n");
+			await cli.waitForExit();
+
+			// The post-navigation request carries: the first topic, the branch
+			// summary of the abandoned branch, and the new prompt — but not the
+			// abandoned "second topic" message verbatim.
+			const wire = (mock.requests.at(-1) as { messages: { role: string; content: string | null }[] }).messages;
+			const flat = wire.map((m) => `${m.role}:${m.content ?? ""}`);
+			assert.ok(
+				flat.some((m) => m === "user:first topic"),
+				JSON.stringify(flat),
+			);
+			assert.ok(
+				wire.some((m) => m.role === "user" && (m.content ?? "").includes("BRANCH-SUMMARY-ONE")),
+				JSON.stringify(flat),
+			);
+			assert.ok(!flat.some((m) => m === "user:second topic"), JSON.stringify(flat));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("/fork branches into a new file and the two branches evolve independently", async () => {
+	const { readdir, readFile } = await import("node:fs/promises");
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([() => mockTextTurn("trunk-answer"), () => mockTextTurn("branch-answer")]);
+		try {
+			const cli = startCli([], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitFor("tau> ");
+			cli.child.stdin?.write("trunk msg\n");
+			await cli.waitFor("trunk-answer");
+			// A bare /fork copies the whole session into a fresh file and switches to it.
+			cli.child.stdin?.write("/fork\n");
+			await cli.waitFor("Forked to");
+			cli.child.stdin?.write("branch msg\n");
+			await cli.waitFor("branch-answer");
+			cli.child.stdin?.write("exit\n");
+			await cli.waitForExit();
+		} finally {
+			await mock.close();
+		}
+
+		// The fork produced a second session file whose header points back at the
+		// original via parentSession.
+		const sessionsRoot = join(home, ".tau", "sessions");
+		const dir = join(sessionsRoot, (await readdir(sessionsRoot))[0]);
+		const files = await readdir(dir);
+		assert.equal(files.length, 2, files.join(", "));
+		const headers = await Promise.all(
+			files.map(async (name) => {
+				const path = join(dir, name);
+				const firstLine = (await readFile(path, "utf8")).split("\n", 1)[0];
+				return { path, header: JSON.parse(firstLine) as { parentSession?: string } };
+			}),
+		);
+		const original = headers.find((h) => h.header.parentSession === undefined);
+		const fork = headers.find((h) => h.header.parentSession !== undefined);
+		assert.ok(original && fork, JSON.stringify(headers.map((h) => h.header)));
+		assert.equal(fork.header.parentSession, original.path);
+
+		// The original branch continues without the fork's messages.
+		const mockTrunk = await startMockOpenAI([() => mockTextTurn("trunk-continued")]);
+		try {
+			const cli = startCli(["-p", "trunk continue", "--session", original.path], {
+				cwd,
+				home,
+				baseUrl: mockTrunk.baseUrl,
+			});
+			await cli.waitForExit();
+			const wire = (mockTrunk.requests[0] as { messages: { role: string; content: string | null }[] }).messages;
+			const flat = wire.map((m) => `${m.role}:${m.content ?? ""}`);
+			assert.ok(
+				flat.some((m) => m === "user:trunk msg") && flat.some((m) => m === "assistant:trunk-answer"),
+				JSON.stringify(flat),
+			);
+			assert.ok(!flat.some((m) => m === "user:branch msg"), JSON.stringify(flat));
+		} finally {
+			await mockTrunk.close();
+		}
+
+		// The fork carries the trunk history plus its own divergent turn.
+		const mockFork = await startMockOpenAI([() => mockTextTurn("fork-continued")]);
+		try {
+			const cli = startCli(["-p", "branch continue", "--session", fork.path], { cwd, home, baseUrl: mockFork.baseUrl });
+			await cli.waitForExit();
+			const wire = (mockFork.requests[0] as { messages: { role: string; content: string | null }[] }).messages;
+			const flat = wire.map((m) => `${m.role}:${m.content ?? ""}`);
+			assert.ok(
+				flat.some((m) => m === "user:trunk msg") && flat.some((m) => m === "user:branch msg"),
+				JSON.stringify(flat),
+			);
+			assert.ok(
+				flat.some((m) => m === "assistant:branch-answer"),
+				JSON.stringify(flat),
+			);
+		} finally {
+			await mockFork.close();
+		}
+	});
+});
+
 test("SIGINT aborts the running turn and the REPL keeps working", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([
