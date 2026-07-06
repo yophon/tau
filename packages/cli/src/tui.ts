@@ -18,6 +18,7 @@ import {
 	type JsonlSessionRepo,
 	messageText,
 	restoreSession,
+	type SessionMetadata,
 	SessionRecorder,
 	type SessionStore,
 	type UiCapability,
@@ -111,6 +112,18 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	const setStatus = (text: string): void => {
 		status.setText(text);
 		tui.requestRender();
+	};
+
+	const switchSession = async (
+		newStore: SessionStore,
+	): Promise<{ metadata: SessionMetadata; messageCount: number }> => {
+		const restored = await restoreSession(newStore);
+		store = newStore;
+		recorder = await SessionRecorder.open(newStore);
+		agent = options.buildAgent(restored.messages, recorder);
+		agent.setUi(uiCapability);
+		await options.extensions.notifySessionStart("resume", agent.extensionContext());
+		return { metadata: await newStore.getMetadata(), messageCount: restored.messages.length };
 	};
 
 	const stop = async (): Promise<void> => {
@@ -234,10 +247,43 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				appendText(dim("No sessions found."));
 			} else {
 				appendText(
-					sessions
-						.map((session) => `${session.timestamp}  ${session.name ?? "(unnamed)"}  ${dim(session.filePath ?? "")}`)
-						.join("\n"),
+					[
+						...sessions.map(
+							(session) =>
+								`${session.timestamp}  ${session.id}  ${session.name ?? "(unnamed)"}  ${dim(session.filePath ?? "")}`,
+						),
+						dim("Resume with /resume <id|path|timestamp|name>."),
+					].join("\n"),
 				);
+			}
+			return true;
+		}
+		if (name === "resume") {
+			if (args === "") {
+				appendText(red("Usage: /resume <id|path|timestamp|name>"));
+				return true;
+			}
+			try {
+				const sessions = await options.sessionRepo.list();
+				const selected = findSession(sessions, args);
+				if (!selected) {
+					appendText(red(`No session matches "${args}".`));
+					return true;
+				}
+				if (selected === "ambiguous") {
+					appendText(red(`Multiple sessions match "${args}". Use a full id or path.`));
+					return true;
+				}
+				const result = await switchSession(await options.sessionRepo.open(selected));
+				appendText(
+					dim(
+						`Resumed ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages${
+							result.metadata.name ? `, "${result.metadata.name}"` : ""
+						}).`,
+					),
+				);
+			} catch (error) {
+				appendText(red(`/resume failed: ${error instanceof Error ? error.message : String(error)}`));
 			}
 			return true;
 		}
@@ -289,14 +335,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				}
 				const source = await store.getMetadata();
 				const newStore = await options.sessionRepo.fork(source, args === "" ? undefined : { entryId: args });
-				const restored = await restoreSession(newStore);
-				store = newStore;
-				recorder = await SessionRecorder.open(newStore);
-				agent = options.buildAgent(restored.messages, recorder);
-				agent.setUi(uiCapability);
-				await options.extensions.notifySessionStart("resume", agent.extensionContext());
-				const meta = await newStore.getMetadata();
-				appendText(dim(`Forked to ${meta.filePath ?? meta.id} (${restored.messages.length} messages).`));
+				const result = await switchSession(newStore);
+				appendText(
+					dim(`Forked to ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages).`),
+				);
 			} catch (error) {
 				appendText(red(`/fork failed: ${error instanceof Error ? error.message : String(error)}`));
 			}
@@ -359,6 +401,26 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 function firstLine(text: string, max = 120): string {
 	const line = text.split("\n")[0] ?? "";
 	return line.length > max ? `${line.slice(0, max)}...` : line;
+}
+
+function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
+	const exact = sessions.filter((session) => sessionMatches(session, selector, false));
+	if (exact.length === 1) return exact[0];
+	if (exact.length > 1) return "ambiguous";
+
+	const prefix = sessions.filter((session) => sessionMatches(session, selector, true));
+	if (prefix.length === 1) return prefix[0];
+	if (prefix.length > 1) return "ambiguous";
+	return undefined;
+}
+
+function sessionMatches(session: SessionMetadata, selector: string, prefix: boolean): boolean {
+	const filePath = session.filePath;
+	const fileName = filePath?.split(/[\\/]/).at(-1);
+	const values = [session.id, session.timestamp, session.name, filePath, fileName].filter(
+		(value): value is string => value !== undefined && value !== "",
+	);
+	return values.some((value) => (prefix ? value.startsWith(selector) : value === selector));
 }
 
 interface RenderState {
