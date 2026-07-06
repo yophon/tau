@@ -397,6 +397,23 @@ export interface RegisteredMessageRenderer {
 	) => Promise<RegisteredMessageRenderResult> | RegisteredMessageRenderResult;
 }
 
+export type RegisteredEntryRenderResult =
+	| string
+	| { label: string; description?: string }
+	| ExtensionRenderComponent
+	| undefined;
+
+export interface RegisteredEntryRenderer {
+	name: string;
+	description?: string;
+	entryTypes?: SessionEntry["type"][];
+	customTypes?: string[];
+	handler: (
+		entry: SessionEntry,
+		ctx: ExtensionContext,
+	) => Promise<RegisteredEntryRenderResult> | RegisteredEntryRenderResult;
+}
+
 /** CLI flag declared by an extension; values are supplied by the host via setFlagValues. */
 export interface RegisteredFlag {
 	name: string;
@@ -463,6 +480,9 @@ export interface ExtensionAPI {
 	/** Register a custom TUI message renderer. Hosts that do not support renderers may ignore it. */
 	registerMessageRenderer(name: string, options: Omit<RegisteredMessageRenderer, "name">): void;
 
+	/** Register a custom TUI session-entry renderer. Hosts that do not support renderers may ignore it. */
+	registerEntryRenderer(name: string, options: Omit<RegisteredEntryRenderer, "name">): void;
+
 	/** Declare a CLI flag. The host parses argv and supplies values via ExtensionRegistry.setFlagValues. */
 	registerFlag(name: string, options: Omit<RegisteredFlag, "name">): void;
 
@@ -526,6 +546,7 @@ export class ExtensionRegistry {
 	readonly commands = new Map<string, RegisteredCommand>();
 	readonly shortcuts = new Map<string, RegisteredShortcut>();
 	readonly messageRenderers = new Map<string, RegisteredMessageRenderer>();
+	readonly entryRenderers = new Map<string, RegisteredEntryRenderer>();
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
@@ -584,6 +605,9 @@ export class ExtensionRegistry {
 			},
 			registerMessageRenderer: (name, options) => {
 				this.messageRenderers.set(name, { name, ...options });
+			},
+			registerEntryRenderer: (name, options) => {
+				this.entryRenderers.set(name, { name, ...options });
 			},
 			registerFlag: (name, options) => {
 				this.flags.set(name, { name, ...options });

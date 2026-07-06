@@ -133,7 +133,7 @@ class TuiUiCapability implements UiCapability {
 | 模型/思考 | Done | `thinking_level_select` 事件 | thinking level 切换前后通知扩展 |
 | 扩展 API | Done | `registerShortcut` | 扩展可注册快捷键；TUI 空闲且无 UI prompt 时触发；`/help` 显示快捷键 |
 | 扩展 API | Done | `registerMessageRenderer` | 扩展可按 role/customType 渲染 user/assistant/custom message，未命中走 fallback |
-| 扩展 API | Next | `registerEntryRenderer` | 扩展可渲染自定义 session entry |
+| 扩展 API | Done | `registerEntryRenderer` | 扩展可按 entry type/customType 渲染 `/tree`/`/fork` selector 中的 session entry |
 | 扩展 API | Next | 自定义 tool renderer | tool call/result 支持组件 renderer，fallback 仍可用 |
 | 扩展 API | Later | extension widgets | editor 上方/下方可挂临时组件 |
 | 扩展 API | Later | custom header/footer | 扩展可追加 header/footer 状态区 |
@@ -161,10 +161,10 @@ class TuiUiCapability implements UiCapability {
 
 ### P8C-2：Entry Renderer API
 
-- [ ] 设计 `registerEntryRenderer` kernel API：面向 `SessionEntry`，支持 custom entry 与内置 entry 的可选覆盖。
-- [ ] `/tree`、`/sessions` 或未来 session entry 展示路径接入 entry renderer；未命中时保留当前文本 fallback。
-- [ ] 明确 renderer 不改变 session 数据，只负责展示；错误时降级为 fallback。
-- [ ] 单测覆盖 registry 注册；tmux 冒烟覆盖扩展渲染一个 custom session entry。
+- [x] 设计 `registerEntryRenderer` kernel API：面向 `SessionEntry`，支持 custom entry 与内置 entry 的可选覆盖。
+- [x] `/tree`、`/fork` session entry 展示路径接入 entry renderer；未命中时保留当前文本 fallback。
+- [x] 明确 renderer 不改变 session 数据，只负责展示；错误时降级为 fallback。
+- [x] 单测覆盖 registry 注册；tmux 冒烟覆盖扩展渲染一个 custom session entry。
 
 ### P8C-3：Tool Renderer API
 
@@ -241,7 +241,7 @@ class TuiUiCapability implements UiCapability {
 
 - [x] `registerShortcut`：扩展注册快捷键，TUI 空闲且无 UI prompt 时触发；`/help` 显示扩展快捷键。
 - [x] `registerMessageRenderer`：扩展自定义消息渲染组件。
-- [ ] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
+- [x] `registerEntryRenderer`：扩展自定义 session entry 渲染组件。
 - [ ] 自定义 tool renderer：tool call/result 支持扩展提供组件；无 renderer 时走文本 fallback。
 - [ ] TUI extension widgets：支持扩展在 editor 上方/下方显示临时组件。
 - [ ] TUI custom header/footer：允许扩展覆盖或追加 header/footer 状态。
@@ -283,6 +283,7 @@ P8A/P8B/P8C/P8D 验证记录：
 - TUI bash stdout/stderr 增量 renderer 已实现；tmux 冒烟确认 model 调用长 bash 命令时，命令执行中 stdout 已可见，完成后 stdout/stderr 分区仍保留。
 - TUI `registerShortcut` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展注册 `ctrl+g` 后 TUI 显示 `shortcut-ok`。
 - TUI `registerMessageRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认 assistant renderer 可覆盖流式回复为 `rendered:tui-renderer-ok`，custom renderer 可把 `/emit` 注入的 custom message 显示为 `rendered:custom:smoke`，user renderer 可把运行中 steering message 显示为 `rendered:user`。
+- TUI `registerEntryRenderer` 已实现；`npm run check` 全绿、`npm test` 72 测试全绿，tmux 冒烟确认全局扩展 `/mark` 写入 custom entry 后，`/tree` selector 显示 `rendered-entry:mark`，选择该信息项不会误触导航。
 
 ## 风险与开放问题
 

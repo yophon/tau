@@ -257,6 +257,12 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			description: "Ping renderer",
 			handler: (message) => `rendered:${message.role}`,
 		});
+		api.registerEntryRenderer("ping-entry-renderer", {
+			entryTypes: ["custom"],
+			customTypes: ["state"],
+			description: "Ping entry renderer",
+			handler: (entry) => `entry:${entry.type}`,
+		});
 	};
 	const second: Extension = (api) => {
 		api.on("input", (event) => ({ action: "transform", text: `${event.text}-b` }));
@@ -284,6 +290,23 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			{ messages: [] },
 		),
 		"rendered:assistant",
+	);
+	const entryRenderer = registry.entryRenderers.get("ping-entry-renderer");
+	assert.deepEqual(entryRenderer?.entryTypes, ["custom"]);
+	assert.deepEqual(entryRenderer?.customTypes, ["state"]);
+	assert.equal(
+		await entryRenderer?.handler(
+			{
+				type: "custom",
+				id: "abc12345",
+				parentId: null,
+				timestamp: "2026-07-06T00:00:00.000Z",
+				customType: "state",
+				data: { ok: true },
+			},
+			{ messages: [] },
+		),
+		"entry:custom",
 	);
 });
 

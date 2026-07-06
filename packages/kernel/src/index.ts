@@ -79,6 +79,8 @@ export {
 	type ProjectTrustEventResult,
 	type RegisteredCommand,
 	type RegisteredCommandResult,
+	type RegisteredEntryRenderer,
+	type RegisteredEntryRenderResult,
 	type RegisteredFlag,
 	type RegisteredMessageRenderer,
 	type RegisteredMessageRenderResult,

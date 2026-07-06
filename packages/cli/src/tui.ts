@@ -24,9 +24,12 @@ import {
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
 	messageText,
+	type RegisteredEntryRenderer,
+	type RegisteredEntryRenderResult,
 	type RegisteredMessageRenderer,
 	type RegisteredMessageRenderResult,
 	restoreSession,
+	type SessionEntry,
 	type SessionMetadata,
 	SessionRecorder,
 	type SessionStore,
@@ -61,6 +64,7 @@ const builtInCommands: SlashCommand[] = [
 ];
 
 const fullForkValue = "__tau_full_session__";
+const entryInfoPrefix = "__tau_entry_info__:";
 
 const selectListTheme: SelectListTheme = {
 	selectedPrefix: cyan,
@@ -326,6 +330,26 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 	};
 
+	const renderEntryWithExtensions = async (
+		entry: SessionEntry,
+		fallback?: EntrySelectPresentation,
+	): Promise<EntrySelectPresentation | undefined> => {
+		for (const renderer of options.extensions.entryRenderers.values()) {
+			if (!entryRendererMatches(renderer, entry)) continue;
+			try {
+				const result = await renderer.handler(entry, agent.extensionContext());
+				const presentation = entryRenderResultToPresentation(result, fallback);
+				if (presentation) return presentation;
+			} catch (error) {
+				appendText(
+					red(`Entry renderer ${renderer.name} failed: ${error instanceof Error ? error.message : String(error)}`),
+				);
+				return fallback;
+			}
+		}
+		return fallback;
+	};
+
 	tui.addInputListener((data) => {
 		if (matchesKey(data, Key.escape) && runningTask === "compaction" && controller) {
 			controller.abort();
@@ -573,21 +597,29 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				const onPath = new Set(path.map((entry) => entry.id));
 				const items: SelectItem[] = [];
 				for (const entry of entries) {
-					if (entry.type !== "message" || entry.message.role !== "user") continue;
-					const marker = onPath.has(entry.id) ? "●" : "○";
-					items.push({
-						value: entry.id,
-						label: `${marker} ${entry.id}`,
-						description: firstLine(messageText(entry.message), 80),
-					});
+					if (entry.type === "message" && entry.message.role === "user") {
+						const marker = onPath.has(entry.id) ? "●" : "○";
+						const presentation = await renderEntryWithExtensions(entry, {
+							label: `${marker} ${entry.id}`,
+							description: firstLine(messageText(entry.message), 80),
+						});
+						if (presentation) items.push({ value: entry.id, ...presentation });
+						continue;
+					}
+					const presentation = await renderEntryWithExtensions(entry);
+					if (presentation) items.push({ value: entryInfoValue(entry.id), ...presentation });
 				}
 				if (items.length === 0) {
-					appendText(dim("No user messages in this session yet."));
+					appendText(dim("No user messages or rendered entries in this session yet."));
 					return true;
 				}
 				const selected = await selectItem("Jump to a user message", items);
 				if (!selected) {
 					appendText(dim("Navigation cancelled."));
+					return true;
+				}
+				if (isEntryInfoValue(selected.value)) {
+					appendText(dim("Rendered entry is not a jump target."));
 					return true;
 				}
 				try {
@@ -631,16 +663,24 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 						},
 					];
 					for (const entry of entries) {
-						if (entry.type !== "message" || entry.message.role !== "user") continue;
-						items.push({
-							value: entry.id,
-							label: `○ ${entry.id}`,
-							description: firstLine(messageText(entry.message), 80),
-						});
+						if (entry.type === "message" && entry.message.role === "user") {
+							const presentation = await renderEntryWithExtensions(entry, {
+								label: `○ ${entry.id}`,
+								description: firstLine(messageText(entry.message), 80),
+							});
+							if (presentation) items.push({ value: entry.id, ...presentation });
+							continue;
+						}
+						const presentation = await renderEntryWithExtensions(entry);
+						if (presentation) items.push({ value: entryInfoValue(entry.id), ...presentation });
 					}
 					const selected = await selectItem("Fork from", items);
 					if (!selected) {
 						appendText(dim("Fork cancelled."));
+						return true;
+					}
+					if (isEntryInfoValue(selected.value)) {
+						appendText(dim("Rendered entry is not a fork target."));
 						return true;
 					}
 					targetEntryId = selected.value === fullForkValue ? "" : selected.value;
@@ -1073,6 +1113,11 @@ interface RenderState {
 	renderMessage(message: AgentMessage, target?: Markdown): Promise<boolean>;
 }
 
+interface EntrySelectPresentation {
+	label: string;
+	description?: string;
+}
+
 interface LiveStreamOutput {
 	stdout: string;
 	stderr: string;
@@ -1097,6 +1142,14 @@ function formatLiveStreamOutput(output: LiveStreamOutput): string {
 	return sections.join("\n");
 }
 
+function entryInfoValue(id: string): string {
+	return `${entryInfoPrefix}${id}`;
+}
+
+function isEntryInfoValue(value: string): boolean {
+	return value.startsWith(entryInfoPrefix);
+}
+
 function messageRendererMatches(renderer: RegisteredMessageRenderer, message: AgentMessage): boolean {
 	if (renderer.roles && !renderer.roles.includes(message.role)) return false;
 	if (renderer.customTypes) {
@@ -1104,6 +1157,38 @@ function messageRendererMatches(renderer: RegisteredMessageRenderer, message: Ag
 		if (!renderer.customTypes.includes(message.customType)) return false;
 	}
 	return true;
+}
+
+function entryRendererMatches(renderer: RegisteredEntryRenderer, entry: SessionEntry): boolean {
+	if (renderer.entryTypes && !renderer.entryTypes.includes(entry.type)) return false;
+	const customType = entryCustomType(entry);
+	if (renderer.customTypes) {
+		if (!customType) return false;
+		if (!renderer.customTypes.includes(customType)) return false;
+	}
+	return true;
+}
+
+function entryCustomType(entry: SessionEntry): string | undefined {
+	if (entry.type === "custom" || entry.type === "custom_message") return entry.customType;
+	return undefined;
+}
+
+function entryRenderResultToPresentation(
+	result: RegisteredEntryRenderResult,
+	fallback?: EntrySelectPresentation,
+): EntrySelectPresentation | undefined {
+	if (result === undefined) return undefined;
+	if (typeof result === "string") return { label: result, description: fallback?.description };
+	if (isComponent(result)) {
+		const [label, ...descriptionLines] = result.render(80);
+		if (!label) return fallback;
+		return {
+			label,
+			description: descriptionLines.length > 0 ? descriptionLines.join(" ") : fallback?.description,
+		};
+	}
+	return result;
 }
 
 function messageRenderResultToComponent(
