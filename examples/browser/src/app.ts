@@ -58,8 +58,19 @@ async function runPrompt(input: string): Promise<void> {
 	const baseUrl = requireElement(baseUrlInput, "#base-url").value.trim();
 	const apiKey = requireElement(apiKeyInput, "#api-key").value.trim();
 	const model = requireElement(modelInput, "#model").value.trim();
+	const shouldProxy =
+		typeof window !== "undefined" &&
+		!baseUrl.startsWith("/") &&
+		!baseUrl.startsWith(window.location.origin) &&
+		!baseUrl.startsWith("http://127.0.0.1") &&
+		!baseUrl.startsWith("http://localhost");
 	const agent = new Agent({
-		config: { baseUrl, apiKey: apiKey === "" ? undefined : apiKey, model },
+		config: {
+			baseUrl: shouldProxy ? `${window.location.origin}/proxy` : baseUrl,
+			apiKey: apiKey === "" ? undefined : apiKey,
+			model,
+			headers: shouldProxy ? { "x-tau-target-base-url": baseUrl } : undefined,
+		},
 		platform,
 		systemPrompt: [
 			"You are tau running in a browser demo.",
