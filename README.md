@@ -56,6 +56,7 @@ npm run tau                       # interactive REPL
 npm run tau -- --tui              # experimental TUI mode
 npm run tau -- -p "list the files here and summarize"
 npm run smoke:browser             # bundle the browser host demo
+npm run demo:browser              # serve the browser demo locally (CORS proxy included)
 ```
 
 ## Embedding the kernel
