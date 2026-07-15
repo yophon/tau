@@ -3,7 +3,9 @@
 	"private": true,
 	"type": "module",
 	"version": "0.0.1",
-	"workspaces": ["packages/*"],
+	"workspaces": [
+		"packages/*"
+	],
 	"scripts": {
 		"check": "biome check --write --error-on-warnings . && npm run check:types && npm run check:purity",
 		"check:types": "tsc -p packages/kernel/tsconfig.json && tsc -p packages/kernel/tsconfig.test.json && tsc -p packages/host-node/tsconfig.json && tsc -p packages/host-browser/tsconfig.json && tsc -p packages/cli/tsconfig.json && tsc -p packages/ext-subagents/tsconfig.json && tsc -p packages/ext-mcp/tsconfig.json && tsc -p packages/ext-resources/tsconfig.json && tsc -p examples/tsconfig.json",
@@ -11,6 +13,7 @@
 		"demo:browser": "node scripts/serve-browser-demo.mjs",
 		"smoke:browser": "node scripts/smoke-browser-demo.mjs",
 		"smoke:browser:runtime": "node scripts/smoke-browser-runtime.mjs",
+		"smoke:quickjs": "node scripts/smoke-quickjs.mjs",
 		"smoke:tui": "node scripts/smoke-tui.mjs",
 		"test": "node --test packages/kernel/test/*.test.ts packages/host-node/test/*.test.ts packages/host-browser/test/*.test.ts packages/cli/test/*.test.ts packages/ext-subagents/test/*.test.ts packages/ext-mcp/test/*.test.ts packages/ext-resources/test/*.test.ts",
 		"tau": "node --disable-warning=ExperimentalWarning packages/cli/src/main.ts"
@@ -19,6 +22,7 @@
 		"@biomejs/biome": "2.3.5",
 		"@types/node": "22.19.19",
 		"esbuild": "0.28.1",
+		"quickjs-emscripten": "0.32.0",
 		"typescript": "5.9.3"
 	},
 	"engines": {

@@ -91,14 +91,18 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **后补（2026-07-08，cf695ec）**：`scripts/serve-browser-demo.mjs`（`npm run demo:browser`）——本地静态服务器 + `/proxy` CORS 转发（`x-tau-target-base-url` 头指定目标，流式透传），demo 对非 localhost 端点自动改走 proxy。注意：这是**浏览器 CORS 便利层**，key 仍由浏览器侧 BYOK 持有；密钥托管型 proxy 依旧推迟（P10 的中转服务器可在此基础上扩展）。
 
-## Phase 10 ⬜ 小程序/RN 平台适配（可移植性证明 #2）
+## Phase 10 🚧 平台适配：裸引擎门禁 + 小程序/RN（可移植性证明 #2/#3）
 
-**目标**：证明 D4 的注入缝隙在非 WinterTC 环境成立。
+**目标**：证明 D4 的注入缝隙在非 WinterTC 环境成立，并把证明变成机械门禁。
 
-- `Platform` 适配器：`wx.request`（enableChunked 流式）→ `PlatformFetch`；TextDecoder polyfill → `createUtf8Decoder`
-- 静态扩展注册表实测（无动态加载路径）
+规格书：[specs/phase-10-platform-adapters.md](specs/phase-10-platform-adapters.md)（草拟，待用户确认后实施适配器部分）。
+
+- ✅ **`npm run smoke:quickjs` 已先行落地（2026-07-14）**：内核 bundle 在 quickjs-emscripten（无 fetch/TextDecoder/crypto/timers 的裸引擎，即 flutter_js 的运行模型）内完成两轮 agent 循环——工具调用、结果回传、流式中文跨 chunk 增量解码，Platform 全部手工注入（手写 UTF-8、LCG randomBytes、脚本化 SSE）。fixture：`test-fixtures/quickjs/vm-entry.ts`。这同时给出 Flutter（flutter_js/QuickJS 嵌入）路径的引擎层可行性证明；Flutter 完整宿主挂 Backlog。
+- ⬜ `@tau/host-weapp`：`wx.request`（enableChunked）→ `PlatformFetch`（推转拉队列）；`RequestTask.abort()` 桥 `TauAbortSignal`（还债 #7）；手写 UTF-8 decoder（iOS JSC 无 TextDecoder）
+- ⬜ 静态扩展注册表实测（无动态加载路径）
+- ⬜ RN：expo/fetch 适配（交付形态见规格书开放问题 #2）
 - 注意：小程序 request 域名白名单 → 实际部署需中转服务器（可基于 `scripts/serve-browser-demo.mjs` 的 `/proxy` 转发扩展）
-- **验收**：小程序模拟器（或 RN）中流式对话跑通
+- **验收**：小程序模拟器与 RN（Expo）中流式对话跑通；smoke:quickjs 常绿
 
 ## Phase 11 ⬜ 发布工程
 
