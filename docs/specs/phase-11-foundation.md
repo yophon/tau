@@ -100,6 +100,18 @@ ubuntu-latest + Node 22 + `npm ci --ignore-scripts`，jobs：
 - [ ] 技术债 #8（smoke:tui 无 CI）删行
 - [ ] DoD 通用项（见 development.md）
 
+## 实施记录
+
+**Block 1 CI(2026-07-14,commit 7fba395)**:workflow 上线,首跑即揪出重大问题(见下)。
+
+**Block 2 错误规范化(2026-07-15,commits dd1be2d + e2e 竞态修复)**:全部落地,94 测试全绿,CI 全绿。要点:
+- 流失败 → pi 语义的 stopReason error/aborted 消息(含部分内容与 errorMessage),入对话与会话;`agent_end` 事件序在错误路径上完整;宿主(REPL/TUI)渲染两种新终态;既有 HTTP 错误测试随语义迁移
+- `network_error` 新码;fetch/reader 两条裸异常已包装;SSE 行 buffer 4MB 上限(消费完整行后测残余);轮间 abort 检查
+- **审计结论修正**:`no_host`/`compaction_failed` 并非死码(extensions.ts:730 / compaction.ts:499 在用),不清理
+- **测试边界如实声明**:新增错误路径测试锁定的是"内核对注入失败的处理逻辑"(回归锁),故障形状(reject/throw/abort 时序)是测试假设的;真实网络的"干挂不响应"内核尚无超时防护——**timeout 缺口列入 Block 3 重试实施时一并评估**(pi 的可重试分类含 timeout 文本,但 pi 依赖宿主/SDK 层超时,tau 需经 Platform 缝隙)
+
+**CI 首跑 2 小时静默 hang 事故(2026-07-15,已根治)**:三个叠加原因——① e2e 在"答案文本出现"后立即写入下一命令,但轮尚未结束,命令被 REPL 当作 steering 消息(P2 特性),竞态在慢 runner 上翻车:raced `exit` 变用户消息 → mock 重复应答 → CLI 永不退出;② `waitForExit` 无超时 → 无限等待;③ 任何 e2e 失败后 CLI 子进程无人清理,存活管道钉住 test runner 事件循环 → 整套件 hang(本地曾复现同机制,一度误归因于新增测试)。修复:`waitForIdle()`(轮询空闲提示符)前置于所有依赖空闲态的写入;`waitForExit` 默认 20s 超时并附 CLI 输出作诊断;`after()` 钩子强杀遗留子进程。教训:**e2e 对"输出出现"的等待不等于"状态就绪";所有无界等待都是 CI 定时炸弹**。
+
 ## 风险与开放问题
 
 1. **重试与 steering 的交互**：退避期间用户 steer/追问怎么办？pi 行为未深究——倾向照抄"退避可被 abort 中断"且 steering 消息照常入队、重试的是同一请求。实现时读 pi `agent-session.ts` 确认后在此记录。
