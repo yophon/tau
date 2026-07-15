@@ -23,6 +23,8 @@ interface CliProcess {
 	child: ChildProcess;
 	output(): string;
 	waitFor(needle: string, timeoutMs?: number): Promise<void>;
+	/** Wait until the REPL is idle (output ends with the prompt) — a line written mid-turn becomes steering, not a command. */
+	waitForIdle(timeoutMs?: number): Promise<void>;
 	waitForExit(timeoutMs?: number): Promise<number | null>;
 }
 
@@ -61,6 +63,22 @@ function startCli(args: string[], options: { cwd: string; home: string; baseUrl:
 					}
 					if (Date.now() - started > timeoutMs) {
 						reject(new Error(`Timed out waiting for ${JSON.stringify(needle)} in output:\n${output}`));
+						return;
+					}
+					setTimeout(poll, 25);
+				};
+				poll();
+			}),
+		waitForIdle: (timeoutMs = 10_000) =>
+			new Promise((resolve, reject) => {
+				const started = Date.now();
+				const poll = (): void => {
+					if (output.endsWith("tau> ")) {
+						resolve();
+						return;
+					}
+					if (Date.now() - started > timeoutMs) {
+						reject(new Error(`Timed out waiting for the idle prompt. Output so far:\n${output}`));
 						return;
 					}
 					setTimeout(poll, 25);
@@ -249,6 +267,7 @@ test("resources extension injects skills and runs prompt templates", async () =>
 			await cli.waitFor("tau> ");
 			cli.child.stdin?.write("/greet world\n");
 			await cli.waitFor("template ran");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("exit\n");
 			await cli.waitForExit();
 		} finally {
@@ -279,6 +298,7 @@ test("lines typed during a running turn become steering messages", async () => {
 			await cli.waitFor("⚙ bash");
 			cli.child.stdin?.write("steer me please\n");
 			await cli.waitFor("steer-done");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("exit\n");
 			await cli.waitForExit();
 
@@ -407,8 +427,10 @@ test("/tree lists user-message jump points and navigating rewrites the context",
 			await cli.waitFor("tau> ");
 			cli.child.stdin?.write("first topic\n");
 			await cli.waitFor("answer-one");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("second topic\n");
 			await cli.waitFor("answer-two");
+			await cli.waitForIdle();
 
 			// /tree with no argument lists the user messages as jump points.
 			const beforeList = cli.output().length;
@@ -429,8 +451,10 @@ test("/tree lists user-message jump points and navigating rewrites the context",
 			// summarizes it, and moves the leaf there.
 			cli.child.stdin?.write(`/tree ${firstTopicId}\n`);
 			await cli.waitFor("Moved to");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("after nav\n");
 			await cli.waitFor("nav-done");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("exit\n");
 			await cli.waitForExit();
 
@@ -463,11 +487,14 @@ test("/fork branches into a new file and the two branches evolve independently",
 			await cli.waitFor("tau> ");
 			cli.child.stdin?.write("trunk msg\n");
 			await cli.waitFor("trunk-answer");
+			await cli.waitForIdle();
 			// A bare /fork copies the whole session into a fresh file and switches to it.
 			cli.child.stdin?.write("/fork\n");
 			await cli.waitFor("Forked to");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("branch msg\n");
 			await cli.waitFor("branch-answer");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("exit\n");
 			await cli.waitForExit();
 		} finally {
@@ -549,6 +576,7 @@ test("SIGINT aborts the running turn and the REPL keeps working", async () => {
 			cli.child.kill("SIGINT");
 			// P11 语义(照抄 pi):abort 不再抛错,而是 aborted 消息 → CLI 打印 Turn aborted.
 			await cli.waitFor("Turn aborted.");
+			await cli.waitForIdle();
 			cli.child.stdin?.write("exit\n");
 			const code = await cli.waitForExit();
 			assert.equal(code, 0);
