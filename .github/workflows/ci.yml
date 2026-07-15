@@ -1,0 +1,38 @@
+# 质量门禁(P11):骨架照抄 pi 的 ci.yml(单 ubuntu + Node 22),tau 无 build 步,追加 smoke 矩阵。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run check
+      # biome --write 会静默修复;若它改动了任何文件,说明提交时没跑 check —— 视为门禁失败
+      - run: git diff --exit-code
+      - run: npm test
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: npm ci --ignore-scripts
+      - run: npm run smoke:browser
+      - run: npm run smoke:quickjs
+      - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:browser:runtime
+      - run: npm run smoke:tui
