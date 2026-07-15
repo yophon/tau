@@ -125,14 +125,15 @@ test("http errors carry status and body", async () => {
 		config: { baseUrl: "https://fake.test/v1", model: "fake-model" },
 		platform: fakePlatform([errorResponse]),
 	});
-	await assert.rejects(
-		async () => {
-			for await (const _event of agent.prompt("hi")) {
-				// drain
-			}
-		},
-		(error: Error) => error.name === "HttpError" && error.message.includes("401"),
-	);
+	// P11 语义(照抄 pi):HTTP 错误不再抛出,而是变成 stopReason error 的 assistant 消息。
+	const events: string[] = [];
+	for await (const event of agent.prompt("hi")) events.push(event.type);
+	assert.equal(events.at(-1), "agent_end");
+	const last = agent.messages.at(-1) as AssistantMessage;
+	assert.equal(last.role, "assistant");
+	assert.equal(last.stopReason, "error");
+	assert.ok(last.errorMessage?.includes("HTTP 401"), last.errorMessage);
+	assert.ok(last.errorMessage?.includes("bad key"), last.errorMessage);
 });
 
 test("steering messages are consumed after the turn's tools, follow-ups when the prompt would end", async () => {

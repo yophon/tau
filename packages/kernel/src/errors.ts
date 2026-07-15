@@ -1,6 +1,7 @@
 export type TauErrorCode =
 	| "platform_missing"
 	| "http_error"
+	| "network_error"
 	| "stream_error"
 	| "aborted"
 	| "max_turns"

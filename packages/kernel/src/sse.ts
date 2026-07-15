@@ -1,7 +1,12 @@
+import { TauError } from "./errors.ts";
+
 export interface SseEvent {
 	event?: string;
 	data: string;
 }
+
+/** Cap on a single buffered (unterminated) SSE line; beyond this the stream is considered broken. */
+const DEFAULT_MAX_BUFFER_LENGTH = 4 * 1024 * 1024;
 
 /**
  * Incremental server-sent-events parser. Feed it decoded text chunks in any
@@ -12,6 +17,11 @@ export class SseParser {
 	private buffer = "";
 	private dataLines: string[] = [];
 	private eventName: string | undefined;
+	private readonly maxBufferLength: number;
+
+	constructor(options?: { maxBufferLength?: number }) {
+		this.maxBufferLength = options?.maxBufferLength ?? DEFAULT_MAX_BUFFER_LENGTH;
+	}
 
 	push(text: string): SseEvent[] {
 		this.buffer += text;
@@ -24,6 +34,10 @@ export class SseParser {
 			const event = this.handleLine(line);
 			if (event) events.push(event);
 			newlineIndex = this.buffer.indexOf("\n");
+		}
+		if (this.buffer.length > this.maxBufferLength) {
+			// A never-terminated line would otherwise grow the buffer without bound.
+			throw new TauError("stream_error", `SSE line exceeded ${this.maxBufferLength} bytes without a newline`);
 		}
 		return events;
 	}

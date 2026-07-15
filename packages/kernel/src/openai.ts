@@ -1,4 +1,4 @@
-import { HttpError, TauError } from "./errors.ts";
+import { HttpError, TauError, toError } from "./errors.ts";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -9,7 +9,7 @@ import {
 	type ToolCall,
 	type Usage,
 } from "./messages.ts";
-import type { Platform, TauAbortSignal } from "./platform.ts";
+import type { Platform, PlatformResponse, TauAbortSignal } from "./platform.ts";
 import { SseParser } from "./sse.ts";
 
 // Wire framing for summary messages, verbatim from pi's convertToLlm
@@ -201,12 +201,19 @@ export async function* streamChatCompletion(
 	if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
 	Object.assign(headers, config.headers);
 
-	const response = await platform.fetch(url, {
-		method: "POST",
-		headers,
-		body: JSON.stringify(body),
-		signal: options?.signal,
-	});
+	let response: PlatformResponse;
+	try {
+		response = await platform.fetch(url, {
+			method: "POST",
+			headers,
+			body: JSON.stringify(body),
+			signal: options?.signal,
+		});
+	} catch (cause) {
+		// An aborted fetch surfaces as the platform's own abort rejection; report it as ours.
+		throwIfAborted(options?.signal);
+		throw new TauError("network_error", `Network request failed: ${toError(cause).message}`, cause);
+	}
 	if (!response.ok) {
 		throw new HttpError(response.status, await response.text());
 	}
@@ -283,7 +290,15 @@ export async function* streamChatCompletion(
 	try {
 		while (!done) {
 			throwIfAborted(options?.signal);
-			const { done: readerDone, value } = await reader.read();
+			let readResult: { done: boolean; value?: Uint8Array };
+			try {
+				readResult = await reader.read();
+			} catch (cause) {
+				// Reads interrupted by abort reject with the platform's own error; report it as ours.
+				throwIfAborted(options?.signal);
+				throw new TauError("stream_error", `Stream read failed: ${toError(cause).message}`, cause);
+			}
+			const { done: readerDone, value } = readResult;
 			if (readerDone) break;
 			if (!value) continue;
 			for (const event of parser.push(decoder.decode(value))) {

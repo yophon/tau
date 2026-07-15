@@ -9,7 +9,7 @@ import {
 	runCompaction,
 	shouldCompact,
 } from "./compaction.ts";
-import { SessionError, TauError } from "./errors.ts";
+import { SessionError, TauError, toError } from "./errors.ts";
 import type {
 	AgentRunResult,
 	AgentSpawnOptions,
@@ -31,7 +31,12 @@ import {
 	toolCallsOf,
 	type UserMessage,
 } from "./messages.ts";
-import { OPENAI_COMPLETIONS_API, type OpenAICompatConfig, streamChatCompletion } from "./openai.ts";
+import {
+	type ChatStreamEvent,
+	OPENAI_COMPLETIONS_API,
+	type OpenAICompatConfig,
+	streamChatCompletion,
+} from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
 import type { Tool, ToolResult, ToolUpdateStream } from "./tools.ts";
@@ -455,6 +460,14 @@ export class Agent {
 		await this.extensions?.notifyAgentStart(ctx);
 
 		for (let turnIndex = 0; turnIndex < this.maxTurnsPerPrompt; turnIndex++) {
+			// Abort observed between turns (e.g. signalled during tool execution) ends
+			// the prompt before the next LLM call instead of waiting to fail inside it.
+			if (signal?.aborted) {
+				await this.pendingRecording;
+				await this.extensions?.notifyAgentEnd(this.messages, ctx);
+				yield { type: "agent_end", messages: this.messages };
+				return;
+			}
 			await this.extensions?.notifyTurnStart(turnIndex, ctx);
 
 			// Compaction runs between turns (as in pi): requested first, then threshold.
@@ -489,13 +502,27 @@ export class Agent {
 			await this.extensions?.notifyMessageStart(partial, ctx);
 
 			let assistantMessage: AssistantMessage | undefined;
+			let streamFailure: TauError | undefined;
 			const tools = this.currentTools();
 			const stream = streamChatCompletion(this.platform, this.config, request, {
 				systemPrompt: systemPrompt === "" ? undefined : systemPrompt,
 				tools: tools.size > 0 ? [...tools.values()] : undefined,
 				signal,
 			});
-			for await (const event of stream) {
+			// Pull manually so only stream failures are converted to error messages;
+			// exceptions thrown by extension hooks inside the loop still propagate as bugs.
+			const iterator = stream[Symbol.asyncIterator]();
+			while (true) {
+				let iteration: IteratorResult<ChatStreamEvent>;
+				try {
+					iteration = await iterator.next();
+				} catch (error) {
+					streamFailure =
+						error instanceof TauError ? error : new TauError("stream_error", toError(error).message, error);
+					break;
+				}
+				if (iteration.done) break;
+				const event = iteration.value;
 				switch (event.type) {
 					case "text_delta": {
 						const last = partial.content.at(-1);
@@ -521,6 +548,26 @@ export class Agent {
 						assistantMessage = event.message;
 						break;
 				}
+			}
+			if (streamFailure) {
+				// As in pi (agent-loop.ts streamAssistantResponse): a stream failure does not
+				// throw — it becomes an assistant message with stopReason error/aborted that
+				// enters the conversation and the session, then the prompt ends normally.
+				partial.stopReason = streamFailure.code === "aborted" ? "aborted" : "error";
+				partial.errorMessage = streamFailure.message;
+				partial.timestamp = Date.now();
+				let finalMessage: AssistantMessage = partial;
+				if (this.extensions) {
+					finalMessage = (await this.extensions.runMessageEnd(finalMessage, ctx)) as AssistantMessage;
+				}
+				this.messages.push(finalMessage);
+				await this.recordMessage(finalMessage);
+				yield { type: "assistant_message", message: finalMessage };
+				await this.extensions?.notifyTurnEnd(turnIndex, finalMessage, [], ctx);
+				await this.pendingRecording;
+				await this.extensions?.notifyAgentEnd(this.messages, ctx);
+				yield { type: "agent_end", messages: this.messages };
+				return;
 			}
 			if (!assistantMessage) {
 				throw new TauError("stream_error", "Stream ended without a final message");

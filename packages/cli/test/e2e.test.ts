@@ -3,17 +3,27 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { mockTextTurn, mockToolCallTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
 
 const CLI_PATH = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 
+// Every spawned CLI is tracked and force-killed after the file's tests: a test
+// that fails mid-flight must not leave a child whose open pipes pin the test
+// runner's event loop (this exact leak once hung the whole suite for hours).
+const spawnedChildren: ChildProcess[] = [];
+after(() => {
+	for (const child of spawnedChildren) {
+		if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
+	}
+});
+
 interface CliProcess {
 	child: ChildProcess;
 	output(): string;
 	waitFor(needle: string, timeoutMs?: number): Promise<void>;
-	waitForExit(): Promise<number | null>;
+	waitForExit(timeoutMs?: number): Promise<number | null>;
 }
 
 function startCli(args: string[], options: { cwd: string; home: string; baseUrl: string }): CliProcess {
@@ -28,6 +38,7 @@ function startCli(args: string[], options: { cwd: string; home: string; baseUrl:
 		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
+	spawnedChildren.push(child);
 	let output = "";
 	child.stdout?.setEncoding("utf8");
 	child.stderr?.setEncoding("utf8");
@@ -56,9 +67,18 @@ function startCli(args: string[], options: { cwd: string; home: string; baseUrl:
 				};
 				poll();
 			}),
-		waitForExit: () =>
-			new Promise((resolve) => {
-				child.on("close", (code) => resolve(code));
+		// A CLI that never exits must fail loudly (with its output as diagnostics),
+		// not hang the suite — CI once sat silent for two hours on exactly this.
+		waitForExit: (timeoutMs = 20_000) =>
+			new Promise((resolve, reject) => {
+				const timer = setTimeout(() => {
+					child.kill("SIGKILL");
+					reject(new Error(`CLI did not exit within ${timeoutMs}ms. Output so far:\n${output}`));
+				}, timeoutMs);
+				child.on("close", (code) => {
+					clearTimeout(timer);
+					resolve(code);
+				});
 			}),
 	};
 }
@@ -527,7 +547,8 @@ test("SIGINT aborts the running turn and the REPL keeps working", async () => {
 			cli.child.stdin?.write("hang\n");
 			await cli.waitFor("streaming forever");
 			cli.child.kill("SIGINT");
-			await cli.waitFor("Error:");
+			// P11 语义(照抄 pi):abort 不再抛错,而是 aborted 消息 → CLI 打印 Turn aborted.
+			await cli.waitFor("Turn aborted.");
 			cli.child.stdin?.write("exit\n");
 			const code = await cli.waitForExit();
 			assert.equal(code, 0);

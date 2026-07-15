@@ -2066,6 +2066,17 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			break;
 		}
 		case "assistant_message": {
+			// Stream failures arrive as messages (stopReason error/aborted), not thrown errors.
+			if (event.message.stopReason === "error" || event.message.stopReason === "aborted") {
+				const note =
+					event.message.stopReason === "aborted"
+						? dim("Turn aborted.")
+						: red(`Error: ${event.message.errorMessage ?? "unknown provider error"}`);
+				const next = state.getAssistantText() === "" ? note : `${state.getAssistantText()}\n${note}`;
+				state.setAssistantText(next);
+				state.getAssistant().setText(next);
+				break;
+			}
 			const target = state.getAssistantText() === "" ? undefined : state.getAssistant();
 			if (await state.renderMessage(event.message, target)) break;
 			const text = messageText(event.message);

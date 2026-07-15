@@ -337,6 +337,14 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 					process.stdout.write(event.delta);
 					break;
 				case "assistant_message":
+					if (event.message.stopReason === "aborted") {
+						process.stdout.write(`\n${dim("Turn aborted.")}\n`);
+						break;
+					}
+					if (event.message.stopReason === "error") {
+						process.stdout.write(`\n${red(`Error: ${event.message.errorMessage ?? "unknown provider error"}`)}\n`);
+						break;
+					}
 					if (messageText(event.message) !== "" || thinkingText(event.message) !== "") process.stdout.write("\n");
 					break;
 				case "user_message":
