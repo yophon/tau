@@ -1,6 +1,6 @@
 # Phase 8：TUI 宿主规格书
 
-> 状态：进行中（2026-07-06，P8A/P8B/P8C 已落地；P8D/P8R 局部落地）
+> 状态：**已完成（2026-07-14）**。P8D-2 Themes 整体延期（Backlog）；`session_before_switch`/`sendMessage deliverAs·triggerTurn`/`ctx.abort`/compact `overflow` reason/`before_tree label` 等 parity 小项延期，见 pi-parity.md 与 roadmap Backlog。
 > 对应 roadmap 阶段：Phase 8
 
 ## 目标
@@ -253,18 +253,20 @@ class TuiUiCapability implements UiCapability {
 
 ### P8E-2：Self-Dogfood
 
-- [ ] 用 `npm run tau -- --tui` 开发 tau 至少一轮，完成一个真实小改动或文档改动，不只启动空跑。
-- [ ] 记录自举过程中遇到的阻塞：输入、滚动、工具输出、abort、reload、session 恢复、长上下文、extension diagnostics。
-- [ ] 对阻塞问题现场修复；不能在 Phase 8 内修的，必须写进技术债并说明绕过方式。
-- [ ] 验收：本文件记录自举日期、使用的命令、完成的任务、发现/修复的问题；最终 `npm run check`、`npm test` 和关键 TTY smoke 通过。
+- [x] 用 `npm run tau -- --tui` 开发 tau 至少一轮，完成一个真实小改动或文档改动，不只启动空跑。
+- [x] 记录自举过程中遇到的阻塞：输入、滚动、工具输出、abort、reload、session 恢复、长上下文、extension diagnostics。
+- [x] 对阻塞问题现场修复；不能在 Phase 8 内修的，必须写进技术债并说明绕过方式。
+- [x] 验收：本文件记录自举日期、使用的命令、完成的任务、发现/修复的问题；最终 `npm run check`、`npm test` 和关键 TTY smoke 通过。
+
+**自举记录（2026-07-14）**：命令 `TAU_BASE_URL=<OpenAI 兼容端点>/v1 TAU_MODEL=gpt-5.5 npm run tau -- --tui`（tmux 驱动）。完成真实改动：README Quick start 增加 `npm run demo:browser` 行；第二轮对话修正该行注释对齐——两轮改动均真实落盘（git diff 验证）。覆盖并通过：assistant 流式渲染、bash 工具失败降级（`rg` 缺失 → 模型自行改用 grep）与 edit 工具链路、多轮上下文、footer usage（observed + trailing 估算）、启动诊断视图、运行中 Ctrl+C → `Turn aborted.` 且 TUI 存活、idle Ctrl+C 正常退出、pi v3 JSONL 落盘（header/entry 格式核对）、`--continue` 跨 TUI/headless（`-p`）恢复上下文并准确引用历史改动。未遇到阻塞级问题；滚动/reload/renderer 等面由 `npm run smoke:tui` 自动化覆盖，本轮未重复手测。
 
 ### P8E-3：Closeout
 
-- [ ] 更新 roadmap：Phase 8 状态、最终完成范围、验证摘要、剩余延期项。
-- [ ] 更新 pi parity：标记 themes/reload/TUI surfaces/help/footer/tool collapse 等对应状态，未对齐项写明原因。
-- [ ] 技术债登记：TUI 自动化、theme schema 稳定性、provider cost 数据、renderer API 限制、session/context 估算误差。
-- [ ] 全量验收：`npm run check`、`npm test`、关键 TTY smoke 全绿；工作区干净。
-- [ ] 最终提交并 push，阶段 8 文档中所有 Done/延期/技术债状态一致。
+- [x] 更新 roadmap：Phase 8 状态、最终完成范围、验证摘要、剩余延期项。
+- [x] 更新 pi parity：标记 themes/reload/TUI surfaces/help/footer/tool collapse 等对应状态，未对齐项写明原因。
+- [x] 技术债登记：TUI 自动化、theme schema 稳定性、provider cost 数据、renderer API 限制、session/context 估算误差。
+- [x] 全量验收：`npm run check`、`npm test`、关键 TTY smoke 全绿；工作区干净。
+- [x] 最终提交并 push，阶段 8 文档中所有 Done/延期/技术债状态一致。
 
 ## 验收清单
 

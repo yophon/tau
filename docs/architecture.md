@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-07-14（补记 browser demo 的 CORS 转发 proxy；pi 快照重建）
+> 最后更新：2026-07-14（Phase 8 TUI 宿主归档；另补记 browser demo 的 CORS 转发 proxy、pi 快照重建）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -80,6 +80,14 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - `@tau/ext-subagents`：默认导出可直接加载的扩展，同时导出 `createSubagentsExtension(options)`；注册 `task` 工具，调用 `ctx.runSubagent()` 完成委派，父会话只记录 task 工具调用与结果。
 - `@tau/ext-mcp`：导出 `createMcpExtension({ servers })`；使用官方 `@modelcontextprotocol/sdk` Client 连接 stdio 或 Streamable HTTP MCP server，`tools/list` 结果动态注册为 tau tools，`tools/call` 结果转换成文本工具结果。stdio 路径是 Node-only，依赖 SDK 的子进程 transport。
 - `@tau/ext-resources`：导出 `createResourcesExtension(options)`；通过 `ctx.capabilities.fs/paths` 加载 `.tau` / `.pi` skills 与 prompt templates，skills 走 `before_agent_start` 注入 `<available_skills>`，prompt templates 动态注册 slash commands 并通过 `{ action:"prompt" }` 触发一轮 prompt；TUI `/reload` 时使用 `resources_discover("reload")` 重建 prompt commands。
+
+## TUI 宿主（P8）
+
+- `@tau/cli` 的 `--tui` 模式，基于 `@earendil-works/pi-tui@0.80.3`（差分渲染；Node ≥ 22.19 因此而来）。readline REPL 与 `-p` 单次模式保留。
+- 交互面：assistant markdown/text 流式、工具折叠/展开（全局 + 单项）、`!`/`!!` 用户 bash（stdout/stderr 增量分区）、steering（运行中输入）、Ctrl+C 中断轮、Esc 中断压缩、autocomplete（slash + 文件路径）、`/model`·`/thinking`·`/compact`·`/tree`·`/fork`·`/sessions`·`/resume`·`/name`·`/reload`·`/help`·`/diagnostics`。
+- `UiCapability` 的 TUI 实现（confirm/input/select/notify），startup project trust 走同一路径。
+- 扩展 surfaces：message/entry/tool renderer、widgets（editor 上下）、header/footer items、shortcuts——错误一律隔离降级，不打断 TUI。`/reload` 重建 registry 并触发 `session_start(reload)` / `resources_discover("reload")`。
+- Themes 延期（Backlog）。冒烟自动化：`npm run smoke:tui`（tmux 驱动，覆盖上述关键路径）。
 
 ## 浏览器宿主（P9）
 

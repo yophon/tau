@@ -64,7 +64,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：62 测试全绿。内核补 `ExtensionContext.capabilities`（fs/shell/platform facade）、`Tool.execute(..., ctx)`、`ctx.runSubagent()`、`resources_discover`、Agent 动态合并 extension tools；CLI 向扩展暴露 Node fs/shell capabilities。新增 `@tau/ext-subagents`（默认 `task` 工具）与 `@tau/ext-mcp`（官方 SDK stdio/Streamable HTTP client，测试覆盖 stdio tools/list + tools/call）。e2e：CLI 项目扩展加载 subagents 并完成父/子 Agent 三请求链路；MCP e2e 用官方 SDK stdio server fixture 暴露 `echo` 工具并通过 tau tool 调用成功。与规格偏差：MCP e2e 未额外安装 filesystem server，改用本仓库内真实 MCP stdio fixture；HTTP transport 实现保留但未做 e2e 覆盖。
 
-## Phase 8 🚧 TUI 宿主
+## Phase 8 ✅ TUI 宿主（2026-07-14）
 
 **目标**：产品级终端体验，对齐 pi 的交互模式。
 
@@ -77,7 +77,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **进展记录（P8A/P8B/P8C/P8D/P8R，2026-07-06）**：引入 `@earendil-works/pi-tui@0.80.3`，Node engine 提升到 `>=22.19.0`；新增可选 `--tui` 模式，保留 `-p` 与 readline REPL；基础 TUI 支持 editor 提交、assistant markdown/text 流式、tool_start/tool_update/tool_result 文本渲染、`/help`/`/compact`/扩展 command prompt action、Ctrl+C abort/退出；TUI 启动期 project trust confirm 与运行中 Agent `UiCapability` facade（confirm/input/select/notify）已落地；TUI `/help` 文本版内置命令列表和扩展 surface 诊断、autocomplete（slash commands + 文件路径）、`/name`、`/sessions` selector、`/tree` selector 与 `/tree <id>`、`/fork` selector 与 `/fork <id>`、文本版 `/resume <id|path|timestamp|name>`、`/follow <text>` follow-up 队列、`!`/`!!` 用户 bash、`user_bash` 扩展事件、bash stdout/stderr 增量分区渲染、`/model` 文本切换与 selector、`model_select` 扩展事件、`/thinking` reasoning effort 覆盖、`thinking_level_select` 扩展事件、`Ctrl+R` reasoning show/hide、`registerShortcut` 扩展快捷键、`registerMessageRenderer` 消息渲染器、`registerEntryRenderer` session entry 渲染器、自定义 tool renderer、extension widgets、custom header/footer、`/reload` host-node 扩展热重载、`resources_discover("reload")` 与 ext-resources prompt command 重建、`/compact` start/end/aborted 状态、compaction polish（阶段、耗时、tokens before/after、summary/kept 粗略结果）、compaction Esc abort、abort 后 pending tool 标记、基础 footer（cwd/session/model/thinking/context usage）已落地。验证：`npm run check` 全绿、`npm test` 73 测试全绿、tmux TTY 冒烟（mock provider 返回 `tui smoke ok`；`/name p8b-smoke`；`/sessions` selector 可恢复历史 session；`/tree` selector 显示 user-message jump points 并可选择跳转；`/fork` selector 可选择 full session 或 user target 并分叉；`/compact` 显示 tokens before/after、kept messages、summary chars 与耗时；长 bash 命令执行中 stdout 可见，完成后 stdout/stderr 分区保留；`/model switched-model` 后下一请求使用新模型；`TAU_MODELS=mock-model,selector-model` 时裸 `/model` selector 可切到 `selector-model`，下一请求使用该模型；`Ctrl+R` 后 footer 显示 `reasoning hidden` 且隐藏后续 reasoning delta；全局扩展可通过 `model_select` 把 `/model requested-model` 改写为 `rewritten-model`；全局扩展可通过 `thinking_level_select` 把 `/thinking low` 改写为 `high` 并写入下一请求；全局扩展注册 `ctrl+g` 后 TUI 显示 `shortcut-ok`；全局扩展可把 assistant/custom/user message 渲染为 `rendered:*`；全局扩展可把 custom session entry 渲染为 `rendered-entry:mark`；全局扩展可把 tool start/update/result 渲染为 `tool-render:*`；全局扩展可在 editor 上方/下方显示并刷新 `widget-*`；全局扩展可追加 `header-status:*` / `footer-status:*`；`/help` 可列出扩展 command/shortcut/renderer/widget/header/footer；project trust 首次确认后项目扩展命令可用；`/reload` 后全局扩展 command/header item 在同一 TUI 会话中刷新；`/reload` 后 reload-only prompt command `/hello world` 可展开并执行）。未完成：themes、产品打磨和自举验收。
 
-**剩余任务索引**：Phase 8 不再靠 roadmap 粗粒度 bullet 追踪，详细任务总表与剩余执行清单以 [specs/phase-8-tui-host.md](specs/phase-8-tui-host.md) 为准，分为 renderer API、runtime extension surfaces、重载/资源、模型/主题/打磨、验收/自举。
+**完成记录（2026-07-14）**：P8A–P8E 全部落地（详细任务总表见 [specs/phase-8-tui-host.md](specs/phase-8-tui-host.md)），唯 P8D-2 Themes 整体延期进 Backlog。自举验收（P8E-2）：真实 OpenAI 兼容端点（gpt-5.5）+ `--tui` 完成 README 两轮真实改动，覆盖流式/工具链路/abort/会话落盘/`--continue` 恢复，未遇阻塞级问题，记录见规格书。全量验收：`npm run check` 全绿、`npm test` 79 测试全绿、`npm run smoke:tui` 通过。延期项（进 Backlog）：Themes；`session_before_switch`、`sendMessage deliverAs/triggerTurn`、`ctx.abort`、compact `overflow` reason、`before_tree label`（核对代码确认均未实现，pi-parity 已如实标注）。技术债：#5 移交 P11（统一 bin 入口时处理）；新登记 #8/#9/#10。
 
 ## Phase 9 ✅ 浏览器宿主（可移植性证明 #1）
 
@@ -109,6 +109,8 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 ## 未排期（Backlog）
 
 - `@tau/pi-compat` 垫片（D9）
+- TUI Themes（P8D-2 整体延期：schema 设计、内置 light/dark、加载入口、reload 刷新，任务细目保留在 phase-8 规格书）
+- pi parity 延期小项（P8 核对确认未实现）：`session_before_switch`、`sendMessage` 的 deliverAs/triggerTurn、`ctx.abort()`、compact `overflow` reason、`before_tree` 的 label/userWantsSummary
 
 ## 技术债登记
 
@@ -116,8 +118,11 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 | # | 债 | 影响 | 计划 |
 |---|---|---|---|
-| 5 | `--disable-warning=ExperimentalWarning` 仅在 npm script，直接 node 跑 CLI 仍有告警 | 观感 | P8（TUI 时统一入口处理） |
+| 5 | `--disable-warning=ExperimentalWarning` 仅在 npm script，直接 node 跑 CLI 仍有告警 | 观感 | P11（P8 未做统一 bin 入口，移交发布工程一并处理） |
 | 6 | `@tau/*` 为占位 scope | 发布前必须定名 | P11 |
 | 7 | 自定义 `Platform.fetch` 收到的 `signal` 是 `TauAbortSignal` 结构子集，非标准 AbortSignal；非 fetch 适配器需自行桥接 | 小程序/RN 适配器作者易踩 | P10 适配器实现时验证并文档化 |
+| 8 | `smoke:tui` 依赖本机 tmux 手动触发，未纳入 CI | TUI 回归靠人肉记得跑 | P11（CI 矩阵时评估 tmux 可行性，不可行则文档化为发布前手动步骤） |
+| 9 | footer 的 cost 恒为 unknown（D3 无模型库/定价数据，usage 只有 token 数） | 观感；用户无成本感知 | 未排期（等 provider 定价数据源决策，不伪造价格） |
+| 10 | context token 为 usage + chars/4 启发式估算（pi 同款），与真实 tokenizer 有偏差 | 压缩触发点/footer 百分比不精确 | 未排期（pi 同款算法，接受偏差；换 tokenizer 属大决策） |
 
 （#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。）
