@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-07-06（Phase 9 browser host 完成后）
+> 最后更新：2026-07-14（补记 browser demo 的 CORS 转发 proxy；pi 快照重建）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -86,7 +86,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - `@tau/host-browser`：导出 `BrowserMemoryFileSystem`、`OpfsFileSystem`、`hasOpfsSupport()` 与 `createBrowserSessionRepo()`。路径使用 POSIX-like 字符串；OPFS 不可用时产品层可降级到内存 FS。
 - 浏览器宿主只提供 `FileSystem`，不提供 `Shell`；`createCodingTools({ fs })` 因能力可选只注册 read/write/edit，bash 自动缺席。
 - 会话不新增浏览器专有格式；`createBrowserSessionRepo()` 复用内核 `JsonlSessionRepo`，继续写 pi v3 JSONL。
-- `examples/browser/` 是静态 demo：使用默认 WinterTC `Platform` 直连 OpenAI-compatible endpoint，优先 OPFS，降级内存 FS；`npm run smoke:browser` 用 esbuild `platform: "browser"` 验证 bundle 不引入 Node API。
+- `examples/browser/` 是静态 demo：使用默认 WinterTC `Platform` 连接 OpenAI-compatible endpoint（localhost 直连；远程端点自动改走 demo 服务器的 `/proxy` CORS 转发，目标经 `x-tau-target-base-url` 头传递，key 仍在浏览器侧 BYOK），优先 OPFS，降级内存 FS。`npm run demo:browser` 起本地服务器；`npm run smoke:browser` 用 esbuild `platform: "browser"` 验证 bundle 不引入 Node API。
 
 ## 扩展加载与信任（host 层）
 

@@ -8,6 +8,7 @@
 		"check": "biome check --write --error-on-warnings . && npm run check:types && npm run check:purity",
 		"check:types": "tsc -p packages/kernel/tsconfig.json && tsc -p packages/kernel/tsconfig.test.json && tsc -p packages/host-node/tsconfig.json && tsc -p packages/host-browser/tsconfig.json && tsc -p packages/cli/tsconfig.json && tsc -p packages/ext-subagents/tsconfig.json && tsc -p packages/ext-mcp/tsconfig.json && tsc -p packages/ext-resources/tsconfig.json && tsc -p examples/tsconfig.json",
 		"check:purity": "node scripts/check-kernel-purity.mjs",
+		"demo:browser": "node scripts/serve-browser-demo.mjs",
 		"smoke:browser": "node scripts/smoke-browser-demo.mjs",
 		"smoke:browser:runtime": "node scripts/smoke-browser-runtime.mjs",
 		"smoke:tui": "node scripts/smoke-tui.mjs",

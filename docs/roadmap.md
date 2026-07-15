@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-06（Phase 6 resources 扩展包完成；P7 后补归档）
+> 最后更新：2026-07-14（P9 完成记录补记 CORS 转发 proxy；pi 快照丢失后按 v0.80.3 重建）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -89,13 +89,15 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 与规格偏差：未新增 Playwright/Puppeteer 真浏览器自动化依赖；以 browser bundle smoke + host capability agent-loop 测试覆盖核心链路。key 安全 proxy 模式按规格范围外推迟。
 
+**后补（2026-07-08，cf695ec）**：`scripts/serve-browser-demo.mjs`（`npm run demo:browser`）——本地静态服务器 + `/proxy` CORS 转发（`x-tau-target-base-url` 头指定目标，流式透传），demo 对非 localhost 端点自动改走 proxy。注意：这是**浏览器 CORS 便利层**，key 仍由浏览器侧 BYOK 持有；密钥托管型 proxy 依旧推迟（P10 的中转服务器可在此基础上扩展）。
+
 ## Phase 10 ⬜ 小程序/RN 平台适配（可移植性证明 #2）
 
 **目标**：证明 D4 的注入缝隙在非 WinterTC 环境成立。
 
 - `Platform` 适配器：`wx.request`（enableChunked 流式）→ `PlatformFetch`；TextDecoder polyfill → `createUtf8Decoder`
 - 静态扩展注册表实测（无动态加载路径）
-- 注意：小程序 request 域名白名单 → 实际部署需中转服务器（与 Phase 9 proxy 模式共用）
+- 注意：小程序 request 域名白名单 → 实际部署需中转服务器（可基于 `scripts/serve-browser-demo.mjs` 的 `/proxy` 转发扩展）
 - **验收**：小程序模拟器（或 RN）中流式对话跑通
 
 ## Phase 11 ⬜ 发布工程
