@@ -1,3 +1,4 @@
+import { AbortHandle } from "./abort.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./branch.ts";
 import {
 	type CompactionResult,
@@ -38,22 +39,23 @@ import {
 	streamChatCompletion,
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
+import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
 import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
 import type { Tool, ToolResult, ToolUpdateStream } from "./tools.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
 export type QueueMode = "one-at-a-time" | "all";
 
-/** Mirrors pi's PendingMessageQueue (packages/agent/src/agent.ts). */
+/** Mirrors pi's PendingMessageQueue (packages/agent/src/agent.ts). Custom messages may queue too (sendMessage deliverAs). */
 class PendingMessageQueue {
-	private readonly items: UserMessage[] = [];
+	private readonly items: (UserMessage | CustomMessage)[] = [];
 	readonly mode: QueueMode;
 
 	constructor(mode: QueueMode) {
 		this.mode = mode;
 	}
 
-	enqueue(message: UserMessage): void {
+	enqueue(message: UserMessage | CustomMessage): void {
 		this.items.push(message);
 	}
 
@@ -61,7 +63,7 @@ class PendingMessageQueue {
 		return this.items.length > 0;
 	}
 
-	drain(): UserMessage[] {
+	drain(): (UserMessage | CustomMessage)[] {
 		if (this.items.length === 0) return [];
 		if (this.mode === "all") return this.items.splice(0);
 		return this.items.splice(0, 1);
@@ -94,17 +96,21 @@ export interface AgentOptions {
 	followUpMode?: QueueMode;
 	/** Compaction thresholds; auto-compaction also requires config.contextWindow. */
 	compaction?: Partial<CompactionSettings>;
+	/** Auto-retry policy for failed LLM requests (pi defaults: enabled, 3 attempts, 2s base). Requires Platform.sleep. */
+	retry?: Partial<RetrySettings>;
 }
 
 export type AgentEvent =
 	| { type: "text_delta"; delta: string }
 	| { type: "reasoning_delta"; delta: string }
 	| { type: "assistant_message"; message: AssistantMessage }
-	| { type: "user_message"; message: UserMessage }
+	| { type: "user_message"; message: UserMessage | CustomMessage }
 	| { type: "tool_start"; toolCall: ToolCall }
 	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string; stream?: ToolUpdateStream }
 	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
 	| { type: "compaction"; result: CompactionResult }
+	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
+	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "agent_end"; messages: AgentMessage[] };
 
 interface ToolUpdate {
@@ -140,12 +146,23 @@ export class Agent {
 	private readonly followUpQueue: PendingMessageQueue;
 	private readonly session: SessionRecorder | undefined;
 	private readonly compactionSettings: CompactionSettings;
+	private readonly retrySettings: RetrySettings;
 	/** Custom instructions of a requested compaction, or null when none is pending. */
 	private pendingCompaction: string | null = null;
+	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
+	private readonly pendingNextTurn: CustomMessage[] = [];
 	/** Serializes session writes triggered by sync extension actions. */
 	private pendingRecording: Promise<void> = Promise.resolve();
 	/** True while a prompt() generator is being consumed (guards navigateTo). */
 	private running = false;
+	/**
+	 * True only while the LLM turn loop is in flight — pi's isStreaming. Hooks
+	 * that fire before the loop (input, before_agent_start) see false, so their
+	 * sendMessage lands immediately instead of being queued as steering.
+	 */
+	private looping = false;
+	/** Abort handle of the run in flight; ctx.abort() fires it. */
+	private activeAbort: AbortHandle | undefined;
 
 	constructor(options: AgentOptions) {
 		this.platform = options.platform ?? defaultPlatform();
@@ -161,9 +178,10 @@ export class Agent {
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.session = options.session;
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
+		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		const session = options.session;
 		options.extensions?.attachHostActions({
-			sendMessage: (input) => {
+			sendMessage: (input, sendOptions) => {
 				const message: CustomMessage = {
 					role: "custom",
 					customType: input.customType,
@@ -172,8 +190,37 @@ export class Agent {
 					details: input.details,
 					timestamp: Date.now(),
 				};
+				// pi semantics (agent-session.sendCustomMessage): nextTurn always holds;
+				// while streaming, deliverAs picks the queue (default steer); while idle
+				// the message lands immediately and triggerTurn may start a run.
+				if (sendOptions?.deliverAs === "nextTurn") {
+					this.pendingNextTurn.push(message);
+					return;
+				}
+				if (this.looping) {
+					if (sendOptions?.deliverAs === "followUp") this.followUpQueue.enqueue(message);
+					else this.steeringQueue.enqueue(message);
+					return;
+				}
 				this.messages.push(message);
 				if (session) this.pendingRecording = this.pendingRecording.then(() => session.recordMessage(message));
+				if (sendOptions?.triggerTurn) this.extensions?.hostAction("resumeTurn")?.();
+			},
+			sendUserMessage: (content, sendOptions) => {
+				// pi semantics: always triggers a turn. Streaming → steer/followUp; idle →
+				// the host submits a fresh prompt (no host action → the call is a no-op
+				// beyond a queued message, so require it explicitly).
+				if (this.looping) {
+					const message: UserMessage = { role: "user", content, timestamp: Date.now() };
+					if (sendOptions?.deliverAs === "followUp") this.followUpQueue.enqueue(message);
+					else this.steeringQueue.enqueue(message);
+					return;
+				}
+				const submit = this.extensions?.hostAction("submitPrompt");
+				if (!submit) {
+					throw new TauError("no_host", "sendUserMessage() while idle requires a host that provides submitPrompt");
+				}
+				submit(content);
 			},
 			appendEntry: (customType, data) => {
 				if (session) this.pendingRecording = this.pendingRecording.then(() => session.appendCustom(customType, data));
@@ -181,6 +228,9 @@ export class Agent {
 			setSessionName: (name) => {
 				if (session) this.pendingRecording = this.pendingRecording.then(() => session.setName(name));
 				void this.extensions?.notifySessionInfoChanged(name, this.extensionContext());
+			},
+			abort: () => {
+				this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
 			},
 		});
 	}
@@ -221,6 +271,11 @@ export class Agent {
 				this.pendingCompaction = customInstructions ?? "";
 			},
 			runSubagent: (prompt, options, signal) => this.runSubagent(prompt, options, signal),
+			abort: () => {
+				const hostAbort = this.extensions?.hostAction("abort");
+				if (hostAbort) hostAbort();
+				else this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
+			},
 			discoverResources: (reason) => {
 				const cwd = this.capabilities.paths?.cwd ?? this.capabilities.fs?.cwd ?? "";
 				return (
@@ -351,10 +406,36 @@ export class Agent {
 	async *prompt(input: string, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
 		if (this.running) throw new TauError("busy", "prompt() is already running");
 		this.running = true;
+		const handle = new AbortHandle();
+		handle.follow(signal);
+		this.activeAbort = handle;
 		try {
-			yield* this.runPrompt(input, signal);
+			yield* this.runPrompt(input, handle.signal);
 		} finally {
 			this.running = false;
+			this.activeAbort = undefined;
+		}
+	}
+
+	/**
+	 * Run the agent loop without committing new user input — the continuation
+	 * behind sendMessage({triggerTurn:true}) while idle (pi's _runAgentPrompt
+	 * for app messages). The conversation must already end in something the
+	 * model should answer (a user/custom message).
+	 */
+	async *resume(signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
+		if (this.running) throw new TauError("busy", "resume() requires an idle agent");
+		this.running = true;
+		const handle = new AbortHandle();
+		handle.follow(signal);
+		this.activeAbort = handle;
+		try {
+			const ctx = this.extensionContext();
+			await this.extensions?.notifyAgentStart(ctx);
+			yield* this.runLoop(ctx, this.systemPrompt ?? "", handle.signal);
+		} finally {
+			this.running = false;
+			this.activeAbort = undefined;
 		}
 	}
 
@@ -458,7 +539,35 @@ export class Agent {
 
 		await this.commitMessage({ role: "user", content: finalInput, timestamp: Date.now() }, ctx);
 		await this.extensions?.notifyAgentStart(ctx);
+		yield* this.runLoop(ctx, systemPrompt, signal);
+	}
 
+	/** The turn loop shared by prompt() and resume(). */
+	private async *runLoop(
+		ctx: ExtensionContext,
+		systemPrompt: string,
+		signal?: TauAbortSignal,
+	): AsyncGenerator<AgentEvent> {
+		// Custom messages held for "the next turn" (sendMessage deliverAs:"nextTurn")
+		// enter the conversation before this run's first LLM call, as in pi.
+		for (const held of this.pendingNextTurn.splice(0)) {
+			await this.commitMessage(held, ctx);
+		}
+
+		this.looping = true;
+		try {
+			yield* this.runTurns(ctx, systemPrompt, signal);
+		} finally {
+			this.looping = false;
+		}
+	}
+
+	private async *runTurns(
+		ctx: ExtensionContext,
+		systemPrompt: string,
+		signal?: TauAbortSignal,
+	): AsyncGenerator<AgentEvent> {
+		let retryAttempt = 0;
 		for (let turnIndex = 0; turnIndex < this.maxTurnsPerPrompt; turnIndex++) {
 			// Abort observed between turns (e.g. signalled during tool execution) ends
 			// the prompt before the next LLM call instead of waiting to fail inside it.
@@ -564,6 +673,46 @@ export class Agent {
 				await this.recordMessage(finalMessage);
 				yield { type: "assistant_message", message: finalMessage };
 				await this.extensions?.notifyTurnEnd(turnIndex, finalMessage, [], ctx);
+
+				// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff,
+				// the error message leaves the in-memory conversation but stays in the
+				// session history, and the backoff sleep is abortable.
+				const retryEligible =
+					finalMessage.stopReason === "error" &&
+					this.retrySettings.enabled &&
+					this.platform.sleep !== undefined &&
+					isRetryableAssistantError(finalMessage);
+				if (retryEligible && retryAttempt < this.retrySettings.maxRetries) {
+					retryAttempt++;
+					const delayMs = this.retrySettings.baseDelayMs * 2 ** (retryAttempt - 1);
+					const startEvent = {
+						attempt: retryAttempt,
+						maxAttempts: this.retrySettings.maxRetries,
+						delayMs,
+						errorMessage: finalMessage.errorMessage ?? "Unknown error",
+					};
+					await this.extensions?.notifyAutoRetryStart(startEvent, ctx);
+					yield { type: "auto_retry_start", ...startEvent };
+					if (this.messages.at(-1) === finalMessage) this.messages.pop();
+					try {
+						await this.platform.sleep?.(delayMs, signal);
+					} catch {
+						const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
+						await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
+						yield { type: "auto_retry_end", ...endEvent };
+						await this.pendingRecording;
+						await this.extensions?.notifyAgentEnd(this.messages, ctx);
+						yield { type: "agent_end", messages: this.messages };
+						return;
+					}
+					turnIndex--; // A retried request does not consume the turn budget.
+					continue;
+				}
+				if (finalMessage.stopReason === "error" && retryAttempt > 0) {
+					const endEvent = { success: false, attempt: retryAttempt, finalError: finalMessage.errorMessage };
+					await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
+					yield { type: "auto_retry_end", ...endEvent };
+				}
 				await this.pendingRecording;
 				await this.extensions?.notifyAgentEnd(this.messages, ctx);
 				yield { type: "agent_end", messages: this.messages };
@@ -578,6 +727,13 @@ export class Agent {
 			this.messages.push(assistantMessage);
 			await this.recordMessage(assistantMessage);
 			yield { type: "assistant_message", message: assistantMessage };
+			if (retryAttempt > 0) {
+				// A clean response after retries closes the cycle (pi resets on success).
+				const endEvent = { success: true, attempt: retryAttempt };
+				await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
+				yield { type: "auto_retry_end", ...endEvent };
+				retryAttempt = 0;
+			}
 
 			const toolCalls = toolCallsOf(assistantMessage);
 			const toolResults: ToolResultMessage[] = [];
@@ -628,7 +784,7 @@ export class Agent {
 			}
 
 			for (const steered of this.steeringQueue.drain()) {
-				const committed = (await this.commitMessage(steered, ctx)) as UserMessage;
+				const committed = (await this.commitMessage(steered, ctx)) as UserMessage | CustomMessage;
 				yield { type: "user_message", message: committed };
 			}
 
@@ -639,7 +795,7 @@ export class Agent {
 				const followUps = this.followUpQueue.drain();
 				if (followUps.length > 0) {
 					for (const followUp of followUps) {
-						const committed = (await this.commitMessage(followUp, ctx)) as UserMessage;
+						const committed = (await this.commitMessage(followUp, ctx)) as UserMessage | CustomMessage;
 						yield { type: "user_message", message: committed };
 					}
 					continue;

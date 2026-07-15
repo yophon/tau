@@ -1,6 +1,6 @@
 # Phase 11：基础夯实——CI 门禁 + 内核健壮性 + 扩展 API 补齐 规格书
 
-> 状态：已确认（2026-07-14，用户批准实施；顺序：CI → 错误规范化+测试 → 重试 → API 补齐）
+> 状态：**已完成（2026-07-15）**
 > 对应 roadmap 阶段：Phase 11（原 P11 发布工程顺移为 P12；P10 适配器实施推后到本阶段之后）
 
 ## 目标
@@ -91,14 +91,14 @@ ubuntu-latest + Node 22 + `npm ci --ignore-scripts`，jobs：
 
 ## 验收清单
 
-- [ ] GitHub Actions 首绿：check + test + 四个 smoke 全过
-- [ ] 审计清单 16 条零覆盖路径全部有测试（对照 2026-07-14 审计报告逐条勾）
-- [ ] 非 `TauError` 裸异常穿透为零（fetch reject / reader 中断均已包装，测试锁定）
-- [ ] 重试 e2e：mock provider 先 429/网络错误后成功，断言指数退避时序、`auto_retry_*` 事件、成功复位；abort 中断退避即刻生效
-- [ ] `Platform.sleep` 缺失时重试禁用（QuickJS 冒烟 fixture 顺带断言：无 sleep 注入照常工作）
-- [ ] `ctx.abort()`/`deliverAs`/`triggerTurn`/`session_before_switch` 单测 + TUI e2e 各一条；pi-parity 四行转绿
-- [ ] 技术债 #8（smoke:tui 无 CI）删行
-- [ ] DoD 通用项（见 development.md）
+- [x] GitHub Actions 首绿：check + test + 四个 smoke 全过
+- [x] 审计清单 16 条零覆盖路径全部有测试（对照 2026-07-14 审计报告逐条勾）
+- [x] 非 `TauError` 裸异常穿透为零（fetch reject / reader 中断均已包装，测试锁定）
+- [x] 重试 e2e：mock provider 先 429/网络错误后成功，断言指数退避时序、`auto_retry_*` 事件、成功复位；abort 中断退避即刻生效
+- [x] `Platform.sleep` 缺失时重试禁用（QuickJS 冒烟 fixture 顺带断言：无 sleep 注入照常工作）
+- [x] `ctx.abort()`/`deliverAs`/`triggerTurn`/`session_before_switch` 单测 + TUI e2e（ctx.abort 场景入 smoke:tui）；pi-parity 四行转绿
+- [x] 技术债 #8（smoke:tui 无 CI）删行
+- [x] DoD 通用项（见 development.md）
 
 ## 实施记录
 
@@ -111,6 +111,10 @@ ubuntu-latest + Node 22 + `npm ci --ignore-scripts`，jobs：
 - **测试边界如实声明**:新增错误路径测试锁定的是"内核对注入失败的处理逻辑"(回归锁),故障形状(reject/throw/abort 时序)是测试假设的;真实网络的"干挂不响应"内核尚无超时防护——**timeout 缺口列入 Block 3 重试实施时一并评估**(pi 的可重试分类含 timeout 文本,但 pi 依赖宿主/SDK 层超时,tau 需经 Platform 缝隙)
 
 **CI 首跑 2 小时静默 hang 事故(2026-07-15,已根治)**:三个叠加原因——① e2e 在"答案文本出现"后立即写入下一命令,但轮尚未结束,命令被 REPL 当作 steering 消息(P2 特性),竞态在慢 runner 上翻车:raced `exit` 变用户消息 → mock 重复应答 → CLI 永不退出;② `waitForExit` 无超时 → 无限等待;③ 任何 e2e 失败后 CLI 子进程无人清理,存活管道钉住 test runner 事件循环 → 整套件 hang(本地曾复现同机制,一度误归因于新增测试)。修复:`waitForIdle()`(轮询空闲提示符)前置于所有依赖空闲态的写入;`waitForExit` 默认 20s 超时并附 CLI 输出作诊断;`after()` 钩子强杀遗留子进程。教训:**e2e 对"输出出现"的等待不等于"状态就绪";所有无界等待都是 CI 定时炸弹**。
+
+**Block 3 重试与停滞超时（2026-07-15）**：`Platform.sleep` 缝隙（defaultPlatform 以 timers 实现并顺带把结构化 signal 桥接为真 AbortSignal——**实现中发现原生 fetch 拒收 TauAbortSignal 结构子集**,这正是技术债 #7 预言的坑,缝隙内桥接后 CLI e2e 全数恢复）;retry.ts 分类正则逐字照抄 pi + 溢出排除;退避策略在 runLoop 内(2s/4s/8s,错误消息移出内存留会话,可中断,auto_retry 双通道事件);`withStallTimeout` 停滞看门狗(默认 120s,race + 双向 loser 清理,超时措辞含 "timed out" 以保持 pi 正则可分类)。开放问题 #1 裁决:退避期间 steering 照常入队,重试重放同一请求。
+
+**Block 4 扩展 API(2026-07-15)**:`AbortHandle`(纯 ES abort 手柄,prompt/resume 每运行持有);`ctx.abort()`;`sendMessage` options 与 `sendUserMessage`(队列判定用 looping 边界——对应 pi 的 isStreaming,而非 prompt 全程,before_agent_start 里的 sendMessage 因此仍直接入列,老测试锁定了这一语义);`Agent.resume()`;`session_before_switch`(TUI switchSession 单点 + CLI /fork);attachHostActions 改 merge,宿主追加 submitPrompt/resumeTurn/abort。smoke:tui 增 ctx.abort 场景。最终 107 测试全绿,CI gate+smoke 全绿。
 
 ## 风险与开放问题
 

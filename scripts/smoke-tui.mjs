@@ -19,6 +19,7 @@ async function main() {
 		await runPromptToolAbortSmoke(root, mock.baseUrl);
 		await runExtensionAndReloadSmoke(root, mock.baseUrl);
 		await runSelectorSmoke(root, mock.baseUrl);
+		await runExtensionAbortSmoke(root, mock.baseUrl);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -133,6 +134,25 @@ async function runSelectorSmoke(root, baseUrl) {
 	}
 }
 
+// P11 验收:扩展经 ctx.abort() 中止运行中的轮(独立 session,避免和 Ctrl+C 场景的
+// "Turn aborted." 文本混淆)。
+async function runExtensionAbortSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "extension-abort", true);
+	await writeSmokeExtension(dirs.cwd);
+	const session = await startTui("extension-abort", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("SMOKE_WIDGET", 10_000);
+		await session.send("ext abort smoke", "Enter");
+		await session.waitFor("EXT_ABORT_TRIGGER", 10_000);
+		await session.waitFor("Turn aborted.", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok extension ctx.abort");
+	} finally {
+		await session.kill();
+	}
+}
+
 async function createSandbox(root, name, trusted) {
 	const projectPath = join(root, name, "project");
 	const home = join(root, name, "home");
@@ -206,6 +226,9 @@ export default async function smoke(api) {
 	api.registerToolRenderer("smoke-tool-renderer", {
 		toolNames: ["smoke_tool"],
 		handler: (event) => "SMOKE_TOOL_RENDER_" + event.phase,
+	});
+	api.on("message_update", (event, ctx) => {
+		if (JSON.stringify(event.message.content ?? []).includes("EXT_ABORT_TRIGGER")) ctx.abort?.();
 	});
 	api.on("resources_discover", (event, ctx) => {
 		if (event.reason !== "reload") return undefined;
@@ -333,6 +356,9 @@ function responseFor(request) {
 		});
 	}
 	if (content.includes("custom smoke tool")) return toolCallTurn("smoke_tool", {});
+	if (content.includes("ext abort smoke")) {
+		return { payloads: [{ choices: [{ delta: { content: "EXT_ABORT_TRIGGER " } }] }], hold: true };
+	}
 	if (content.includes("hang smoke")) {
 		return { payloads: [{ choices: [{ delta: { content: "SMOKE_ABORT_STREAM " } }] }], hold: true };
 	}

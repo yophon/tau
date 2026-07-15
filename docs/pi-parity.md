@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-14（P8 closeout：TUI surfaces 全绿，Themes 与若干小项如实标延期；另补记 P9 后追加的 CORS 转发 proxy 口径）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-15（P11：重试/超时/ctx.abort/deliverAs/sendUserMessage/session_before_switch 全绿；此前 P8 closeout 与 P9 proxy 口径）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期延期 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -18,7 +18,7 @@
 | `message_start` / `message_update` / `message_end` | 消息级流式观察；message_end 可替换消息 | ✅ P2+P3（全消息角色；update 仅 assistant 流式，携带 tau ChatStreamEvent 而非 pi AssistantMessageEvent） |
 | `tool_execution_start` / `update` / `end` | 工具执行过程观察（update 携带流式部分输出） | ✅ P2 |
 | `session_start` / `session_info_changed` / `session_shutdown` | 会话生命周期 | ✅ P3/P8（session_start: startup/resume/reload；shutdown: quit） |
-| `session_before_switch` | 切换会话前（可取消） | 📍Backlog（P8 核对确认未实现：tau 无运行中切换会话，/resume 为重启进入） |
+| `session_before_switch` | 切换会话前（可取消） | ✅ P11（TUI /resume、/sessions selector、双宿主 /fork 切换前触发；reason 取 "resume"，CLI 无 new-session 动作故 "new" 暂无触发点） |
 | `session_before_compact` / `session_compact` | 压缩前（可取消/**可完全接管压缩**）/压缩后 | ✅ P4（reason 取子集 manual/threshold；overflow reason 📍Backlog，P8 未做） |
 | `session_before_fork` | 分叉前（可取消） | ✅ P5（entry-targeted /fork 触发；全量复制无分叉点故不触发） |
 | `session_before_tree` / `session_tree` | 分支树导航前/后 | ✅ P5（before_tree 可取消/可接管摘要；tree 携带 summaryEntry；preparation 取 tau 子集；label/userWantsSummary 📍Backlog，P8 未做） |
@@ -27,16 +27,17 @@
 | `model_select` | 运行时切换模型 | ✅ P8（before 可改写/取消，after 可记录） |
 | `thinking_level_select` | 运行时切换思考等级 | ✅ P8（`/thinking` 写入 `reasoning_effort` 覆盖） |
 | `project_trust` | **首次在目录运行的信任门**（决定是否加载项目扩展） | ✅ P2（事件 + CLI 信任门 + trust.json） |
+| `auto_retry_start` / `auto_retry_end` | 自动重试退避起止（attempt/delayMs/errorMessage；end 带 success/finalError） | ✅ P11（策略照抄 pi：指数退避默认 3 次 2s 起、错误消息移出内存留会话、退避可中断；分类正则逐字照抄 ai/utils/retry.ts） |
 
 ## 事件之外的生命周期/API 面
 
 | pi 特性 | 说明 | tau 状态 |
 |---|---|---|
-| **steering / follow-up 队列** | `Agent` 支持流式中插话（steer）与排队追问（followUp），`sendUserMessage(deliverAs)` | ✅ P2（steer/followUp/QueueMode；扩展动作形态即下行 sendMessage，✅ P3；deliverAs 延期见下行） |
-| `sendMessage` / `appendEntry` | 扩展注入自定义消息 / 持久化自定义 entry（不进 LLM 上下文） | ✅ P3（sendMessage 的 triggerTurn/deliverAs 📍Backlog，P8 未做） |
+| **steering / follow-up 队列** | `Agent` 支持流式中插话（steer）与排队追问（followUp），`sendUserMessage(deliverAs)` | ✅ P2+P11（steer/followUp/QueueMode；`sendUserMessage` 动作 ✅ P11：流中 steer/followUp，空闲经宿主 submitPrompt 总触发） |
+| `sendMessage` / `appendEntry` | 扩展注入自定义消息 / 持久化自定义 entry（不进 LLM 上下文） | ✅ P3+P11（deliverAs steer/followUp/nextTurn 三值 + triggerTurn 空闲起轮均照抄 pi；宿主经 resumeTurn/Agent.resume() 支撑） |
 | Tool execute context / capabilities facade | pi 工具执行可拿 ctx；tau 暴露 `ctx.capabilities.fs/shell/platform`，并给 `Tool.execute` 第四参传 ctx | ✅ P7（facade 子集；无 raw Agent 暴露） |
 | `ctx.runSubagent()` facade | 子 Agent 委派，不污染父会话 | ✅ P7（tau 扩展 API，pi 无内置 subagent） |
-| `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | ✅ P4（getContextUsage/compact；abort 走宿主 AbortController；ctx.abort() 📍Backlog，P8 未做） |
+| `ctx.getContextUsage()` / `compact()` / `abort()` | token 用量查询、触发压缩、中断 | ✅ P4+P11（getContextUsage/compact；ctx.abort() ✅ P11：中止当前 prompt 与重试退避，内核 AbortHandle 支撑，宿主可经 attachHostActions 覆盖） |
 | `registerFlag` / `getFlag` | 扩展注册 CLI flag | ✅ P2 |
 | `registerShortcut` | 键盘快捷键 | ✅ P8（TUI 空闲快捷键；`/help` 显示） |
 | `registerMessageRenderer` | 自定义消息 TUI 渲染 | ✅ P8（user/assistant/custom message；支持 role/customType 匹配） |

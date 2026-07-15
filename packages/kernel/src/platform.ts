@@ -54,6 +54,12 @@ export interface Platform {
 	createUtf8Decoder(): Utf8Decoder;
 	/** Fill-quality randomness for ids (uuidv7). Not for cryptographic use. */
 	randomBytes(length: number): Uint8Array;
+	/**
+	 * Interruptible delay; rejects with a TauError("aborted") when the signal
+	 * fires. Optional: when absent, automatic retry and stall timeouts are
+	 * disabled — bare-engine hosts pay nothing for features they cannot back.
+	 */
+	sleep?(ms: number, signal?: TauAbortSignal): Promise<void>;
 }
 
 interface TextDecoderLike {
@@ -64,6 +70,10 @@ interface GlobalCandidates {
 	fetch?: PlatformFetch;
 	TextDecoder?: new (encoding?: string) => TextDecoderLike;
 	crypto?: { getRandomValues?(bytes: Uint8Array): Uint8Array };
+	setTimeout?: (callback: () => void, ms: number) => unknown;
+	clearTimeout?: (handle: unknown) => void;
+	AbortController?: new () => { signal: TauAbortSignal & object; abort(reason?: unknown): void };
+	AbortSignal?: abstract new () => object;
 }
 
 /**
@@ -87,8 +97,24 @@ export function defaultPlatform(): Platform {
 			"globalThis.TextDecoder is not available. Provide a Platform with a createUtf8Decoder implementation.",
 		);
 	}
+	const globalSetTimeout = g.setTimeout;
+	const globalClearTimeout = g.clearTimeout;
+	const GlobalAbortController = g.AbortController;
+	const GlobalAbortSignal = g.AbortSignal;
+	// Native fetch rejects structural signals ("Expected signal to be an instance
+	// of AbortSignal"), so the seam bridges kernel-made TauAbortSignals into real
+	// ones. Kernel-side this is invisible; custom Platform adapters must do the
+	// equivalent for their transport (tech debt #7's documented obligation).
+	const bridgeSignal = (signal: TauAbortSignal | undefined): TauAbortSignal | undefined => {
+		if (!signal || !GlobalAbortController) return signal;
+		if (GlobalAbortSignal && signal instanceof GlobalAbortSignal) return signal;
+		const controller = new GlobalAbortController();
+		if (signal.aborted) controller.abort(signal.reason);
+		else signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+		return controller.signal;
+	};
 	return {
-		fetch: (url, init) => globalFetch(url, init),
+		fetch: (url, init) => globalFetch(url, init && { ...init, signal: bridgeSignal(init.signal) }),
 		createUtf8Decoder: () => {
 			const decoder = new GlobalTextDecoder("utf-8");
 			return {
@@ -106,5 +132,26 @@ export function defaultPlatform(): Platform {
 			for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
 			return bytes;
 		},
+		// Timers exist on every WinterTC host; omitted when absent so exotic hosts
+		// simply run without retry/stall features instead of crashing.
+		sleep:
+			typeof globalSetTimeout === "function"
+				? (ms, signal) =>
+						new Promise<void>((resolve, reject) => {
+							const fail = (): void => {
+								if (handle !== undefined) globalClearTimeout?.(handle);
+								reject(new TauError("aborted", "Sleep aborted"));
+							};
+							if (signal?.aborted) {
+								fail();
+								return;
+							}
+							const handle = globalSetTimeout(() => {
+								signal?.removeEventListener("abort", fail);
+								resolve();
+							}, ms);
+							signal?.addEventListener("abort", fail, { once: true });
+						})
+				: undefined,
 	};
 }

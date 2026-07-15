@@ -261,7 +261,14 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 
 	const switchSession = async (
 		newStore: SessionStore,
-	): Promise<{ metadata: SessionMetadata; messageCount: number }> => {
+	): Promise<{ cancelled: true } | { cancelled?: false; metadata: SessionMetadata; messageCount: number }> => {
+		// Extensions may veto the switch (pi's session_before_switch).
+		const target = await newStore.getMetadata();
+		const decision = await extensions.runSessionBeforeSwitch(
+			{ reason: "resume", targetSessionFile: target.filePath },
+			agent.extensionContext(),
+		);
+		if (decision.cancelled) return { cancelled: true };
 		const restored = await restoreSession(newStore);
 		store = newStore;
 		recorder = await SessionRecorder.open(newStore);
@@ -564,6 +571,19 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		appendText(dim(`Model set to ${decision.model}.`));
 	}
 
+	// sendUserMessage / sendMessage({triggerTurn}) while idle route here. Attached
+	// to every active registry (initial and after each /reload).
+	function attachTuiHostActions(registry: ExtensionRegistry): void {
+		registry.attachHostActions({
+			submitPrompt: (text) => {
+				if (runningTask === undefined) void runPrompt(text);
+			},
+			resumeTurn: () => {
+				if (runningTask === undefined) void runPrompt(null);
+			},
+		});
+	}
+
 	async function reloadExtensions(): Promise<void> {
 		if (runningTask) {
 			appendText(dim("Reload is unavailable while a task is running."));
@@ -587,6 +607,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			nextAgent.setUi(uiCapability);
 			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
 			extensions = nextExtensions;
+			attachTuiHostActions(nextExtensions);
 			agent = nextAgent;
 			lastSessionStartReason = "reload";
 			lastReloadStatus = `success ${new Date().toISOString()}`;
@@ -841,6 +862,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				}
 				try {
 					const result = await switchSession(await options.sessionRepo.open(selected));
+					if (result.cancelled) {
+						appendText(dim("Session switch cancelled by an extension."));
+						return true;
+					}
 					appendText(
 						dim(
 							`Resumed ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages${
@@ -871,6 +896,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					return true;
 				}
 				const result = await switchSession(await options.sessionRepo.open(selected));
+				if (result.cancelled) {
+					appendText(dim("Session switch cancelled by an extension."));
+					return true;
+				}
 				appendText(
 					dim(
 						`Resumed ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages${
@@ -998,6 +1027,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					targetEntryId === "" ? undefined : { entryId: targetEntryId },
 				);
 				const result = await switchSession(newStore);
+				if (result.cancelled) {
+					appendText(dim("Session switch cancelled by an extension (fork file kept)."));
+					return true;
+				}
 				appendText(
 					dim(`Forked to ${result.metadata.filePath ?? result.metadata.id} (${result.messageCount} messages).`),
 				);
@@ -1205,7 +1238,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 	}
 
-	async function runPrompt(input: string): Promise<void> {
+	async function runPrompt(input: string | null): Promise<void> {
 		runningTask = "turn";
 		activeStatus = "working";
 		steeringCount = 0;
@@ -1213,14 +1246,16 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		controller = new AbortController();
 		setFooter();
 		setStatus(cyan("Working..."));
-		appendText(bold(`> ${input}`));
+		if (input !== null) appendText(bold(`> ${input}`));
 		let assistantComponent: Markdown | undefined;
 		let assistantText = "";
 		const toolComponents = new Map<string, Component>();
 		const toolOutputs = new Map<string, LiveStreamOutput>();
 		const pendingTools = new Map<string, string>();
 		try {
-			for await (const event of agent.prompt(input, controller.signal)) {
+			// input null = extension-triggered continuation without new user input.
+			const stream = input === null ? agent.resume(controller.signal) : agent.prompt(input, controller.signal);
+			for await (const event of stream) {
 				await renderEvent(event, {
 					getAssistant: () => {
 						if (!assistantComponent) {
@@ -1265,6 +1300,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 	}
 
+	attachTuiHostActions(extensions);
 	await refreshExtensionSurfaces();
 	appendText(await formatDiagnostics());
 	tui.start();
@@ -2190,6 +2226,24 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 		}
 		case "compaction":
 			state.getAssistant().setText(dim(`[${formatCompactionResult(event.result)}]`));
+			break;
+		case "auto_retry_start":
+			state.addComponent(
+				new Text(
+					dim(
+						`[retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.errorMessage.split("\n")[0]}]`,
+					),
+					1,
+					0,
+				),
+			);
+			break;
+		case "auto_retry_end":
+			if (!event.success && event.finalError !== undefined) {
+				state.addComponent(
+					new Text(dim(`[retry gave up after ${event.attempt}: ${event.finalError.split("\n")[0]}]`), 1, 0),
+				);
+			}
 			break;
 		case "agent_end":
 			break;

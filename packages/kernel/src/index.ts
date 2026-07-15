@@ -1,3 +1,4 @@
+export { AbortHandle } from "./abort.ts";
 export { Agent, type AgentEvent, type AgentOptions, type QueueMode } from "./agent.ts";
 export {
 	BRANCH_SUMMARY_PREAMBLE,
@@ -52,6 +53,8 @@ export {
 	type AgentRunResult,
 	type AgentSpawnOptions,
 	type AgentStartEvent,
+	type AutoRetryEndEvent,
+	type AutoRetryStartEvent,
 	type BeforeAgentStartEvent,
 	type BeforeAgentStartEventResult,
 	type CompactionReason,
@@ -96,10 +99,13 @@ export {
 	type RegisteredWidgetRenderResult,
 	type ResourcesDiscoverEvent,
 	type ResourcesDiscoverResult,
+	type SendMessageOptions,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeCompactResult,
 	type SessionBeforeForkEvent,
 	type SessionBeforeForkResult,
+	type SessionBeforeSwitchEvent,
+	type SessionBeforeSwitchResult,
 	type SessionBeforeTreeEvent,
 	type SessionBeforeTreeResult,
 	type SessionCompactEvent,
@@ -164,6 +170,12 @@ export {
 	type TauAbortSignal,
 	type Utf8Decoder,
 } from "./platform.ts";
+export {
+	DEFAULT_RETRY_SETTINGS,
+	isContextOverflowError,
+	isRetryableAssistantError,
+	type RetrySettings,
+} from "./retry.ts";
 export {
 	type ForkOptions,
 	getEntriesToFork,

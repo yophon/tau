@@ -1,3 +1,4 @@
+import { AbortHandle } from "./abort.ts";
 import { HttpError, TauError, toError } from "./errors.ts";
 import {
 	type AgentMessage,
@@ -43,6 +44,13 @@ export interface OpenAICompatConfig {
 	extraBody?: Record<string, unknown>;
 	/** Set false for providers that reject stream_options. Defaults to true. */
 	includeUsage?: boolean;
+	/**
+	 * Max silence (ms) tolerated waiting for response headers or the next stream
+	 * chunk before failing with a timeout — the defense against servers that hang
+	 * without erroring. Default 120000; 0 disables. Requires Platform.sleep
+	 * (absent on bare engines → no stall protection, silently).
+	 */
+	stallTimeoutMs?: number;
 }
 
 /** The `api` field recorded on assistant messages, as in pi. */
@@ -168,6 +176,46 @@ function throwIfAborted(signal: TauAbortSignal | undefined): void {
 	if (signal?.aborted) throw new TauError("aborted", "Request aborted");
 }
 
+const DEFAULT_STALL_TIMEOUT_MS = 120_000;
+
+/**
+ * Race a pending step against the stall clock. Losers are always cleaned up:
+ * the sleep is aborted when the step wins, and a timed-out step's eventual
+ * rejection is marked handled so it cannot become an unhandled rejection.
+ */
+async function withStallTimeout<T>(
+	step: Promise<T>,
+	platform: Platform,
+	stallTimeoutMs: number | undefined,
+	what: string,
+): Promise<T> {
+	const timeoutMs = stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
+	const sleep = platform.sleep;
+	if (!sleep || timeoutMs <= 0) return step;
+	const stallClock = new AbortHandle();
+	// Mark handled: the losing branch's rejection must never surface on its own.
+	const guarded = step.then(
+		(value) => ({ ok: true as const, value }),
+		(error) => ({ ok: false as const, error }),
+	);
+	const clock = sleep(timeoutMs, stallClock.signal).then(
+		() => "timeout" as const,
+		() => "cancelled" as const,
+	);
+	const winner = await Promise.race([guarded, clock]);
+	if (winner === "timeout") {
+		// Wording matters: "timed out" keeps this classifiable by the pi retry patterns.
+		throw new TauError("timeout", `${what} timed out: no data for ${timeoutMs}ms`);
+	}
+	stallClock.abort();
+	if (winner === "cancelled") {
+		// Unreachable: the clock only reports cancelled after stallClock.abort() above.
+		throw new TauError("timeout", `${what} stall clock cancelled unexpectedly`);
+	}
+	if (!winner.ok) throw winner.error;
+	return winner.value;
+}
+
 /**
  * Stream a chat completion from any OpenAI-compatible endpoint. Yields text and
  * reasoning deltas as they arrive, complete tool calls once assembled, and a
@@ -203,15 +251,21 @@ export async function* streamChatCompletion(
 
 	let response: PlatformResponse;
 	try {
-		response = await platform.fetch(url, {
-			method: "POST",
-			headers,
-			body: JSON.stringify(body),
-			signal: options?.signal,
-		});
+		response = await withStallTimeout(
+			platform.fetch(url, {
+				method: "POST",
+				headers,
+				body: JSON.stringify(body),
+				signal: options?.signal,
+			}),
+			platform,
+			config.stallTimeoutMs,
+			"Waiting for response headers",
+		);
 	} catch (cause) {
 		// An aborted fetch surfaces as the platform's own abort rejection; report it as ours.
 		throwIfAborted(options?.signal);
+		if (cause instanceof TauError && cause.code === "timeout") throw cause;
 		throw new TauError("network_error", `Network request failed: ${toError(cause).message}`, cause);
 	}
 	if (!response.ok) {
@@ -292,10 +346,11 @@ export async function* streamChatCompletion(
 			throwIfAborted(options?.signal);
 			let readResult: { done: boolean; value?: Uint8Array };
 			try {
-				readResult = await reader.read();
+				readResult = await withStallTimeout(reader.read(), platform, config.stallTimeoutMs, "Response stream");
 			} catch (cause) {
 				// Reads interrupted by abort reject with the platform's own error; report it as ours.
 				throwIfAborted(options?.signal);
+				if (cause instanceof TauError && cause.code === "timeout") throw cause;
 				throw new TauError("stream_error", `Stream read failed: ${toError(cause).message}`, cause);
 			}
 			const { done: readerDone, value } = readResult;

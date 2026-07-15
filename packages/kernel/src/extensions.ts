@@ -68,6 +68,11 @@ export interface ExtensionContext {
 	runSubagent?: (prompt: string, options?: AgentSpawnOptions, signal?: TauAbortSignal) => Promise<AgentRunResult>;
 	/** Collect resource paths contributed by extensions. */
 	discoverResources?: (reason: ResourcesDiscoverEvent["reason"]) => Promise<Required<ResourcesDiscoverResult>>;
+	/**
+	 * Abort the current agent operation (the running prompt and any retry
+	 * backoff), as in pi. No-op when the agent is idle.
+	 */
+	abort?: () => void;
 }
 
 /** Handler signature, as in pi: returning undefined/void means "no opinion". */
@@ -283,6 +288,32 @@ export interface SessionTreeEvent {
 	oldLeafId: string | null;
 	summaryEntry?: SessionEntry;
 	fromExtension?: boolean;
+}
+
+/** Fired before the host switches to another session (pi shape). Handlers may cancel. */
+export interface SessionBeforeSwitchEvent {
+	type: "session_before_switch";
+	reason: "new" | "resume";
+	targetSessionFile?: string;
+}
+
+export type SessionBeforeSwitchResult = { cancel?: boolean } | undefined;
+
+/** Fired when an automatic retry of a failed LLM request begins its backoff (pi shape). */
+export interface AutoRetryStartEvent {
+	type: "auto_retry_start";
+	attempt: number;
+	maxAttempts: number;
+	delayMs: number;
+	errorMessage: string;
+}
+
+/** Fired when the retry cycle resolves: success after retries, cancellation, or exhaustion. */
+export interface AutoRetryEndEvent {
+	type: "auto_retry_end";
+	success: boolean;
+	attempt: number;
+	finalError?: string;
 }
 
 /** Fired for user input before it enters the conversation. */
@@ -521,9 +552,29 @@ export interface ExtensionAPI {
 	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
+	on(
+		event: "session_before_switch",
+		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
+	): void;
+	on(event: "auto_retry_start", handler: ExtensionHandler<AutoRetryStartEvent>): void;
+	on(event: "auto_retry_end", handler: ExtensionHandler<AutoRetryEndEvent>): void;
 
-	/** Inject a custom message into the conversation (enters LLM context as a user-role message). */
-	sendMessage(message: CustomMessageInput): void;
+	/**
+	 * Inject a custom message into the conversation (enters LLM context as a
+	 * user-role message). Options mirror pi's sendMessage: `deliverAs` decides
+	 * queueing while a prompt is streaming (default "steer"; "followUp" waits for
+	 * the current run; "nextTurn" holds the message as context for the next user
+	 * turn), `triggerTurn` starts an LLM turn when the agent is idle (requires a
+	 * host that provides resumeTurn).
+	 */
+	sendMessage(message: CustomMessageInput, options?: SendMessageOptions): void;
+
+	/**
+	 * Send a user message. Always triggers a turn (as in pi): steers or queues a
+	 * follow-up while streaming, and submits a fresh prompt via the host when
+	 * idle (requires a host that provides submitPrompt).
+	 */
+	sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
 
 	/** Persist extension state as a session entry that never enters LLM context. */
 	appendEntry(customType: string, data: unknown): void;
@@ -605,13 +656,31 @@ interface HandlerLists {
 	session_before_fork: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>[];
 	session_before_tree: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>[];
 	session_tree: ExtensionHandler<SessionTreeEvent>[];
+	session_before_switch: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>[];
+	auto_retry_start: ExtensionHandler<AutoRetryStartEvent>[];
+	auto_retry_end: ExtensionHandler<AutoRetryEndEvent>[];
 }
 
-/** Actions an attached Agent provides to back sendMessage/appendEntry/setSessionName. */
+/** Options for the sendMessage extension action (pi shape). */
+export interface SendMessageOptions {
+	/** Start an LLM turn when idle. Ignored while streaming. Requires host resumeTurn support. */
+	triggerTurn?: boolean;
+	/** Delivery while streaming: steer (default), followUp, or hold for the next user turn. */
+	deliverAs?: "steer" | "followUp" | "nextTurn";
+}
+
+/** Actions an attached Agent/host provides to back the extension action methods. */
 export interface ExtensionHostActions {
-	sendMessage(message: CustomMessageInput): void;
-	appendEntry(customType: string, data: unknown): void;
-	setSessionName(name: string): void;
+	sendMessage?(message: CustomMessageInput, options?: SendMessageOptions): void;
+	sendUserMessage?(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+	appendEntry?(customType: string, data: unknown): void;
+	setSessionName?(name: string): void;
+	/** Abort the current agent operation (ctx.abort backing). */
+	abort?(): void;
+	/** Host-run submission of a fresh prompt (backs sendUserMessage while idle). */
+	submitPrompt?(text: string): void;
+	/** Host-run continuation without new user input (backs sendMessage triggerTurn while idle). */
+	resumeTurn?(): void;
 }
 
 /**
@@ -662,6 +731,9 @@ export class ExtensionRegistry {
 		session_before_fork: [],
 		session_before_tree: [],
 		session_tree: [],
+		session_before_switch: [],
+		auto_retry_start: [],
+		auto_retry_end: [],
 	};
 
 	static async load(extensions: Extension[]): Promise<ExtensionRegistry> {
@@ -711,25 +783,37 @@ export class ExtensionRegistry {
 				this.flags.set(name, { name, ...options });
 			},
 			getFlag: (name) => this.getFlag(name),
-			sendMessage: (message) => this.requireHostActions("sendMessage").sendMessage(message),
-			appendEntry: (customType, data) => this.requireHostActions("appendEntry").appendEntry(customType, data),
-			setSessionName: (name) => this.requireHostActions("setSessionName").setSessionName(name),
+			sendMessage: (message, options) => this.requireHostActions("sendMessage")(message, options),
+			sendUserMessage: (content, options) => this.requireHostActions("sendUserMessage")(content, options),
+			appendEntry: (customType, data) => this.requireHostActions("appendEntry")(customType, data),
+			setSessionName: (name) => this.requireHostActions("setSessionName")(name),
 		};
 		for (const extension of extensions) {
 			await extension(api);
 		}
 	}
 
-	/** Called by the Agent on construction to back the action methods. */
+	/**
+	 * Back the extension action methods. Merges: the Agent attaches the core
+	 * actions on construction, and the host may attach more (submitPrompt,
+	 * resumeTurn, abort) before or after — later attachments override same-name
+	 * actions without clobbering the rest.
+	 */
 	attachHostActions(actions: ExtensionHostActions): void {
-		this.hostActions = actions;
+		this.hostActions = { ...this.hostActions, ...actions };
 	}
 
-	private requireHostActions(action: string): ExtensionHostActions {
-		if (!this.hostActions) {
-			throw new TauError("no_host", `${action}() requires an attached Agent (call it from an event handler)`);
+	/** Look up a host action if any host attached it (Agent-internal helper). */
+	hostAction<K extends keyof ExtensionHostActions>(name: K): ExtensionHostActions[K] {
+		return this.hostActions?.[name];
+	}
+
+	private requireHostActions<K extends keyof ExtensionHostActions>(action: K): NonNullable<ExtensionHostActions[K]> {
+		const found = this.hostActions?.[action];
+		if (!found) {
+			throw new TauError("no_host", `${String(action)}() requires a host that provides this action`);
 		}
-		return this.hostActions;
+		return found;
 	}
 
 	/** Host-side: supply parsed CLI flag values. Unknown names are ignored (host validates). */
@@ -1025,6 +1109,30 @@ export class ExtensionRegistry {
 	async notifySessionTree(event: Omit<SessionTreeEvent, "type">, ctx: ExtensionContext): Promise<void> {
 		for (const handler of this.handlers.session_tree) {
 			await handler({ type: "session_tree", ...event }, ctx);
+		}
+	}
+
+	/** Run session_before_switch handlers; the first cancel wins (pi semantics). */
+	async runSessionBeforeSwitch(
+		event: Omit<SessionBeforeSwitchEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<{ cancelled: boolean }> {
+		for (const handler of this.handlers.session_before_switch) {
+			const result = await handler({ type: "session_before_switch", ...event }, ctx);
+			if (result?.cancel) return { cancelled: true };
+		}
+		return { cancelled: false };
+	}
+
+	async notifyAutoRetryStart(event: Omit<AutoRetryStartEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.auto_retry_start) {
+			await handler({ type: "auto_retry_start", ...event }, ctx);
+		}
+	}
+
+	async notifyAutoRetryEnd(event: Omit<AutoRetryEndEvent, "type">, ctx: ExtensionContext): Promise<void> {
+		for (const handler of this.handlers.auto_retry_end) {
+			await handler({ type: "auto_retry_end", ...event }, ctx);
 		}
 	}
 

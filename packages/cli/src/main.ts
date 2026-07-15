@@ -47,6 +47,9 @@ REPL commands: /name <name>, /sessions, /compact [instructions], /tree [<id>],
 (up to <id> if given) and switches to it.
 
 Extensions may declare additional --<flag> options (see registerFlag).
+Retry/timeout env knobs: TAU_MAX_RETRIES (0 disables, default 3),
+TAU_RETRY_BASE_DELAY_MS (default 2000, exponential), TAU_STALL_TIMEOUT_MS
+(default 120000, 0 disables the dry-stream watchdog).
 Without -p, tau starts an interactive REPL. During a running turn, typed lines
 are queued as steering messages. Ctrl+C aborts the current turn.`;
 
@@ -308,7 +311,7 @@ function setThinkingLevelInConfig(config: OpenAICompatConfig, level: ThinkingLev
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
 
-async function runTurn(agent: Agent, input: string, readline: Readline): Promise<void> {
+async function runTurn(agent: Agent, input: string | null, readline: Readline): Promise<void> {
 	const controller = new AbortController();
 	turnState.controller = controller;
 	const onSigint = (): void => {
@@ -323,7 +326,9 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 	readline.on("line", onLine);
 	let sawReasoning = false;
 	try {
-		for await (const event of agent.prompt(input, controller.signal)) {
+		// input null = continuation without new user input (extension triggerTurn).
+		const stream = input === null ? agent.resume(controller.signal) : agent.prompt(input, controller.signal);
+		for await (const event of stream) {
 			switch (event.type) {
 				case "reasoning_delta":
 					sawReasoning = true;
@@ -359,6 +364,18 @@ async function runTurn(agent: Agent, input: string, readline: Readline): Promise
 					break;
 				case "compaction":
 					process.stdout.write(dim(`[compacted: ~${event.result.tokensBefore} tokens summarized]\n`));
+					break;
+				case "auto_retry_start":
+					process.stdout.write(
+						dim(
+							`[retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${firstLine(event.errorMessage)}]\n`,
+						),
+					);
+					break;
+				case "auto_retry_end":
+					if (!event.success && event.finalError !== undefined) {
+						process.stdout.write(dim(`[retry gave up after ${event.attempt}: ${firstLine(event.finalError)}]\n`));
+					}
 					break;
 				case "tool_result": {
 					const marker = event.result.isError ? red("✗") : dim("✓");
@@ -435,7 +452,22 @@ async function main(): Promise<void> {
 	const envWindow = Number.parseInt(process.env.TAU_CONTEXT_WINDOW ?? "", 10);
 	const contextWindow = options.contextWindow ?? (Number.isFinite(envWindow) && envWindow > 0 ? envWindow : undefined);
 	const modelChoices = uniqueStrings([model, ...(options.models ?? []), ...splitList(process.env.TAU_MODELS)]);
-	const config: OpenAICompatConfig = { baseUrl, apiKey, model, contextWindow };
+	const envStall = Number.parseInt(process.env.TAU_STALL_TIMEOUT_MS ?? "", 10);
+	const config: OpenAICompatConfig = {
+		baseUrl,
+		apiKey,
+		model,
+		contextWindow,
+		...(Number.isFinite(envStall) && envStall >= 0 ? { stallTimeoutMs: envStall } : {}),
+	};
+	const envMaxRetries = Number.parseInt(process.env.TAU_MAX_RETRIES ?? "", 10);
+	const envRetryDelay = Number.parseInt(process.env.TAU_RETRY_BASE_DELAY_MS ?? "", 10);
+	const retry = {
+		...(Number.isFinite(envMaxRetries) && envMaxRetries >= 0
+			? { maxRetries: envMaxRetries, enabled: envMaxRetries > 0 }
+			: {}),
+		...(Number.isFinite(envRetryDelay) && envRetryDelay > 0 ? { baseDelayMs: envRetryDelay } : {}),
+	};
 	const cwd = resolve(process.cwd());
 	if (options.tui && options.print === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
 		console.error("--tui requires a TTY stdin/stdout");
@@ -520,6 +552,7 @@ async function main(): Promise<void> {
 			},
 			initialMessages: messages,
 			session,
+			retry,
 		});
 	let agent = buildAgent(initialMessages, recorder);
 	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
@@ -562,6 +595,19 @@ async function main(): Promise<void> {
 	if (contextWindow === undefined) {
 		console.log(dim("No --context-window configured: auto-compaction is off (use /compact manually)."));
 	}
+	// Host actions for extension-triggered runs (sendUserMessage / sendMessage
+	// triggerTurn while idle). Closures read the live `agent` binding, so they
+	// stay correct across /fork agent swaps.
+	extensions.attachHostActions({
+		submitPrompt: (text) => {
+			if (turnState.controller) return; // already running: extensions steer instead
+			void runTurn(agent, text, readline);
+		},
+		resumeTurn: () => {
+			if (turnState.controller) return;
+			void runTurn(agent, null, readline);
+		},
+	});
 	const extensionNote = extensions.tools.size + extensions.commands.size > 0 ? " · extensions loaded" : "";
 	console.log(dim(`tau · ${model} @ ${baseUrl} · cwd ${cwd}${extensionNote} · "exit" or Ctrl+D to quit`));
 	// In a TTY, readline intercepts Ctrl+C: abort the running turn if there is
@@ -669,12 +715,21 @@ async function main(): Promise<void> {
 					}
 					const source = await store.getMetadata();
 					const newStore = await sessionRepo.fork(source, arg === "" ? undefined : { entryId: arg });
+					const meta = await newStore.getMetadata();
+					// Switching into the fork is a session switch: extensions may veto it.
+					const switchDecision = await extensions.runSessionBeforeSwitch(
+						{ reason: "resume", targetSessionFile: meta.filePath },
+						agent.extensionContext(),
+					);
+					if (switchDecision.cancelled) {
+						console.log(dim("Session switch cancelled by an extension (fork file kept)."));
+						continue;
+					}
 					const restored = await restoreSession(newStore);
 					store = newStore;
 					recorder = await SessionRecorder.open(newStore);
 					agent = buildAgent(restored.messages, recorder);
 					await extensions.notifySessionStart("resume", agent.extensionContext());
-					const meta = await newStore.getMetadata();
 					console.log(dim(`Forked to ${meta.filePath ?? meta.id} (${restored.messages.length} messages).`));
 				} catch (error) {
 					console.log(red(`/fork failed: ${error instanceof Error ? error.message : String(error)}`));

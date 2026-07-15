@@ -3,6 +3,7 @@ export type TauErrorCode =
 	| "http_error"
 	| "network_error"
 	| "stream_error"
+	| "timeout"
 	| "aborted"
 	| "max_turns"
 	| "no_host"

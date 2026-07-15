@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-14（P11 基础夯实立项并先行、原发布工程顺移 P12；P8 归档；P10 门禁先行落地）
+> 最后更新：2026-07-15（P11 基础夯实完成归档；下一步 P10 适配器实施，然后 P12 发布工程）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -104,16 +104,19 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 - 注意：小程序 request 域名白名单 → 实际部署需中转服务器（可基于 `scripts/serve-browser-demo.mjs` 的 `/proxy` 转发扩展）
 - **验收**：小程序模拟器与 RN（Expo）中流式对话跑通；smoke:quickjs 常绿
 
-## Phase 11 🚧 基础夯实（CI 门禁 + 内核健壮性 + 扩展 API 补齐）
+## Phase 11 ✅ 基础夯实（CI 门禁 + 内核健壮性 + 扩展 API 补齐）（2026-07-15）
 
 **目标**：向新端扩张前把地基做硬。用户裁决（2026-07-14）：优先于 P10 适配器实施。
 
-规格书：[specs/phase-11-foundation.md](specs/phase-11-foundation.md)（草拟，待用户确认）。
+规格书：[specs/phase-11-foundation.md](specs/phase-11-foundation.md)（已完成，含实施记录与 CI hang 复盘）。
 
-- ⬜ CI：GitHub Actions（ubuntu + Node 22），check + test + smoke 全家桶（browser/quickjs/browser:runtime/tui）
-- ⬜ 内核健壮性：错误规范化（消灭 2 条裸异常穿透、SSE buffer 上限、死码清理、轮间 abort 检查、错误路径的 agent_end 一致性）+ 审计出的 16 条零覆盖路径测试补齐
-- ⬜ 重试：`Platform.sleep` 可选缝隙 + pi 同款指数退避（默认开 3 次 2s 起）+ `auto_retry_start/end` 事件
-- ⬜ 扩展 API 补齐：`ctx.abort()`、`sendMessage` 的 `deliverAs/triggerTurn`、`sendUserMessage`、`session_before_switch`（Backlog 相应行清除）
+**完成记录（2026-07-15）**：107 测试全绿，CI（gate + smoke）全绿。
+- ✅ CI：GitHub Actions（ubuntu + Node 22）双 job——check + `git diff --exit-code`（防格式漂移）+ test；smoke 全家桶（browser/quickjs/browser:runtime/tui）。首跑揪出 e2e 竞态类缺陷（详见规格书复盘）：raced 命令被 steer、waitForExit 无超时、失败测试泄漏子进程——已全部根治（waitForIdle/超时+诊断输出/after() 兜底击杀）
+- ✅ 内核健壮性：**流失败照抄 pi 转为 stopReason error/aborted 消息**（不再抛出，入对话与会话，宿主渲染新终态）；`network_error`/`timeout` 新错误码；fetch/reader 裸异常包装；SSE 行 buffer 4MB 上限；轮间 abort 检查；停滞超时看门狗（默认 120s，经 `withStallTimeout` race，防服务器干挂）；审计 16 条零覆盖路径全部补齐（agent-errors.test.ts 15 用例 + 迁移 2 个旧断言）。审计修正：`no_host`/`compaction_failed` 实为在用，非死码
+- ✅ 重试：`Platform.sleep` 可选缝隙（defaultPlatform 用 timers，缺失则重试/超时静默禁用——裸引擎零负担）；分类正则逐字照抄 pi `ai/utils/retry.ts` + 溢出文本排除；指数退避 2s/4s/8s 默认 3 次；错误消息移出内存留在会话；退避可 abort；`auto_retry_start/end` 双通道（扩展事件 + AgentEvent）；CLI/TUI dim 行展示；env 知调 TAU_MAX_RETRIES/TAU_RETRY_BASE_DELAY_MS/TAU_STALL_TIMEOUT_MS
+- ✅ 扩展 API：`ctx.abort()`（内核 AbortHandle 支撑，宿主可覆盖）、`sendMessage` options（deliverAs 三值语义照抄 pi 的 sendCustomMessage,以 pi isStreaming 对应的 looping 边界判定）、`sendUserMessage`（总触发,宿主 submitPrompt/resumeTurn 动作 + `Agent.resume()` 无输入续跑）、`session_before_switch`（TUI 三切换点 + CLI /fork）；attachHostActions 改 merge 语义
+- 发现并修复实现前未预见的问题：**原生 fetch 拒收结构化 TauAbortSignal**（undici 要求真 AbortSignal 实例）——defaultPlatform 缝隙内桥接,技术债 #7 的适配器义务由此有了内核侧范例
+- TUI e2e：smoke:tui 新增 extension ctx.abort 场景（message_update 钩子中止流中轮 → Turn aborted.）
 
 ## Phase 12 ⬜ 发布工程（原 P11 顺移）
 
@@ -125,7 +128,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 - `@tau/pi-compat` 垫片（D9）
 - TUI Themes（P8D-2 整体延期：schema 设计、内置 light/dark、加载入口、reload 刷新，任务细目保留在 phase-8 规格书）
-- pi parity 延期小项（P8 核对确认未实现）：`session_before_switch`、`sendMessage` 的 deliverAs/triggerTurn、`ctx.abort()`、compact `overflow` reason、`before_tree` 的 label/userWantsSummary
+- pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
 
 ## 技术债登记
 
@@ -136,7 +139,6 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 | 5 | `--disable-warning=ExperimentalWarning` 仅在 npm script，直接 node 跑 CLI 仍有告警 | 观感 | P12（P8 未做统一 bin 入口，移交发布工程一并处理） |
 | 6 | `@tau/*` 为占位 scope | 发布前必须定名 | P12（scope 候选可在 P11 规格开放问题 #4 预决策） |
 | 7 | 自定义 `Platform.fetch` 收到的 `signal` 是 `TauAbortSignal` 结构子集，非标准 AbortSignal；非 fetch 适配器需自行桥接 | 小程序/RN 适配器作者易踩 | P10 适配器实现时验证并文档化 |
-| 8 | `smoke:tui` 依赖本机 tmux 手动触发，未纳入 CI | TUI 回归靠人肉记得跑 | P11 基础夯实（CI 上线时纳入；抖动则降级方案见 phase-11 规格开放问题 #2） |
 | 9 | footer 的 cost 恒为 unknown（D3 无模型库/定价数据，usage 只有 token 数） | 观感；用户无成本感知 | 未排期（等 provider 定价数据源决策，不伪造价格） |
 | 10 | context token 为 usage + chars/4 启发式估算（pi 同款），与真实 tokenizer 有偏差 | 压缩触发点/footer 百分比不精确 | 未排期（pi 同款算法，接受偏差；换 tokenizer 属大决策） |
 
