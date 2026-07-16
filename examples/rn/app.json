@@ -1,0 +1,12 @@
+{
+  "expo": {
+    "name": "tau-rn-demo",
+    "slug": "tau-rn-demo",
+    "version": "0.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "plugins": [
+      "expo-asset"
+    ]
+  }
+}

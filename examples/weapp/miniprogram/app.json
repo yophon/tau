@@ -1,0 +1,9 @@
+{
+	"pages": ["pages/chat/chat"],
+	"renderer": "webview",
+	"window": {
+		"navigationBarTitleText": "tau weapp demo",
+		"navigationBarBackgroundColor": "#1a1a2e",
+		"navigationBarTextStyle": "white"
+	}
+}

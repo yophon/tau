@@ -1,0 +1,20 @@
+{
+  "miniprogramRoot": "miniprogram/",
+  "compileType": "miniprogram",
+  "appid": "touristappid",
+  "projectname": "tau-weapp-demo",
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "enhance": true,
+    "postcss": false,
+    "minified": false,
+    "babelSetting": {
+      "ignore": [
+        "lib/tau.js"
+      ]
+    },
+    "minifyWXML": true
+  },
+  "libVersion": "3.0.0"
+}

@@ -1,0 +1,20 @@
+{
+  "name": "tau-rn-demo",
+  "version": "0.0.1",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start"
+  },
+  "dependencies": {
+    "@tau/host-rn": "file:../../packages/host-rn",
+    "@tau/kernel": "file:../../packages/kernel",
+    "expo": "~52.0.0",
+    "expo-asset": "~11.0.5",
+    "react": "18.3.1",
+    "react-native": "0.76.5"
+  },
+  "devDependencies": {
+    "babel-preset-expo": "~12.0.0"
+  }
+}

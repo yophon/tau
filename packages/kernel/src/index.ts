@@ -196,4 +196,5 @@ export {
 } from "./session.ts";
 export { type SseEvent, SseParser } from "./sse.ts";
 export { errorResult, optionalNumber, requireString, type Tool, type ToolResult } from "./tools.ts";
+export { createIncrementalUtf8Decoder } from "./utf8.ts";
 export { uuidv7 } from "./uuid.ts";

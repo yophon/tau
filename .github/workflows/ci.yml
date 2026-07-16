@@ -33,6 +33,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci --ignore-scripts
       - run: npm run smoke:browser
+      - run: npm run smoke:weapp
       - run: npm run smoke:quickjs
       - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:browser:runtime
       - run: npm run smoke:tui

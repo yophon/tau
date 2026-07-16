@@ -1,0 +1,20 @@
+<view class="page">
+	<view class="config">
+		<input class="field" placeholder="baseUrl（https://…/v1）" value="{{baseUrl}}" data-field="baseUrl" bindinput="bindField" />
+		<input class="field" placeholder="apiKey（可空）" password value="{{apiKey}}" data-field="apiKey" bindinput="bindField" />
+		<input class="field" placeholder="model" value="{{model}}" data-field="model" bindinput="bindField" />
+		<input class="field" placeholder="stallTimeoutMs（默认 120000，慢网络调大）" type="number" value="{{stallTimeoutMs}}" data-field="stallTimeoutMs" bindinput="bindField" />
+	</view>
+	<scroll-view class="messages" scroll-y scroll-into-view="bottom-anchor">
+		<view wx:for="{{messages}}" wx:key="index" class="msg {{item.role}} {{item.status}}">
+			<text class="msg-text">{{item.text}}</text>
+			<text wx:if="{{item.errorMessage}}" class="error-detail">{{item.errorMessage}}</text>
+		</view>
+		<view id="bottom-anchor"></view>
+	</scroll-view>
+	<view class="composer">
+		<input class="prompt" placeholder="输入消息…" value="{{input}}" data-field="input" bindinput="bindField" confirm-type="send" bindconfirm="onSend" />
+		<button class="btn" size="mini" bindtap="onSend" disabled="{{running}}">发送</button>
+		<button class="btn" size="mini" bindtap="onAbort" disabled="{{!running}}">中止</button>
+	</view>
+</view>

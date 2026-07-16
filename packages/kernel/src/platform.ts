@@ -138,6 +138,9 @@ export function defaultPlatform(): Platform {
 			typeof globalSetTimeout === "function"
 				? (ms, signal) =>
 						new Promise<void>((resolve, reject) => {
+							// Declared before fail(): a signal already aborted at entry runs fail()
+							// ahead of the timer, and a const would still be in its TDZ there.
+							let handle: unknown;
 							const fail = (): void => {
 								if (handle !== undefined) globalClearTimeout?.(handle);
 								reject(new TauError("aborted", "Sleep aborted"));
@@ -146,7 +149,7 @@ export function defaultPlatform(): Platform {
 								fail();
 								return;
 							}
-							const handle = globalSetTimeout(() => {
+							handle = globalSetTimeout(() => {
 								signal?.removeEventListener("abort", fail);
 								resolve();
 							}, ms);

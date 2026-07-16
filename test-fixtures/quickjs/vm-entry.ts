@@ -1,9 +1,15 @@
 // 裸引擎冒烟 fixture：在 QuickJS（无 fetch/TextEncoder/TextDecoder/crypto/timers，
 // 即 flutter_js 的运行模型）里跑内核的完整两轮 agent 循环。
 // Platform 全部手工注入——这既是测试，也是 D4 注入缝隙的持续证明。
-import { Agent, type Platform, type PlatformResponse, type Tool } from "../../packages/kernel/src/index.ts";
+import {
+	Agent,
+	createIncrementalUtf8Decoder,
+	type Platform,
+	type PlatformResponse,
+	type Tool,
+} from "../../packages/kernel/src/index.ts";
 
-// ---- 手写 UTF-8 编解码（证明缝隙在无 TextDecoder 环境可实现；host-weapp 将复用同款）----
+// ---- UTF-8 编码手写；解码用内核共享 createIncrementalUtf8Decoder（P10：host-weapp/host-rn 同款）----
 function utf8Encode(text: string): Uint8Array {
 	const out: number[] = [];
 	for (const ch of text) {
@@ -14,32 +20,6 @@ function utf8Encode(text: string): Uint8Array {
 		else out.push(0xf0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3f), 0x80 | ((cp >> 6) & 0x3f), 0x80 | (cp & 0x3f));
 	}
 	return new Uint8Array(out);
-}
-
-function createUtf8Decoder(): { decode(chunk: Uint8Array): string; flush(): string } {
-	let pending: number[] = [];
-	return {
-		decode(chunk) {
-			pending.push(...chunk);
-			let result = "";
-			let i = 0;
-			while (i < pending.length) {
-				const byte = pending[i];
-				const length = byte < 0x80 ? 1 : byte >> 5 === 0b110 ? 2 : byte >> 4 === 0b1110 ? 3 : 4;
-				if (i + length > pending.length) break; // 多字节字符被切断，留待下一 chunk
-				let cp = length === 1 ? byte : byte & (0xff >> (length + 1));
-				for (let j = 1; j < length; j++) cp = (cp << 6) | (pending[i + j] & 0x3f);
-				result += String.fromCodePoint(cp);
-				i += length;
-			}
-			pending = pending.slice(i);
-			return result;
-		},
-		flush() {
-			pending = [];
-			return "";
-		},
-	};
 }
 
 // ---- 脚本化 OpenAI 兼容 SSE 流；多字节字符故意切在 3 字节 chunk 边界，考验增量解码 ----
@@ -101,7 +81,7 @@ const platform: Platform = {
 		if (!response) throw new Error("scripted responses exhausted");
 		return response;
 	},
-	createUtf8Decoder,
+	createUtf8Decoder: createIncrementalUtf8Decoder,
 	// 裸引擎无 crypto——确定性 LCG（同 kernel test helpers 的 seededRandomBytes）
 	randomBytes: (length) => {
 		let state = 42;

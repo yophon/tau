@@ -4,5 +4,5 @@
 		"lib": ["ES2023", "DOM", "DOM.Iterable"],
 		"types": []
 	},
-	"include": ["extensions", "browser/src"]
+	"include": ["extensions", "browser/src", "weapp/src"]
 }
