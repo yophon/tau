@@ -7,8 +7,11 @@
 - Node ≥ 22.19（原生 type-stripping，零构建直接跑源码；P8 引入 `@earendil-works/pi-tui` 后的最低版本）
 - `npm install --ignore-scripts` — 安装依赖
 - `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁**。改完代码必跑，全绿才算完
-- `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试）
+- `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试 + CLI e2e）
 - `npm run tau` — 跑 CLI（需 TAU_BASE_URL / TAU_API_KEY / TAU_MODEL 环境变量或对应 flag）
+- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）
+- **CI（P11 起）**：push/PR 到 main 自动跑 gate（check + `git diff --exit-code` 防格式漂移 + test）与 smoke 全家桶。提交前本地跑过 check 可避免 CI 因 biome 自动修复而红
+- **e2e 纪律（P11 事故教训）**：REPL 测试写命令前必须 `waitForIdle()`（运行中写入会变 steering）；一切等待必须有超时；spawn 的子进程必须有 `after()` 兜底击杀——无界等待都是 CI 定时炸弹
 
 ## pi 参照系
 
@@ -40,6 +43,7 @@
 - [ ] `npm run check` 全绿（lint + 全包类型 + 纯度门禁）
 - [ ] `npm test` 全绿，新功能有内核单测（假 Platform，不碰宿主 API）
 - [ ] 至少一条 e2e 路径实测通过（mock 服务器 + 真 CLI；交互路径用 tmux）
+- [ ] push 后 GitHub Actions（gate + smoke）全绿
 - [ ] 规格书的验收清单逐项勾掉
 
 **4. 归档（完成才算数）**
