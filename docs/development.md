@@ -9,7 +9,7 @@
 - `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁**。改完代码必跑，全绿才算完
 - `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试 + CLI e2e）
 - `npm run tau` — 跑 CLI（需 TAU_BASE_URL / TAU_API_KEY / TAU_MODEL 环境变量或对应 flag）
-- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）
+- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（weapp demo bundle 无 Node 泄漏）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）· `demo:weapp`（生成小程序 demo 的 lib/tau.js）
 - **CI（P11 起）**：push/PR 到 main 自动跑 gate（check + `git diff --exit-code` 防格式漂移 + test）与 smoke 全家桶。提交前本地跑过 check 可避免 CI 因 biome 自动修复而红
 - **e2e 纪律（P11 事故教训）**：REPL 测试写命令前必须 `waitForIdle()`（运行中写入会变 steering）；一切等待必须有超时；spawn 的子进程必须有 `after()` 兜底击杀——无界等待都是 CI 定时炸弹
 
@@ -28,6 +28,7 @@
 5. **能力可选**：任何代码不得假设 fs/shell/ui 存在，缺失时降级（少注册工具、扩展走无 UI 路径）。
 6. **不擅自 commit**：commit 前询问用户。
 7. **文档即接口**：行为与文档冲突时，要么改代码要么改文档，不允许悬置。发现文档间不一致，当场修。
+8. **适配器信号桥接义务**（P10，原技术债 #7）：内核造的 `TauAbortSignal` 是结构子集，原生传输层普遍拒收（undici/expo fetch 要真 `AbortSignal`；wx 要 `RequestTask.abort()`）。写新 `Platform` 适配器必须按需双向桥接，且 abort 后 pending read 必须 reject（abort 才能传回内核转成 aborted 消息）。参照实现：kernel `platform.ts` 的 `bridgeSignal`、`host-rn`（正向）、`host-weapp`（反向）。
 
 ## 阶段执行流程（每个 Phase 依此走完）
 

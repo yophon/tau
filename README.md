@@ -18,6 +18,8 @@ inject a small adapter instead of polyfilling globals.
 | `@tau/kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, capability interfaces | **No** — enforced by `npm run check:purity` |
 | `@tau/host-node` | `FileSystem` + `Shell` capability providers for Node.js | Yes |
 | `@tau/host-browser` | OPFS + in-memory `FileSystem` capability providers and browser session repo helper | Yes |
+| `@tau/host-weapp` | WeChat mini-program `Platform` adapter: `wx.request` chunked streaming → `PlatformFetch` | Yes |
+| `@tau/host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
 | `@tau/cli` | Minimal terminal frontend | Yes |
 | `@tau/ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
 | `@tau/ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
@@ -57,7 +59,9 @@ npm run tau -- --tui              # experimental TUI mode
 npm run tau -- -p "list the files here and summarize"
 npm run smoke:browser             # bundle the browser host demo
 npm run smoke:quickjs             # full agent loop on a bare QuickJS engine (no WinterTC globals)
+npm run smoke:weapp               # bundle the WeChat mini-program demo (no Node leakage)
 npm run demo:browser              # serve the browser demo locally (CORS proxy included)
+npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js for WeChat devtools
 ```
 
 ## Embedding the kernel
@@ -126,9 +130,9 @@ Living docs under [docs/](docs/) — start here when picking up development:
 
 - [docs/development.md](docs/development.md) — process source of truth: commands, hard rules, spec-first phase workflow, Definition of Done
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
-- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P11) with status, dependencies, and tech-debt register
+- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P12) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D12)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D16)
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

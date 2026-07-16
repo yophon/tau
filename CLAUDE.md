@@ -8,7 +8,7 @@
 2. `docs/architecture.md` — 当前架构、内核代码地图、术语表
 3. `docs/roadmap.md` — 第一个非 ✅ 阶段 = 当前工作（含阶段依赖图、技术债登记）
 4. `docs/specs/phase-<N>-*.md` — 当前阶段规格书（若无，先写它：模板 `docs/specs/TEMPLATE.md`，经用户确认再动码）
-5. `docs/decisions.md` — 决策理由（D1–D12），改设计前先查
+5. `docs/decisions.md` — 决策理由（D1–D16），改设计前先查
 6. `docs/pi-parity.md` — pi 钩子/生命周期对照清单（实现或排除任何一项时更新它）
 
 ## 最重要的四条

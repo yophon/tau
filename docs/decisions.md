@@ -61,3 +61,7 @@ Phase 0 曾把消息模型设计成 OpenAI wire 格式的直接镜像（string c
 ## D15：Platform 可选能力模式——`sleep` 缺失即静默禁用，不做降级模拟（2026-07-15，P11）
 
 `Platform.sleep?` 是缝隙的第一个可选成员：存在则自动重试与停滞看门狗启用；缺失则两者**整体禁用**（绝不做 0 延时忙重试或轮询模拟）。理由：裸引擎（QuickJS/flutter_js）无 timers，强求实现会破坏"内核只依赖语言标准"的主张；与能力可选（fs/shell 缺失就少注册工具）哲学一致，是 D4 的自然延伸。影响：适配器作者实现 `sleep`（一行 setTimeout）即免费获得重试+超时；未来新增缝隙成员默认走同一模式——可选、缺失静默降级、文档写明差异。另：`defaultPlatform()` 顺带承担结构化 signal → 真 AbortSignal 的桥接（原生 fetch 拒收结构子集），自定义适配器对自家传输负有同等桥接义务（债 #7）。
+
+## D16：适配器交付形态——官方独立宿主包 + 内核共享 UTF-8 解码器（2026-07-15，P10，用户裁决）
+
+小程序与 RN 适配器都以独立零依赖包交付（`@tau/host-weapp`、`@tau/host-rn`），即使 host-rn 薄到接近"文档 + 示例"也发包（用户拍板：接口正式、npm install 即用）。三处共需的手写增量 UTF-8 解码器（weapp iOS JSC / Hermes / 裸 QuickJS 均无 TextDecoder）提为内核公开导出 `createIncrementalUtf8Decoder()`（`utf8.ts`）：纯 ECMAScript、零宿主 API、天然过纯度门禁，内核本就定义了 `Utf8Decoder` 接口，配一个纯 ES 参考实现胜过三份复制。代价（已接受）：内核 API 面 +1，且 pi 无对应物（pi 跑 Node 不需要）——这是 tau 原创面，D7"先抄 pi"在此无参照。`defaultPlatform()` 仍优先全局 TextDecoder，行为不变。

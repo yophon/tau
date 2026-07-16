@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-15（P11 基础夯实完成归档；下一步 P10 适配器实施，然后 P12 发布工程）
+> 最后更新：2026-07-15（P10 平台适配完成归档：host-weapp/host-rn/内核 utf8/两端 demo/双端模拟器 e2e；下一步 P12 发布工程）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -91,18 +91,21 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **后补（2026-07-08，cf695ec）**：`scripts/serve-browser-demo.mjs`（`npm run demo:browser`）——本地静态服务器 + `/proxy` CORS 转发（`x-tau-target-base-url` 头指定目标，流式透传），demo 对非 localhost 端点自动改走 proxy。注意：这是**浏览器 CORS 便利层**，key 仍由浏览器侧 BYOK 持有；密钥托管型 proxy 依旧推迟（P10 的中转服务器可在此基础上扩展）。
 
-## Phase 10 🚧 平台适配：裸引擎门禁 + 小程序/RN（可移植性证明 #2/#3）
+## Phase 10 ✅ 平台适配：裸引擎门禁 + 小程序/RN（可移植性证明 #2/#3）（2026-07-15）
 
 **目标**：证明 D4 的注入缝隙在非 WinterTC 环境成立，并把证明变成机械门禁。
 
-规格书：[specs/phase-10-platform-adapters.md](specs/phase-10-platform-adapters.md)（草拟，待用户确认后实施适配器部分）。
+规格书：[specs/phase-10-platform-adapters.md](specs/phase-10-platform-adapters.md)（已确认实施；2026-07-15 用户裁决 D16：RN 独立包 + 共享解码器进内核）。
 
-- ✅ **`npm run smoke:quickjs` 已先行落地（2026-07-14）**：内核 bundle 在 quickjs-emscripten（无 fetch/TextDecoder/crypto/timers 的裸引擎，即 flutter_js 的运行模型）内完成两轮 agent 循环——工具调用、结果回传、流式中文跨 chunk 增量解码，Platform 全部手工注入（手写 UTF-8、LCG randomBytes、脚本化 SSE）。fixture：`test-fixtures/quickjs/vm-entry.ts`。这同时给出 Flutter（flutter_js/QuickJS 嵌入）路径的引擎层可行性证明；Flutter 完整宿主挂 Backlog。
-- ⬜ `@tau/host-weapp`：`wx.request`（enableChunked）→ `PlatformFetch`（推转拉队列）；`RequestTask.abort()` 桥 `TauAbortSignal`（还债 #7）；手写 UTF-8 decoder（iOS JSC 无 TextDecoder）
-- ⬜ 静态扩展注册表实测（无动态加载路径）
-- ⬜ RN：expo/fetch 适配（交付形态见规格书开放问题 #2）
+- ✅ **`npm run smoke:quickjs` 已先行落地（2026-07-14）**：内核 bundle 在 quickjs-emscripten（无 fetch/TextDecoder/crypto/timers 的裸引擎，即 flutter_js 的运行模型）内完成两轮 agent 循环——工具调用、结果回传、流式中文跨 chunk 增量解码，Platform 全部手工注入。fixture：`test-fixtures/quickjs/vm-entry.ts`（P10 起复用内核共享解码器）。这同时给出 Flutter（flutter_js/QuickJS 嵌入）路径的引擎层可行性证明；Flutter 完整宿主挂 Backlog。
+- ✅ 内核 `utf8.ts`：`createIncrementalUtf8Decoder()` 公开导出（D16），weapp/RN/quickjs 三处复用；顺手修复 `defaultPlatform().sleep` 预 abort 时的 TDZ ReferenceError
+- ✅ `@tau/host-weapp`：`wx.request`（enableChunked）→ `PlatformFetch`（推转拉队列）；`RequestTask.abort()` 桥 `TauAbortSignal`（还债 #7 反向镜像）；chunked statusCode 时序约束文档化（200 假设 + late non-2xx 转 stream error）；10 单测
+- ✅ `@tau/host-rn`：`createRnPlatform({ fetch: expoFetch })`，bridgeSignal 正向桥 + 内核解码器 + sleep；6 单测 + 2 真 HTTP e2e（undici 与 expo/fetch 同构）
+- ✅ 静态扩展注册表实测（两端 demo 静态 import 扩展经 `ExtensionRegistry.load`，无动态加载路径）
+- ✅ RN（Expo）e2e：iPhone 17 模拟器（iOS 26.5）+ Expo Go 流式对话 + get_time 工具链路实测通过（记录见规格书）
+- ✅ 微信开发者工具模拟器 e2e：automator 驱动实测通过（Page 域协议在新版工具不通，走 `evaluate()` 绕行；坑位记录见规格书）
 - 注意：小程序 request 域名白名单 → 实际部署需中转服务器（可基于 `scripts/serve-browser-demo.mjs` 的 `/proxy` 转发扩展）
-- **验收**：小程序模拟器与 RN（Expo）中流式对话跑通；smoke:quickjs 常绿
+- **验收达成**：小程序模拟器与 RN（Expo）中流式对话 + 工具链路实测跑通；smoke:quickjs/smoke:weapp 常绿入 CI。**完成记录**：131 测试全绿（+22：内核 utf8/platform、host-weapp 10、host-rn 6+2 真 HTTP e2e）；与规格偏差见规格书（onHeadersReceived 可选项、smoke:weapp、D16）。
 
 ## Phase 11 ✅ 基础夯实（CI 门禁 + 内核健壮性 + 扩展 API 补齐）（2026-07-15）
 
@@ -138,8 +141,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 |---|---|---|---|
 | 5 | `--disable-warning=ExperimentalWarning` 仅在 npm script，直接 node 跑 CLI 仍有告警 | 观感 | P12（P8 未做统一 bin 入口，移交发布工程一并处理） |
 | 6 | `@tau/*` 为占位 scope | 发布前必须定名 | P12（scope 候选可在 P11 规格开放问题 #4 预决策） |
-| 7 | 自定义 `Platform.fetch` 收到的 `signal` 是 `TauAbortSignal` 结构子集，非标准 AbortSignal；非 fetch 适配器需自行桥接 | 小程序/RN 适配器作者易踩 | P10 适配器实现时验证并文档化 |
 | 9 | footer 的 cost 恒为 unknown（D3 无模型库/定价数据，usage 只有 token 数） | 观感；用户无成本感知 | 未排期（等 provider 定价数据源决策，不伪造价格） |
 | 10 | context token 为 usage + chars/4 启发式估算（pi 同款），与真实 tokenizer 有偏差 | 压缩触发点/footer 百分比不精确 | 未排期（pi 同款算法，接受偏差；换 tokenizer 属大决策） |
 
-（#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。）
+（#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。）
