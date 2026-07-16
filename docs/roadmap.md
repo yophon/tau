@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-16（P12 发布工程完成归档：@yophon/tau-* 九包 0.1.0 发布到 npm。P0–P12 全部完成，后续工作见 Backlog）
+> 最后更新：2026-07-16（P12 发布归档同日，P13 Flutter 宿主实战立项——规格草拟待确认）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -126,6 +126,15 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 规格书：[specs/phase-12-release-engineering.md](specs/phase-12-release-engineering.md)。
 
 **完成记录**：九包以 `@yophon/tau-*` 锁步 0.1.0 真实发布到 npm（scope 用户裁决）。dist 双轨（D17）：开发零构建不变，发布物 tsc 产物，publish 时经 `withPublishManifest` 临时改写 manifest（npm 不支持 publishConfig.exports）+ d.ts 说明符后处理。pi 镜像脚本：sync-versions / publish（幂等 + pack 校验）/ release / check-pinned-deps / cli shrinkwrap（拒 install-script 依赖），门禁入 check 与 CI。e2e：`smoke:pack`（内核 tarball 裸消费者安装/运行/strict 类型检查，入 CI）+ `npx @yophon/tau-cli@0.1.0 -p` 真 registry 全链路（无 ExperimentalWarning，还债 #5）。还债 #5/#6。发布实录（2FA/token 的坑）见规格书。偏离：lockfile-commit 独立脚本由 CI `npm ci` + `git diff` 覆盖；docs 英文化缩水为 README 双语（P10 后完成）+ 包级英文描述，内部文档维持中文。CI on-tag 发布推迟（用户裁决）。
+
+## Phase 13 ⬜ Flutter 宿主实战：手机上的 agent 本体 + MCP 工具端
+
+规格书：[specs/phase-13-flutter-host.md](specs/phase-13-flutter-host.md)（草拟，待用户确认）。原 Backlog"Flutter 完整宿主"转正（2026-07-16 用户立项）。
+
+- 内核跑手机（flutter_js：Android/QuickJS、iOS/JSC），电脑侧零 tau 痕迹的 MCP 服务；产品叙事"手机 agent 连接任意 MCP 工具端"
+- `@yophon/tau-ext-mcp-http`（纯 Platform 的 Streamable HTTP MCP client，零依赖）+ `examples/flutter/`（app + mcp-server）
+- v1 裁决：无语音、仅局域网、内存对话；iOS 亮屏执行为已知约束
+- **验收**：quickjs 裸引擎 MCP 工具回路 e2e 入 CI；Android/iOS 模拟器手工 e2e 各一次
 
 ## 未排期（Backlog）
 
