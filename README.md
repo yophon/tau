@@ -1,5 +1,7 @@
 # tau
 
+**English** | [简体中文](README.zh-CN.md)
+
 Runtime-agnostic coding agent kernel. The kernel is pure ECMAScript plus one
 injectable platform seam; every host capability (filesystem, shell, HTTP,
 UI, …) is provided by plugins. BYOK only, OpenAI-compatible protocol only.
@@ -11,16 +13,33 @@ language standard — every non-ECMAScript API is resolved through the `Platform
 interface, so hosts like WeChat mini-programs or React Native only need to
 inject a small adapter instead of polyfilling globals.
 
+## What works today
+
+- **Agent loop** — OpenAI-compatible streaming, tool calls, steering (type
+  while it runs), follow-up queues, abort, auto-retry with backoff, stall
+  watchdog. Provider failures become `stopReason: "error"/"aborted"` messages
+  instead of exceptions (pi semantics).
+- **Sessions** — pi v3 JSONL format on disk: resume (`--continue`), in-place
+  tree navigation (`/tree`), forking (`/fork`), automatic context compaction
+  with pi's exact algorithm and prompts.
+- **Extensions** — pi-mirrored API: 25+ lifecycle events, tools, slash
+  commands, flags, renderers, widgets, shortcuts. Standard packs: subagents
+  (`task` tool), MCP client bridge, skills & prompt templates
+  (pi-file-compatible).
+- **Hosts** — terminal (REPL / product-grade TUI / one-shot `-p`), browser
+  (OPFS), WeChat mini-program, React Native (Expo), and a bare QuickJS engine
+  with zero WinterTC globals — each verified end-to-end, most in CI.
+
 ## Packages
 
 | Package | Role | May touch the runtime? |
 |---------|------|------------------------|
-| `@tau/kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, capability interfaces | **No** — enforced by `npm run check:purity` |
+| `@tau/kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, sessions, compaction, branching, extension system, capability interfaces | **No** — enforced by `npm run check:purity` |
 | `@tau/host-node` | `FileSystem` + `Shell` capability providers for Node.js | Yes |
 | `@tau/host-browser` | OPFS + in-memory `FileSystem` capability providers and browser session repo helper | Yes |
 | `@tau/host-weapp` | WeChat mini-program `Platform` adapter: `wx.request` chunked streaming → `PlatformFetch` | Yes |
 | `@tau/host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
-| `@tau/cli` | Minimal terminal frontend | Yes |
+| `@tau/cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
 | `@tau/ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
 | `@tau/ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
 | `@tau/ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
@@ -34,12 +53,16 @@ inject a small adapter instead of polyfilling globals.
    itself — may reference WinterTC globals, and only to build `defaultPlatform()`.
 2. **Capabilities are optional.** `createCodingTools({ fs, shell })` registers
    only the tools whose capabilities exist. No filesystem → no read/write/edit;
-   the agent still runs.
+   the agent still runs (that is exactly what the mini-program demo does).
 3. **The kernel defines structural types, not lib types.** `PlatformFetch`,
    `PlatformResponse`, `TauAbortSignal` are minimal structural subsets. Real
-   `fetch`/`AbortSignal` satisfy them; a `wx.request` adapter can too.
+   `fetch`/`AbortSignal` satisfy them; a `wx.request` adapter does too.
+   Adapters must bridge signals both ways (see `docs/development.md`, hard
+   rule 8) — three reference implementations ship in-tree.
 4. **Zero build, zero kernel dependencies.** Everything runs from source on
-   Node ≥ 22.19 (native type stripping). The kernel has no npm dependencies.
+   Node ≥ 22.19 (native type stripping). The kernel has no npm dependencies —
+   it even ships its own pure-ES incremental UTF-8 decoder for hosts without
+   `TextDecoder` (mini-program iOS JSC, Hermes, bare QuickJS).
 5. **Erasable TypeScript only** (`erasableSyntaxOnly`): no enums, namespaces,
    or parameter properties.
 
@@ -48,21 +71,30 @@ inject a small adapter instead of polyfilling globals.
 ```bash
 npm install --ignore-scripts
 npm run check   # lint + types + kernel purity
-npm test        # node --test, includes a fake-provider agent-loop test
+npm test        # node --test: kernel unit tests + host tests + CLI e2e
 
 # Run the CLI against any OpenAI-compatible endpoint (BYOK)
 export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
 export TAU_MODEL=deepseek-chat
-npm run tau                       # interactive REPL
-npm run tau -- --tui              # experimental TUI mode
+npm run tau                       # readline REPL
+npm run tau -- --tui              # TUI mode (streaming markdown, /tree, /fork, /model, …)
 npm run tau -- -p "list the files here and summarize"
-npm run smoke:browser             # bundle the browser host demo
+```
+
+Portability proofs and demos:
+
+```bash
 npm run smoke:quickjs             # full agent loop on a bare QuickJS engine (no WinterTC globals)
+npm run smoke:browser             # bundle the browser host demo
 npm run smoke:weapp               # bundle the WeChat mini-program demo (no Node leakage)
 npm run demo:browser              # serve the browser demo locally (CORS proxy included)
 npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js for WeChat devtools
 ```
+
+- `examples/browser/` — static page, OPFS filesystem, BYOK in the browser
+- `examples/weapp/` — WeChat mini-program chat demo ([README](examples/weapp/README.md))
+- `examples/rn/` — React Native (Expo) chat demo ([README](examples/rn/README.md))
 
 ## Embedding the kernel
 
@@ -71,8 +103,10 @@ import { Agent, createCodingTools } from "@tau/kernel";
 
 const agent = new Agent({
 	config: { baseUrl, apiKey, model },
-	// platform defaults to WinterTC globals; inject your own on exotic hosts:
-	// platform: { fetch: wxFetchAdapter, createUtf8Decoder: ... },
+	// platform defaults to WinterTC globals (Node/browser/edge);
+	// on exotic hosts inject an adapter instead:
+	//   @tau/host-weapp → createWeappPlatform(wx)
+	//   @tau/host-rn    → createRnPlatform({ fetch: expoFetch })
 	tools: createCodingTools({ fs: myFileSystem, shell: myShell }),
 });
 
@@ -107,21 +141,19 @@ const guard: Extension = (api) => {
 export default guard;
 ```
 
-Hooks (pi semantics): `input` (`continue` / `transform` / `handled`),
-`tool_call` (block via result, modify args by mutating `event.input` in place),
-`tool_result` (override `output` / `isError`), `agent_start` / `agent_end` /
-`turn_start` / `turn_end` (observe; `turn_end` carries the turn's tool
-results). Handlers chain in registration order. UI interaction goes through
-the optional `UiCapability` the host provides (the CLI backs it with readline,
-and omits it on non-TTY stdin so extensions degrade instead of hanging).
+25+ hooks with pi semantics cover the whole lifecycle: input transformation,
+per-request context rewriting, message/tool streaming, tool blocking and
+result overrides, session events (compaction, fork, tree navigation, switch),
+model/thinking selection, project trust, resource discovery. The full list
+with event ordering guarantees lives in
+[docs/architecture.md](docs/architecture.md). UI interaction goes through the
+optional `UiCapability`; headless hosts omit it and extensions degrade instead
+of hanging.
 
 The CLI loads global extensions from `~/.tau/extensions/` (always trusted) and
 project extensions from `cwd/.tau/extensions/` behind a **trust gate**: the
 first run in a directory asks for confirmation (remembered in
-`~/.tau/trust.json`); headless runs skip untrusted project extensions. It
-dispatches `/command` input to registered extension commands (`/help` lists
-them), forwards extension-declared `--flags`, queues lines typed during a
-running turn as steering messages, and Ctrl+C aborts the current turn. See
+`~/.tau/trust.json`); headless runs skip untrusted project extensions. See
 [examples/extensions/guard.ts](examples/extensions/guard.ts).
 
 ## Documentation
