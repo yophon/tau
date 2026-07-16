@@ -1,4 +1,4 @@
-import type { Extension, ExtensionContext, FileInfo, FileSystem } from "@tau/kernel";
+import type { Extension, ExtensionContext, FileInfo, FileSystem } from "@yophon/tau-kernel";
 
 export interface Skill {
 	name: string;

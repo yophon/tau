@@ -1,6 +1,6 @@
 # tau weapp demo
 
-微信小程序宿主最小 demo：`@tau/host-weapp` 的 `createWeappPlatform(wx)` + 静态扩展注册（D8：无动态加载路径）。仅内存对话——不提供 fs/shell 能力，默认工具四件套自动缺席，模型可用的工具只有扩展注册的 `get_time`（能力可选的展示面）。
+微信小程序宿主最小 demo：`@yophon/tau-host-weapp` 的 `createWeappPlatform(wx)` + 静态扩展注册（D8：无动态加载路径）。仅内存对话——不提供 fs/shell 能力，默认工具四件套自动缺席，模型可用的工具只有扩展注册的 `get_time`（能力可选的展示面）。
 
 ## 运行
 

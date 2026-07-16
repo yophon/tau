@@ -5,7 +5,7 @@
 // 边界、D14 abort 终态。
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Agent, type Tool } from "@tau/kernel";
+import { Agent, type Tool } from "@yophon/tau-kernel";
 import { mockTextTurn, mockToolCallTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
 import { TestAbortController } from "../../kernel/test/helpers.ts";
 import { createRnPlatform, type RnFetchLike } from "../src/index.ts";

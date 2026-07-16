@@ -7,8 +7,8 @@
     "start": "expo start"
   },
   "dependencies": {
-    "@tau/host-rn": "file:../../packages/host-rn",
-    "@tau/kernel": "file:../../packages/kernel",
+    "@yophon/tau-host-rn": "file:../../packages/host-rn",
+    "@yophon/tau-kernel": "file:../../packages/kernel",
     "expo": "~52.0.0",
     "expo-asset": "~11.0.5",
     "react": "18.3.1",

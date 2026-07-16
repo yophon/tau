@@ -34,15 +34,15 @@ inject a small adapter instead of polyfilling globals.
 
 | Package | Role | May touch the runtime? |
 |---------|------|------------------------|
-| `@tau/kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, sessions, compaction, branching, extension system, capability interfaces | **No** — enforced by `npm run check:purity` |
-| `@tau/host-node` | `FileSystem` + `Shell` capability providers for Node.js | Yes |
-| `@tau/host-browser` | OPFS + in-memory `FileSystem` capability providers and browser session repo helper | Yes |
-| `@tau/host-weapp` | WeChat mini-program `Platform` adapter: `wx.request` chunked streaming → `PlatformFetch` | Yes |
-| `@tau/host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
-| `@tau/cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
-| `@tau/ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
-| `@tau/ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
-| `@tau/ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
+| `@yophon/tau-kernel` | Agent loop, OpenAI-compatible streaming client, SSE parser, tool system, sessions, compaction, branching, extension system, capability interfaces | **No** — enforced by `npm run check:purity` |
+| `@yophon/tau-host-node` | `FileSystem` + `Shell` capability providers for Node.js | Yes |
+| `@yophon/tau-host-browser` | OPFS + in-memory `FileSystem` capability providers and browser session repo helper | Yes |
+| `@yophon/tau-host-weapp` | WeChat mini-program `Platform` adapter: `wx.request` chunked streaming → `PlatformFetch` | Yes |
+| `@yophon/tau-host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
+| `@yophon/tau-cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
+| `@yophon/tau-ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
+| `@yophon/tau-ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
+| `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 
 ## Design rules
 
@@ -99,14 +99,14 @@ npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js 
 ## Embedding the kernel
 
 ```ts
-import { Agent, createCodingTools } from "@tau/kernel";
+import { Agent, createCodingTools } from "@yophon/tau-kernel";
 
 const agent = new Agent({
 	config: { baseUrl, apiKey, model },
 	// platform defaults to WinterTC globals (Node/browser/edge);
 	// on exotic hosts inject an adapter instead:
-	//   @tau/host-weapp → createWeappPlatform(wx)
-	//   @tau/host-rn    → createRnPlatform({ fetch: expoFetch })
+	//   @yophon/tau-host-weapp → createWeappPlatform(wx)
+	//   @yophon/tau-host-rn    → createRnPlatform({ fetch: expoFetch })
 	tools: createCodingTools({ fs: myFileSystem, shell: myShell }),
 });
 
@@ -127,7 +127,7 @@ dynamic code (mini-programs, React Native): they import extensions statically;
 Node hosts may use `loadExtensionsFromDir()` as a convenience.
 
 ```ts
-import type { Extension } from "@tau/kernel";
+import type { Extension } from "@yophon/tau-kernel";
 
 const guard: Extension = (api) => {
 	api.registerTool(myTool);

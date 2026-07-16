@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Agent, ExtensionRegistry, messageText } from "@tau/kernel";
+import { Agent, ExtensionRegistry, messageText } from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { createSubagentsExtension } from "../src/index.ts";
 

@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-15（P10 平台适配完成归档：host-weapp/host-rn/内核 utf8/两端 demo/双端模拟器 e2e；下一步 P12 发布工程）
+> 最后更新：2026-07-16（P12 发布工程完成归档：@yophon/tau-* 九包 0.1.0 发布到 npm。P0–P12 全部完成，后续工作见 Backlog）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -121,11 +121,11 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 - 发现并修复实现前未预见的问题：**原生 fetch 拒收结构化 TauAbortSignal**（undici 要求真 AbortSignal 实例）——defaultPlatform 缝隙内桥接,技术债 #7 的适配器义务由此有了内核侧范例
 - TUI e2e：smoke:tui 新增 extension ctx.abort 场景（message_update 钩子中止流中轮 → Turn aborted.）
 
-## Phase 12 ⬜ 发布工程（原 P11 顺移）
+## Phase 12 ✅ 发布工程（原 P11 顺移）（2026-07-16）
 
-- 参考 pi：锁步版本、npm 发布脚本、shrinkwrap 供应链加固（`scripts/` 下相关脚本）
-- 决定正式包名（npm scope）
-- README/docs 英文化整理
+规格书：[specs/phase-12-release-engineering.md](specs/phase-12-release-engineering.md)。
+
+**完成记录**：九包以 `@yophon/tau-*` 锁步 0.1.0 真实发布到 npm（scope 用户裁决）。dist 双轨（D17）：开发零构建不变，发布物 tsc 产物，publish 时经 `withPublishManifest` 临时改写 manifest（npm 不支持 publishConfig.exports）+ d.ts 说明符后处理。pi 镜像脚本：sync-versions / publish（幂等 + pack 校验）/ release / check-pinned-deps / cli shrinkwrap（拒 install-script 依赖），门禁入 check 与 CI。e2e：`smoke:pack`（内核 tarball 裸消费者安装/运行/strict 类型检查，入 CI）+ `npx @yophon/tau-cli@0.1.0 -p` 真 registry 全链路（无 ExperimentalWarning，还债 #5）。还债 #5/#6。发布实录（2FA/token 的坑）见规格书。偏离：lockfile-commit 独立脚本由 CI `npm ci` + `git diff` 覆盖；docs 英文化缩水为 README 双语（P10 后完成）+ 包级英文描述，内部文档维持中文。CI on-tag 发布推迟（用户裁决）。
 
 ## 未排期（Backlog）
 
@@ -139,9 +139,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 | # | 债 | 影响 | 计划 |
 |---|---|---|---|
-| 5 | `--disable-warning=ExperimentalWarning` 仅在 npm script，直接 node 跑 CLI 仍有告警 | 观感 | P12（P8 未做统一 bin 入口，移交发布工程一并处理） |
-| 6 | `@tau/*` 为占位 scope | 发布前必须定名 | P12（scope 候选可在 P11 规格开放问题 #4 预决策） |
 | 9 | footer 的 cost 恒为 unknown（D3 无模型库/定价数据，usage 只有 token 数） | 观感；用户无成本感知 | 未排期（等 provider 定价数据源决策，不伪造价格） |
 | 10 | context token 为 usage + chars/4 启发式估算（pi 同款），与真实 tokenizer 有偏差 | 压缩触发点/footer 百分比不精确 | 未排期（pi 同款算法，接受偏差；换 tokenizer 属大决策） |
 
-（#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。）
+（#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

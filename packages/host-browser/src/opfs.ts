@@ -1,4 +1,4 @@
-import { FileError, type FileInfo, type FileSystem } from "@tau/kernel";
+import { FileError, type FileInfo, type FileSystem } from "@yophon/tau-kernel";
 import { normalizeBrowserPath, pathName, splitPath } from "./path.ts";
 
 interface BrowserFileLike {

@@ -29,15 +29,15 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 
 | 包 | 职责 | 允许碰运行时？ |
 |----|------|----------------|
-| `@tau/kernel` | Agent 循环、OpenAI 兼容流式客户端、SSE 解析、工具系统、会话、压缩、分支、扩展系统、能力接口 | **否**——`npm run check:purity` 机械强制 |
-| `@tau/host-node` | Node.js 的 `FileSystem` + `Shell` 能力提供者 | 是 |
-| `@tau/host-browser` | OPFS 与内存 `FileSystem` 能力提供者、浏览器会话仓库辅助 | 是 |
-| `@tau/host-weapp` | 微信小程序 `Platform` 适配器：`wx.request` chunked 流式 → `PlatformFetch` | 是 |
-| `@tau/host-rn` | React Native（Expo）`Platform` 适配器，基于 `expo/fetch` | 是 |
-| `@tau/cli` | 终端前端：REPL、TUI、单次模式 | 是 |
-| `@tau/ext-subagents` | 注册 `task` 工具、以子 Agent 完成委派的扩展包 | 不直接碰运行时 API |
-| `@tau/ext-mcp` | 把 MCP server 工具桥接为 tau 工具的扩展包 | 是——MCP SDK transport |
-| `@tau/ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
+| `@yophon/tau-kernel` | Agent 循环、OpenAI 兼容流式客户端、SSE 解析、工具系统、会话、压缩、分支、扩展系统、能力接口 | **否**——`npm run check:purity` 机械强制 |
+| `@yophon/tau-host-node` | Node.js 的 `FileSystem` + `Shell` 能力提供者 | 是 |
+| `@yophon/tau-host-browser` | OPFS 与内存 `FileSystem` 能力提供者、浏览器会话仓库辅助 | 是 |
+| `@yophon/tau-host-weapp` | 微信小程序 `Platform` 适配器：`wx.request` chunked 流式 → `PlatformFetch` | 是 |
+| `@yophon/tau-host-rn` | React Native（Expo）`Platform` 适配器，基于 `expo/fetch` | 是 |
+| `@yophon/tau-cli` | 终端前端：REPL、TUI、单次模式 | 是 |
+| `@yophon/tau-ext-subagents` | 注册 `task` 工具、以子 Agent 完成委派的扩展包 | 不直接碰运行时 API |
+| `@yophon/tau-ext-mcp` | 把 MCP server 工具桥接为 tau 工具的扩展包 | 是——MCP SDK transport |
+| `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
 
 ## 设计规则
 
@@ -92,14 +92,14 @@ npm run demo:weapp                # 生成 examples/weapp/miniprogram/lib/tau.js
 ## 嵌入内核
 
 ```ts
-import { Agent, createCodingTools } from "@tau/kernel";
+import { Agent, createCodingTools } from "@yophon/tau-kernel";
 
 const agent = new Agent({
 	config: { baseUrl, apiKey, model },
 	// platform 默认取 WinterTC 全局（Node/浏览器/edge）；
 	// 特殊宿主注入适配器即可：
-	//   @tau/host-weapp → createWeappPlatform(wx)
-	//   @tau/host-rn    → createRnPlatform({ fetch: expoFetch })
+	//   @yophon/tau-host-weapp → createWeappPlatform(wx)
+	//   @yophon/tau-host-rn    → createRnPlatform({ fetch: expoFetch })
 	tools: createCodingTools({ fs: myFileSystem, shell: myShell }),
 });
 
@@ -118,7 +118,7 @@ for await (const event of agent.prompt("修复失败的测试")) {
 扩展；Node 宿主可以用 `loadExtensionsFromDir()` 作为便利。
 
 ```ts
-import type { Extension } from "@tau/kernel";
+import type { Extension } from "@yophon/tau-kernel";
 
 const guard: Extension = (api) => {
 	api.registerTool(myTool);

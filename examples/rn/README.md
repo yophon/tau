@@ -1,6 +1,6 @@
 # tau RN (Expo) demo
 
-React Native 宿主最小 demo：`@tau/host-rn` 的 `createRnPlatform({ fetch: expoFetch })` + 静态扩展注册。仅内存对话（无 fs/shell 能力）。
+React Native 宿主最小 demo：`@yophon/tau-host-rn` 的 `createRnPlatform({ fetch: expoFetch })` + 静态扩展注册。仅内存对话（无 fs/shell 能力）。
 
 **关键点**：RN 内置的全局 `fetch` 会缓冲整个响应体，不能流式——必须用 `expo/fetch`（Expo SDK 52+），其 Response 结构上满足内核的 `PlatformResponse`（含 `body.getReader()`）。Hermes 无 `TextDecoder`，UTF-8 增量解码由内核共享的 `createIncrementalUtf8Decoder` 提供。
 
@@ -8,7 +8,7 @@ React Native 宿主最小 demo：`@tau/host-rn` 的 `createRnPlatform({ fetch: e
 
 ```bash
 cd examples/rn
-npm install          # @tau/* 经 file: 链接到本仓库 packages/
+npm install          # @yophon/tau-* 经 file: 链接到本仓库 packages/
 npx expo start       # 然后按 i（iOS 模拟器）/ a（Android 模拟器）/ 扫码真机 Expo Go
 ```
 

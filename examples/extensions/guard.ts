@@ -1,4 +1,4 @@
-import type { Extension } from "@tau/kernel";
+import type { Extension } from "@yophon/tau-kernel";
 
 const DANGEROUS = [/\brm\s+-rf?\b/, /\bgit\s+reset\s+--hard\b/, /\bsudo\b/];
 

@@ -1,14 +1,25 @@
 {
-	"name": "@tau/host-rn",
-	"version": "0.0.1",
-	"type": "module",
-	"private": true,
+	"name": "@yophon/tau-host-rn",
+	"version": "0.1.0",
 	"description": "React Native (Expo) Platform adapter for tau",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/host-rn"
+	},
 	"exports": {
 		".": "./src/index.ts",
 		"./package.json": "./package.json"
 	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"dependencies": {
-		"@tau/kernel": "0.0.1"
+		"@yophon/tau-kernel": "^0.1.0"
 	}
 }

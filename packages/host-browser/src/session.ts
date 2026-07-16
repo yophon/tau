@@ -4,7 +4,7 @@ import {
 	type JsonlSessionRepo as JsonlSessionRepoType,
 	type Platform,
 	sessionDirSlug,
-} from "@tau/kernel";
+} from "@yophon/tau-kernel";
 
 export interface BrowserSessionRepoOptions {
 	fs: FileSystem;

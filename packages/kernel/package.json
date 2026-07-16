@@ -1,11 +1,22 @@
 {
-	"name": "@tau/kernel",
-	"version": "0.0.1",
-	"type": "module",
-	"private": true,
+	"name": "@yophon/tau-kernel",
+	"version": "0.1.0",
 	"description": "Runtime-agnostic agent kernel: pure ECMAScript plus an injectable platform seam",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/kernel"
+	},
 	"exports": {
 		".": "./src/index.ts",
 		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
 	}
 }

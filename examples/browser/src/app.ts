@@ -1,5 +1,12 @@
-import { BrowserMemoryFileSystem, hasOpfsSupport, OpfsFileSystem } from "@tau/host-browser";
-import { Agent, createCodingTools, defaultPlatform, type FileInfo, type FileSystem, messageText } from "@tau/kernel";
+import { BrowserMemoryFileSystem, hasOpfsSupport, OpfsFileSystem } from "@yophon/tau-host-browser";
+import {
+	Agent,
+	createCodingTools,
+	defaultPlatform,
+	type FileInfo,
+	type FileSystem,
+	messageText,
+} from "@yophon/tau-kernel";
 
 const cwd = "/workspace";
 const platform = defaultPlatform();

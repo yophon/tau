@@ -14,7 +14,7 @@ import {
 	type PlatformResponse,
 	type TauAbortSignal,
 	TauError,
-} from "@tau/kernel";
+} from "@yophon/tau-kernel";
 
 /** Structural subset of expo/fetch — injectable for tests, no expo types. */
 export type RnFetchLike = (

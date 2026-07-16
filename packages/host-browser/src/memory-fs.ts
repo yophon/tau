@@ -1,4 +1,4 @@
-import { FileError, type FileErrorCode, type FileInfo, type FileKind, type FileSystem } from "@tau/kernel";
+import { FileError, type FileErrorCode, type FileInfo, type FileKind, type FileSystem } from "@yophon/tau-kernel";
 import { normalizeBrowserPath, parentPath, pathName, splitPath } from "./path.ts";
 
 interface MemoryNodeBase {

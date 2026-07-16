@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Agent, createCodingTools, messageText, restoreSession, SessionRecorder } from "@tau/kernel";
+import { Agent, createCodingTools, messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, seededRandomBytes, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import {
 	BrowserMemoryFileSystem,

@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Extension } from "@tau/kernel";
+import type { Extension } from "@yophon/tau-kernel";
 
 /**
  * Load extensions from a directory of .ts/.js/.mjs modules, each default-exporting

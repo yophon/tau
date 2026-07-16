@@ -1,6 +1,13 @@
 import { appendFile, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, resolve } from "node:path";
-import { FileError, type FileErrorCode, type FileInfo, type FileKind, type FileSystem, toError } from "@tau/kernel";
+import {
+	FileError,
+	type FileErrorCode,
+	type FileInfo,
+	type FileKind,
+	type FileSystem,
+	toError,
+} from "@yophon/tau-kernel";
 
 function fileKindFromStats(stats: { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }): FileKind {
 	if (stats.isFile()) return "file";

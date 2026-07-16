@@ -1,4 +1,4 @@
-// Kernel purity gate: @tau/kernel must bundle for a neutral platform with no
+// Kernel purity gate: @yophon/tau-kernel must bundle for a neutral platform with no
 // external imports, and its sources must not reference host globals. Anything
 // beyond ECMAScript must flow through the Platform seam.
 import { readdirSync, readFileSync } from "node:fs";

@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@tau/host-node";
+import { loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@yophon/tau-host-node";
 import {
 	Agent,
 	createCodingTools,
@@ -19,7 +19,7 @@ import {
 	type ThinkingLevel,
 	thinkingText,
 	type UiCapability,
-} from "@tau/kernel";
+} from "@yophon/tau-kernel";
 import { createStartupTuiUi, runTui } from "./tui.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent

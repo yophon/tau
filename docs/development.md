@@ -4,12 +4,13 @@
 
 ## 环境与命令
 
-- Node ≥ 22.19（原生 type-stripping，零构建直接跑源码；P8 引入 `@earendil-works/pi-tui` 后的最低版本）
+- Node ≥ 22.19（原生 type-stripping，**开发期**零构建直接跑源码；P8 引入 `@earendil-works/pi-tui` 后的最低版本。发布物是 dist JS——Node 拒绝 strip node_modules 里的 .ts，见 D17）
 - `npm install --ignore-scripts` — 安装依赖
-- `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁**。改完代码必跑，全绿才算完
+- `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁** + 依赖钉死 + shrinkwrap 校验。改完代码必跑，全绿才算完
 - `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试 + CLI e2e）
 - `npm run tau` — 跑 CLI（需 TAU_BASE_URL / TAU_API_KEY / TAU_MODEL 环境变量或对应 flag）
-- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（weapp demo bundle 无 Node 泄漏）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）· `demo:weapp`（生成小程序 demo 的 lib/tau.js）
+- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（weapp demo bundle 无 Node 泄漏）· `smoke:pack`（内核 tarball 在裸消费者项目安装/运行/类型检查）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）· `demo:weapp`（生成小程序 demo 的 lib/tau.js）
+- **发布工程（P12）**：`npm run build`（tsc 出 dist，发布前置）· `npm run version:patch|minor|major`（锁步 bump + 内部依赖同步 + shrinkwrap 重生成）· `npm run publish:dry` / `publish:npm`（幂等，pack 校验；发布时临时把 manifest 改写为 dist 形态）· `npm run release -- patch`（bump → 门禁 → CHANGELOG 滚动 → commit+tag+push；发布仍手动）。CHANGELOG.md 的 `[Unreleased]` 段随改动随手记
 - **CI（P11 起）**：push/PR 到 main 自动跑 gate（check + `git diff --exit-code` 防格式漂移 + test）与 smoke 全家桶。提交前本地跑过 check 可避免 CI 因 biome 自动修复而红
 - **e2e 纪律（P11 事故教训）**：REPL 测试写命令前必须 `waitForIdle()`（运行中写入会变 steering）；一切等待必须有超时；spawn 的子进程必须有 `after()` 兜底击杀——无界等待都是 CI 定时炸弹
 
@@ -21,10 +22,10 @@
 
 ## 硬规则
 
-1. **内核纯度**（D5）：`@tau/kernel` 不得引用任何宿主 API；平台能力一律经 `Platform` 缝隙。只有 `platform.ts` 可碰 WinterTC 全局。门禁会抓，但别指望门禁——写之前想清楚。
+1. **内核纯度**（D5）：`@yophon/tau-kernel` 不得引用任何宿主 API；平台能力一律经 `Platform` 缝隙。只有 `platform.ts` 可碰 WinterTC 全局。门禁会抓，但别指望门禁——写之前想清楚。
 2. **设计先抄 pi**（D7）：新模块动手前先读 pi 对应实现。照抄接口形状（事件名/对象形状/result 约定/签名）；偏离仅限运行时耦合处（Node API、TUI、typebox、多 provider），且必须在代码注释与规格书中记录原因。
 3. **可擦除 TS**（D6）：无 enum/namespace/参数属性/内联 `import()`。相对 import 必须带 `.ts` 扩展名（Node 运行时要求）。
-4. **内核零依赖**：不给 `@tau/kernel` 加任何 npm 依赖。宿主包可以加，但先想想是否必要。
+4. **内核零依赖**：不给 `@yophon/tau-kernel` 加任何 npm 依赖。宿主包可以加，但先想想是否必要。
 5. **能力可选**：任何代码不得假设 fs/shell/ui 存在，缺失时降级（少注册工具、扩展走无 UI 路径）。
 6. **不擅自 commit**：commit 前询问用户。
 7. **文档即接口**：行为与文档冲突时，要么改代码要么改文档，不允许悬置。发现文档间不一致，当场修。
@@ -67,5 +68,5 @@
 
 - biome 管格式（tab 缩进、120 列），`npm run check` 自动修
 - 错误：内核用类型化错误类（TauError/FileError/ShellError，稳定 code 字段）；工具执行失败返回 `{ output, isError: true }` 而不是抛出
-- 事件命名 snake_case 照抄 pi；能力接口 PascalCase 名词；包名 `@tau/<role>`（kernel / host-* / ext-* / cli）
+- 事件命名 snake_case 照抄 pi；能力接口 PascalCase 名词；包名 `@yophon/tau-<role>`（kernel / host-* / ext-* / cli）
 - 注释只写代码本身表达不了的约束；接口照抄 pi 处在文件头注明镜像来源；偏离处逐点注明原因

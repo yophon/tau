@@ -1,7 +1,7 @@
-// tau RN (Expo) demo：@tau/host-rn 的 createRnPlatform + expo/fetch 流式对话。
+// tau RN (Expo) demo：@yophon/tau-host-rn 的 createRnPlatform + expo/fetch 流式对话。
 // 仅内存对话（无 fs/shell 能力）；模型可用工具只有静态扩展注册的 get_time（D8）。
-import { createRnPlatform } from "@tau/host-rn";
-import { AbortHandle, Agent, ExtensionRegistry } from "@tau/kernel";
+import { createRnPlatform } from "@yophon/tau-host-rn";
+import { AbortHandle, Agent, ExtensionRegistry } from "@yophon/tau-kernel";
 import { fetch as expoFetch } from "expo/fetch";
 import { useRef, useState } from "react";
 import {

@@ -16,7 +16,7 @@ import {
 	type PlatformResponse,
 	type TauAbortSignal,
 	TauError,
-} from "@tau/kernel";
+} from "@yophon/tau-kernel";
 
 /** Structural subset of wx RequestTask in chunked mode. */
 export interface WeappRequestTask {

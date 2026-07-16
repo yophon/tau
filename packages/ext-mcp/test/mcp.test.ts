@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { Agent, ExtensionRegistry, messageText } from "@tau/kernel";
+import { Agent, ExtensionRegistry, messageText } from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { createMcpExtension } from "../src/index.ts";
 

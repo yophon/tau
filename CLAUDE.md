@@ -13,7 +13,7 @@
 
 ## 最重要的四条
 
-- `@tau/kernel` 禁止碰宿主 API（`npm run check:purity` 强制，仅 `platform.ts` 豁免）
+- `@yophon/tau-kernel` 禁止碰宿主 API（`npm run check:purity` 强制，仅 `platform.ts` 豁免）
 - 新模块设计先读 pi 对应实现（`../pi`，快照 v0.80.3）并照抄接口形状（D7/D11）
 - 每个阶段：规格书先行（经用户确认）→ 实现 → DoD 全绿 → 按 development.md 归档文档
 - 不擅自 commit；发现文档间不一致当场修

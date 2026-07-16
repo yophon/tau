@@ -39,8 +39,8 @@ try {
 	await writeFile(
 		entry,
 		`
-import { Agent, createCodingTools, messageText } from "@tau/kernel";
-import { OpfsFileSystem } from "@tau/host-browser";
+import { Agent, createCodingTools, messageText } from "@yophon/tau-kernel";
+import { OpfsFileSystem } from "@yophon/tau-host-browser";
 
 function makeSseResponse(payloads) {
 	const encoder = new TextEncoder();

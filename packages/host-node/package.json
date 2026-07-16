@@ -1,14 +1,25 @@
 {
-	"name": "@tau/host-node",
-	"version": "0.0.1",
-	"type": "module",
-	"private": true,
+	"name": "@yophon/tau-host-node",
+	"version": "0.1.0",
 	"description": "Node.js capability providers for the tau kernel: filesystem and shell",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/host-node"
+	},
 	"exports": {
 		".": "./src/index.ts",
 		"./package.json": "./package.json"
 	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"dependencies": {
-		"@tau/kernel": "0.0.1"
+		"@yophon/tau-kernel": "^0.1.0"
 	}
 }

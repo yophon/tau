@@ -2,8 +2,8 @@
 // 静态扩展注册（D8 移植性主张）：扩展是静态 import 的纯函数值，经 ExtensionRegistry.load
 // 传入——全程无动态代码加载路径。能力可选：不提供 fs/shell，createCodingTools 缺席，
 // 模型可用的工具只有扩展注册的 get_time。
-import { createWeappPlatform, type WeappApi } from "@tau/host-weapp";
-import { AbortHandle, Agent, type Extension, ExtensionRegistry } from "@tau/kernel";
+import { createWeappPlatform, type WeappApi } from "@yophon/tau-host-weapp";
+import { AbortHandle, Agent, type Extension, ExtensionRegistry } from "@yophon/tau-kernel";
 
 export { AbortHandle };
 

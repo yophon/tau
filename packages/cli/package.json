@@ -1,9 +1,17 @@
 {
-	"name": "@tau/cli",
-	"version": "0.0.1",
-	"type": "module",
-	"private": true,
+	"name": "@yophon/tau-cli",
+	"version": "0.1.0",
 	"description": "Minimal terminal frontend for the tau kernel",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/cli"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
 	"bin": {
 		"tau": "./src/main.ts"
 	},
@@ -11,9 +19,15 @@
 		".": "./src/main.ts",
 		"./package.json": "./package.json"
 	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
 	"dependencies": {
 		"@earendil-works/pi-tui": "0.80.3",
-		"@tau/host-node": "0.0.1",
-		"@tau/kernel": "0.0.1"
+		"@yophon/tau-host-node": "^0.1.0",
+		"@yophon/tau-kernel": "^0.1.0"
 	}
 }

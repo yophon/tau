@@ -46,7 +46,7 @@ import {
 	type ShellExecResult,
 	type ThinkingLevel,
 	type UiCapability,
-} from "@tau/kernel";
+} from "@yophon/tau-kernel";
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
 const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;

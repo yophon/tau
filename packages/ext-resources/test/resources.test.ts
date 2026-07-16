@@ -3,8 +3,8 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { NodeFileSystem } from "@tau/host-node";
-import { Agent, type Extension, ExtensionRegistry } from "@tau/kernel";
+import { NodeFileSystem } from "@yophon/tau-host-node";
+import { Agent, type Extension, ExtensionRegistry } from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, textTurn } from "../../kernel/test/helpers.ts";
 import {
 	createResourcesExtension,

@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createCodingTools, FileError } from "@tau/kernel";
+import { createCodingTools, FileError } from "@yophon/tau-kernel";
 import { NodeFileSystem } from "../src/fs.ts";
 import { NodeShell } from "../src/shell.ts";
 

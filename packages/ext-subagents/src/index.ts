@@ -1,4 +1,4 @@
-import type { Extension } from "@tau/kernel";
+import type { Extension } from "@yophon/tau-kernel";
 
 export interface SubagentsOptions {
 	toolName?: string;

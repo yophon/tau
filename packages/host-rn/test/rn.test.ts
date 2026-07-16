@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Agent, type PlatformResponse, type TauAbortSignal, TauError, type Tool } from "@tau/kernel";
+import { Agent, type PlatformResponse, type TauAbortSignal, TauError, type Tool } from "@yophon/tau-kernel";
 import { makeAbortableStreamResponse, TestAbortController, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { createRnPlatform } from "../src/index.ts";
 

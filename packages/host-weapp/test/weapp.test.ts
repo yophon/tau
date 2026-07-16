@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Agent, TauError, type Tool } from "@tau/kernel";
+import { Agent, TauError, type Tool } from "@yophon/tau-kernel";
 import { TestAbortController, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { createWeappPlatform, type WeappApi, type WeappRequestOptions, type WeappRequestTask } from "../src/index.ts";
 

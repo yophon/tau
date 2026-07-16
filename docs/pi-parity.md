@@ -49,7 +49,7 @@
 | `/reload` 热重载扩展 | 运行时重载 | ✅ P8（host-node 扩展 registry 与 resources reload；theme reload 随 Themes 延期 Backlog） |
 | `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ❌ D3（OpenAI 兼容 only；如需求出现走扩展层协议适配再议） |
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
-| 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@tau/ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |
+| 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@yophon/tau-ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |
 | 浏览器宿主 | pi 的浏览器能力与产品层/proxy 绑定更深；tau 只提供 host capability | ✅ P9（OPFS/内存 FileSystem；session 复用 pi v3 JSONL；CORS 转发 proxy 后补于 demo 服务器，密钥托管 proxy 推迟） |
 
 ## 安全缺口（已修复）

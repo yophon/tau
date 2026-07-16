@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
-import { type Shell, ShellError, type ShellExecResult, type TauAbortSignal, toError } from "@tau/kernel";
+import { type Shell, ShellError, type ShellExecResult, type TauAbortSignal, toError } from "@yophon/tau-kernel";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 

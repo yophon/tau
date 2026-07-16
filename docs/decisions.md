@@ -65,3 +65,7 @@ Phase 0 曾把消息模型设计成 OpenAI wire 格式的直接镜像（string c
 ## D16：适配器交付形态——官方独立宿主包 + 内核共享 UTF-8 解码器（2026-07-15，P10，用户裁决）
 
 小程序与 RN 适配器都以独立零依赖包交付（`@tau/host-weapp`、`@tau/host-rn`），即使 host-rn 薄到接近"文档 + 示例"也发包（用户拍板：接口正式、npm install 即用）。三处共需的手写增量 UTF-8 解码器（weapp iOS JSC / Hermes / 裸 QuickJS 均无 TextDecoder）提为内核公开导出 `createIncrementalUtf8Decoder()`（`utf8.ts`）：纯 ECMAScript、零宿主 API、天然过纯度门禁，内核本就定义了 `Utf8Decoder` 接口，配一个纯 ES 参考实现胜过三份复制。代价（已接受）：内核 API 面 +1，且 pi 无对应物（pi 跑 Node 不需要）——这是 tau 原创面，D7"先抄 pi"在此无参照。`defaultPlatform()` 仍优先全局 TextDecoder，行为不变。
+
+## D17：发布走 dist 双轨——开发零构建不变，发布物是 tsc 产物（2026-07-16，P12）
+
+Node 原生 type-stripping **拒绝**处理 `node_modules` 下的 .ts（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），所以"零构建"只能是开发期主张：workspace 内直接跑 src 不变；发布物是 `tsc -p tsconfig.build.json` 出的 dist（ESM JS + d.ts + sourcemap，`rewriteRelativeImportExtensions` 把 .ts 相对导入改写为 .js）。两个实现细节：① npm 不支持 pnpm 式的 `publishConfig.exports` 覆盖，因此仓库内 package.json 保持 src exports，**publish/pack 时临时改写 manifest 为 dist 形态、结束后还原**（scripts/release-lib.mjs 的 `withPublishManifest`）；② tsc 的 rewrite 只改 JS 不改 d.ts，构建脚本后处理 d.ts 把 `.ts` 说明符改写为 `.js`（映射到 .d.ts），否则消费者 tsc 解析不了。验证：`smoke:pack` 把内核 tarball 装进裸消费者项目，运行两轮循环 + 严格模式类型检查，入 CI。
