@@ -142,11 +142,24 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 ## 未排期（Backlog）
 
-- P13 的 iOS 模拟器手工 e2e（JSC 路径实测；用户裁决 2026-07-16 推迟）
-- P13 的审批弹窗确认/拒绝、中止、重连的逐路径手工验证（代码就位，Android 核心回路已验；这几条 UI 路径未逐一手工走）
-- P13 后续：会话持久化到手机磁盘、语音（STT/TTS）、公网/中转/内网穿透、iOS 后台执行缓解、Flutter CI
-- `@tau/pi-compat` 垫片（D9）
-- TUI Themes（P8D-2 整体延期：schema 设计、内置 light/dark、加载入口、reload 刷新，任务细目保留在 phase-8 规格书）
+> P0–P13 全部 ✅，无"当前阶段"；本表即下一步工作候选，按优先级分组。
+
+### A. 近期收尾候选（推荐先做，把 P13 真正封口）
+
+- **发版把 ext-mcp-http 推上 npm**（真实缺口）：`@yophon/tau-ext-mcp-http` 新包与内核 `PlatformResponse.headers` 改动都在 main，但 npm 仍是 0.1.0——**别人 `npm install` 装不到新包**。跑 `npm run version:patch`（锁步 0.1.1）→ `publish:npm`，走 P12 建好的流水线。发布白名单已含 ext-mcp-http（release-lib.mjs）。
+- **P13 Android UI 路径补验**：审批弹窗确认/拒绝、中止按钮、重连按钮——代码就位，Android 核心回路已验，这三条 UI 路径未逐一手工走。真机 + adb 隧道套路见 phase-13 规格书 Android e2e 实录，半小时收干净 DoD。
+
+### B. 可选增强（投入较大，看方向裁决）
+
+- **Flutter 会话持久化**：手机对话现在仅内存、重开即清。落 pi v3 JSONL over Dart FileSystem 桥，补"重开恢复"（与 iOS 锁屏冻结的产品约束配套）。
+- **TUI Themes**（P8D-2 整体延期）：schema 设计、内置 light/dark、加载入口、reload 刷新，任务细目在 phase-8 规格书。
+- **`@tau/pi-compat` 垫片**（D9）：让 pi 社区扩展直接跑在 tau 上，扩大生态。
+- **公网/中转/内网穿透**：Flutter 现仅局域网，走出去需中转层（可基于 browser demo 的 `/proxy` 扩展）。
+
+### C. 已裁决推迟
+
+- P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
+- P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
 
 ## 技术债登记
