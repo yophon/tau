@@ -1,6 +1,6 @@
 {
 	"name": "@yophon/tau-ext-mcp",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "MCP tool bridge extension for tau",
 	"type": "module",
 	"license": "MIT",
@@ -21,6 +21,6 @@
 	},
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "1.29.0",
-		"@yophon/tau-kernel": "^0.1.0"
+		"@yophon/tau-kernel": "^0.1.1"
 	}
 }

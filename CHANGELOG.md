@@ -2,7 +2,7 @@
 
 All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
-## [Unreleased]
+## [0.1.1] - 2026-07-17
 
 ### Added
 - `@yophon/tau-ext-mcp-http` — zero-dependency Streamable HTTP MCP client

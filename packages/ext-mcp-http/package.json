@@ -1,6 +1,6 @@
 {
 	"name": "@yophon/tau-ext-mcp-http",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Pure-Platform Streamable HTTP MCP client extension for tau (zero dependencies beyond the kernel)",
 	"type": "module",
 	"license": "MIT",
@@ -20,6 +20,6 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@yophon/tau-kernel": "^0.1.0"
+		"@yophon/tau-kernel": "^0.1.1"
 	}
 }

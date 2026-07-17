@@ -1,17 +1,17 @@
 {
 	"name": "@yophon/tau-cli",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"lockfileVersion": 3,
 	"requires": true,
 	"packages": {
 		"": {
 			"name": "@yophon/tau-cli",
-			"version": "0.1.0",
+			"version": "0.1.1",
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/pi-tui": "0.80.3",
-				"@yophon/tau-host-node": "^0.1.0",
-				"@yophon/tau-kernel": "^0.1.0"
+				"@yophon/tau-host-node": "^0.1.1",
+				"@yophon/tau-kernel": "^0.1.1"
 			},
 			"bin": {
 				"tau": "./dist/main.js"
@@ -34,16 +34,16 @@
 			}
 		},
 		"node_modules/@yophon/tau-host-node": {
-			"version": "0.1.0",
-			"resolved": "https://registry.npmjs.org/@yophon/tau-host-node/-/tau-host-node-0.1.0.tgz",
+			"version": "0.1.1",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-host-node/-/tau-host-node-0.1.1.tgz",
 			"license": "MIT",
 			"dependencies": {
-				"@yophon/tau-kernel": "^0.1.0"
+				"@yophon/tau-kernel": "^0.1.1"
 			}
 		},
 		"node_modules/@yophon/tau-kernel": {
-			"version": "0.1.0",
-			"resolved": "https://registry.npmjs.org/@yophon/tau-kernel/-/tau-kernel-0.1.0.tgz",
+			"version": "0.1.1",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-kernel/-/tau-kernel-0.1.1.tgz",
 			"license": "MIT"
 		},
 		"node_modules/get-east-asian-width": {

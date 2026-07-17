@@ -1,6 +1,6 @@
 {
 	"name": "@yophon/tau-host-weapp",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "WeChat mini-program Platform adapter for tau",
 	"type": "module",
 	"license": "MIT",
@@ -20,6 +20,6 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@yophon/tau-kernel": "^0.1.0"
+		"@yophon/tau-kernel": "^0.1.1"
 	}
 }
