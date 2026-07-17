@@ -69,3 +69,7 @@ Phase 0 曾把消息模型设计成 OpenAI wire 格式的直接镜像（string c
 ## D17：发布走 dist 双轨——开发零构建不变，发布物是 tsc 产物（2026-07-16，P12）
 
 Node 原生 type-stripping **拒绝**处理 `node_modules` 下的 .ts（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），所以"零构建"只能是开发期主张：workspace 内直接跑 src 不变；发布物是 `tsc -p tsconfig.build.json` 出的 dist（ESM JS + d.ts + sourcemap，`rewriteRelativeImportExtensions` 把 .ts 相对导入改写为 .js）。两个实现细节：① npm 不支持 pnpm 式的 `publishConfig.exports` 覆盖，因此仓库内 package.json 保持 src exports，**publish/pack 时临时改写 manifest 为 dist 形态、结束后还原**（scripts/release-lib.mjs 的 `withPublishManifest`）；② tsc 的 rewrite 只改 JS 不改 d.ts，构建脚本后处理 d.ts 把 `.ts` 说明符改写为 `.js`（映射到 .d.ts），否则消费者 tsc 解析不了。验证：`smoke:pack` 把内核 tarball 装进裸消费者项目，运行两轮循环 + 严格模式类型检查，入 CI。
+
+## D18：引擎缺口由宿主层补，内核保持干净 ES2022（2026-07-16，P13）
+
+flutter_js 内置的 QuickJS 版本偏旧，缺若干 ES2022+ 内置方法（P13 真机实测确认缺 `Array.prototype.at`——内核 `openai.ts`/`agent.ts` 的流式组装用它，第二轮流式文本才踩中）。抉择：**改内核去掉 `.at()` 等** vs **宿主 bundle 补 polyfill**。选后者——`.at()` 是 ES2022 标准，内核的目标是"纯 ECMAScript 语言标准"，一个落后的嵌入引擎不该反向拉低内核基线；引擎缺口与 Platform 缺口同性质，都由宿主层补齐（`examples/flutter/app/js/polyfills.ts`，内核加载前 guarded 定义，引擎已有则不覆盖）。这与 D4 注入缝隙哲学一致：宿主负责把运行时垫到内核假设的语言基线。代价（已接受）：① 纯度门禁的 `smoke:quickjs` 用 quickjs-emscripten（较新，有 `.at()`），**不完全代表 flutter_js 的老 QuickJS**——真实引擎差异只能靠真机 e2e 兜底（风险 #1）；② 每个裸引擎宿主需自带匹配其引擎的 polyfill 集。若未来内核大量依赖更新的内置，再考虑收紧内核的语言基线声明。

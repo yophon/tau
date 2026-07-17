@@ -1,0 +1,13 @@
+{
+	"name": "tau-flutter-demo-mcp-server",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"description": "Computer-side MCP server for the tau Flutter demo — plain MCP, no tau dependency; swap in any Streamable HTTP MCP server",
+	"scripts": {
+		"start": "node server.mjs"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "1.29.0"
+	}
+}

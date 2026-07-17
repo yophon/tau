@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-16（P12 发布归档同日，P13 Flutter 宿主实战立项——规格草拟待确认）
+> 最后更新：2026-07-17（P13 Flutter 宿主实战完成：ext-mcp-http + Flutter demo + 裸引擎 MCP e2e + Android 真机 e2e）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -127,17 +127,24 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：九包以 `@yophon/tau-*` 锁步 0.1.0 真实发布到 npm（scope 用户裁决）。dist 双轨（D17）：开发零构建不变，发布物 tsc 产物，publish 时经 `withPublishManifest` 临时改写 manifest（npm 不支持 publishConfig.exports）+ d.ts 说明符后处理。pi 镜像脚本：sync-versions / publish（幂等 + pack 校验）/ release / check-pinned-deps / cli shrinkwrap（拒 install-script 依赖），门禁入 check 与 CI。e2e：`smoke:pack`（内核 tarball 裸消费者安装/运行/strict 类型检查，入 CI）+ `npx @yophon/tau-cli@0.1.0 -p` 真 registry 全链路（无 ExperimentalWarning，还债 #5）。还债 #5/#6。发布实录（2FA/token 的坑）见规格书。偏离：lockfile-commit 独立脚本由 CI `npm ci` + `git diff` 覆盖；docs 英文化缩水为 README 双语（P10 后完成）+ 包级英文描述，内部文档维持中文。CI on-tag 发布推迟（用户裁决）。
 
-## Phase 13 ⬜ Flutter 宿主实战：手机上的 agent 本体 + MCP 工具端
+## Phase 13 ✅ Flutter 宿主实战：手机上的 agent 本体 + MCP 工具端（2026-07-17）
 
-规格书：[specs/phase-13-flutter-host.md](specs/phase-13-flutter-host.md)（草拟，待用户确认）。原 Backlog"Flutter 完整宿主"转正（2026-07-16 用户立项）。
+规格书：[specs/phase-13-flutter-host.md](specs/phase-13-flutter-host.md)（含实施记录与真机 e2e 实录）。原 Backlog"Flutter 完整宿主"转正（2026-07-16 用户立项）。
 
-- 内核跑手机（flutter_js：Android/QuickJS、iOS/JSC），电脑侧零 tau 痕迹的 MCP 服务；产品叙事"手机 agent 连接任意 MCP 工具端"
-- `@yophon/tau-ext-mcp-http`（纯 Platform 的 Streamable HTTP MCP client，零依赖）+ `examples/flutter/`（app + mcp-server）
-- v1 裁决：无语音、仅局域网、内存对话；iOS 亮屏执行为已知约束
-- **验收**：quickjs 裸引擎 MCP 工具回路 e2e 入 CI；Android/iOS 模拟器手工 e2e 各一次
+**完成记录（2026-07-17）**：141 测试全绿（+10：ext-mcp-http fake-platform 单测），`smoke:quickjs:mcp` 裸引擎 MCP 回路入 CI。
+- ✅ `@yophon/tau-ext-mcp-http`：纯 Platform 的 Streamable HTTP MCP client，零依赖。工厂返回 `{ extension, connect }`（`connect()` 幂等可重入；离线经 `onStatus` 静默降级不抛；404 重握手重放）。协议锁 `2025-06-18` 接受协商回落。
+- ✅ 内核补 `PlatformResponse.headers?`（读 MCP-Session-Id/content-type，`defaultPlatform` 直通，适配器可选、缺失嗅探降级）。
+- ✅ `examples/flutter/mcp-server/`（零 tau 依赖，read/write/list/run + 工作目录边界 + Bearer token）+ `examples/flutter/app/`（TauEngine flutter_js 封装 + Platform 桥 + guard 审批扩展 + 设置/聊天两页，bundle 提交进仓库）。
+- ✅ `smoke:quickjs:mcp`：QuickJS 内核 + ext-mcp-http 经 `http-bridge`（Node↔VM 真 HTTP fetch 桥，Flutter Platform 桥预演）调真实 mcp-server，工具回路 + 结果回填 + 流式回复，入 CI。
+- ✅ Android 真机 e2e（AAK-AN00/Android 16，用户确认）：完整工具回路（read_file → 流式回复，工具卡片返回值正确，mock LLM 双请求为证）、离线降级、已连接指示、无 token 401。
+- 引擎选型定 flutter_js（Android/QuickJS）；实测撞出并修复两处：onMessage 预解码差异、老 QuickJS 缺 `Array.prototype.at`（宿主 polyfill 补，记 **D18**）。
+- 延期（挂 Backlog）：iOS/JSC 手工 e2e、审批弹窗/中止/重连的逐路径手工验证（代码就位）、会话持久化、语音、公网中转。
 
 ## 未排期（Backlog）
 
+- P13 的 iOS 模拟器手工 e2e（JSC 路径实测；用户裁决 2026-07-16 推迟）
+- P13 的审批弹窗确认/拒绝、中止、重连的逐路径手工验证（代码就位，Android 核心回路已验；这几条 UI 路径未逐一手工走）
+- P13 后续：会话持久化到手机磁盘、语音（STT/TTS）、公网/中转/内网穿透、iOS 后台执行缓解、Flutter CI
 - `@tau/pi-compat` 垫片（D9）
 - TUI Themes（P8D-2 整体延期：schema 设计、内置 light/dark、加载入口、reload 刷新，任务细目保留在 phase-8 规格书）
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）

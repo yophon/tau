@@ -23,6 +23,11 @@ export interface PlatformBodyReader {
 	cancel(reason?: unknown): unknown;
 }
 
+/** Structural subset of fetch Headers; native Headers instances satisfy it. */
+export interface PlatformResponseHeaders {
+	get(name: string): string | null;
+}
+
 /**
  * Structural subset of a fetch Response. Hosts without fetch (WeChat
  * mini-programs, React Native without streaming) implement this shape over
@@ -34,6 +39,11 @@ export interface PlatformResponse {
 	readonly status: number;
 	text(): Promise<string>;
 	readonly body: { getReader(): PlatformBodyReader } | null;
+	/**
+	 * Optional: consumers needing response headers (e.g. MCP-Session-Id) must
+	 * degrade gracefully when an adapter cannot provide them.
+	 */
+	readonly headers?: PlatformResponseHeaders;
 }
 
 export type PlatformFetch = (url: string, init?: PlatformRequestInit) => Promise<PlatformResponse>;

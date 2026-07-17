@@ -36,5 +36,6 @@ jobs:
       - run: npm run smoke:weapp
       - run: npm run smoke:pack
       - run: npm run smoke:quickjs
+      - run: npm run smoke:quickjs:mcp
       - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:browser:runtime
       - run: npm run smoke:tui

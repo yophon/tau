@@ -13,6 +13,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"host-rn",
 	"ext-subagents",
 	"ext-mcp",
+	"ext-mcp-http",
 	"ext-resources",
 	"cli",
 ];

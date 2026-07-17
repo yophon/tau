@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-15（P11：重试/超时/ctx.abort/deliverAs/sendUserMessage/session_before_switch 全绿；此前 P8 closeout 与 P9 proxy 口径）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-17（P13：移动/嵌入引擎宿主 + 纯 Platform MCP client 两项 tau 原创面登记）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期延期 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -51,6 +51,8 @@
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
 | 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@yophon/tau-ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |
 | 浏览器宿主 | pi 的浏览器能力与产品层/proxy 绑定更深；tau 只提供 host capability | ✅ P9（OPFS/内存 FileSystem；session 复用 pi v3 JSONL；CORS 转发 proxy 后补于 demo 服务器，密钥托管 proxy 推迟） |
+| 移动/嵌入引擎宿主 | pi 无先例（跑 Node/浏览器） | ✅ P13（tau 原创面：flutter_js Android/QuickJS 真机跑通内核 + 纯 Platform MCP client；引擎缺口宿主 polyfill 补，D18） |
+| 纯 Platform MCP client（Streamable HTTP） | pi 用官方 SDK（假设 Node/浏览器全局） | ✅ P13（`ext-mcp-http` 抄协议不抄 SDK，零依赖进裸引擎；SDK 版 `ext-mcp` 并存服务 Node stdio） |
 
 ## 安全缺口（已修复）
 

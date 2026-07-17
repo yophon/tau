@@ -167,6 +167,7 @@ export {
 	type PlatformFetch,
 	type PlatformRequestInit,
 	type PlatformResponse,
+	type PlatformResponseHeaders,
 	type TauAbortSignal,
 	type Utf8Decoder,
 } from "./platform.ts";

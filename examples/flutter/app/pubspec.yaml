@@ -1,0 +1,23 @@
+name: tau_flutter_demo
+description: tau agent on the phone — kernel in flutter_js, tools over MCP.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=3.24.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_js: ^0.8.2
+  http: ^1.2.0
+  shared_preferences: ^2.3.0
+
+dev_dependencies:
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/tau.js
