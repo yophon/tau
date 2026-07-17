@@ -20,10 +20,12 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   （`/tree`）、分叉（`/fork`）、自动上下文压缩（算法与 prompt 逐字照抄 pi）。
 - **扩展**——镜像 pi 的扩展 API：25+ 生命周期事件、工具、slash 命令、flags、
   渲染器、widgets、快捷键。标准扩展包：子 agent（`task` 工具）、MCP client
-  桥、skills 与 prompt templates（与 pi 文件格式兼容）。
+  桥（基于官方 SDK，以及一个零依赖、纯 `Platform` 的 HTTP client 供裸引擎用）、
+  skills 与 prompt templates（与 pi 文件格式兼容）。
 - **宿主**——终端（REPL / 产品级 TUI / 单次 `-p`）、浏览器（OPFS）、微信小
-  程序、React Native（Expo），以及零 WinterTC 全局的裸 QuickJS 引擎——每一个
-  都做过端到端验证，大部分已入 CI。
+  程序、React Native（Expo）、手机（Flutter 经 `flutter_js`，内核跑在 QuickJS
+  里），以及零 WinterTC 全局的裸 QuickJS 引擎——每一个都做过端到端验证，大部
+  分已入 CI。
 
 ## 包一览
 
@@ -36,7 +38,8 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 | `@yophon/tau-host-rn` | React Native（Expo）`Platform` 适配器，基于 `expo/fetch` | 是 |
 | `@yophon/tau-cli` | 终端前端：REPL、TUI、单次模式 | 是 |
 | `@yophon/tau-ext-subagents` | 注册 `task` 工具、以子 Agent 完成委派的扩展包 | 不直接碰运行时 API |
-| `@yophon/tau-ext-mcp` | 把 MCP server 工具桥接为 tau 工具的扩展包 | 是——MCP SDK transport |
+| `@yophon/tau-ext-mcp` | 用官方 SDK（stdio/HTTP）把 MCP server 工具桥接为 tau 工具 | 是——MCP SDK transport |
+| `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的 Streamable HTTP MCP client——零依赖，能进 SDK 进不了的裸引擎 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
 
 ## 设计规则
@@ -79,6 +82,7 @@ npm run tau -- -p "列出这里的文件并总结"
 
 ```bash
 npm run smoke:quickjs             # 裸 QuickJS 引擎（无 WinterTC 全局）跑完整 agent 循环
+npm run smoke:quickjs:mcp         # 裸引擎内核经桥接 fetch 调真实 MCP server
 npm run smoke:browser             # 打包浏览器宿主 demo
 npm run smoke:weapp               # 打包微信小程序 demo（验证无 Node 泄漏）
 npm run demo:browser              # 本地起浏览器 demo（含 CORS 转发 proxy）
@@ -88,6 +92,8 @@ npm run demo:weapp                # 生成 examples/weapp/miniprogram/lib/tau.js
 - `examples/browser/`——静态页面，OPFS 文件系统，浏览器内 BYOK
 - `examples/weapp/`——微信小程序对话 demo（[README](examples/weapp/README.md)）
 - `examples/rn/`——React Native（Expo）对话 demo（[README](examples/rn/README.md)）
+- `examples/flutter/`——手机上的 agent（内核跑在 `flutter_js`）+ 它经局域网驱动的
+  零 tau 依赖电脑侧 MCP server（[app](examples/flutter/app/README.md) · [mcp-server](examples/flutter/mcp-server/README.md)）
 
 ## 嵌入内核
 
@@ -149,9 +155,9 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 
 - [docs/development.md](docs/development.md)——流程唯一事实源：命令、硬规则、规格书先行的阶段流程、Definition of Done
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
-- [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P12）：状态、依赖、技术债登记
+- [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P13）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D16）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D18）
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

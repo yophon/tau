@@ -24,11 +24,13 @@ inject a small adapter instead of polyfilling globals.
   with pi's exact algorithm and prompts.
 - **Extensions** — pi-mirrored API: 25+ lifecycle events, tools, slash
   commands, flags, renderers, widgets, shortcuts. Standard packs: subagents
-  (`task` tool), MCP client bridge, skills & prompt templates
+  (`task` tool), MCP client bridges (SDK-based, and a zero-dependency pure-
+  `Platform` HTTP client for bare engines), skills & prompt templates
   (pi-file-compatible).
 - **Hosts** — terminal (REPL / product-grade TUI / one-shot `-p`), browser
-  (OPFS), WeChat mini-program, React Native (Expo), and a bare QuickJS engine
-  with zero WinterTC globals — each verified end-to-end, most in CI.
+  (OPFS), WeChat mini-program, React Native (Expo), a phone (Flutter via
+  `flutter_js`, kernel running in QuickJS), and a bare QuickJS engine with zero
+  WinterTC globals — each verified end-to-end, most in CI.
 
 ## Packages
 
@@ -41,7 +43,8 @@ inject a small adapter instead of polyfilling globals.
 | `@yophon/tau-host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
 | `@yophon/tau-cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
 | `@yophon/tau-ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
-| `@yophon/tau-ext-mcp` | Extension package that bridges MCP server tools into tau tools | Yes — MCP SDK transports |
+| `@yophon/tau-ext-mcp` | Extension package that bridges MCP server tools into tau tools via the official SDK (stdio/HTTP) | Yes — MCP SDK transports |
+| `@yophon/tau-ext-mcp-http` | Streamable HTTP MCP client written entirely on the `Platform` seam — zero dependencies, runs on bare engines where the SDK cannot | **No** — pure `Platform` |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 
 ## Design rules
@@ -86,6 +89,7 @@ Portability proofs and demos:
 
 ```bash
 npm run smoke:quickjs             # full agent loop on a bare QuickJS engine (no WinterTC globals)
+npm run smoke:quickjs:mcp         # bare-engine kernel calling a real MCP server over a bridged fetch
 npm run smoke:browser             # bundle the browser host demo
 npm run smoke:weapp               # bundle the WeChat mini-program demo (no Node leakage)
 npm run demo:browser              # serve the browser demo locally (CORS proxy included)
@@ -95,6 +99,8 @@ npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js 
 - `examples/browser/` — static page, OPFS filesystem, BYOK in the browser
 - `examples/weapp/` — WeChat mini-program chat demo ([README](examples/weapp/README.md))
 - `examples/rn/` — React Native (Expo) chat demo ([README](examples/rn/README.md))
+- `examples/flutter/` — a phone agent (kernel in `flutter_js`) plus a zero-tau
+  computer-side MCP server it drives over the LAN ([app](examples/flutter/app/README.md) · [mcp-server](examples/flutter/mcp-server/README.md))
 
 ## Embedding the kernel
 
@@ -162,9 +168,9 @@ Living docs under [docs/](docs/) — start here when picking up development:
 
 - [docs/development.md](docs/development.md) — process source of truth: commands, hard rules, spec-first phase workflow, Definition of Done
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
-- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P12) with status, dependencies, and tech-debt register
+- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P13) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D16)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D18)
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License
