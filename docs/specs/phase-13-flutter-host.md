@@ -56,6 +56,8 @@ export function createHttpMcpExtension(options: {
 - Bearer token 认证（启动时生成/指定，**明文打印**给手机手填——二维码需 app 加扫码依赖与相机权限，不值 v1；裁决 2026-07-16）；绑定 0.0.0.0 供局域网访问
 - 兼任自动化 e2e fixture（见验收）；README 说明"可替换为任何现成 MCP server"
 
+**换成现成 MCP server（选型对照，裁决 2026-07-16：并存）**：内置这个最小 server 只作**开箱即用的示例**，不追求功能齐全。现成的功能齐全 server（[Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP) all-in-one：文件/shell/进程/编辑；官方 `@modelcontextprotocol/server-filesystem` 只文件、15 工具；`tumf/mcp-shell-server` 只 shell、白名单+审计）几乎都是 **stdio** 传输，而 `ext-mcp-http` 只说 **Streamable HTTP**——故换用现成 server 需一个传输网关（[supergateway](https://github.com/supercorp-ai/supergateway) `--stdio "…" --outputTransport streamableHttp`，或 `mcp-proxy`）把 stdio 桥成 HTTP，网关的 `--oauth2Bearer` 对应 tau app 的 token 字段。用户裁决**并存**：内置 server 当兜底 demo，`mcp-server/README.md` 指路到「Desktop Commander/filesystem + supergateway」做日常/生产工具端。不把电脑侧做成正式发布包（`@yophon/tau-mcp-server`）——现成生态已够，重复造轮无收益。
+
 **3. `examples/flutter/app/`（Flutter 示例工程，Dart ≥ 3 / Flutter 3.38）**
 
 - **引擎封装 `TauEngine`**（Dart）：flutter_js 加载 JS bundle；宿主循环泵微任务（QuickJS `executePendingJobs`；JSC 侧按 flutter_js 语义对齐）；Dart↔JS 消息通道封装

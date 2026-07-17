@@ -25,6 +25,28 @@ node server.mjs --dir ~/code/my-project
 
 所有路径限定在 `--dir` 内，越界拒绝。
 
+## 换成现成的 MCP server（功能更全）
+
+这个内置 server 是**开箱即用的最小示例**（4 个工具 + HTTP + token 一个进程搞定，零额外依赖）。想要更全的工具端时，手机 agent 说的是标准 MCP，直接换即可——只有一个约束：`ext-mcp-http` 走 **Streamable HTTP**，而多数现成 server 是 **stdio**（本地子进程），需要一个传输网关桥成 HTTP。
+
+**方案：现成 stdio server + [supergateway](https://github.com/supercorp-ai/supergateway) 桥成 Streamable HTTP**
+
+```bash
+# 官方 filesystem server（15 个文件工具：read/write/edit_file、directory_tree、search_files…；无 shell）
+npx -y supergateway \
+  --stdio "npx -y @modelcontextprotocol/server-filesystem ~/code/my-project" \
+  --outputTransport streamableHttp --streamableHttpPath /mcp \
+  --oauth2Bearer "$(openssl rand -hex 16)" \
+  --port 8720
+# 手机 app 的 MCP URL 填 http://<电脑局域网 IP>:8720/mcp，token 填上面生成的值
+```
+
+- **功能最全的 all-in-one**：[Desktop Commander](https://github.com/wonderwhy-er/DesktopCommanderMCP)——文件读写（含 Excel/PDF/DOCX）、shell 命令 + 流式输出 + 后台进程/超时/进程管理、外科式编辑。把上面 `--stdio` 里的命令换成它的启动命令即可。
+- **只要执行命令**：[tumf/mcp-shell-server](https://github.com/tumf/mcp-shell-server)（白名单化 + 审计日志）。
+- supergateway 认证用 `--oauth2Bearer <token>`（tau app 的 token 字段照填），额外头用可重复的 `--header`。它默认监听端口未必绑 0.0.0.0——局域网访问不通时用 `mcp-proxy` 或给它套一层反代/`--host`（视版本）。
+
+选型对照与传输约束的完整分析见 P13 规格书「换成现成 MCP server」讨论。
+
 ## ⚠ 安全
 
 - **`run_command` 对持有 token 的任何客户端就是远程代码执行**。局域网 + Bearer token 是仅有的屏障，不要把这个端口暴露到不可信网络。
