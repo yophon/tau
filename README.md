@@ -32,6 +32,15 @@ inject a small adapter instead of polyfilling globals.
   `flutter_js`, kernel running in QuickJS), and a bare QuickJS engine with zero
   WinterTC globals — each verified end-to-end, most in CI.
 
+The kernel's only host dependency is the four-method `Platform` seam, so the
+agent loop runs anywhere with a JS engine and an HTTP path to an
+OpenAI-compatible endpoint. Whether that loop is also a *useful* coding agent
+is a separate, capability question — no shell means no `bash` tool, unless a
+remote one is wired in over MCP (exactly the Flutter demo's story). See
+[docs/architecture.md](docs/architecture.md#可移植性广度前提与边界) for the honest
+reach, prerequisites, and boundaries (network + BYOK, engine polyfills for
+older runtimes, paths that are code-present but not yet e2e-verified).
+
 ## Packages
 
 | Package | Role | May touch the runtime? |

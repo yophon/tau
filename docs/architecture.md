@@ -123,6 +123,22 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - 裸引擎门禁 `smoke:quickjs:mcp`（入 CI）：QuickJS 内核 + ext-mcp-http 经 `test-fixtures/quickjs/http-bridge`（Node↔VM 真 HTTP fetch 桥，Flutter Platform 桥的预演）调真实 mcp-server，验证工具回路。Flutter app 本身不入 CI（toolchain 重），Dart 侧靠真机手工 e2e（Android 已验，iOS 推迟）。
 - **v1 约束**：仅局域网、内存对话、iOS 锁屏 ~30s 冻结（亮屏执行为前提）；key/token 明文存 `shared_preferences`，`run_command` 是 RCE 面（审批弹窗 + 工作目录边界 + 可信局域网为屏障）。
 
+## 可移植性：广度、前提与边界
+
+内核对宿主的**全部**依赖就是 `Platform` 那四样（`fetch` / `createUtf8Decoder` / `randomBytes` / `sleep?`）。翻译成一句话：**任何能跑 JS 引擎、且能发 HTTP 到一个 OpenAI 兼容端点的设备，agent 循环就能跑。** 这不是纸面主张——已实测覆盖 6 个运行时家族，横跨设备光谱主要区块：桌面/服务器/边缘（Node，含 Deno/Bun/Workers 的 WinterTC 全局）、Web（任意现代浏览器）、移动原生（RN/Expo iOS 实测、Flutter/QuickJS Android 真机实测）、小程序（微信）、裸嵌入引擎（QuickJS CI 门禁）。
+
+**"能跑"有两层，勿合并**：
+1. **agent 循环能转**——门槛就是"有 JS 引擎 + 能上网"，覆盖面极广。
+2. **是不是一个有用的 coding agent**——取决于**宿主提供了哪些能力**，不取决于循环本身。浏览器/手机无 Shell → 无 bash 工具；无 fs → 无 read/write/edit。P13 的意义正在于 MCP 把"工具"从"本地能力"解耦成"远程工具端"：手机没有 shell，但能连电脑的 shell。所以循环到处能跑，要变成能干活的 agent，要么宿主给本地能力（`createCodingTools` 按能力可选注册），要么接远程 MCP（`ext-mcp-http`）。
+
+**前提与注意（诚实边界）**：
+- **需要网络 + BYOK**：无本地模型支持（D3），真离线设备跑不了——它要够到一个 OpenAI 兼容端点。
+- **老/裸引擎可能要宿主补语言垫片**：内核以干净 ES2022 编写，但落后引擎缺新内置（如 flutter_js 的老 QuickJS 缺 `Array.prototype.at`）——由宿主层 polyfill 兜（D18），"纯 ECMAScript"在此等于"宿主补齐语言基线后成立"。纯度门禁的 `smoke:quickjs` 用较新的 quickjs-emscripten，不完全代表部署引擎，真实差异靠真机 e2e 兜底。
+- **架构支持 ≠ 已验证**：Flutter iOS/JSC 路径、RN Android/Hermes、ext-mcp-http 部分传输属代码就位未逐一 e2e（见各宿主 Backlog）。
+- **要有 JS 引擎**：没引擎或内存太小的裸 MCU 出局（QuickJS 足迹已很小，但仍需一个引擎）。
+
+**结论**：广度基本证毕——剩下的工作不是"还能不能跑在更多设备"，而是**深度**：坐实未实测路径、在各宿主补齐能力矩阵（会话持久化、更多工具端）。
+
 ## 扩展加载与信任（host 层）
 
 内核从不加载代码；CLI 的加载顺序：全局 `~/.tau/extensions/`（**始终信任**）→ 项目 `cwd/.tau/extensions/` 过信任门——`~/.tau/trust.json` 有记录按记录；否则先问全局扩展（`project_trust` 事件），无决定时 TTY 下 `ui.confirm` 并持久化，headless 拒绝加载。扩展声明的 `--<flag>` 由 CLI 在加载后解析并 `setFlagValues`。REPL 在轮运行期间输入的行进入 steering 队列；Ctrl+C 中断当前轮（无运行中的轮才退出 REPL）。

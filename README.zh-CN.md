@@ -27,6 +27,13 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   里），以及零 WinterTC 全局的裸 QuickJS 引擎——每一个都做过端到端验证，大部
   分已入 CI。
 
+内核对宿主的唯一依赖就是四个方法的 `Platform` 缝隙，因此 agent 循环能跑在任何
+「有 JS 引擎 + 能发 HTTP 到 OpenAI 兼容端点」的地方。但这个循环是不是一个*有用
+的* coding agent，是另一个**能力问题**——没有 shell 就没有 `bash` 工具，除非经
+MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的真实广度、前提与边界
+（网络 + BYOK、老引擎的语言垫片、代码就位但尚未 e2e 验证的路径）见
+[docs/architecture.md](docs/architecture.md#可移植性广度前提与边界)。
+
 ## 包一览
 
 | 包 | 职责 | 允许碰运行时？ |
