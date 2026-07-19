@@ -4,6 +4,25 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed
+- Kernel: token estimation is now CJK-aware (P14). CJK-range characters count
+  ~1 token each instead of pi's chars/4, which undercounted Chinese/Japanese/
+  Korean text 3-4x and delayed auto-compaction. Mixed/CJK-heavy sessions will
+  see compaction trigger earlier (a correction, not a regression); pure-ASCII
+  behavior is mathematically unchanged. New export: `estimateStringTokens`.
+- Kernel: the compaction summary prompts append an identifier-preservation
+  rule (UUIDs, hashes, URLs, paths must be preserved verbatim) so summaries
+  can no longer strand the agent by paraphrasing opaque identifiers.
+
+### Added
+- Kernel: optional `AgentOptions.pricing` (`ModelPricing`, USD per million
+  tokens) fills `usage.cost` on assistant messages; without it cost stays
+  zero ("unknown"). tau still ships no pricing data — hosts supply prices.
+  Cache token prices are optional and uncounted when omitted. New exports:
+  `ModelPricing`, `computeUsageCost`.
+- CLI/TUI: `--pricing "in=0.5,out=2[,cacheRead=...][,cacheWrite=...]"` flag
+  and `TAU_PRICING` env; the TUI footer shows real accumulated cost when set.
+
 ## [0.1.1] - 2026-07-17
 
 ### Added

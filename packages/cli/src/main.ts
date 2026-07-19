@@ -10,6 +10,7 @@ import {
 	defaultPlatform,
 	ExtensionRegistry,
 	JsonlSessionRepo,
+	type ModelPricing,
 	messageText,
 	type OpenAICompatConfig,
 	restoreSession,
@@ -36,6 +37,10 @@ Options:
       --tui              Use the TUI interactive mode
   -w, --context-window <n>  Model context window in tokens; enables auto-compaction
                          (env: TAU_CONTEXT_WINDOW)
+      --pricing <spec>   Unit prices, USD per million tokens, e.g.
+                         "in=0.5,out=2,cacheRead=0.05,cacheWrite=0.625"
+                         (cache keys optional and uncounted when omitted;
+                         env: TAU_PRICING). Enables real cost in the footer.
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
@@ -63,6 +68,7 @@ interface CliOptions {
 	tui: boolean;
 	continue: boolean;
 	contextWindow?: number;
+	pricing?: ModelPricing;
 	sessionPath?: string;
 	noSession: boolean;
 	help: boolean;
@@ -120,6 +126,15 @@ function parseArgs(argv: string[]): CliOptions {
 				options.contextWindow = parsed;
 				break;
 			}
+			case "--pricing": {
+				const parsed = parsePricing(next());
+				if (parsed instanceof Error) {
+					console.error(parsed.message);
+					process.exit(1);
+				}
+				options.pricing = parsed;
+				break;
+			}
 			case "--session":
 				options.sessionPath = next();
 				break;
@@ -138,6 +153,33 @@ function parseArgs(argv: string[]): CliOptions {
 		}
 	}
 	return options;
+}
+
+const PRICING_KEYS: Record<string, keyof ModelPricing> = {
+	in: "inputPerMTok",
+	out: "outputPerMTok",
+	cacheRead: "cacheReadPerMTok",
+	cacheWrite: "cacheWritePerMTok",
+};
+
+/** Parse "in=0.5,out=2,cacheRead=0.05,cacheWrite=0.625" (cache keys optional). */
+function parsePricing(spec: string): ModelPricing | Error {
+	const values: Partial<Record<keyof ModelPricing, number>> = {};
+	for (const part of spec.split(",")) {
+		const trimmed = part.trim();
+		if (trimmed === "") continue;
+		const eq = trimmed.indexOf("=");
+		const key = eq === -1 ? "" : PRICING_KEYS[trimmed.slice(0, eq).trim()];
+		const value = eq === -1 ? Number.NaN : Number(trimmed.slice(eq + 1).trim());
+		if (!key || !Number.isFinite(value) || value < 0) {
+			return new Error(`Invalid pricing entry "${trimmed}" (expected in=<n>,out=<n>[,cacheRead=<n>][,cacheWrite=<n>])`);
+		}
+		values[key] = value;
+	}
+	if (values.inputPerMTok === undefined || values.outputPerMTok === undefined) {
+		return new Error('Pricing requires both "in" and "out" (USD per million tokens)');
+	}
+	return { inputPerMTok: values.inputPerMTok, outputPerMTok: values.outputPerMTok, ...values };
 }
 
 function splitList(value: string | undefined): string[] {
@@ -460,6 +502,14 @@ async function main(): Promise<void> {
 		contextWindow,
 		...(Number.isFinite(envStall) && envStall >= 0 ? { stallTimeoutMs: envStall } : {}),
 	};
+	let pricing = options.pricing;
+	if (!pricing && process.env.TAU_PRICING) {
+		const parsed = parsePricing(process.env.TAU_PRICING);
+		// Env is a convenience knob: a bad value degrades to "cost unknown" with a
+		// warning instead of refusing to start (the explicit flag does exit).
+		if (parsed instanceof Error) console.error(`Ignoring TAU_PRICING: ${parsed.message}`);
+		else pricing = parsed;
+	}
 	const envMaxRetries = Number.parseInt(process.env.TAU_MAX_RETRIES ?? "", 10);
 	const envRetryDelay = Number.parseInt(process.env.TAU_RETRY_BASE_DELAY_MS ?? "", 10);
 	const retry = {
@@ -553,6 +603,7 @@ async function main(): Promise<void> {
 			initialMessages: messages,
 			session,
 			retry,
+			pricing,
 		});
 	let agent = buildAgent(initialMessages, recorder);
 	await extensions.notifySessionStart(sessionReason, agent.extensionContext());

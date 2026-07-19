@@ -73,3 +73,11 @@ Node 原生 type-stripping **拒绝**处理 `node_modules` 下的 .ts（`ERR_UNS
 ## D18：引擎缺口由宿主层补，内核保持干净 ES2022（2026-07-16，P13）
 
 flutter_js 内置的 QuickJS 版本偏旧，缺若干 ES2022+ 内置方法（P13 真机实测确认缺 `Array.prototype.at`——内核 `openai.ts`/`agent.ts` 的流式组装用它，第二轮流式文本才踩中）。抉择：**改内核去掉 `.at()` 等** vs **宿主 bundle 补 polyfill**。选后者——`.at()` 是 ES2022 标准，内核的目标是"纯 ECMAScript 语言标准"，一个落后的嵌入引擎不该反向拉低内核基线；引擎缺口与 Platform 缺口同性质，都由宿主层补齐（`examples/flutter/app/js/polyfills.ts`，内核加载前 guarded 定义，引擎已有则不覆盖）。这与 D4 注入缝隙哲学一致：宿主负责把运行时垫到内核假设的语言基线。代价（已接受）：① 纯度门禁的 `smoke:quickjs` 用 quickjs-emscripten（较新，有 `.at()`），**不完全代表 flutter_js 的老 QuickJS**——真实引擎差异只能靠真机 e2e 兜底（风险 #1）；② 每个裸引擎宿主需自带匹配其引擎的 polyfill 集。若未来内核大量依赖更新的内置，再考虑收紧内核的语言基线声明。
+
+## D19：token/成本诚实化的三点偏离（2026-07-17，P14）
+
+P14 对 pi 照抄内容做了两处有意偏离、新增一处 pi 无参照的原创面，合并记录：
+
+1. **token 估算偏离 chars/4**：pi 的估算面向英文语料，对 CJK 低估 3–4 倍（主流 BPE 对中日韩约 1 字 1 token），导致 tau 的主要用户（中文场景）压缩触发点严重滞后、上下文静默溢出风险。改为按字符类别加权（CJK 区段 1 token/字，其余保持 chars/4），纯 ES 单遍 charCodeAt 实现（`estimateStringTokens`），纯 ASCII 路径数学等价、行为不变。残余偏差依旧接受（债 #10 降级不销案）；换真 tokenizer 仍属大决策不做。
+2. **摘要 prompt 追加标识符保护条款**：pi prompt 逐字照抄之上追加一条规则（opaque identifiers 原样保留，禁止缩写/重构）。参照 yo-agent（源出 OpenClaw IDENTIFIER_PRESERVATION）——摘要失真 UUID/hash/URL 会让 agent 压缩后失忆，这是 pi 没踩过但多家实现踩过并修复的坑。
+3. **ModelPricing 注入位**（pi 无对应物——pi 有模型库带定价，tau 因 D2/D3 排除）：`AgentOptions.pricing` 可选单价（USD/百万 token），有则内核在 response_end 填 `usage.cost`，无则维持零值（"unknown"）。**绝不伪造价格**：tau 不带任何定价数据，数据责任在宿主/用户。cache 单价可选且缺省不计（宁少算不多算，用户裁决）。债 #9 半解：机制有了，数据外置。

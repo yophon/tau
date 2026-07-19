@@ -20,6 +20,7 @@ async function main() {
 		await runExtensionAndReloadSmoke(root, mock.baseUrl);
 		await runSelectorSmoke(root, mock.baseUrl);
 		await runExtensionAbortSmoke(root, mock.baseUrl);
+		await runPricingFooterSmoke(root, mock.baseUrl);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -241,7 +242,7 @@ export default async function smoke(api) {
 	);
 }
 
-async function startTui(label, dirs, baseUrl, args) {
+async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 	const name = `tau-smoke-${label}-${process.pid}-${Math.random().toString(16).slice(2)}`;
 	const command = [
 		"env",
@@ -249,6 +250,7 @@ async function startTui(label, dirs, baseUrl, args) {
 		`TAU_BASE_URL=${shellQuote(baseUrl)}`,
 		"TAU_MODEL=mock-model",
 		"TAU_API_KEY=test",
+		...extraEnv.map(shellQuote),
 		shellQuote(process.execPath),
 		"--disable-warning=ExperimentalWarning",
 		shellQuote(cliPath),
@@ -302,6 +304,24 @@ class TmuxSession {
 		} catch {
 			// Already exited.
 		}
+	}
+}
+
+// P14 验收：mock provider 返回 usage，TAU_PRICING 注入单价后 footer 显示真实成本
+// （2M input × $0.5/MTok + 1M output × $2/MTok = $3.0000）；无 pricing 时为 "cost unknown"。
+async function runPricingFooterSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "pricing-footer", false);
+	const session = await startTui("pricing-footer", dirs, baseUrl, ["--no-session"], ["TAU_PRICING=in=0.5,out=2"]);
+	try {
+		await session.waitFor("cost unknown", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await session.waitFor("cost $3.0000", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok pricing footer");
+	} finally {
+		await session.kill();
 	}
 }
 
@@ -361,6 +381,14 @@ function responseFor(request) {
 	}
 	if (content.includes("hang smoke")) {
 		return { payloads: [{ choices: [{ delta: { content: "SMOKE_ABORT_STREAM " } }] }], hold: true };
+	}
+	if (content.includes("pricing smoke")) {
+		return {
+			payloads: [
+				{ choices: [{ delta: { content: "SMOKE_PRICING_OK" }, finish_reason: "stop" }] },
+				{ choices: [], usage: { prompt_tokens: 2_000_000, completion_tokens: 1_000_000, total_tokens: 3_000_000 } },
+			],
+		};
 	}
 	if (content.includes("selector first")) return textTurn("SMOKE_SELECTOR_FIRST");
 	if (content.includes("SMOKE_RELOAD_PROMPT")) return textTurn("SMOKE_RELOAD_RESPONSE");

@@ -56,15 +56,45 @@ function getAssistantUsage(message: AgentMessage): Usage | undefined {
 }
 
 const ESTIMATED_IMAGE_CHARS = 4800;
+const ESTIMATED_IMAGE_TOKENS = ESTIMATED_IMAGE_CHARS / 4;
 
-function contentChars(content: string | { type: string; text?: string; data?: string }[]): number {
-	if (typeof content === "string") return content.length;
-	let chars = 0;
-	for (const block of content) {
-		if (block.type === "text" && block.text) chars += block.text.length;
-		else if (block.type === "image") chars += ESTIMATED_IMAGE_CHARS;
+/**
+ * CJK-aware weighted token estimate. Deviation from pi's chars/4 heuristic (P14):
+ * mainstream BPE tokenizers emit roughly one token per CJK character, so chars/4
+ * undercounts Chinese/Japanese/Korean text 3-4x and delays compaction badly for
+ * tau's primary audience. CJK-range characters count 1 token each; everything
+ * else keeps pi's chars/4. Single pass, charCodeAt only (bare-engine friendly;
+ * surrogate halves fall into the non-CJK bucket, which is fine for an estimate).
+ */
+export function estimateStringTokens(text: string): number {
+	let cjk = 0;
+	let other = 0;
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (
+			(code >= 0x3000 && code <= 0x30ff) || // CJK punctuation, hiragana, katakana
+			(code >= 0x3400 && code <= 0x4dbf) || // CJK extension A
+			(code >= 0x4e00 && code <= 0x9fff) || // CJK unified ideographs
+			(code >= 0xac00 && code <= 0xd7af) || // Hangul syllables
+			(code >= 0xf900 && code <= 0xfaff) || // CJK compatibility ideographs
+			(code >= 0xff00 && code <= 0xffef) // full/half-width forms
+		) {
+			cjk++;
+		} else {
+			other++;
+		}
 	}
-	return chars;
+	return cjk + Math.ceil(other / 4);
+}
+
+function contentTokens(content: string | { type: string; text?: string; data?: string }[]): number {
+	if (typeof content === "string") return estimateStringTokens(content);
+	let tokens = 0;
+	for (const block of content) {
+		if (block.type === "text" && block.text) tokens += estimateStringTokens(block.text);
+		else if (block.type === "image") tokens += ESTIMATED_IMAGE_TOKENS;
+	}
+	return tokens;
 }
 
 function safeJsonStringify(value: unknown): string {
@@ -75,28 +105,27 @@ function safeJsonStringify(value: unknown): string {
 	}
 }
 
-/** Estimate token count for one message using pi's conservative chars/4 heuristic. */
+/** Estimate token count for one message (weighted heuristic, see estimateStringTokens). */
 export function estimateTokens(message: AgentMessage): number {
-	let chars = 0;
 	switch (message.role) {
 		case "user":
 		case "custom":
 		case "toolResult":
-			chars = contentChars(message.content);
-			break;
-		case "assistant":
+			return contentTokens(message.content);
+		case "assistant": {
+			let tokens = 0;
 			for (const block of message.content) {
-				if (block.type === "text") chars += block.text.length;
-				else if (block.type === "thinking") chars += block.thinking.length;
-				else if (block.type === "toolCall") chars += block.name.length + safeJsonStringify(block.arguments).length;
+				if (block.type === "text") tokens += estimateStringTokens(block.text);
+				else if (block.type === "thinking") tokens += estimateStringTokens(block.thinking);
+				else if (block.type === "toolCall")
+					tokens += estimateStringTokens(block.name + safeJsonStringify(block.arguments));
 			}
-			break;
+			return tokens;
+		}
 		case "compactionSummary":
 		case "branchSummary":
-			chars = message.summary.length;
-			break;
+			return estimateStringTokens(message.summary);
 	}
-	return Math.ceil(chars / 4);
 }
 
 /** Estimate context tokens: last valid assistant usage + heuristic for trailing messages. */
@@ -228,6 +257,10 @@ export const SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assi
 
 Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
 
+// Prompts copied verbatim from pi, with one appended rule (P14 deviation): the
+// opaque-identifier preservation clause (via yo-agent, originally OpenClaw's
+// IDENTIFIER_PRESERVATION) — summaries that shorten UUIDs/hashes/URLs strand the
+// agent after compaction. Appears in both SUMMARIZATION and UPDATE prompts.
 const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
 
 Use this EXACT format:
@@ -259,7 +292,8 @@ Use this EXACT format:
 - [Any data, examples, or references needed to continue]
 - [Or "(none)" if not applicable]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise. Preserve exact file paths, function names, and error messages.
+Preserve all opaque identifiers exactly as written (UUIDs, commit hashes, file paths, URLs, session ids, tokens). Never shorten, reconstruct, or paraphrase them.`;
 
 const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
 
@@ -298,7 +332,8 @@ Use this EXACT format:
 ## Critical Context
 - [Preserve important context, add new if needed]
 
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+Keep each section concise. Preserve exact file paths, function names, and error messages.
+Preserve all opaque identifiers exactly as written (UUIDs, commit hashes, file paths, URLs, session ids, tokens). Never shorten, reconstruct, or paraphrase them.`;
 
 const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
 

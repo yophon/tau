@@ -25,7 +25,9 @@ import {
 	type AgentMessage,
 	type AssistantMessage,
 	type CustomMessage,
+	computeUsageCost,
 	emptyUsage,
+	type ModelPricing,
 	messageText,
 	type ToolCall,
 	type ToolResultMessage,
@@ -98,6 +100,8 @@ export interface AgentOptions {
 	compaction?: Partial<CompactionSettings>;
 	/** Auto-retry policy for failed LLM requests (pi defaults: enabled, 3 attempts, 2s base). Requires Platform.sleep. */
 	retry?: Partial<RetrySettings>;
+	/** Host-supplied unit prices; fills usage.cost on assistant messages. Absent = cost stays zero ("unknown"). */
+	pricing?: ModelPricing;
 }
 
 export type AgentEvent =
@@ -147,6 +151,7 @@ export class Agent {
 	private readonly session: SessionRecorder | undefined;
 	private readonly compactionSettings: CompactionSettings;
 	private readonly retrySettings: RetrySettings;
+	private readonly pricing: ModelPricing | undefined;
 	/** Custom instructions of a requested compaction, or null when none is pending. */
 	private pendingCompaction: string | null = null;
 	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
@@ -179,6 +184,7 @@ export class Agent {
 		this.session = options.session;
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
+		this.pricing = options.pricing;
 		const session = options.session;
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
@@ -655,6 +661,7 @@ export class Agent {
 						break;
 					case "response_end":
 						assistantMessage = event.message;
+						if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
 						break;
 				}
 			}

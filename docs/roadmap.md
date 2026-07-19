@@ -1,10 +1,10 @@
 # tau 路线图
 
-> 最后更新：2026-07-17（P13 Flutter 宿主实战完成：ext-mcp-http + Flutter demo + 裸引擎 MCP e2e + Android 真机 e2e）
+> 最后更新：2026-07-17（P14 完成：CJK 加权估算 + ModelPricing 注入位 + 摘要标识符条款，记 D19；当前工作 = P15 权限与审批。同日：先天不足分析定 P14–P18 五阶段并修 Backlog）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
-**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核。**执行顺序调整（2026-07-14 用户裁决）**：P11 基础夯实先行，P10 适配器实施推后至其后；P12 发布工程收尾。
+**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核。**执行顺序调整（2026-07-14 用户裁决）**：P11 基础夯实先行，P10 适配器实施推后至其后；P12 发布工程收尾。**P14–P18（2026-07-17 先天不足分析立项）**：P14 独立先行（量级最小）；P15 依赖既有 tool_call 钩子（已定型）；P16 只加内核缝 + 独立扩展包；P17 为工程阶段可穿插执行；P18 的审批交互依赖 P15 先落地（审批在串行 preflight 段的语义），排最后。
 
 ## Phase 0 ✅ 内核种子（2026-07-04）
 
@@ -140,14 +140,43 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 - 引擎选型定 flutter_js（Android/QuickJS）；实测撞出并修复两处：onMessage 预解码差异、老 QuickJS 缺 `Array.prototype.at`（宿主 polyfill 补，记 **D18**）。
 - 延期（挂 Backlog）：iOS/JSC 手工 e2e、审批弹窗/中止/重连的逐路径手工验证（代码就位）、会话持久化、语音、公网中转。
 
+## Phase 14 ✅ Token 估算与成本诚实化（2026-07-17）
+
+规格书：[specs/phase-14-token-cost-honesty.md](specs/phase-14-token-cost-honesty.md)（已确认并完成；用户裁决：cache 单价缺省不计）。
+
+估算函数换按字符类别加权（CJK ≈ 1 token/字，其余 chars/4）——消除中文场景压缩触发点滞后 3–4 倍的系统性偏差（债 #10 升级）；内核开可选 `ModelPricing` 注入位，宿主给单价则如实算成本、不给维持 unknown、绝不伪造（债 #9 半解）；压缩摘要 prompt 追加标识符保护条款（防 UUID/hash/URL 压缩失真）。
+
+**完成记录（2026-07-17）**：147 测试全绿（+6：CJK 加权估算单测、CJK 全链路自动压缩触发、computeUsageCost 单测 ×2、Agent pricing 集成 ×2）；`smoke:tui` 新增 pricing footer 场景实测通过（mock usage + `TAU_PRICING` → footer `cost $3.0000`；无 pricing 维持 `cost unknown`）。内核：`estimateStringTokens`（加权估算，D19-1）、摘要 prompt 标识符条款（D19-2）、`ModelPricing`/`computeUsageCost` + `AgentOptions.pricing`（D19-3）；CLI：`--pricing`/`TAU_PRICING`（flag 非法即退出、env 非法警告降级）。与规格偏差：无；实现中发现 CJK 大消息在 keepRecentTokens 切点保护下可连续触发压缩（P4 已记载的算法正确行为），e2e 断言按此放宽。commit/push 后 CI 复核为遗留动作。
+
+## Phase 15 ⬜ 权限与审批系统
+
+规格书：[specs/phase-15-permissions.md](specs/phase-15-permissions.md)（草拟；默认档位已裁决 2026-07-17：内核 autonomous / CLI·TUI supervised）。
+
+内核一等公民权限机制：`PermissionMode`（read-only/supervised/autonomous/bypass）× 静态风险分级 × 审批门（经 `UiCapability.confirm`，headless 按 D10 降级 deny）。同阶段还清三笔安全债：trust.json 内容 digest 校验、工具参数 mini JSON Schema 校验、敏感路径保护。pi 无对应物（grep 证毕），概念参照 yo-agent PolicyEngine——继 utf8.ts/移动宿主后的第三块原创面，需记新决策（编号届时顺延）。**这是"敢给别人用"的门槛阶段。**
+
+## Phase 16 ⬜ 协议适配扩展层（ChatTransport 缝 + Anthropic 扩展）
+
+规格书：[specs/phase-16-provider-transport.md](specs/phase-16-provider-transport.md)（草拟，待确认）。
+
+兑现 D3 预留口子（"扩展/插件层协议适配，不进内核"）：内核开 `ChatTransport` 注入缝（默认 = 现 OpenAI 兼容客户端，零行为变化），新包 `@yophon/tau-ext-provider-anthropic` 纯 Platform 实现 Anthropic Messages（复用 SseParser，抄协议不抄 SDK，ext-mcp-http 同路线）。直接收益：thinking 原生流式、cache_control 显式缓存、**tool_result 图片不再降级 `[image omitted]`**、usage cacheRead/cacheWrite 真值（与 P14 pricing 组合出真实成本）。D13 消息形状对齐 pi 的红利在此兑现——转换逻辑大量照抄 pi anthropic provider。
+
+## Phase 17 ⬜ 验证矩阵收窄
+
+规格书：[specs/phase-17-verification-matrix.md](specs/phase-17-verification-matrix.md)（草拟，待确认）。工程阶段，可穿插在 P15/P16 间隙执行。
+
+三个"架构支持 ≠ 已验证"缺口：`smoke:dialects`（DeepSeek/Ollama/OpenRouter 真实端点冒烟，env 驱动 + CI secrets 可选 job）；`smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁，polyfills 单源化，销 D18 风险 #1）；P13 Android 三条 UI 路径手工补验（审批弹窗/中止/重连，原 Backlog A 项并入）。
+
+## Phase 18 ⬜ 工具并行执行（pi ToolExecutionMode 对齐）
+
+规格书：[specs/phase-18-parallel-tools.md](specs/phase-18-parallel-tools.md)（草拟；默认值已裁决 2026-07-17：照抄 pi 默认 parallel 一步到位）。依赖 P15（审批在串行 preflight 段），排最后。
+
+立项时的重要更正：原以为并行工具属"偏离 pi 的原创"，重读快照发现 pi v0.80.3 本就有 `ToolExecutionMode`（默认 parallel）+ per-tool `executionMode` + `executeToolCallsParallel` 双实现——**tau 只移植了 sequential 路径，这是一个此前未登记的 pi-parity 缺口**（2026-07-17 已补记 pi-parity.md）。本阶段照抄补齐：preflight 串行（钩子/审批不并发）→ 执行并发 → end 按完成序 → toolResult 消息按源序。
+
 ## 未排期（Backlog）
 
-> P0–P13 全部 ✅，无"当前阶段"；本表即下一步工作候选，按优先级分组。
-
-### A. 近期收尾候选（推荐先做，把 P13 真正封口）
-
-- **发版把 ext-mcp-http 推上 npm**（真实缺口）：`@yophon/tau-ext-mcp-http` 新包与内核 `PlatformResponse.headers` 改动都在 main，但 npm 仍是 0.1.0——**别人 `npm install` 装不到新包**。跑 `npm run version:patch`（锁步 0.1.1）→ `publish:npm`，走 P12 建好的流水线。发布白名单已含 ext-mcp-http（release-lib.mjs）。
-- **P13 Android UI 路径补验**：审批弹窗确认/拒绝、中止按钮、重连按钮——代码就位，Android 核心回路已验，这三条 UI 路径未逐一手工走。真机 + adb 隧道套路见 phase-13 规格书 Android e2e 实录，半小时收干净 DoD。
+> P0–P14 全部 ✅；**当前工作 = P15**（P15–P18 已排期，见上；每阶段动工前规格书需经用户确认）。本表为未排期候选。
+>
+> 原 A 组两项已消化（2026-07-17）：ext-mcp-http 发版随 v0.1.1 完成（2026-07-16，npm 实测 0.1.1 可装）；Android UI 补验并入 P17。
 
 ### B. 可选增强（投入较大，看方向裁决）
 
@@ -168,7 +197,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 | # | 债 | 影响 | 计划 |
 |---|---|---|---|
-| 9 | footer 的 cost 恒为 unknown（D3 无模型库/定价数据，usage 只有 token 数） | 观感；用户无成本感知 | 未排期（等 provider 定价数据源决策，不伪造价格） |
-| 10 | context token 为 usage + chars/4 启发式估算（pi 同款），与真实 tokenizer 有偏差 | 压缩触发点/footer 百分比不精确 | 未排期（pi 同款算法，接受偏差；换 tokenizer 属大决策） |
+| 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
+| 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
 
 （#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

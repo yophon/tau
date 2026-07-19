@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import {
 	estimateContextTokens,
+	estimateStringTokens,
 	estimateTokens,
 	findCutPoint,
 	prepareCompaction,
@@ -56,7 +57,25 @@ function entriesOf(messages: AgentMessage[]): SessionEntry[] {
 	}));
 }
 
-test("token estimation: chars/4 heuristic, last valid usage wins, aborted usage skipped", () => {
+test("token estimation: CJK-aware weighting (P14 deviation from pi's chars/4)", () => {
+	assert.equal(estimateStringTokens(""), 0);
+	assert.equal(estimateStringTokens("abcd"), 1); // ASCII keeps chars/4
+	assert.equal(estimateStringTokens("你好世界"), 4); // 1 token per CJK char
+	assert.equal(estimateStringTokens("こんにちは"), 5); // kana counts as CJK
+	assert.equal(estimateStringTokens("한국어"), 3); // hangul counts as CJK
+	assert.equal(estimateStringTokens("你好, world!"), 2 + Math.ceil(8 / 4)); // mixed: 2 CJK + 8 ASCII
+	assert.equal(estimateStringTokens("👍"), 1); // surrogate pair: 2 units → non-CJK bucket, no throw
+	assert.equal(estimateTokens(userMsg("你".repeat(400))), 400);
+
+	// The point of the deviation: a 400-char Chinese message estimates 400 tokens,
+	// not 100 — under chars/4 this window would NOT trigger compaction (100 < 300)
+	// and the context would silently overflow.
+	const settings = { enabled: true, reserveTokens: 200, keepRecentTokens: 1 };
+	assert.equal(shouldCompact(estimateContextTokens([userMsg("你".repeat(400))]).tokens, 500, settings), true);
+	assert.equal(shouldCompact(100, 500, settings), false);
+});
+
+test("token estimation: weighted heuristic, last valid usage wins, aborted usage skipped", () => {
 	assert.equal(estimateTokens(userMsg("a".repeat(400))), 100);
 	const messages = [
 		userMsg("x".repeat(400)),
@@ -163,12 +182,47 @@ test("agent auto-compacts between turns when the threshold is exceeded", async (
 	assert.equal(summarizationRequest.messages[0].role, "system");
 	assert.equal(summarizationRequest.messages[0].content, SUMMARIZATION_SYSTEM_PROMPT);
 	assert.ok(summarizationRequest.messages[1].content.includes("<conversation>"));
+	// P14: identifier-preservation clause appended to pi's verbatim prompt.
+	assert.ok(summarizationRequest.messages[1].content.includes("Preserve all opaque identifiers exactly as written"));
 
 	// Request 3 carries the summary instead of the old history.
 	const finalRequest = requests[2] as { messages: { role: string; content: string | null }[] };
 	assert.ok(finalRequest.messages.some((m) => m.role === "user" && m.content?.includes("MOCK-SUMMARY")));
 	assert.ok(!finalRequest.messages.some((m) => m.content === "first question"));
 	assert.equal(agent.messages[0].role, "compactionSummary");
+});
+
+// P14: a Chinese-heavy conversation must trigger auto-compaction at the weighted
+// estimate (1 token/CJK char). Under pi's chars/4 the same window would not
+// trigger (400 chars → ~100 tokens < threshold of 300) and the context would
+// silently overflow. tokensBefore ≥ 400 is the decisive assertion: chars/4
+// could never report that number for this conversation.
+test("auto-compaction triggers on CJK-weighted estimate where chars/4 would not", async () => {
+	const requests: { messages?: { role: string; content: string }[] }[] = [];
+	const responses = [
+		makeSseResponse(textTurn("MOCK-RESPONSE-1")),
+		makeSseResponse(textTurn("MOCK-RESPONSE-2")),
+		makeSseResponse(textTurn("MOCK-RESPONSE-3")),
+		makeSseResponse(textTurn("MOCK-RESPONSE-4")),
+	];
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake", contextWindow: 500 },
+		platform: fakePlatform(responses, requests),
+		compaction: { reserveTokens: 200, keepRecentTokens: 1 },
+	});
+	let compaction: { tokensBefore: number } | undefined;
+	for await (const event of agent.prompt("你".repeat(400))) {
+		if (event.type === "compaction") compaction ??= event.result;
+	}
+	for await (const event of agent.prompt("第二个问题")) {
+		if (event.type === "compaction") compaction ??= event.result;
+	}
+	assert.ok(compaction, "expected auto-compaction to trigger on CJK-weighted estimate");
+	assert.ok(compaction.tokensBefore >= 400, `tokensBefore ${compaction.tokensBefore} should reflect 1 token/CJK char`);
+	// May run more than once: keepRecentTokens' cut-point protection can keep the
+	// big message, re-tripping the threshold next turn (P4-documented behavior).
+	const summaryRequests = requests.filter((r) => r.messages?.[0]?.content === SUMMARIZATION_SYSTEM_PROMPT);
+	assert.ok(summaryRequests.length >= 1);
 });
 
 test("session_before_compact can cancel or take over compaction", async () => {

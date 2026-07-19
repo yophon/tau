@@ -37,7 +37,7 @@ export interface UsageCost {
 	total: number;
 }
 
-/** pi's Usage shape. tau has no pricing database yet, so cost fields are zero. */
+/** pi's Usage shape. cost stays zero unless the host injects ModelPricing (P14) — tau ships no pricing data (D2/D3). */
 export interface Usage {
 	input: number;
 	output: number;
@@ -45,6 +45,28 @@ export interface Usage {
 	cacheWrite: number;
 	totalTokens: number;
 	cost: UsageCost;
+}
+
+/**
+ * Optional host-supplied unit prices, USD per million tokens. tau never fabricates
+ * prices: without this the cost stays zero ("unknown"). Cache prices default to
+ * not counted at all (undercounting beats guessing — P14 user ruling).
+ */
+export interface ModelPricing {
+	inputPerMTok: number;
+	outputPerMTok: number;
+	cacheReadPerMTok?: number;
+	cacheWritePerMTok?: number;
+}
+
+export function computeUsageCost(usage: Usage, pricing: ModelPricing): UsageCost {
+	const input = (usage.input / 1_000_000) * pricing.inputPerMTok;
+	const output = (usage.output / 1_000_000) * pricing.outputPerMTok;
+	const cacheRead =
+		pricing.cacheReadPerMTok === undefined ? 0 : (usage.cacheRead / 1_000_000) * pricing.cacheReadPerMTok;
+	const cacheWrite =
+		pricing.cacheWritePerMTok === undefined ? 0 : (usage.cacheWrite / 1_000_000) * pricing.cacheWritePerMTok;
+	return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
