@@ -40,7 +40,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 规格书：[specs/phase-5-branching.md](specs/phase-5-branching.md)。pi 两种分支能力照抄：**/tree 原地树导航**（同文件跳到任意历史点继续，被放弃分支自动生成结构化摘要挂到新位置）与 **/fork 分叉新文件**（复制出独立会话，header 记 parentSession）。内核：`branch.ts`（collectEntriesForBranchSummary 走最深公共祖先、prepareBranchEntries 的 token 预算与嵌套摘要文件清单继承、generateBranchSummary + BRANCH_SUMMARY_PROMPT/PREAMBLE 逐字照抄）；新消息角色 `branchSummary`（wire 以 user 角色发 PREAMBLE+summary）；SessionEntry 并入 `branch_summary`；SessionRepo.fork（getEntriesToFork 三语义：全量/at/before，错误码 `invalid_fork_target`）双实现（InMemory + JSONL 写 parentSession header）；`Agent.navigateTo`（运行中防护、摘要生成被 abort = 取消导航、branch_summary 挂新位置后 messagesFromPath 重建）；事件 session_before_fork/session_before_tree（可取消）/session_tree。CLI：/tree（列 user 消息节点 + ●○ 当前路径标记）、/tree \<id\>（跳转）、/fork [\<id\>]（分叉切换）。
 
-**完成记录**：55 测试全绿（新增 branch.test.ts 10 用例——公共祖先收集、prepareBranchEntries 预算/文件清单继承、navigateTo 摘要/取消/接管/守卫；session.test.ts fork 三语义 + parentSession lineage；2 个 CLI e2e——/tree 列表+跳转后上下文含 branchSummary、/fork 双分支各自 --session 续写互不污染）。与规格偏差：无。范围外项（/clone、label entry、树可视化、before_tree 的 userWantsSummary/label 字段）按计划推迟 P8。备注：分支代码本已在提交 ef83282 落地，但当时漏归档（roadmap/pi-parity 未更新、规格验收清单的两条 CLI e2e 未落实）——本次补齐 e2e 并完成文档闭环。
+**完成记录**：55 测试全绿（新增 branch.test.ts 10 用例——公共祖先收集、prepareBranchEntries 预算/文件清单继承、navigateTo 摘要/取消/接管/守卫；session.test.ts fork 三语义 + parentSession lineage；2 个 CLI e2e——/tree 列表+跳转后上下文含 branchSummary、/fork 双分支各自 --session 续写互不污染）。与规格偏差：无。范围外项（/clone、label entry、树可视化、before_tree 的 userWantsSummary/label 字段）按计划推迟 P8。备注：分支代码本已在提交 bd7cf7b 落地，但当时漏归档（roadmap/pi-parity 未更新、规格验收清单的两条 CLI e2e 未落实）——本次补齐 e2e 并完成文档闭环。
 
 ## Phase 6 ✅ Resources 扩展包：Skills 与 Prompt Templates（2026-07-06）
 
@@ -89,7 +89,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 与规格偏差：未新增 Playwright/Puppeteer 真浏览器自动化依赖；以 browser bundle smoke + host capability agent-loop 测试覆盖核心链路。key 安全 proxy 模式按规格范围外推迟。
 
-**后补（2026-07-08，cf695ec）**：`scripts/serve-browser-demo.mjs`（`npm run demo:browser`）——本地静态服务器 + `/proxy` CORS 转发（`x-tau-target-base-url` 头指定目标，流式透传），demo 对非 localhost 端点自动改走 proxy。注意：这是**浏览器 CORS 便利层**，key 仍由浏览器侧 BYOK 持有；密钥托管型 proxy 依旧推迟（P10 的中转服务器可在此基础上扩展）。
+**后补（2026-07-08，7c184bc）**：`scripts/serve-browser-demo.mjs`（`npm run demo:browser`）——本地静态服务器 + `/proxy` CORS 转发（`x-tau-target-base-url` 头指定目标，流式透传），demo 对非 localhost 端点自动改走 proxy。注意：这是**浏览器 CORS 便利层**，key 仍由浏览器侧 BYOK 持有；密钥托管型 proxy 依旧推迟（P10 的中转服务器可在此基础上扩展）。
 
 ## Phase 10 ✅ 平台适配：裸引擎门禁 + 小程序/RN（可移植性证明 #2/#3）（2026-07-15）
 

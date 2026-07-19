@@ -102,9 +102,9 @@ ubuntu-latest + Node 22 + `npm ci --ignore-scripts`，jobs：
 
 ## 实施记录
 
-**Block 1 CI(2026-07-14,commit 7fba395)**:workflow 上线,首跑即揪出重大问题(见下)。
+**Block 1 CI(2026-07-14,commit 33d5178)**:workflow 上线,首跑即揪出重大问题(见下)。
 
-**Block 2 错误规范化(2026-07-15,commits dd1be2d + e2e 竞态修复)**:全部落地,94 测试全绿,CI 全绿。要点:
+**Block 2 错误规范化(2026-07-15,commits 06f87d8 + e2e 竞态修复)**:全部落地,94 测试全绿,CI 全绿。要点:
 - 流失败 → pi 语义的 stopReason error/aborted 消息(含部分内容与 errorMessage),入对话与会话;`agent_end` 事件序在错误路径上完整;宿主(REPL/TUI)渲染两种新终态;既有 HTTP 错误测试随语义迁移
 - `network_error` 新码;fetch/reader 两条裸异常已包装;SSE 行 buffer 4MB 上限(消费完整行后测残余);轮间 abort 检查
 - **审计结论修正**:`no_host`/`compaction_failed` 并非死码(extensions.ts:730 / compaction.ts:499 在用),不清理
