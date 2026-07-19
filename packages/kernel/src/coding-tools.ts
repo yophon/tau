@@ -1,4 +1,5 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
+import type { PermissionMode } from "./policy.ts";
 import { errorResult, optionalNumber, requireString, type Tool } from "./tools.ts";
 
 const MAX_READ_LINES = 2000;
@@ -152,14 +153,22 @@ function createBashTool(shell: Shell): Tool {
 /**
  * Build the default coding tool set from whatever capabilities the host
  * provides. Missing capabilities simply mean fewer tools — the kernel never
- * assumes a filesystem or shell exists.
+ * assumes a filesystem or shell exists. Under mode "read-only" the mutating
+ * tools (write/edit/bash) are not registered at all, so they never reach the
+ * request wire; the Agent's policy gate stays as the backstop for tools
+ * registered by other paths.
  */
-export function createCodingTools(capabilities: { fs?: FileSystem; shell?: Shell }): Tool[] {
+export function createCodingTools(
+	capabilities: { fs?: FileSystem; shell?: Shell },
+	options?: { mode?: PermissionMode },
+): Tool[] {
+	const readOnly = options?.mode === "read-only";
 	const tools: Tool[] = [];
 	if (capabilities.fs) {
-		tools.push(createReadTool(capabilities.fs), createWriteTool(capabilities.fs), createEditTool(capabilities.fs));
+		tools.push(createReadTool(capabilities.fs));
+		if (!readOnly) tools.push(createWriteTool(capabilities.fs), createEditTool(capabilities.fs));
 	}
-	if (capabilities.shell) {
+	if (capabilities.shell && !readOnly) {
 		tools.push(createBashTool(capabilities.shell));
 	}
 	return tools;

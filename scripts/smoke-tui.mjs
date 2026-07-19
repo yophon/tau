@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -9,6 +9,10 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const repoRoot = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const cliPath = join(repoRoot, "packages", "cli", "src", "main.ts");
 const resourcesUrl = pathToFileURL(join(repoRoot, "packages", "ext-resources", "src", "index.ts")).href;
+
+// Distinguish repeated approval outcomes on a capture-the-whole-pane screen.
+let approvalDoneCount = 0;
+let approvalDenyCount = 0;
 
 async function main() {
 	await requireTmux();
@@ -21,6 +25,8 @@ async function main() {
 		await runSelectorSmoke(root, mock.baseUrl);
 		await runExtensionAbortSmoke(root, mock.baseUrl);
 		await runPricingFooterSmoke(root, mock.baseUrl);
+		await runApprovalSmoke(root, mock.baseUrl);
+		await runTrustDigestSmoke(root, mock.baseUrl);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -250,6 +256,9 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		`TAU_BASE_URL=${shellQuote(baseUrl)}`,
 		"TAU_MODEL=mock-model",
 		"TAU_API_KEY=test",
+		// Pre-P15 behavior for scenarios that are not about permissions; the
+		// approval scenario overrides with an explicit --permission-mode flag.
+		"TAU_PERMISSION_MODE=autonomous",
 		...extraEnv.map(shellQuote),
 		shellQuote(process.execPath),
 		"--disable-warning=ExperimentalWarning",
@@ -325,6 +334,108 @@ async function runPricingFooterSmoke(root, baseUrl) {
 	}
 }
 
+// P15 验收：supervised 档下高风险 bash 触发审批选择器——Allow once 执行 / Deny 拒绝
+// / Always allow 持久化到 ~/.tau/permissions.json，且第二个 TUI 进程直接放行。
+async function runApprovalSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "approval", false);
+	const session = await startTui("approval", dirs, baseUrl, ["--no-session", "--permission-mode", "supervised"]);
+	try {
+		await session.waitFor("mode supervised", 10_000);
+
+		// Allow once: the command runs, the model sees its output.
+		await session.send("approval smoke", "Enter");
+		await session.waitFor("Allow bash? (high risk)", 10_000);
+		await session.waitFor("Always allow", 10_000);
+		await session.send("1", "Enter");
+		await session.waitFor("SMOKE_APPROVAL_DONE_1", 15_000);
+
+		// Deny: the model sees the denial instead.
+		await session.send("approval smoke", "Enter");
+		await session.waitFor("Deny", 10_000);
+		await session.send("3", "Enter");
+		await session.waitFor("SMOKE_APPROVAL_DENIED_1", 15_000);
+
+		// Always allow: runs now and persists the rule.
+		await session.send("approval smoke", "Enter");
+		await session.waitFor("Always allow", 10_000);
+		await session.send("2", "Enter");
+		await session.waitFor("SMOKE_APPROVAL_DONE_2", 15_000);
+
+		// Same process, same rule: no selector — the flow only completes if the
+		// call goes straight through.
+		await session.send("approval smoke", "Enter");
+		await session.waitFor("SMOKE_APPROVAL_DONE_3", 15_000);
+
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+
+		const persisted = await readFile(join(dirs.home, ".tau", "permissions.json"), "utf8");
+		if (!persisted.includes('"bash"')) throw new Error(`permissions.json missing bash rule:\n${persisted}`);
+	} finally {
+		await session.kill();
+	}
+
+	// A fresh TUI process against the same HOME honors the persisted rule.
+	const second = await startTui("approval-2", dirs, baseUrl, ["--no-session", "--permission-mode", "supervised"]);
+	try {
+		await second.waitFor("mode supervised", 10_000);
+		await second.send("approval smoke", "Enter");
+		await second.waitFor("SMOKE_APPROVAL_DONE_4", 15_000);
+		await second.send("exit", "Enter");
+		await second.waitForExit();
+		console.log("ok approval gate");
+	} finally {
+		await second.kill();
+	}
+}
+
+// P15 验收：trust.json 内容 digest——同内容二次启动不再询问；扩展内容修改后
+// 重新触发信任询问。
+async function runTrustDigestSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "trust-digest", false);
+	await writeSmokeExtension(dirs.cwd);
+
+	const first = await startTui("trust-digest-1", dirs, baseUrl, ["--no-session"]);
+	try {
+		await first.waitFor("Trust this directory", 10_000);
+		await first.send("y", "Enter");
+		await first.waitFor("SMOKE_HEADER", 10_000);
+		await first.send("exit", "Enter");
+		await first.waitForExit();
+	} finally {
+		await first.kill();
+	}
+
+	// Unchanged content: no question — the header can only appear if startup
+	// was not blocked on the trust confirm.
+	const second = await startTui("trust-digest-2", dirs, baseUrl, ["--no-session"]);
+	try {
+		await second.waitFor("SMOKE_HEADER", 10_000);
+		const screen = await second.capture();
+		if (screen.includes("Trust this directory")) throw new Error(`Unexpected re-question:\n${screen}`);
+		await second.send("exit", "Enter");
+		await second.waitForExit();
+	} finally {
+		await second.kill();
+	}
+
+	// Changed content: the digest no longer matches → question again.
+	const extensionPath = join(dirs.cwd, ".tau", "extensions", "smoke.mjs");
+	await writeFile(extensionPath, `${await readFile(extensionPath, "utf8")}\n// digest-buster\n`, "utf8");
+	const third = await startTui("trust-digest-3", dirs, baseUrl, ["--no-session"]);
+	try {
+		await third.waitFor("changed since they were last trusted", 10_000);
+		await third.waitFor("Trust this directory", 10_000);
+		await third.send("y", "Enter");
+		await third.waitFor("SMOKE_HEADER", 10_000);
+		await third.send("exit", "Enter");
+		await third.waitForExit();
+		console.log("ok trust digest");
+	} finally {
+		await third.kill();
+	}
+}
+
 async function startMockOpenAI() {
 	const requests = [];
 	const server = createServer((req, res) => {
@@ -365,10 +476,18 @@ function responseFor(request) {
 		const content = String(lastMessage.content ?? "");
 		if (content.includes("BASH_SMOKE_LINE_3")) return textTurn("SMOKE_BASH_DONE");
 		if (content.includes("SMOKE_TOOL_OUTPUT")) return textTurn("SMOKE_CUSTOM_TOOL_DONE");
+		if (content.includes("APPROVAL_RAN_42")) return textTurn(`SMOKE_APPROVAL_DONE_${++approvalDoneCount}`);
+		if (content.includes("Denied by policy")) return textTurn(`SMOKE_APPROVAL_DENIED_${++approvalDenyCount}`);
 	}
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("stream smoke")) return textTurn("SMOKE_STREAM_OK", 40);
+	if (content.includes("approval smoke")) {
+		// rm -rf hits the kernel's dangerous-command rules (high risk) but only
+		// touches a scratch path inside the sandbox; the echo only prints when
+		// the command actually executed.
+		return toolCallTurn("bash", { command: "rm -rf ./approval-scratch; echo APPROVAL_RAN_$((6*7))" });
+	}
 	if (content.includes("bash smoke")) {
 		return toolCallTurn("bash", {
 			command:

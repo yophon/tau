@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -37,6 +37,10 @@ function startCli(args: string[], options: { cwd: string; home: string; baseUrl:
 			TAU_BASE_URL: options.baseUrl,
 			TAU_MODEL: "mock-model",
 			TAU_API_KEY: "test",
+			// Pre-P15 behavior for the scenarios that are not about permissions;
+			// permission tests override with an explicit --permission-mode flag
+			// (flags take precedence over the env).
+			TAU_PERMISSION_MODE: "autonomous",
 		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
@@ -580,6 +584,125 @@ test("SIGINT aborts the running turn and the REPL keeps working", async () => {
 			cli.child.stdin?.write("exit\n");
 			const code = await cli.waitForExit();
 			assert.equal(code, 0);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// P15: permissions and approval
+// ---------------------------------------------------------------------------
+
+test("supervised headless denies tool calls instead of hanging", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([
+			// The argument text always shows up in the tool_start line; only the
+			// *executed* command would print "denied-42", so that is the marker.
+			() => mockToolCallTurn("bash", { command: "echo denied-$((6*7))" }),
+			(request) => {
+				const messages = request.messages as { role: string; content: string | null }[];
+				const toolMessage = messages.find((m) => m.role === "tool");
+				return mockTextTurn(`model saw: ${(toolMessage?.content ?? "").trim()}`);
+			},
+		]);
+		try {
+			const cli = startCli(["--permission-mode", "supervised", "-p", "run it"], { cwd, home, baseUrl: mock.baseUrl });
+			const code = await cli.waitForExit();
+			assert.equal(code, 0);
+			assert.ok(cli.output().includes("Denied by policy: approval required"), cli.output());
+			assert.ok(!cli.output().includes("denied-42"), cli.output());
+			// The denial (not the command output) went back to the model.
+			assert.ok(cli.output().includes("model saw: Denied by policy"), cli.output());
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("read-only mode keeps write/edit/bash off the request wire entirely", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([() => mockTextTurn("read-only ok")]);
+		try {
+			const cli = startCli(["--permission-mode", "read-only", "-p", "look around"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+			});
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("read-only ok"), cli.output());
+			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
+			assert.deepEqual(
+				(request.tools ?? []).map((tool) => tool.function.name),
+				["read"],
+			);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("invalid --permission-mode exits with an error", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const cli = startCli(["--permission-mode", "yolo", "-p", "x"], { cwd, home, baseUrl: "http://127.0.0.1:9" });
+		const code = await cli.waitForExit();
+		assert.notEqual(code, 0);
+		assert.ok(cli.output().includes("--permission-mode must be one of"), cli.output());
+	});
+});
+
+test("trust digest: legacy records upgrade, matching digests skip the question, changes invalidate", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const extensionsDir = join(cwd, ".tau", "extensions");
+		await mkdir(extensionsDir, { recursive: true });
+		const extensionPath = join(extensionsDir, "marker.ts");
+		await writeFile(
+			extensionPath,
+			[
+				"const marker = (api) => {",
+				'\tapi.on("tool_call", () => ({ block: true, reason: "marker extension loaded" }));',
+				"};",
+				"export default marker;",
+				"",
+			].join("\n"),
+		);
+		const turns = [() => mockToolCallTurn("bash", { command: "echo digest-check-ran" }), () => mockTextTurn("done")];
+
+		// Legacy boolean trust record: still trusted, digest backfilled with a note.
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(join(home, ".tau", "trust.json"), JSON.stringify({ trusted: { [cwd]: true } }));
+		let mock = await startMockOpenAI(turns);
+		try {
+			const cli = startCli(["-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("Recorded a content digest"), cli.output());
+			assert.ok(cli.output().includes("marker extension loaded"), cli.output());
+		} finally {
+			await mock.close();
+		}
+
+		// Unchanged content: no re-question, no upgrade note, extension still loads.
+		mock = await startMockOpenAI(turns);
+		try {
+			const cli = startCli(["-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			assert.ok(!cli.output().includes("Recorded a content digest"), cli.output());
+			assert.ok(!cli.output().includes("changed since they were last trusted"), cli.output());
+			assert.ok(cli.output().includes("marker extension loaded"), cli.output());
+		} finally {
+			await mock.close();
+		}
+
+		// Changed content: headless cannot re-confirm, so the extension is skipped
+		// and the previously blocked command actually runs.
+		await writeFile(extensionPath, `// changed\n${await readFile(extensionPath, "utf8")}`);
+		mock = await startMockOpenAI(turns);
+		try {
+			const cli = startCli(["-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("changed since they were last trusted"), cli.output());
+			assert.ok(cli.output().includes("Skipped 1 project extension"), cli.output());
+			assert.ok(cli.output().includes("digest-check-ran"), cli.output());
 		} finally {
 			await mock.close();
 		}

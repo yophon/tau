@@ -85,6 +85,12 @@ npm run tau -- --tui              # TUI 模式（流式 markdown、/tree、/fork
 npm run tau -- -p "列出这里的文件并总结"
 ```
 
+> **权限（P15，破坏性变更）**：CLI/TUI 现默认 `--permission-mode supervised`——
+> bash 命令与文件写入在 TTY 下先审批，headless（`-p` 管道）下直接**拒绝**。
+> 用 `--permission-mode autonomous`（或 `TAU_PERMISSION_MODE=autonomous`）恢复
+> 旧行为；`read-only` 只保留读工具；`bypass` 关闭权限门。"总是允许"持久化到
+> `~/.tau/permissions.json`。内核库默认仍是 `autonomous`。
+
 可移植性证明与 demo：
 
 ```bash

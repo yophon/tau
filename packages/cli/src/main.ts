@@ -3,9 +3,10 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@yophon/tau-host-node";
+import { digestDirectory, loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@yophon/tau-host-node";
 import {
 	Agent,
+	type ApprovalRequest,
 	createCodingTools,
 	defaultPlatform,
 	ExtensionRegistry,
@@ -13,6 +14,7 @@ import {
 	type ModelPricing,
 	messageText,
 	type OpenAICompatConfig,
+	type PermissionMode,
 	restoreSession,
 	SessionRecorder,
 	type SessionStore,
@@ -41,6 +43,11 @@ Options:
                          "in=0.5,out=2,cacheRead=0.05,cacheWrite=0.625"
                          (cache keys optional and uncounted when omitted;
                          env: TAU_PRICING). Enables real cost in the footer.
+      --permission-mode <mode>  read-only | supervised | autonomous | bypass
+                         (default: supervised; env: TAU_PERMISSION_MODE).
+                         supervised asks before medium/high-risk tools;
+                         headless (piped) runs deny instead of asking.
+                         read-only registers only the read tool.
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
@@ -69,6 +76,7 @@ interface CliOptions {
 	continue: boolean;
 	contextWindow?: number;
 	pricing?: ModelPricing;
+	permissionMode?: PermissionMode;
 	sessionPath?: string;
 	noSession: boolean;
 	help: boolean;
@@ -135,6 +143,15 @@ function parseArgs(argv: string[]): CliOptions {
 				options.pricing = parsed;
 				break;
 			}
+			case "--permission-mode": {
+				const value = next();
+				if (!isPermissionMode(value)) {
+					console.error(`--permission-mode must be one of: ${PERMISSION_MODES.join(", ")}`);
+					process.exit(1);
+				}
+				options.permissionMode = value;
+				break;
+			}
 			case "--session":
 				options.sessionPath = next();
 				break;
@@ -187,6 +204,59 @@ function splitList(value: string | undefined): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter((item) => item !== "");
+}
+
+const PERMISSION_MODES: readonly PermissionMode[] = ["read-only", "supervised", "autonomous", "bypass"];
+
+function isPermissionMode(value: string): value is PermissionMode {
+	return (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// Approval persistence (P15): "always allow" decisions are keyed by tool name
+// plus a rule fingerprint (the policy reason that fired, or the bare risk
+// level), so one approval covers the rule, not the exact argument bytes.
+// ---------------------------------------------------------------------------
+
+type ApprovalChoice = "once" | "always" | "deny";
+
+interface PermissionRule {
+	tool: string;
+	fingerprint: string;
+	action: "allow";
+}
+
+function permissionsStorePath(): string {
+	return join(homedir(), ".tau", "permissions.json");
+}
+
+function approvalFingerprint(request: ApprovalRequest): string {
+	return request.reason ?? `risk:${request.risk}`;
+}
+
+function readPermissionRules(): PermissionRule[] {
+	try {
+		const parsed = JSON.parse(readFileSync(permissionsStorePath(), "utf8")) as { rules?: PermissionRule[] };
+		return Array.isArray(parsed.rules) ? parsed.rules : [];
+	} catch {
+		return [];
+	}
+}
+
+function isAlwaysAllowed(request: ApprovalRequest): boolean {
+	const fingerprint = approvalFingerprint(request);
+	return readPermissionRules().some(
+		(rule) => rule.tool === request.toolName && rule.fingerprint === fingerprint && rule.action === "allow",
+	);
+}
+
+function recordAlwaysAllow(request: ApprovalRequest): void {
+	if (isAlwaysAllowed(request)) return;
+	const rules = readPermissionRules();
+	rules.push({ tool: request.toolName, fingerprint: approvalFingerprint(request), action: "allow" });
+	const path = permissionsStorePath();
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, `${JSON.stringify({ version: 1, rules }, null, "\t")}\n`, "utf8");
 }
 
 function uniqueStrings(values: string[]): string[] {
@@ -254,11 +324,17 @@ function createUi(readline: Readline): UiCapability {
 
 // ---------------------------------------------------------------------------
 // Project trust gate: project extensions are arbitrary code, so loading them
-// from an untrusted directory would be remote code execution by `cd`.
+// from an untrusted directory would be remote code execution by `cd`. Since
+// P15 a trusted record also pins a content digest of the extensions directory;
+// changed content re-triggers the question (a trust decision covers what was
+// reviewed, not whatever lands there later).
 // ---------------------------------------------------------------------------
 
+/** Legacy entries were plain booleans (no digest); they are upgraded on first load. */
+type TrustEntry = boolean | { trusted: boolean; digest?: string };
+
 interface TrustStore {
-	trusted: Record<string, boolean>;
+	trusted: Record<string, TrustEntry>;
 }
 
 function trustStorePath(): string {
@@ -284,34 +360,50 @@ async function isProjectTrusted(
 	registry: ExtensionRegistry,
 	cwd: string,
 	ui: UiCapability | undefined,
+	extensionsDir: string,
 ): Promise<boolean> {
 	const store = readTrustStore();
+	const digest = await digestDirectory(extensionsDir);
 	const recorded = store.trusted[cwd];
-	if (recorded !== undefined) return recorded;
+	if (recorded !== undefined) {
+		const entry = typeof recorded === "boolean" ? { trusted: recorded } : recorded;
+		// A denial needs no integrity check — nothing was loaded, nothing changes that.
+		if (!entry.trusted) return false;
+		if (entry.digest === undefined) {
+			// Pre-P15 record: backfill the digest without re-asking, once.
+			store.trusted[cwd] = { trusted: true, digest };
+			writeTrustStore(store);
+			console.log(dim("Recorded a content digest for this project's extensions (older trust entry had none)."));
+			return true;
+		}
+		if (entry.digest === digest) return true;
+		console.log(dim("Project extensions changed since they were last trusted — confirming again."));
+	}
 
 	// Global (always-trusted) extensions may decide via the project_trust event.
 	const decision = await registry.runProjectTrust(cwd, { ui, messages: [] });
 	if (decision.trusted !== "undecided") {
 		const trusted = decision.trusted === "yes";
 		if (decision.remember) {
-			store.trusted[cwd] = trusted;
+			store.trusted[cwd] = { trusted, digest };
 			writeTrustStore(store);
 		}
 		return trusted;
 	}
 
-	if (!ui) return false; // headless + no record = reject
+	if (!ui) return false; // headless + no valid record = reject
 	const approved = await ui.confirm("Trust this directory and load its .tau/extensions?", cwd);
-	store.trusted[cwd] = approved;
+	store.trusted[cwd] = { trusted: approved, digest };
 	writeTrustStore(store);
 	return approved;
 }
 
 async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<ExtensionRegistry> {
 	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(homedir(), ".tau", "extensions")));
-	const projectExtensions = await loadExtensionsFromDir(join(cwd, ".tau", "extensions"));
+	const extensionsDir = join(cwd, ".tau", "extensions");
+	const projectExtensions = await loadExtensionsFromDir(extensionsDir);
 	if (projectExtensions.length === 0) return registry;
-	if (await isProjectTrusted(registry, cwd, ui)) {
+	if (await isProjectTrusted(registry, cwd, ui, extensionsDir)) {
 		await registry.add(projectExtensions);
 	} else {
 		console.log(dim(`Skipped ${projectExtensions.length} project extension(s): directory not trusted.`));
@@ -510,6 +602,15 @@ async function main(): Promise<void> {
 		if (parsed instanceof Error) console.error(`Ignoring TAU_PRICING: ${parsed.message}`);
 		else pricing = parsed;
 	}
+	let permissionMode = options.permissionMode;
+	if (!permissionMode && process.env.TAU_PERMISSION_MODE) {
+		const value = process.env.TAU_PERMISSION_MODE;
+		if (isPermissionMode(value)) permissionMode = value;
+		else console.error(`Ignoring TAU_PERMISSION_MODE="${value}" (expected one of: ${PERMISSION_MODES.join(", ")})`);
+	}
+	// Interactive hosts default to supervised (P15 user ruling) — the kernel's
+	// own default stays autonomous for library consumers.
+	permissionMode ??= "supervised";
 	const envMaxRetries = Number.parseInt(process.env.TAU_MAX_RETRIES ?? "", 10);
 	const envRetryDelay = Number.parseInt(process.env.TAU_RETRY_BASE_DELAY_MS ?? "", 10);
 	const retry = {
@@ -578,6 +679,36 @@ async function main(): Promise<void> {
 
 	const fs = new NodeFileSystem(cwd);
 	const shell = new NodeShell(cwd);
+	// Approval plumbing (P15): the kernel decides *when* to ask, the host owns
+	// *how*. REPL and TUI install their prompt into approvalPromptRef below;
+	// with no UI at all onApproval stays undefined so the kernel's headless
+	// degradation (ask → deny) applies.
+	const approvalPromptRef: { current?: (request: ApprovalRequest) => Promise<ApprovalChoice> } = {};
+	const onApproval =
+		ui === undefined
+			? undefined
+			: async (request: ApprovalRequest): Promise<boolean> => {
+					if (isAlwaysAllowed(request)) return true;
+					const choice = approvalPromptRef.current
+						? await approvalPromptRef.current(request)
+						: (await ui.confirm(`Allow ${request.toolName}? (${request.risk} risk)`, request.reason))
+							? "once"
+							: "deny";
+					if (choice === "always") recordAlwaysAllow(request);
+					return choice !== "deny";
+				};
+	if (readline && ui) {
+		// Readline prompt shared by the REPL and one-shot TTY runs; the TUI
+		// replaces it with a selector via setApprovalPrompt.
+		approvalPromptRef.current = async (request) => {
+			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk)`)}`);
+			if (request.reason) console.log(dim(request.reason));
+			console.log(dim(firstLine(JSON.stringify(request.args), 200)));
+			const answer = (await readline.question("Allow? [y]es once / [a]lways / [N]o ")).trim().toLowerCase();
+			if (answer === "a" || answer === "always") return "always";
+			return answer === "y" || answer === "yes" ? "once" : "deny";
+		};
+	}
 	const buildAgent = (
 		messages: typeof initialMessages,
 		session: SessionRecorder | undefined,
@@ -587,7 +718,7 @@ async function main(): Promise<void> {
 			config,
 			platform,
 			systemPrompt: options.system ?? defaultSystemPrompt(cwd),
-			tools: createCodingTools({ fs, shell }),
+			tools: createCodingTools({ fs, shell }, { mode: permissionMode }),
 			extensions: agentExtensions,
 			ui,
 			capabilities: {
@@ -604,6 +735,8 @@ async function main(): Promise<void> {
 			session,
 			retry,
 			pricing,
+			permissionMode,
+			onApproval,
 		});
 	let agent = buildAgent(initialMessages, recorder);
 	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
@@ -625,6 +758,7 @@ async function main(): Promise<void> {
 			baseUrl,
 			cwd,
 			contextWindow,
+			permissionMode,
 			sessionRepo,
 			shell,
 			store,
@@ -635,6 +769,9 @@ async function main(): Promise<void> {
 			},
 			setThinkingLevel: (nextLevel) => {
 				setThinkingLevelInConfig(config, nextLevel);
+			},
+			setApprovalPrompt: (prompt) => {
+				approvalPromptRef.current = prompt;
 			},
 			buildAgent,
 			reloadExtensions,
@@ -660,7 +797,9 @@ async function main(): Promise<void> {
 		},
 	});
 	const extensionNote = extensions.tools.size + extensions.commands.size > 0 ? " · extensions loaded" : "";
-	console.log(dim(`tau · ${model} @ ${baseUrl} · cwd ${cwd}${extensionNote} · "exit" or Ctrl+D to quit`));
+	console.log(
+		dim(`tau · ${model} @ ${baseUrl} · cwd ${cwd} · ${permissionMode}${extensionNote} · "exit" or Ctrl+D to quit`),
+	);
 	// In a TTY, readline intercepts Ctrl+C: abort the running turn if there is
 	// one, otherwise quit the REPL.
 	readline.on("SIGINT", () => {

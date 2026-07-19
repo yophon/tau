@@ -41,9 +41,10 @@ import {
 	streamChatCompletion,
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
+import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
 import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
-import type { Tool, ToolResult, ToolUpdateStream } from "./tools.ts";
+import { type Tool, type ToolResult, type ToolUpdateStream, validateToolArgs } from "./tools.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
 export type QueueMode = "one-at-a-time" | "all";
@@ -102,6 +103,19 @@ export interface AgentOptions {
 	retry?: Partial<RetrySettings>;
 	/** Host-supplied unit prices; fills usage.cost on assistant messages. Absent = cost stays zero ("unknown"). */
 	pricing?: ModelPricing;
+	/**
+	 * Permission mode gating tool execution (P15). Kernel default:
+	 * "autonomous" — library consumers keep their behavior and opt into
+	 * stricter modes; interactive hosts should pass "supervised".
+	 */
+	permissionMode?: PermissionMode;
+	/** Tool policy consulted before every tool execution. Defaults to createDefaultPolicy(). */
+	policy?: ToolPolicy;
+	/**
+	 * Handler for policy "ask" decisions. Defaults to ui.confirm; when both
+	 * are absent, "ask" degrades to deny (D10 headless semantics).
+	 */
+	onApproval?: (request: ApprovalRequest) => Promise<boolean>;
 }
 
 export type AgentEvent =
@@ -152,6 +166,9 @@ export class Agent {
 	private readonly compactionSettings: CompactionSettings;
 	private readonly retrySettings: RetrySettings;
 	private readonly pricing: ModelPricing | undefined;
+	private readonly permissionMode: PermissionMode;
+	private readonly policy: ToolPolicy;
+	private readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	/** Custom instructions of a requested compaction, or null when none is pending. */
 	private pendingCompaction: string | null = null;
 	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
@@ -185,6 +202,9 @@ export class Agent {
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		this.pricing = options.pricing;
+		this.permissionMode = options.permissionMode ?? "autonomous";
+		this.policy = options.policy ?? createDefaultPolicy();
+		this.onApproval = options.onApproval;
 		const session = options.session;
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
@@ -313,6 +333,11 @@ export class Agent {
 			steeringMode: this.steeringQueue.mode,
 			followUpMode: this.followUpQueue.mode,
 			compaction: this.compactionSettings,
+			// Subagents inherit the permission stance — spawning a child must not
+			// be a policy escape hatch.
+			permissionMode: this.permissionMode,
+			policy: this.policy,
+			onApproval: this.onApproval,
 		});
 		let text = "";
 		let lastAssistantText = "";
@@ -846,6 +871,54 @@ export class Agent {
 			args = event.input;
 		}
 
+		// Argument validation before the policy (P15): malformed calls fail fast
+		// so the model can self-correct, and policy rules never fire on junk.
+		const problems = validateToolArgs(tool.parameters, args);
+		if (problems.length > 0) {
+			return {
+				result: { output: `Invalid arguments for ${toolCall.name}: ${problems.join("; ")}`, isError: true },
+			};
+		}
+
+		// Policy gate (P15): extensions ruled above, the static policy rules here.
+		// A denial is a normal error tool result — the loop continues and the
+		// model can change course; tool_execution_start never fires for it.
+		const policyDecision = this.policy.assess(
+			{ toolName: toolCall.name, args, declaredRisk: tool.risk },
+			this.permissionMode,
+		);
+		const riskText = policyDecision.reason ?? `${policyDecision.risk}-risk tool call in ${this.permissionMode} mode`;
+		if (policyDecision.action === "deny") {
+			return { result: { output: `Denied by policy: ${riskText}`, isError: true } };
+		}
+		if (policyDecision.action === "ask") {
+			const handler = this.onApproval ?? this.uiApprovalHandler();
+			if (!handler) {
+				return {
+					result: {
+						output: `Denied by policy: approval required (${riskText}), but no approval handler is available`,
+						isError: true,
+					},
+				};
+			}
+			const request: ApprovalRequest = {
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				args,
+				risk: policyDecision.risk,
+				reason: policyDecision.reason,
+			};
+			let approved: boolean;
+			try {
+				approved = await this.awaitApproval(handler, request, signal);
+			} catch (cause) {
+				return { result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true } };
+			}
+			if (!approved) {
+				return { result: { output: `Denied by policy: approval declined (${riskText})`, isError: true } };
+			}
+		}
+
 		await this.extensions?.notifyToolExecutionStart({ toolCallId: toolCall.id, toolName: toolCall.name, args }, ctx);
 		const updateNotifications: Promise<void>[] = [];
 		const emitUpdate = (partialOutput: string, stream?: ToolUpdateStream): void => {
@@ -888,5 +961,53 @@ export class Agent {
 			result = { output: finalResult.output, isError: finalResult.isError };
 		}
 		return { result };
+	}
+
+	/** Default approval handler over the host UI; no UI means no handler (ask degrades to deny). */
+	private uiApprovalHandler(): ((request: ApprovalRequest) => Promise<boolean>) | undefined {
+		const ui = this.ui;
+		if (!ui) return undefined;
+		return (request) => {
+			const summary = JSON.stringify(request.args) ?? "{}";
+			const detail = summary.length > 400 ? `${summary.slice(0, 400)}…` : summary;
+			return ui.confirm(
+				`Allow ${request.toolName}? (${request.risk} risk)`,
+				request.reason ? `${request.reason}\n${detail}` : detail,
+			);
+		};
+	}
+
+	/** Wait for an approval decision; an abort while waiting counts as a rejection. */
+	private awaitApproval(
+		handler: (request: ApprovalRequest) => Promise<boolean>,
+		request: ApprovalRequest,
+		signal?: TauAbortSignal,
+	): Promise<boolean> {
+		const decision = handler(request);
+		if (!signal) return decision;
+		if (signal.aborted) return Promise.resolve(false);
+		return new Promise<boolean>((resolve, reject) => {
+			let settled = false;
+			const onAbort = (): void => {
+				if (settled) return;
+				settled = true;
+				resolve(false);
+			};
+			signal.addEventListener("abort", onAbort, { once: true });
+			decision.then(
+				(value) => {
+					if (settled) return;
+					settled = true;
+					signal.removeEventListener("abort", onAbort);
+					resolve(value);
+				},
+				(cause) => {
+					if (settled) return;
+					settled = true;
+					signal.removeEventListener("abort", onAbort);
+					reject(cause);
+				},
+			);
+		});
 	}
 }

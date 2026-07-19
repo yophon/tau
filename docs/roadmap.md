@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-17（P14 完成：CJK 加权估算 + ModelPricing 注入位 + 摘要标识符条款，记 D19；当前工作 = P15 权限与审批。同日：先天不足分析定 P14–P18 五阶段并修 Backlog）
+> 最后更新：2026-07-19（P15 完成：权限与审批系统——policy.ts 档位矩阵 + Agent 审批门 + 三笔安全债还清，记 D20；当前工作 = P16 协议适配扩展层）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -148,11 +148,13 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录（2026-07-17）**：147 测试全绿（+6：CJK 加权估算单测、CJK 全链路自动压缩触发、computeUsageCost 单测 ×2、Agent pricing 集成 ×2）；`smoke:tui` 新增 pricing footer 场景实测通过（mock usage + `TAU_PRICING` → footer `cost $3.0000`；无 pricing 维持 `cost unknown`）。内核：`estimateStringTokens`（加权估算，D19-1）、摘要 prompt 标识符条款（D19-2）、`ModelPricing`/`computeUsageCost` + `AgentOptions.pricing`（D19-3）；CLI：`--pricing`/`TAU_PRICING`（flag 非法即退出、env 非法警告降级）。与规格偏差：无；实现中发现 CJK 大消息在 keepRecentTokens 切点保护下可连续触发压缩（P4 已记载的算法正确行为），e2e 断言按此放宽。commit/push 后 CI 复核为遗留动作。
 
-## Phase 15 ⬜ 权限与审批系统
+## Phase 15 ✅ 权限与审批系统（2026-07-19）
 
-规格书：[specs/phase-15-permissions.md](specs/phase-15-permissions.md)（草拟；默认档位已裁决 2026-07-17：内核 autonomous / CLI·TUI supervised）。
+规格书：[specs/phase-15-permissions.md](specs/phase-15-permissions.md)（已确认并完成；用户裁决：内核 autonomous / CLI·TUI supervised、扩展工具 risk 自声明纳入）。
 
-内核一等公民权限机制：`PermissionMode`（read-only/supervised/autonomous/bypass）× 静态风险分级 × 审批门（经 `UiCapability.confirm`，headless 按 D10 降级 deny）。同阶段还清三笔安全债：trust.json 内容 digest 校验、工具参数 mini JSON Schema 校验、敏感路径保护。pi 无对应物（grep 证毕），概念参照 yo-agent PolicyEngine——继 utf8.ts/移动宿主后的第三块原创面，需记新决策（编号届时顺延）。**这是"敢给别人用"的门槛阶段。**
+内核一等公民权限机制：`PermissionMode`（read-only/supervised/autonomous/bypass）× 静态风险分级 × 审批门（经 `onApproval` ?? `UiCapability.confirm`，headless 按 D10 降级 deny）。pi 无对应物（grep 证毕），概念参照 yo-agent PolicyEngine——第三块原创面，记 **D20**。**这是"敢给别人用"的门槛阶段。**
+
+**完成记录（2026-07-19）**：177 测试全绿（+30：policy 矩阵/保护路径/危险模式 9、validateToolArgs 4、Agent 审批门集成 11、digestDirectory 2、CLI e2e 4）；smoke:tui 新增 approval gate（Allow once/Always allow/Deny 三路径 + permissions.json 跨进程持久化）与 trust digest（同内容不重问/改内容重问）双场景，八场景全过。内核：`policy.ts`（矩阵 + `createDefaultPolicy` 静态规则 + risk 自声明，内置名不可降级）、Agent 审批门（`tool_call` 钩子后：validateToolArgs → 策略评估 → ask 走审批、abort 计为拒绝、deny 不断循环、子 agent 继承权限栈）、`createCodingTools` read-only 过滤（写类工具不上 wire）、`registerTool(tool, { risk? })`。宿主：host-node `digestDirectory`（sha256，跳 dotfiles/node_modules）；CLI `--permission-mode`/`TAU_PERMISSION_MODE`（flag 非法即退出、env 非法警告降级）、trust.json digest 校验（布尔旧条目补算不重问、内容变更重询）、`~/.tau/permissions.json`"总是允许"按 `(tool, 规则指纹)` 持久化、REPL `[y]/[a]/[N]` 审批、TUI 三选项 select + footer `mode` 段；guard demo 改写为"策略之上的 house rules 示例"。**破坏性变更**：CLI/TUI 默认档从等效 bypass 变 supervised（CHANGELOG/README 已醒目说明；e2e/smoke 基建显式声明 autonomous 保持既有场景语义）。与规格偏差：无（规格内两处草拟期笔误已在确认时修正：digest 归属层 host-node→CLI 宿主层、决策编号 D19→D20）。
 
 ## Phase 16 ⬜ 协议适配扩展层（ChatTransport 缝 + Anthropic 扩展）
 
@@ -174,7 +176,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 ## 未排期（Backlog）
 
-> P0–P14 全部 ✅；**当前工作 = P15**（P15–P18 已排期，见上；每阶段动工前规格书需经用户确认）。本表为未排期候选。
+> P0–P15 全部 ✅；**当前工作 = P16**（P16–P18 已排期，见上；每阶段动工前规格书需经用户确认）。本表为未排期候选。
 >
 > 原 A 组两项已消化（2026-07-17）：ext-mcp-http 发版随 v0.1.1 完成（2026-07-16，npm 实测 0.1.1 可装）；Android UI 补验并入 P17。
 

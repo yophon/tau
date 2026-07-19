@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-17（P14–P18 立项核对：补记此前漏登的 `ToolExecutionMode` 并行工具缺口 📍P18；`registerProvider` 由 ❌D3 改 📍P16 扩展层兑现）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-19（P15：权限与审批系统落地——pi 无对应物的 tau 原创面登记，D20）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期延期 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -54,6 +54,7 @@
 | 浏览器宿主 | pi 的浏览器能力与产品层/proxy 绑定更深；tau 只提供 host capability | ✅ P9（OPFS/内存 FileSystem；session 复用 pi v3 JSONL；CORS 转发 proxy 后补于 demo 服务器，密钥托管 proxy 推迟） |
 | 移动/嵌入引擎宿主 | pi 无先例（跑 Node/浏览器） | ✅ P13（tau 原创面：flutter_js Android/QuickJS 真机跑通内核 + 纯 Platform MCP client；引擎缺口宿主 polyfill 补，D18） |
 | 纯 Platform MCP client（Streamable HTTP） | pi 用官方 SDK（假设 Node/浏览器全局） | ✅ P13（`ext-mcp-http` 抄协议不抄 SDK，零依赖进裸引擎；SDK 版 `ext-mcp` 并存服务 Node stdio） |
+| 权限与审批系统 | **pi 无对应物**（grep 证毕；pi 哲学 = 审批留给扩展） | ✅ P15（tau 原创面，D20：`PermissionMode` 四档 × 静态风险分级 → allow/ask/deny 矩阵，审批门挂 `tool_call` 钩子后；概念参照 yo-agent PolicyEngine 纯 ES 重写。内核默认 autonomous / CLI·TUI 默认 supervised；顺还 trust digest / 参数 schema 校验 / 保护路径三笔安全债） |
 
 ## 安全缺口（已修复）
 

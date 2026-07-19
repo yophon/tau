@@ -1,6 +1,6 @@
 # Phase 15：权限与审批系统 规格书
 
-> 状态：草拟（待用户确认后动码）
+> 状态：已完成（2026-07-19；同日确认，用户裁决：纳入扩展工具 risk 自声明字段；开放问题全部落案）
 > 对应 roadmap 阶段：Phase 15
 > 背景：2026-07-17 先天不足分析——tau 目前 bash/write 默认全权执行，审批只有 guard demo 扩展；这是"敢给别人用"之前最大的安全缺口。安全类债按项目规则必须绑定阶段，本阶段即绑定。
 
@@ -77,7 +77,7 @@ export interface ApprovalRequest {
 
 **关联安全债（同阶段还清）**：
 
-1. **trust.json 内容校验**：host-node 在信任记录里存项目扩展目录的内容摘要（文件相对路径 + `node:crypto` sha256，宿主层计算，内核不碰）；下次加载摘要不符 → 重新走 `project_trust` 询问。
+1. **trust.json 内容校验**：宿主层在信任记录里存项目扩展目录的内容摘要（文件相对路径 + `node:crypto` sha256，宿主层计算，内核不碰）。注：trust store 读写现居 `packages/cli/src/main.ts`（非 host-node，草拟时写错已核实），digest 计算辅助下沉 host-node 供非 CLI 宿主复用。下次加载摘要不符 → 重新走 `project_trust` 询问。
 2. **工具参数 mini schema 校验**：`tools.ts` 增 `validateToolArgs(schema, args)`——支持 JSON Schema 子集（`type` / `properties` / `required` / `enum` / `items` / 基本标量），纯 ES 手写约 100 行；`Agent.executeToolCall` 在策略评估前调用，失败返回 isError 工具结果（模型可自纠）。内核四件套与扩展工具统一受益。
 3. **CLI/TUI 接线**：`--permission-mode` / `TAU_PERMISSION_MODE`；TUI 审批走既有 confirm 对话框，追加"本次允许 / 总是允许"两选项，"总是允许"按 `(toolName, 规则指纹)` 持久化到 `~/.tau/permissions.json`（宿主层）。
 
@@ -92,7 +92,7 @@ export interface ApprovalRequest {
 - kernel `policy.ts`（类型 + 默认策略 + 档位矩阵）+ Agent 审批门接线 + 单测
 - read-only 档：`createCodingTools` 支持按档位过滤（只注册只读工具），Agent 层对漏网工具兜底 deny
 - `validateToolArgs` mini schema 校验 + 单测
-- host-node trust.json digest 校验 + 重询流程 + e2e
+- CLI 宿主层 trust.json digest 校验 + 重询流程 + e2e（digest 辅助函数放 host-node 供非 CLI 宿主复用）
 - CLI/TUI：档位 flag/env、审批 UI（confirm + 总是允许持久化）、headless deny 路径
 - guard demo 扩展改写为"策略之上的自定义示例"（不再承担基础审批职责）
 - decisions.md 追加决策（权限是内核机制而非扩展；pi 无参照、概念参照 yo-agent；档位默认值裁决记录。编号届时顺延——P14 先行落地会先占号）
@@ -109,19 +109,19 @@ export interface ApprovalRequest {
 
 ## 验收清单
 
-- [ ] 单测：档位矩阵全组合（4 mode × 3 risk）；默认策略对代表性输入的分级（含保护路径、危险 bash 模式各 ≥ 5 例）；schema 校验通过/拒绝/类型不符
-- [ ] e2e（tmux）：supervised 下 `bash rm -rf` 触发审批 → y 执行 / n 拒绝且模型收到 isError 结果，双路径
-- [ ] e2e：headless（`-p` 管道）supervised 下高风险工具直接 deny，进程不挂起
-- [ ] e2e：read-only 档启动，bash/write 工具不出现在请求 wire 的 tools 列表中
-- [ ] e2e：项目扩展内容修改后再次运行，重新触发信任询问；未修改则不询问
-- [ ] "总是允许"持久化后二次运行不再询问同指纹调用
-- [ ] guard demo 更新且 P1 相关测试迁移
-- [ ] decisions.md（D19）、architecture.md、pi-parity.md（记录"pi 无对应物，tau 原创面"）归档
-- [ ] DoD 通用项（见 development.md）
+- [x] 单测：档位矩阵全组合（4 mode × 3 risk）；默认策略对代表性输入的分级（含保护路径、危险 bash 模式各 ≥ 5 例）；schema 校验通过/拒绝/类型不符（policy.test.ts 9 用例 + tools.test.ts 4 用例 + permissions.test.ts 11 用例）
+- [x] e2e（tmux）：supervised 下 `bash rm -rf` 触发审批 → y 执行 / n 拒绝且模型收到 isError 结果，双路径（smoke:tui `runApprovalSmoke`：Allow once 执行 / Deny 后 mock 收到 `Denied by policy`）
+- [x] e2e：headless（`-p` 管道）supervised 下高风险工具直接 deny，进程不挂起（CLI e2e "supervised headless denies tool calls instead of hanging"）
+- [x] e2e：read-only 档启动，bash/write 工具不出现在请求 wire 的 tools 列表中（CLI e2e 断言 `request.tools === ["read"]`）
+- [x] e2e：项目扩展内容修改后再次运行，重新触发信任询问；未修改则不询问（smoke:tui `runTrustDigestSmoke` 交互三段 + CLI e2e headless 三段：布尔旧条目补算 / 未变不问 / 变更后 headless 跳过）
+- [x] "总是允许"持久化后二次运行不再询问同指纹调用（smoke:tui：Always allow 后同进程第 4 次与第二个 TUI 进程均直接放行，permissions.json 断言含 bash 规则）
+- [x] guard demo 更新且 P1 相关测试迁移（改写为"策略之上的 house rules 示例"；核实无测试直接引用 guard.ts——P1 e2e 早已演化为内联 deny.ts fixture，无需迁移）
+- [x] decisions.md（D20——P14 已占 D19）、architecture.md、pi-parity.md（记录"pi 无对应物，tau 原创面"）归档
+- [x] DoD 通用项（见 development.md）：check 全绿、177 测试全绿、smoke:tui 八场景全过；push 后 CI 复核为遗留动作
 
 ## 风险与开放问题
 
 - ~~开放问题 1~~ **已裁决（2026-07-17）**：**内核默认 `autonomous`**（库消费者行为不破坏、显式选择安全档）、**CLI/TUI 默认 `supervised`**（交互产品安全优先，老用户可 env 调回）。破坏性体验变更，CHANGELOG 与 README 需醒目说明。
-- **开放问题 2**：`ask` 在无 UI 且无 onApproval 时 deny——与 guard demo 的既有 e2e（headless 降级 block）语义一致，但要确认扩展 `tool_call` block 与策略 deny 的文案区分。
-- **开放问题 3**：扩展注册工具的风险自声明字段（`registerTool(tool, { risk? })`）本期是否纳入——建议纳入（一行类型），否则扩展工具永远 medium。
+- ~~开放问题 2~~ **已落案（2026-07-19 核实）**：既有扩展 block 文案为 `Tool call blocked: <reason>`（agent.ts），策略 deny 用 `Denied by policy: <reason>`——前缀天然可区分，无需额外设计。
+- ~~开放问题 3~~ **已裁决（2026-07-19）**：**纳入**。`registerTool(tool, { risk? })` 一行类型；扩展可声明 low（如只读 MCP 工具）免审批、high 强制审批，未声明维持 medium。
 - 风险：危险 bash 模式的静态正则永远不完备——文档明示这是"减少事故"而非"防御恶意"，深度防御靠档位而非规则穷举。

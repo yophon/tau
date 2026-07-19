@@ -175,6 +175,18 @@ export {
 	type Utf8Decoder,
 } from "./platform.ts";
 export {
+	type ApprovalRequest,
+	createDefaultPolicy,
+	DEFAULT_PROTECTED_PATHS,
+	type PermissionMode,
+	type PolicyAction,
+	type PolicyDecision,
+	type RiskLevel,
+	resolvePolicyAction,
+	type ToolPolicy,
+	type ToolPolicyCall,
+} from "./policy.ts";
+export {
 	DEFAULT_RETRY_SETTINGS,
 	isContextOverflowError,
 	isRetryableAssistantError,
@@ -199,6 +211,13 @@ export {
 	sessionDirSlug,
 } from "./session.ts";
 export { type SseEvent, SseParser } from "./sse.ts";
-export { errorResult, optionalNumber, requireString, type Tool, type ToolResult } from "./tools.ts";
+export {
+	errorResult,
+	optionalNumber,
+	requireString,
+	type Tool,
+	type ToolResult,
+	validateToolArgs,
+} from "./tools.ts";
 export { createIncrementalUtf8Decoder } from "./utf8.ts";
 export { uuidv7 } from "./uuid.ts";

@@ -4,6 +4,7 @@ import { TauError } from "./errors.ts";
 import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
+import type { RiskLevel } from "./policy.ts";
 import type { SessionEntry } from "./session.ts";
 import type { Tool, ToolResult } from "./tools.ts";
 
@@ -582,8 +583,14 @@ export interface ExtensionAPI {
 	/** Set the session's display name. */
 	setSessionName(name: string): void;
 
-	/** Register a tool the model can call. Same-name registrations override (later wins). */
-	registerTool(tool: Tool): void;
+	/**
+	 * Register a tool the model can call. Same-name registrations override
+	 * (later wins). `risk` self-declares the tool's risk for the permission
+	 * policy (P15): low skips approval in supervised mode, high forces it in
+	 * autonomous mode; undeclared extension tools default to medium. Built-in
+	 * tool names (read/write/edit/bash) keep their built-in classification.
+	 */
+	registerTool(tool: Tool, options?: { risk?: RiskLevel }): void;
 
 	/** Register a custom command. */
 	registerCommand(name: string, options: Omit<RegisteredCommand, "name">): void;
@@ -749,8 +756,8 @@ export class ExtensionRegistry {
 		};
 		const api: ExtensionAPI = {
 			on: on as ExtensionAPI["on"],
-			registerTool: (tool) => {
-				this.tools.set(tool.name, tool);
+			registerTool: (tool, options) => {
+				this.tools.set(tool.name, options?.risk !== undefined ? { ...tool, risk: options.risk } : tool);
 			},
 			registerCommand: (name, options) => {
 				this.commands.set(name, { name, ...options });

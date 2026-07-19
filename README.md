@@ -94,6 +94,14 @@ npm run tau -- --tui              # TUI mode (streaming markdown, /tree, /fork, 
 npm run tau -- -p "list the files here and summarize"
 ```
 
+> **Permissions (P15, breaking):** the CLI/TUI now default to
+> `--permission-mode supervised` — bash commands and file writes ask for
+> approval in a TTY and are **denied** in headless (`-p` piped) runs. Use
+> `--permission-mode autonomous` (or `TAU_PERMISSION_MODE=autonomous`) to
+> restore the old behavior, `read-only` to strip mutating tools entirely,
+> `bypass` to disable the gate. "Always allow" answers persist to
+> `~/.tau/permissions.json`. The kernel library default remains `autonomous`.
+
 Portability proofs and demos:
 
 ```bash

@@ -4,6 +4,45 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### ⚠ Breaking
+- CLI/TUI now default to `--permission-mode supervised` (P15): medium/high-risk
+  tool calls (any bash command, any file write) prompt for approval in a TTY
+  and are **denied** in headless (piped `-p`) runs. Restore the old behavior
+  with `--permission-mode autonomous` or `TAU_PERMISSION_MODE=autonomous`.
+  The kernel library default stays `autonomous` — `new Agent(...)` consumers
+  are unaffected unless they opt in.
+
+### Added
+- Kernel: first-class permission system (P15, D20 — no pi counterpart).
+  `PermissionMode` (read-only/supervised/autonomous/bypass) × static risk
+  rules (protected paths, dangerous bash patterns) → allow/ask/deny before
+  every tool execution; `ask` resolves via `AgentOptions.onApproval` ??
+  `ui.confirm` and degrades to deny when neither exists. Denials are normal
+  error tool results — the loop continues. Subagents inherit the permission
+  stance. New exports: `PermissionMode`, `RiskLevel`, `PolicyDecision`,
+  `ToolPolicy`, `ApprovalRequest`, `createDefaultPolicy`,
+  `resolvePolicyAction`, `DEFAULT_PROTECTED_PATHS`, `validateToolArgs`.
+- Kernel: tool arguments are validated against the tool's JSON Schema
+  (subset) before execution; malformed calls return an error result the
+  model can self-correct. Extension tools may self-declare risk via
+  `registerTool(tool, { risk })` (built-in names cannot be downgraded).
+  `createCodingTools(caps, { mode: "read-only" })` registers only `read`.
+- CLI/TUI: `--permission-mode` / `TAU_PERMISSION_MODE`; approval prompts
+  (REPL `[y]es/[a]lways/[N]o`, TUI "Allow once / Always allow / Deny"
+  selector); "always allow" persists per (tool, rule fingerprint) to
+  `~/.tau/permissions.json`; the TUI footer shows the active mode.
+- host-node: `digestDirectory` — trust records in `~/.tau/trust.json` now pin
+  a sha256 content digest of the project extensions directory; changed
+  content re-triggers the trust question (legacy boolean entries are
+  upgraded in place without re-asking).
+- Kernel: optional `AgentOptions.pricing` (`ModelPricing`, USD per million
+  tokens) fills `usage.cost` on assistant messages; without it cost stays
+  zero ("unknown"). tau still ships no pricing data — hosts supply prices.
+  Cache token prices are optional and uncounted when omitted. New exports:
+  `ModelPricing`, `computeUsageCost`.
+- CLI/TUI: `--pricing "in=0.5,out=2[,cacheRead=...][,cacheWrite=...]"` flag
+  and `TAU_PRICING` env; the TUI footer shows real accumulated cost when set.
+
 ### Changed
 - Kernel: token estimation is now CJK-aware (P14). CJK-range characters count
   ~1 token each instead of pi's chars/4, which undercounted Chinese/Japanese/
@@ -13,15 +52,6 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 - Kernel: the compaction summary prompts append an identifier-preservation
   rule (UUIDs, hashes, URLs, paths must be preserved verbatim) so summaries
   can no longer strand the agent by paraphrasing opaque identifiers.
-
-### Added
-- Kernel: optional `AgentOptions.pricing` (`ModelPricing`, USD per million
-  tokens) fills `usage.cost` on assistant messages; without it cost stays
-  zero ("unknown"). tau still ships no pricing data — hosts supply prices.
-  Cache token prices are optional and uncounted when omitted. New exports:
-  `ModelPricing`, `computeUsageCost`.
-- CLI/TUI: `--pricing "in=0.5,out=2[,cacheRead=...][,cacheWrite=...]"` flag
-  and `TAU_PRICING` env; the TUI footer shows real accumulated cost when set.
 
 ## [0.1.1] - 2026-07-17
 

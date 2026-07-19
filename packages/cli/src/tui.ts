@@ -23,11 +23,13 @@ import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
+	type ApprovalRequest,
 	type CompactionResult,
 	type CustomMessage,
 	type ExtensionRegistry,
 	type JsonlSessionRepo,
 	messageText,
+	type PermissionMode,
 	type RegisteredDiagnosticResult,
 	type RegisteredEntryRenderer,
 	type RegisteredEntryRenderResult,
@@ -116,6 +118,7 @@ export interface RunTuiOptions {
 	baseUrl: string;
 	cwd: string;
 	contextWindow?: number;
+	permissionMode: PermissionMode;
 	sessionRepo: JsonlSessionRepo;
 	shell: Shell;
 	store?: SessionStore;
@@ -123,6 +126,8 @@ export interface RunTuiOptions {
 	thinkingLevel?: ThinkingLevel;
 	setModel(model: string): void;
 	setThinkingLevel(level: ThinkingLevel | undefined): void;
+	/** Install the TUI approval prompt (P15 "allow once / always / deny" selector) into the host's approval loop. */
+	setApprovalPrompt?(prompt: (request: ApprovalRequest) => Promise<"once" | "always" | "deny">): void;
 	buildAgent(
 		messages: AgentMessage[] | undefined,
 		session: SessionRecorder | undefined,
@@ -237,6 +242,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				toolsCollapsed,
 				cwd: options.cwd,
 				sessionLabel,
+				permissionMode: options.permissionMode,
 				activeStatus,
 				steeringCount,
 				followUpCount,
@@ -364,6 +370,20 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		},
 	};
 	agent.setUi(uiCapability);
+
+	// P15 approval prompt: a numbered select through the same editor-input
+	// mechanism as ui.confirm (works mid-turn, automatable in tmux e2e).
+	options.setApprovalPrompt?.(async (request) => {
+		const argsSummary = JSON.stringify(request.args) ?? "{}";
+		const detail = [request.reason, argsSummary.length > 200 ? `${argsSummary.slice(0, 200)}…` : argsSummary]
+			.filter((part): part is string => Boolean(part))
+			.join("\n");
+		const choice = await uiCapability.select(
+			`Allow ${request.toolName}? (${request.risk} risk)${detail === "" ? "" : `\n${dim(detail)}`}`,
+			["Allow once", "Always allow", "Deny"],
+		);
+		return choice === "Allow once" ? "once" : choice === "Always allow" ? "always" : "deny";
+	});
 
 	const runShortcut = async (name: string): Promise<void> => {
 		const shortcut = extensions.shortcuts.get(name);
@@ -1579,6 +1599,7 @@ interface FooterState {
 	toolsCollapsed: boolean;
 	cwd: string;
 	sessionLabel: string;
+	permissionMode: PermissionMode;
 	activeStatus?: string;
 	steeringCount: number;
 	followUpCount: number;
@@ -1601,6 +1622,7 @@ function formatFooter(state: FooterState): string {
 	const primary = [
 		...activity,
 		`model ${state.model}`,
+		`mode ${state.permissionMode}`,
 		`thinking ${formatThinkingLevel(state.thinkingLevel)}`,
 		`reasoning ${state.showReasoning ? "shown" : "hidden"}`,
 		`tools ${state.toolsCollapsed ? "collapsed" : "expanded"}`,
