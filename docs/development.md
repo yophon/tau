@@ -16,7 +16,7 @@
 
 ## pi 参照系
 
-- pi 快照位于本仓库同级目录 `../pi`（绝对路径 `/Users/[user]/Desktop/atlasandecho/yophon/pi`，2026-07-19 仓库迁址后更新），**版本 v0.80.3，非 git 仓库**。快照若丢失，用 `git clone --depth 1 --branch v0.80.3 https://github.com/earendil-works/pi-mono ../pi && rm -rf ../pi/.git` 重建（2026-07-14 曾因仓库搬家丢失过一次，按此重建）
+- pi 快照位于本仓库同级目录 `../pi`（即 `~/Desktop/atlasandecho/yophon/pi`，2026-07-19 仓库迁址后更新），**版本 v0.80.3，非 git 仓库**。快照若丢失，用 `git clone --depth 1 --branch v0.80.3 https://github.com/earendil-works/pi-mono ../pi && rm -rf ../pi/.git` 重建（2026-07-14 曾因仓库搬家丢失过一次，按此重建）
 - "先读 pi / 照抄 pi" 一律以该快照为准（decisions.md D11）。若快照被更新到新版本，必须在 decisions.md 追加记录并重新核对 pi-parity.md
 - roadmap 每个阶段列有"先读 pi"的具体文件清单；读了清单之外的关键文件，补记进该阶段规格书
 
