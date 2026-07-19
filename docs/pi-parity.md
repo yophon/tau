@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-17（P13：移动/嵌入引擎宿主 + 纯 Platform MCP client 两项 tau 原创面登记）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-07-17（P14–P18 立项核对：补记此前漏登的 `ToolExecutionMode` 并行工具缺口 📍P18；`registerProvider` 由 ❌D3 改 📍P16 扩展层兑现）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期延期 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -47,7 +47,8 @@
 | Header/footer items | header/footer 状态区扩展 | ✅ P8（短文本状态段；host 控制刷新频率） |
 | Themes | TUI 主题系统 | 📍Backlog（P8D-2 整体延期，任务细目在 phase-8 规格书） |
 | `/reload` 热重载扩展 | 运行时重载 | ✅ P8（host-node 扩展 registry 与 resources reload；theme reload 随 Themes 延期 Backlog） |
-| `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ❌ D3（OpenAI 兼容 only；如需求出现走扩展层协议适配再议） |
+| `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | 📍P16（扩展层兑现 D3 预留口：`AgentOptions.transport` 注入而非扩展事件——协议选择是宿主装配决策，不做运行中热换；内核仍 OpenAI 兼容 only，D3 不推翻） |
+| `toolExecution` / `Tool.executionMode` 并行工具执行 | `packages/agent` 的 `ToolExecutionMode = "sequential" \| "parallel"`（**pi 默认 parallel**）：preflight 串行 → 执行并发 → `tool_execution_end` 完成序 → toolResult 消息源序；per-tool 可强制 sequential | 📍P18（tau 现仅移植 sequential 路径——2026-07-17 立项核对时发现的漏登缺口，非有意偏离） |
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
 | 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@yophon/tau-ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |
 | 浏览器宿主 | pi 的浏览器能力与产品层/proxy 绑定更深；tau 只提供 host capability | ✅ P9（OPFS/内存 FileSystem；session 复用 pi v3 JSONL；CORS 转发 proxy 后补于 demo 服务器，密钥托管 proxy 推迟） |
