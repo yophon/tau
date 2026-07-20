@@ -10,6 +10,7 @@
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/pi-tui": "0.80.3",
+				"@yophon/tau-ext-provider-anthropic": "^0.1.1",
 				"@yophon/tau-host-node": "^0.1.1",
 				"@yophon/tau-kernel": "^0.1.1"
 			},
@@ -31,6 +32,14 @@
 			},
 			"engines": {
 				"node": ">=22.19.0"
+			}
+		},
+		"node_modules/@yophon/tau-ext-provider-anthropic": {
+			"version": "0.1.1",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-provider-anthropic/-/tau-ext-provider-anthropic-0.1.1.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.1.1"
 			}
 		},
 		"node_modules/@yophon/tau-host-node": {

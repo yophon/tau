@@ -1,6 +1,6 @@
 # Phase 16：协议适配扩展层（ChatTransport 缝 + Anthropic 扩展）规格书
 
-> 状态：草拟（待用户确认后动码）
+> 状态：已完成（2026-07-20）——除"真实端点手工验收"一项待用户执行（需 Anthropic API key），其余验收全过；完成记录见 roadmap.md P16
 > 对应 roadmap 阶段：Phase 16
 > 背景：2026-07-17 先天不足分析——"OpenAI 兼容 only"是最低公分母协议：工具结果图片降级为 `[image omitted]`（openai.ts）、thinking 只兼容 DeepSeek 方言、prompt cache 不可控、usage 的 cacheRead/cacheWrite 恒为零。D3 当年预留的口子（"如将来需要，作为扩展/插件层协议适配，不进内核"）本阶段兑现。
 
@@ -15,6 +15,8 @@
 | `packages/ai/src/api/`（stream 接口形状） | 抄概念：pi 把"发请求 → 产出统一流事件"抽象为可替换的 stream 函数，多 provider 共用一个事件联合。tau 取最小子集：单一 `ChatTransport` 函数类型，**不做** pi 的 provider 注册表 / API 别名 / 模型库（D2/D3 边界）。 |
 | `packages/ai/src/providers/`（anthropic 实现） | 抄消息转换：pi 的 anthropic provider 做"pi 消息 → Anthropic wire"转换——**tau 消息模型就是 pi 形状（D13），转换逻辑可大量照抄**（内容块映射、tool_result 扇出、cache_control 落点、stop_reason 映射、usage 映射）。这是 D13 当年"消除永久格式分歧"的直接红利兑现。偏离：pi 用 Node SDK/全局，tau 扩展全走 Platform 缝隙（fetch/SseParser），保持裸引擎可用。 |
 | `packages/coding-agent/src/core/extensions/types.ts`（registerProvider） | pi 扩展可注册自定义 provider。tau 不做 registerProvider 事件（pi-parity 该行 ❌D3 更新为 📍P16 扩展层兑现）：transport 经 `AgentOptions` 注入而非扩展事件——协议选择是宿主装配决策，不是运行中可热换的钩子（避免会话中途换协议导致 usage/缓存语义断裂）。偏离原因记入 decisions.md。 |
+| `packages/ai/src/api/transform-messages.ts`（清单外补记） | 跨 provider 消息变换，anthropic wire 转换的前置步骤，照抄其关键路径：error/aborted assistant 消息整条跳过（不完整轮不重放）、孤儿 tool call 合成 `"No result provided"` 空结果、跨模型时 thinking 无 signature 转 text / redacted 丢弃、toolCallId 规范化（Anthropic 要求 `^[a-zA-Z0-9_-]+$` ≤64，仅跨模型消息改写并同步 toolResult 引用）。同模型判定用 D13 的 `provider`/`api`/`model` 三字段。不抄：图片降级（tau 无模型库，Claude 全系支持视觉）。 |
+| `packages/ai/src/api/simple-options.ts`（清单外补记） | thinking level → budget 默认表（minimal 1024 / low 2048 / medium 8192 / high 16384）。扩展包不做 level 映射（config 直收 budgetTokens）；CLI 接线层用此表把既有 /thinking level 翻译成 budgetTokens。 |
 
 ## 接口草案
 
@@ -43,7 +45,7 @@ export interface AnthropicTransportConfig {
 	baseUrl?: string;             // 默认 https://api.anthropic.com
 	maxTokens?: number;           // Anthropic 必填项，默认给合理值
 	thinking?: { budgetTokens: number } | "adaptive";
-	cacheControl?: "auto" | "off"; // auto：system + tools + 倒数第二条 user 打 ephemeral 标记
+	cacheControl?: "auto" | "off"; // auto 抄 pi 落点：system 尾 + tools 末项 + 最后一条 user 消息末 block 打 ephemeral 标记
 	headers?: Record<string, string>;
 	stallTimeoutMs?: number;      // 复用内核 withStallTimeout
 }
@@ -87,19 +89,19 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 
 ## 验收清单
 
-- [ ] 内核单测：fake transport 驱动完整两轮循环（含工具调用），Agent 对协议零感知
-- [ ] ext 单测（fake platform + scripted SSE）：thinking 流式、tool_use 累积 parse、tool_result 图片进 wire（断言 base64 block 而非 `[image omitted]`）、usage cacheRead/cacheWrite 断言、cache_control 标记落点断言、stop_reason 全映射
-- [ ] e2e：mock Anthropic SSE 服务器 + 真 CLI 全链路（流式中文 + 工具回路 + `--continue` 恢复）
-- [ ] e2e：同一会话文件先后用 openai/anthropic transport 续写，restore 正常（格式兼容证明）
-- [ ] 失败语义：mock 5xx/断流 → stopReason error 消息 + 重试路径（D14/P11 行为在新 transport 上复验）
-- [ ] 纯度 smoke：ext 包 esbuild neutral 打包零 external 通过
-- [ ] 真实端点手工验收一轮（Anthropic API key，thinking + 工具 + 缓存命中在响应 usage 中可见）
-- [ ] pi-parity / decisions / architecture（代码地图 + 分层图加 ext-provider-anthropic）归档
-- [ ] DoD 通用项（见 development.md）
+- [x] 内核单测：fake transport 驱动完整两轮循环（含工具调用），Agent 对协议零感知（transport.test.ts，fakePlatform([]) 证明 fetch 未被触碰）
+- [x] ext 单测（fake platform + scripted SSE）：thinking 流式、tool_use 累积 parse、tool_result 图片进 wire（断言 base64 block 而非 `[image omitted]`）、usage cacheRead/cacheWrite 断言、cache_control 标记落点断言、stop_reason 全映射（17 用例）
+- [x] e2e：mock Anthropic SSE 服务器 + 真 CLI 全链路（流式中文 + 工具回路 + `--continue` 恢复）（e2e-anthropic.test.ts）
+- [x] e2e：同一会话文件先后用 openai/anthropic transport 续写，restore 正常（格式兼容证明——实测三轮 openai→anthropic→openai）
+- [x] 失败语义：mock 5xx/断流 → stopReason error 消息 + 重试路径（D14/P11 行为在新 transport 上复验；2×500 退避后恢复、503 无重试 error 终态、SSE error 事件、message_stop 截断皆有断言）
+- [x] 纯度 smoke：ext 包 esbuild neutral 打包零 external 通过（check:purity 扩面为 PURE_PACKAGES 三包门禁，ext-mcp-http 一并纳入）
+- [ ] 真实端点手工验收一轮（Anthropic API key，thinking + 工具 + 缓存命中在响应 usage 中可见）——待用户执行：`npm run tau -- --provider anthropic -k <key> -m claude-sonnet-5 -p "..."`
+- [x] pi-parity / decisions / architecture（代码地图 + 分层图加 ext-provider-anthropic）归档（D3 补记 + D21 新增）
+- [x] DoD 通用项（见 development.md）：check 全绿、202 测试全绿；push 后 CI 复核为遗留动作（不擅自 commit）
 
 ## 风险与开放问题
 
-- **开放问题 1（设计关键，需在实现前敲定）**：压缩/分支摘要现直接收 `OpenAICompatConfig`（D3 时代签名）。改为收 transport 后，"摘要用同一模型"的 D3 约定自然保持；但 `contextWindow`/token 预算参数与 transport 解耦要理顺。倾向：`CompactionConfig` 持 transport 引用 + 显式 contextWindow，签名小改，P4 测试跟随更新。
-- **开放问题 2**：CLI 的 provider 选择面（`--provider` 枚举 vs baseUrl 嗅探）——建议显式 flag，不嗅探。
+- **开放问题 1（已裁决 2026-07-20）**：压缩/分支摘要现直接收 `OpenAICompatConfig`（D3 时代签名）。改为收 transport 后，"摘要用同一模型"的 D3 约定自然保持；但 `contextWindow`/token 预算参数与 transport 解耦要理顺。**裁决：按倾向执行——`CompactionConfig` 持 transport 引用 + 显式 contextWindow，签名小改，P4 测试跟随更新。**
+- **开放问题 2（已裁决 2026-07-20）**：CLI 的 provider 选择面。**裁决：显式 `--provider` flag（枚举校验，flag 非法即退出、env 非法警告降级，沿用 P14/P15 模式），不做 baseUrl 嗅探。**
 - 风险：Anthropic 协议演进（新 block 类型）——transport 对未知 block 宽容跳过 + 记 debug，锁 `anthropic-version` 头（协议锁定策略与 ext-mcp-http 锁 `2025-06-18` 同款）。
 - 风险：cache_control `auto` 策略的落点选择影响命中率但不影响正确性——先抄 pi 的落点，实测后调。

@@ -14,6 +14,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-subagents",
 	"ext-mcp",
 	"ext-mcp-http",
+	"ext-provider-anthropic",
 	"ext-resources",
 	"cli",
 ];

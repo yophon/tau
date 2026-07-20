@@ -156,12 +156,20 @@ export {
 	type UserMessage,
 } from "./messages.ts";
 export {
+	BRANCH_SUMMARY_PREFIX,
+	BRANCH_SUMMARY_SUFFIX,
 	type ChatStreamEvent,
+	type ChatTransport,
+	COMPACTION_SUMMARY_PREFIX,
+	COMPACTION_SUMMARY_SUFFIX,
+	createOpenAICompatTransport,
 	type JsonSchema,
 	OPENAI_COMPLETIONS_API,
 	type OpenAICompatConfig,
 	streamChatCompletion,
 	type ToolDefinition,
+	type TransportRequest,
+	withStallTimeout,
 } from "./openai.ts";
 export {
 	defaultPlatform,

@@ -19,6 +19,14 @@ export interface ImageContent {
 export interface ThinkingContent {
 	type: "thinking";
 	thinking: string;
+	/**
+	 * Provider continuity payload (pi's thinkingSignature): Anthropic requires it
+	 * to replay thinking blocks. Transports that have no such concept leave it
+	 * unset; a same-model replay preserves it, a cross-model one degrades to text.
+	 */
+	thinkingSignature?: string;
+	/** True for opaque redacted thinking (Anthropic redacted_thinking); `thinkingSignature` then holds the payload. */
+	redacted?: boolean;
 }
 
 /** A tool invocation requested by the model. `arguments` is the parsed object, as in pi. */

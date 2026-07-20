@@ -1,7 +1,7 @@
 import { TauError } from "./errors.ts";
 import { type AgentMessage, type AssistantMessage, messageText, type Usage } from "./messages.ts";
-import { type OpenAICompatConfig, streamChatCompletion } from "./openai.ts";
-import type { Platform, TauAbortSignal } from "./platform.ts";
+import type { ChatTransport } from "./openai.ts";
+import type { TauAbortSignal } from "./platform.ts";
 import type { SessionEntry } from "./session.ts";
 
 /**
@@ -10,7 +10,8 @@ import type { SessionEntry } from "./session.ts";
  * estimation, cut-point selection, structured summarization prompts (verbatim),
  * iterative summary updates, split-turn handling, file-operation extraction.
  * Deviations: results throw TauError instead of pi's Result type; summarization
- * runs over tau's OpenAICompatConfig instead of pi's model registry (D3).
+ * runs over the agent's ChatTransport (P16) instead of pi's model registry (D3),
+ * so summaries use the same model/protocol as the conversation.
  */
 
 export interface CompactionSettings {
@@ -514,19 +515,18 @@ export function prepareCompaction(
 }
 
 export async function completeText(
-	platform: Platform,
-	config: OpenAICompatConfig,
+	transport: ChatTransport,
 	systemPrompt: string,
 	promptText: string,
 	maxTokens: number,
 	signal?: TauAbortSignal,
 ): Promise<string> {
-	const stream = streamChatCompletion(
-		platform,
-		{ ...config, extraBody: { ...config.extraBody, max_tokens: maxTokens } },
-		[{ role: "user", content: promptText, timestamp: Date.now() }],
-		{ systemPrompt, signal },
-	);
+	const stream = transport({
+		systemPrompt,
+		messages: [{ role: "user", content: promptText, timestamp: Date.now() }],
+		maxTokens,
+		signal,
+	});
 	let final: AssistantMessage | undefined;
 	for await (const event of stream) {
 		if (event.type === "response_end") final = event.message;
@@ -537,8 +537,7 @@ export async function completeText(
 
 /** Generate or update a conversation summary (pi's generateSummary). */
 export async function generateSummary(
-	platform: Platform,
-	config: OpenAICompatConfig,
+	transport: ChatTransport,
 	messages: AgentMessage[],
 	options: {
 		reserveTokens: number;
@@ -557,13 +556,12 @@ export async function generateSummary(
 		promptText += `<previous-summary>\n${options.previousSummary}\n</previous-summary>\n\n`;
 	}
 	promptText += basePrompt;
-	return completeText(platform, config, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal);
+	return completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal);
 }
 
 /** Run a prepared compaction: summarize (split-turn aware) and assemble the result. */
 export async function runCompaction(
-	platform: Platform,
-	config: OpenAICompatConfig,
+	transport: ChatTransport,
 	preparation: CompactionPreparation,
 	customInstructions?: string,
 	signal?: TauAbortSignal,
@@ -573,7 +571,7 @@ export async function runCompaction(
 	if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
 		const historySummary =
 			preparation.messagesToSummarize.length > 0
-				? await generateSummary(platform, config, preparation.messagesToSummarize, {
+				? await generateSummary(transport, preparation.messagesToSummarize, {
 						reserveTokens: settings.reserveTokens,
 						customInstructions,
 						previousSummary,
@@ -582,8 +580,7 @@ export async function runCompaction(
 				: "No prior history.";
 		const prefixPrompt = `<conversation>\n${serializeConversation(preparation.turnPrefixMessages)}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
 		const turnPrefixSummary = await completeText(
-			platform,
-			config,
+			transport,
 			SUMMARIZATION_SYSTEM_PROMPT,
 			prefixPrompt,
 			Math.floor(0.5 * settings.reserveTokens),
@@ -591,7 +588,7 @@ export async function runCompaction(
 		);
 		summary = `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
 	} else {
-		summary = await generateSummary(platform, config, preparation.messagesToSummarize, {
+		summary = await generateSummary(transport, preparation.messagesToSummarize, {
 			reserveTokens: settings.reserveTokens,
 			customInstructions,
 			previousSummary,

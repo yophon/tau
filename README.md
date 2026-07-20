@@ -4,7 +4,9 @@
 
 Runtime-agnostic coding agent kernel. The kernel is pure ECMAScript plus one
 injectable platform seam; every host capability (filesystem, shell, HTTP,
-UI, …) is provided by plugins. BYOK only, OpenAI-compatible protocol only.
+UI, …) is provided by plugins. BYOK only. The kernel ships an OpenAI-compatible
+client; other protocols plug in through the `ChatTransport` seam — an Anthropic
+Messages transport ships as an extension package.
 
 Architecture and interface design are heavily inspired by
 [pi](https://github.com/earendil-works/pi-mono) (MIT), pushed one step further:
@@ -18,7 +20,10 @@ inject a small adapter instead of polyfilling globals.
 - **Agent loop** — OpenAI-compatible streaming, tool calls, steering (type
   while it runs), follow-up queues, abort, auto-retry with backoff, stall
   watchdog. Provider failures become `stopReason: "error"/"aborted"` messages
-  instead of exceptions (pi semantics).
+  instead of exceptions (pi semantics). The wire protocol is injectable
+  (`ChatTransport`): `--provider anthropic` speaks the Anthropic Messages API
+  natively — thinking streams with signatures, prompt caching
+  (`cache_control`), images in tool results, true cacheRead/cacheWrite usage.
 - **Sessions** — pi v3 JSONL format on disk: resume (`--continue`), in-place
   tree navigation (`/tree`), forking (`/fork`), automatic context compaction
   with pi's exact algorithm and prompts.
@@ -54,6 +59,7 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
 | `@yophon/tau-ext-mcp` | Extension package that bridges MCP server tools into tau tools via the official SDK (stdio/HTTP) | Yes — MCP SDK transports |
 | `@yophon/tau-ext-mcp-http` | Streamable HTTP MCP client written entirely on the `Platform` seam — zero dependencies, runs on bare engines where the SDK cannot | **No** — pure `Platform` |
+| `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 
 ## Design rules
@@ -92,6 +98,9 @@ export TAU_MODEL=deepseek-chat
 npm run tau                       # readline REPL
 npm run tau -- --tui              # TUI mode (streaming markdown, /tree, /fork, /model, …)
 npm run tau -- -p "list the files here and summarize"
+
+# Or speak the Anthropic Messages API natively (base URL optional)
+npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
 ```
 
 > **Permissions (P15, breaking):** the CLI/TUI now default to

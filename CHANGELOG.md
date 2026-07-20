@@ -5,6 +5,10 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel: `runCompaction`, `generateSummary`, `completeText`, and
+  `generateBranchSummary` now take a `ChatTransport` instead of
+  `(platform, config)` (P16); `generateBranchSummary` reads the token budget
+  from `options.contextWindow`. Callers going through `Agent` are unaffected.
 - CLI/TUI now default to `--permission-mode supervised` (P15): medium/high-risk
   tool calls (any bash command, any file write) prompt for approval in a TTY
   and are **denied** in headless (piped `-p`) runs. Restore the old behavior
@@ -13,6 +17,33 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   are unaffected unless they opt in.
 
 ### Added
+- Kernel: `ChatTransport` injection seam (P16, D3's reserved extension point).
+  `AgentOptions.transport` swaps the wire protocol per agent; the default
+  `createOpenAICompatTransport(platform, config)` wraps the existing client
+  with zero behavior change. The agent loop, compaction, and branch summaries
+  all speak through the seam; subagents inherit it. New exports:
+  `ChatTransport`, `TransportRequest`, `createOpenAICompatTransport`,
+  `withStallTimeout`, the summary wire-framing constants, and an optional
+  `OpenAICompatConfig.api` label. `ThinkingContent` gains pi's optional
+  `thinkingSignature`/`redacted` fields; `streamChatCompletion` accepts
+  `maxTokens`.
+- `@yophon/tau-ext-provider-anthropic` (new package): pure-Platform Anthropic
+  Messages transport — hand-written protocol (no SDK), kernel SseParser,
+  bare-engine safe. Native thinking streaming (signature round-trip,
+  redacted blocks), tool_result **images as base64 blocks** (no more
+  `[image omitted]` on this path), `cache_control` auto placement (system +
+  last tool + last user message, pi's layout), usage cacheRead/cacheWrite
+  truth (combines with `--pricing` for real costs), pi's stop_reason mapping
+  and message transforms (dropped error/aborted turns, synthetic results for
+  orphaned tool calls, cross-model degradation).
+- CLI: `--provider anthropic` / `TAU_PROVIDER` (flag validates hard, env
+  warns and degrades). With it, `--base-url` becomes optional
+  (api.anthropic.com), an API key is required, `/model` switches propagate to
+  the transport, and `/thinking` levels map onto Anthropic budget tokens
+  (pi's defaults: minimal 1024 / low 2048 / medium 8192 / high+xhigh 16384).
+- Purity gate now covers pure-Platform extension packages (ext-mcp-http,
+  ext-provider-anthropic): same source scan as the kernel plus a neutral
+  esbuild bundle with only the kernel external.
 - Kernel: first-class permission system (P15, D20 — no pi counterpart).
   `PermissionMode` (read-only/supervised/autonomous/bypass) × static risk
   rules (protected paths, dangerous bash patterns) → allow/ask/deny before

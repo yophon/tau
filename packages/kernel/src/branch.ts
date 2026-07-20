@@ -10,8 +10,8 @@ import {
 } from "./compaction.ts";
 import { SessionError } from "./errors.ts";
 import type { AgentMessage } from "./messages.ts";
-import type { OpenAICompatConfig } from "./openai.ts";
-import type { Platform, TauAbortSignal } from "./platform.ts";
+import type { ChatTransport } from "./openai.ts";
+import type { TauAbortSignal } from "./platform.ts";
 import type { SessionEntry, SessionStore } from "./session.ts";
 
 /**
@@ -20,7 +20,7 @@ import type { SessionEntry, SessionStore } from "./session.ts";
  * the entries a navigation abandons, budgeted message selection with nested
  * summary handling, and the structured summary prompt (verbatim). Deviations:
  * errors throw (TauError/SessionError) instead of pi's Result type, and
- * summarization runs over tau's OpenAICompatConfig (D3), as in compaction.ts.
+ * summarization runs over the agent's ChatTransport (P16), as in compaction.ts.
  */
 
 /** File-operation details stored on generated branch summary entries. */
@@ -63,6 +63,12 @@ export interface GenerateBranchSummaryOptions {
 	replaceInstructions?: boolean;
 	/** Tokens reserved for prompt and model output. Defaults to 16384. */
 	reserveTokens?: number;
+	/**
+	 * Context window bounding the message-selection budget. Previously read off
+	 * the OpenAI config; explicit since the transport seam (P16). Defaults to
+	 * 128000, as before.
+	 */
+	contextWindow?: number;
 }
 
 /** Collect entries that should be summarized before navigating to a different session tree entry. */
@@ -210,13 +216,12 @@ Keep each section concise. Preserve exact file paths, function names, and error 
 
 /** Generate a summary for abandoned branch entries (pi's generateBranchSummary). */
 export async function generateBranchSummary(
-	platform: Platform,
-	config: OpenAICompatConfig,
+	transport: ChatTransport,
 	entries: SessionEntry[],
 	options?: GenerateBranchSummaryOptions,
 ): Promise<BranchSummaryResult> {
 	const reserveTokens = options?.reserveTokens ?? 16384;
-	const contextWindow = config.contextWindow || 128000;
+	const contextWindow = options?.contextWindow || 128000;
 	const tokenBudget = contextWindow - reserveTokens;
 
 	const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget);
@@ -234,7 +239,7 @@ export async function generateBranchSummary(
 	}
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
 
-	let summary = await completeText(platform, config, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
+	let summary = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
 	summary = BRANCH_SUMMARY_PREAMBLE + summary;
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);

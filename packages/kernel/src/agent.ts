@@ -36,9 +36,10 @@ import {
 } from "./messages.ts";
 import {
 	type ChatStreamEvent,
+	type ChatTransport,
+	createOpenAICompatTransport,
 	OPENAI_COMPLETIONS_API,
 	type OpenAICompatConfig,
-	streamChatCompletion,
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
@@ -79,6 +80,15 @@ class PendingMessageQueue {
 
 export interface AgentOptions {
 	config: OpenAICompatConfig;
+	/**
+	 * Protocol transport for LLM requests (P16). Defaults to the OpenAI-compatible
+	 * client over `config`. When injected, the transport owns all protocol details
+	 * (baseUrl, apiKey, wire format); `config` remains the source of the
+	 * model/provider/api labels on partial messages, of contextWindow, and of the
+	 * default-transport fallback. Not hot-swappable mid-session by design —
+	 * switching protocols mid-conversation would break usage/cache semantics.
+	 */
+	transport?: ChatTransport;
 	/** Host platform. Defaults to WinterTC-style globals via defaultPlatform(). */
 	platform?: Platform;
 	systemPrompt?: string;
@@ -154,6 +164,7 @@ export class Agent {
 	readonly messages: AgentMessage[] = [];
 	private readonly platform: Platform;
 	private readonly config: OpenAICompatConfig;
+	private readonly transport: ChatTransport;
 	private readonly systemPrompt: string | undefined;
 	private readonly baseTools: Tool[];
 	private readonly extensions: ExtensionRegistry | undefined;
@@ -189,6 +200,7 @@ export class Agent {
 	constructor(options: AgentOptions) {
 		this.platform = options.platform ?? defaultPlatform();
 		this.config = options.config;
+		this.transport = options.transport ?? createOpenAICompatTransport(this.platform, this.config);
 		this.systemPrompt = options.systemPrompt;
 		this.baseTools = [...(options.tools ?? [])];
 		this.extensions = options.extensions;
@@ -323,6 +335,7 @@ export class Agent {
 	): Promise<AgentRunResult> {
 		const child = new Agent({
 			config: this.config,
+			transport: this.transport,
 			platform: this.platform,
 			systemPrompt: options.systemPrompt ?? this.systemPrompt,
 			tools: options.tools ?? this.baseTools,
@@ -386,8 +399,7 @@ export class Agent {
 			: {};
 		if (decision.cancel) return undefined;
 		const fromExtension = decision.result !== undefined;
-		const result =
-			decision.result ?? (await runCompaction(this.platform, this.config, preparation, customInstructions, signal));
+		const result = decision.result ?? (await runCompaction(this.transport, preparation, customInstructions, signal));
 
 		if (this.session) {
 			await this.session.recordCompaction({ ...result, fromHook: fromExtension || undefined });
@@ -510,8 +522,9 @@ export class Agent {
 		let summaryDetails = hook.summary?.details;
 		if (!summaryText && options?.summarize !== false && entries.length > 0) {
 			try {
-				const generated = await generateBranchSummary(this.platform, this.config, entries, {
+				const generated = await generateBranchSummary(this.transport, entries, {
 					customInstructions: hook.customInstructions ?? options?.customInstructions,
+					contextWindow: this.config.contextWindow,
 					signal: options?.signal,
 				});
 				summaryText = generated.summary;
@@ -632,7 +645,7 @@ export class Agent {
 			const partial: AssistantMessage = {
 				role: "assistant",
 				content: [],
-				api: OPENAI_COMPLETIONS_API,
+				api: this.config.api ?? OPENAI_COMPLETIONS_API,
 				provider: this.config.provider ?? "openai-compat",
 				model: this.config.model,
 				usage: emptyUsage(),
@@ -644,8 +657,9 @@ export class Agent {
 			let assistantMessage: AssistantMessage | undefined;
 			let streamFailure: TauError | undefined;
 			const tools = this.currentTools();
-			const stream = streamChatCompletion(this.platform, this.config, request, {
+			const stream = this.transport({
 				systemPrompt: systemPrompt === "" ? undefined : systemPrompt,
+				messages: request,
 				tools: tools.size > 0 ? [...tools.values()] : undefined,
 				signal,
 			});

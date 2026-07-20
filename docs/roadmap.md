@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-19（P15 完成：权限与审批系统——policy.ts 档位矩阵 + Agent 审批门 + 三笔安全债还清，记 D20；当前工作 = P16 协议适配扩展层）
+> 最后更新：2026-07-20（P16 完成：ChatTransport 注入缝 + `@yophon/tau-ext-provider-anthropic`，记 D21；当前工作 = P17 验证矩阵收窄）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -156,11 +156,13 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录（2026-07-19）**：177 测试全绿（+30：policy 矩阵/保护路径/危险模式 9、validateToolArgs 4、Agent 审批门集成 11、digestDirectory 2、CLI e2e 4）；smoke:tui 新增 approval gate（Allow once/Always allow/Deny 三路径 + permissions.json 跨进程持久化）与 trust digest（同内容不重问/改内容重问）双场景，八场景全过。内核：`policy.ts`（矩阵 + `createDefaultPolicy` 静态规则 + risk 自声明，内置名不可降级）、Agent 审批门（`tool_call` 钩子后：validateToolArgs → 策略评估 → ask 走审批、abort 计为拒绝、deny 不断循环、子 agent 继承权限栈）、`createCodingTools` read-only 过滤（写类工具不上 wire）、`registerTool(tool, { risk? })`。宿主：host-node `digestDirectory`（sha256，跳 dotfiles/node_modules）；CLI `--permission-mode`/`TAU_PERMISSION_MODE`（flag 非法即退出、env 非法警告降级）、trust.json digest 校验（布尔旧条目补算不重问、内容变更重询）、`~/.tau/permissions.json`"总是允许"按 `(tool, 规则指纹)` 持久化、REPL `[y]/[a]/[N]` 审批、TUI 三选项 select + footer `mode` 段；guard demo 改写为"策略之上的 house rules 示例"。**破坏性变更**：CLI/TUI 默认档从等效 bypass 变 supervised（CHANGELOG/README 已醒目说明；e2e/smoke 基建显式声明 autonomous 保持既有场景语义）。与规格偏差：无（规格内两处草拟期笔误已在确认时修正：digest 归属层 host-node→CLI 宿主层、决策编号 D19→D20）。
 
-## Phase 16 ⬜ 协议适配扩展层（ChatTransport 缝 + Anthropic 扩展）
+## Phase 16 ✅ 协议适配扩展层（ChatTransport 缝 + Anthropic 扩展）（2026-07-20）
 
-规格书：[specs/phase-16-provider-transport.md](specs/phase-16-provider-transport.md)（草拟，待确认）。
+规格书：[specs/phase-16-provider-transport.md](specs/phase-16-provider-transport.md)（已完成；两个开放问题经用户授权按规格倾向裁决——CompactionConfig 持 transport + 显式 contextWindow、显式 `--provider` flag 不嗅探）。
 
-兑现 D3 预留口子（"扩展/插件层协议适配，不进内核"）：内核开 `ChatTransport` 注入缝（默认 = 现 OpenAI 兼容客户端，零行为变化），新包 `@yophon/tau-ext-provider-anthropic` 纯 Platform 实现 Anthropic Messages（复用 SseParser，抄协议不抄 SDK，ext-mcp-http 同路线）。直接收益：thinking 原生流式、cache_control 显式缓存、**tool_result 图片不再降级 `[image omitted]`**、usage cacheRead/cacheWrite 真值（与 P14 pricing 组合出真实成本）。D13 消息形状对齐 pi 的红利在此兑现——转换逻辑大量照抄 pi anthropic provider。
+兑现 D3 预留口子：内核开 `ChatTransport` 注入缝（`AgentOptions.transport`，缺省 = 现 OpenAI 兼容客户端包装，零行为变化；对话/压缩/分支摘要全部走缝；子 agent 继承；不做运行中热换——偏离 pi registerProvider 的理由记 **D21**）。新包 `@yophon/tau-ext-provider-anthropic`：纯 Platform 手写 Anthropic Messages 流式协议（协议锁 2023-06-01，复用内核 SseParser/withStallTimeout，ext-mcp-http 同路线），消息/事件/stop_reason/usage 映射照抄 pi anthropic-messages.ts + transform-messages.ts（D13 红利兑现）。收益落袋：thinking 原生流式（signature 回传 + redacted）、`cache_control` auto 打点（pi 落点）、**tool_result 图片 base64 上 wire**（本路径消除 `[image omitted]`）、usage cacheRead/cacheWrite 真值（与 P14 pricing 组合出真实成本）。内核配套：`ThinkingContent` 补 pi 的 `thinkingSignature`/`redacted`、`OpenAICompatConfig.api`、`TransportRequest.maxTokens`（摘要上限协议中立）、summary framing 常量与 `withStallTimeout` 导出；**破坏性变更**：`runCompaction`/`generateSummary`/`completeText`/`generateBranchSummary` 签名改收 transport（经 Agent 的调用方无感）。CLI：`--provider anthropic`/`TAU_PROVIDER`（flag 非法即退出、env 警告降级），anthropic 下 base-url 可选、必须有 key、`/model` 双 config 同步、`/thinking` 按 pi 默认表映射 budgetTokens。纯度门禁扩面：纯 Platform 扩展包（ext-mcp-http、ext-provider-anthropic）纳入同款静态扫描 + neutral 打包（仅内核 external）。
+
+**完成记录（2026-07-20）**：202 测试全绿（+25：内核 transport 缝 4——fake transport 两轮工具循环/压缩走缝/失败语义/maxTokens 透传；ext 单测 17——thinking 流式与 signature、tool_use 累积 parse、CJK 跨 chunk、redacted、stop_reason 全映射、HTTP/SSE error/截断三失败路径、tool_result 图片 wire 断言、cache_control 落点、thinking clamp、transform 全路径、Agent 集成两轮回路；CLI e2e 4——真 CLI 全链路中文流式+工具+协议头断言、**同一 pi v3 会话文件 openai→anthropic→openai 三轮跨协议续写**、5xx 重试恢复+无重试 error 终态、flag/key 校验）。`npm run build` 11 包出 dist 正常。与规格偏差：无；规格草拟期的 cache_control 注释（"倒数第二条 user"）与风险条款（"抄 pi 落点"）矛盾，按风险条款修正为 pi 落点（末条 user）。真实端点手工验收（Anthropic API key）待用户执行后勾销。
 
 ## Phase 17 ⬜ 验证矩阵收窄
 
@@ -176,7 +178,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 ## 未排期（Backlog）
 
-> P0–P15 全部 ✅；**当前工作 = P16**（P16–P18 已排期，见上；每阶段动工前规格书需经用户确认）。本表为未排期候选。
+> P0–P16 全部 ✅；**当前工作 = P17**（P17–P18 已排期，见上；每阶段动工前规格书需经用户确认）。本表为未排期候选。
 >
 > 原 A 组两项已消化（2026-07-17）：ext-mcp-http 发版随 v0.1.1 完成（2026-07-16，npm 实测 0.1.1 可装）；Android UI 补验并入 P17。
 

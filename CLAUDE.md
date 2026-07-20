@@ -1,6 +1,6 @@
 # tau
 
-运行时无关的 coding agent 内核（纯 ECMAScript + 注入式 Platform 缝隙），能力全部插件化。BYOK only，OpenAI 兼容协议 only。设计大量照抄 pi（`../pi`，MIT）。
+运行时无关的 coding agent 内核（纯 ECMAScript + 注入式 Platform 缝隙），能力全部插件化。BYOK only；内核内置 OpenAI 兼容协议，其他协议经 ChatTransport 扩展层（D21）。设计大量照抄 pi（`../pi`，MIT）。
 
 ## 新会话必读（按序）
 

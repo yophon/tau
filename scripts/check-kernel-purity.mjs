@@ -1,12 +1,21 @@
 // Kernel purity gate: @yophon/tau-kernel must bundle for a neutral platform with no
 // external imports, and its sources must not reference host globals. Anything
 // beyond ECMAScript must flow through the Platform seam.
+// Pure-Platform extension packages (ext-mcp-http, ext-provider-anthropic) run
+// under the same gate: identical source scan, neutral bundle with only the
+// kernel left external.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { build } from "esbuild";
 
 const root = new URL("..", import.meta.url).pathname;
-const kernelSrc = join(root, "packages/kernel/src");
+
+// dir (under packages/), entry, and externals allowed in the neutral bundle.
+const PURE_PACKAGES = [
+	{ dir: "kernel", external: [] },
+	{ dir: "ext-mcp-http", external: ["@yophon/tau-kernel"] },
+	{ dir: "ext-provider-anthropic", external: ["@yophon/tau-kernel"] },
+];
 
 const BANNED_PATTERNS = [
 	{ pattern: /from\s+["']node:/, reason: "node: builtin import" },
@@ -17,7 +26,7 @@ const BANNED_PATTERNS = [
 	{ pattern: /\bimport\s*\(/, reason: "dynamic import" },
 ];
 
-// Globals outside the Platform seam that the kernel may not touch directly.
+// Globals outside the Platform seam that pure packages may not touch directly.
 // TextDecoder/fetch/crypto are allowed ONLY in platform.ts (the seam itself).
 const SEAM_ONLY_PATTERNS = [
 	{ pattern: /(?<!\.)\bfetch\s*\(/, reason: "direct fetch call (use Platform.fetch)" },
@@ -37,42 +46,47 @@ function listTsFiles(dir) {
 }
 
 const violations = [];
-for (const file of listTsFiles(kernelSrc)) {
-	const text = readFileSync(file, "utf8");
-	const relPath = relative(root, file);
-	const isSeam = relPath.endsWith("platform.ts");
-	const lines = text.split("\n");
-	for (const { pattern, reason } of [...BANNED_PATTERNS, ...(isSeam ? [] : SEAM_ONLY_PATTERNS)]) {
-		lines.forEach((line, i) => {
-			if (pattern.test(line)) violations.push(`${relPath}:${i + 1}: ${reason}\n    ${line.trim()}`);
-		});
+for (const { dir } of PURE_PACKAGES) {
+	for (const file of listTsFiles(join(root, "packages", dir, "src"))) {
+		const text = readFileSync(file, "utf8");
+		const relPath = relative(root, file);
+		const isSeam = relPath.endsWith("platform.ts");
+		const lines = text.split("\n");
+		for (const { pattern, reason } of [...BANNED_PATTERNS, ...(isSeam ? [] : SEAM_ONLY_PATTERNS)]) {
+			lines.forEach((line, i) => {
+				if (pattern.test(line)) violations.push(`${relPath}:${i + 1}: ${reason}\n    ${line.trim()}`);
+			});
+		}
 	}
 }
 
 if (violations.length > 0) {
-	console.error("Kernel purity violations:\n");
+	console.error("Purity violations:\n");
 	for (const violation of violations) console.error(`  ${violation}`);
 	process.exit(1);
 }
 
-try {
-	await build({
-		entryPoints: [join(kernelSrc, "index.ts")],
-		bundle: true,
-		platform: "neutral",
-		format: "esm",
-		write: false,
-		logLevel: "silent",
-	});
-} catch (error) {
-	console.error("Kernel failed to bundle for a neutral platform:\n");
-	const errors = error && typeof error === "object" && Array.isArray(error.errors) ? error.errors : [];
-	for (const entry of errors) {
-		const location = entry.location ? `${entry.location.file}:${entry.location.line}` : "";
-		console.error(`  ${[location, entry.text].filter(Boolean).join(" ")}`);
+for (const { dir, external } of PURE_PACKAGES) {
+	try {
+		await build({
+			entryPoints: [join(root, "packages", dir, "src", "index.ts")],
+			bundle: true,
+			platform: "neutral",
+			format: "esm",
+			external,
+			write: false,
+			logLevel: "silent",
+		});
+	} catch (error) {
+		console.error(`packages/${dir} failed to bundle for a neutral platform:\n`);
+		const errors = error && typeof error === "object" && Array.isArray(error.errors) ? error.errors : [];
+		for (const entry of errors) {
+			const location = entry.location ? `${entry.location.file}:${entry.location.line}` : "";
+			console.error(`  ${[location, entry.text].filter(Boolean).join(" ")}`);
+		}
+		if (errors.length === 0) console.error(error);
+		process.exit(1);
 	}
-	if (errors.length === 0) console.error(error);
-	process.exit(1);
 }
 
-console.log("Kernel purity check passed.");
+console.log(`Purity check passed (${PURE_PACKAGES.map(({ dir }) => dir).join(", ")}).`);

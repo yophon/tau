@@ -3,10 +3,17 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import {
+	ANTHROPIC_DEFAULT_BASE_URL,
+	ANTHROPIC_MESSAGES_API,
+	type AnthropicTransportConfig,
+	createAnthropicTransport,
+} from "@yophon/tau-ext-provider-anthropic";
 import { digestDirectory, loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@yophon/tau-host-node";
 import {
 	Agent,
 	type ApprovalRequest,
+	type ChatTransport,
 	createCodingTools,
 	defaultPlatform,
 	ExtensionRegistry,
@@ -30,9 +37,14 @@ const USAGE = `tau - minimal OpenAI-compatible coding agent
 Usage: tau [options] [-p "prompt"]
 
 Options:
-  -b, --base-url <url>   API base URL (env: TAU_BASE_URL, OPENAI_BASE_URL)
+  -b, --base-url <url>   API base URL (env: TAU_BASE_URL, OPENAI_BASE_URL;
+                         optional with --provider anthropic)
   -k, --api-key <key>    API key (env: TAU_API_KEY, OPENAI_API_KEY)
   -m, --model <model>    Model id (env: TAU_MODEL)
+      --provider <name>  Wire protocol: openai (default) | anthropic
+                         (env: TAU_PROVIDER). anthropic speaks the Anthropic
+                         Messages API: native thinking, prompt caching, images
+                         in tool results.
       --models <list>    Comma-separated TUI model selector candidates (env: TAU_MODELS)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
@@ -69,6 +81,7 @@ interface CliOptions {
 	baseUrl?: string;
 	apiKey?: string;
 	model?: string;
+	provider?: ProviderKind;
 	models?: string[];
 	system?: string;
 	print?: string;
@@ -109,6 +122,15 @@ function parseArgs(argv: string[]): CliOptions {
 			case "--model":
 				options.model = next();
 				break;
+			case "--provider": {
+				const value = next();
+				if (!isProvider(value)) {
+					console.error(`--provider must be one of: ${PROVIDERS.join(", ")}`);
+					process.exit(1);
+				}
+				options.provider = value;
+				break;
+			}
 			case "--models":
 				options.models = splitList(next());
 				break;
@@ -210,6 +232,30 @@ const PERMISSION_MODES: readonly PermissionMode[] = ["read-only", "supervised", 
 
 function isPermissionMode(value: string): value is PermissionMode {
 	return (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+const PROVIDERS = ["openai", "anthropic"] as const;
+type ProviderKind = (typeof PROVIDERS)[number];
+
+function isProvider(value: string): value is ProviderKind {
+	return (PROVIDERS as readonly string[]).includes(value);
+}
+
+/**
+ * pi's default thinking budgets (simple-options.ts), mapping the shared
+ * /thinking levels onto Anthropic budget tokens; xhigh clamps to high.
+ */
+const ANTHROPIC_THINKING_BUDGETS: Partial<Record<ThinkingLevel, number>> = {
+	minimal: 1024,
+	low: 2048,
+	medium: 8192,
+	high: 16384,
+	xhigh: 16384,
+};
+
+function setAnthropicThinking(config: AnthropicTransportConfig, level: ThinkingLevel | undefined): void {
+	const budget = level === undefined || level === "none" ? undefined : ANTHROPIC_THINKING_BUDGETS[level];
+	config.thinking = budget === undefined ? undefined : { budgetTokens: budget };
 }
 
 // ---------------------------------------------------------------------------
@@ -577,9 +623,21 @@ async function main(): Promise<void> {
 	const baseUrl = options.baseUrl ?? process.env.TAU_BASE_URL ?? process.env.OPENAI_BASE_URL;
 	const apiKey = options.apiKey ?? process.env.TAU_API_KEY ?? process.env.OPENAI_API_KEY;
 	const model = options.model ?? process.env.TAU_MODEL;
-	if (!baseUrl || !model) {
+	let provider = options.provider;
+	if (!provider && process.env.TAU_PROVIDER) {
+		const value = process.env.TAU_PROVIDER;
+		if (isProvider(value)) provider = value;
+		else console.error(`Ignoring TAU_PROVIDER="${value}" (expected one of: ${PROVIDERS.join(", ")})`);
+	}
+	provider ??= "openai";
+	// anthropic has a well-known default endpoint; the OpenAI-compatible world does not.
+	if (!model || (provider === "openai" && !baseUrl)) {
 		console.error("Missing --base-url and/or --model (or TAU_BASE_URL / TAU_MODEL env vars).\n");
 		console.error(USAGE);
+		process.exit(1);
+	}
+	if (provider === "anthropic" && !apiKey) {
+		console.error("--provider anthropic requires an API key (--api-key or TAU_API_KEY).");
 		process.exit(1);
 	}
 
@@ -587,13 +645,28 @@ async function main(): Promise<void> {
 	const contextWindow = options.contextWindow ?? (Number.isFinite(envWindow) && envWindow > 0 ? envWindow : undefined);
 	const modelChoices = uniqueStrings([model, ...(options.models ?? []), ...splitList(process.env.TAU_MODELS)]);
 	const envStall = Number.parseInt(process.env.TAU_STALL_TIMEOUT_MS ?? "", 10);
+	const stallTimeout = Number.isFinite(envStall) && envStall >= 0 ? { stallTimeoutMs: envStall } : {};
+	const effectiveBaseUrl = baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL;
+	// With an injected transport the config's protocol fields are inert; it still
+	// carries the message labels (provider/api/model) and contextWindow.
 	const config: OpenAICompatConfig = {
-		baseUrl,
+		baseUrl: effectiveBaseUrl,
 		apiKey,
 		model,
 		contextWindow,
-		...(Number.isFinite(envStall) && envStall >= 0 ? { stallTimeoutMs: envStall } : {}),
+		...(provider === "anthropic" ? { provider: "anthropic", api: ANTHROPIC_MESSAGES_API } : {}),
+		...stallTimeout,
 	};
+	const anthropicConfig: AnthropicTransportConfig | undefined =
+		provider === "anthropic"
+			? {
+					// The required-key gate above ran already; assert for the type system.
+					apiKey: apiKey as string,
+					model,
+					...(baseUrl !== undefined ? { baseUrl } : {}),
+					...stallTimeout,
+				}
+			: undefined;
 	let pricing = options.pricing;
 	if (!pricing && process.env.TAU_PRICING) {
 		const parsed = parsePricing(process.env.TAU_PRICING);
@@ -645,6 +718,9 @@ async function main(): Promise<void> {
 	};
 
 	const platform = defaultPlatform();
+	const transport: ChatTransport | undefined = anthropicConfig
+		? createAnthropicTransport(anthropicConfig, platform)
+		: undefined;
 	const sessionRepo = new JsonlSessionRepo(
 		new NodeFileSystem("/"),
 		platform,
@@ -716,6 +792,7 @@ async function main(): Promise<void> {
 	): Agent =>
 		new Agent({
 			config,
+			transport,
 			platform,
 			systemPrompt: options.system ?? defaultSystemPrompt(cwd),
 			tools: createCodingTools({ fs, shell }, { mode: permissionMode }),
@@ -755,7 +832,7 @@ async function main(): Promise<void> {
 			extensions,
 			model,
 			modelChoices,
-			baseUrl,
+			baseUrl: effectiveBaseUrl,
 			cwd,
 			contextWindow,
 			permissionMode,
@@ -766,9 +843,12 @@ async function main(): Promise<void> {
 			thinkingLevel: thinkingLevelFromExtraBody(config.extraBody),
 			setModel: (nextModel) => {
 				config.model = nextModel;
+				// The transport reads its own config per request; keep both in step.
+				if (anthropicConfig) anthropicConfig.model = nextModel;
 			},
 			setThinkingLevel: (nextLevel) => {
-				setThinkingLevelInConfig(config, nextLevel);
+				if (anthropicConfig) setAnthropicThinking(anthropicConfig, nextLevel);
+				else setThinkingLevelInConfig(config, nextLevel);
 			},
 			setApprovalPrompt: (prompt) => {
 				approvalPromptRef.current = prompt;
@@ -797,8 +877,11 @@ async function main(): Promise<void> {
 		},
 	});
 	const extensionNote = extensions.tools.size + extensions.commands.size > 0 ? " · extensions loaded" : "";
+	const providerNote = provider === "anthropic" ? " · anthropic" : "";
 	console.log(
-		dim(`tau · ${model} @ ${baseUrl} · cwd ${cwd} · ${permissionMode}${extensionNote} · "exit" or Ctrl+D to quit`),
+		dim(
+			`tau · ${model} @ ${effectiveBaseUrl}${providerNote} · cwd ${cwd} · ${permissionMode}${extensionNote} · "exit" or Ctrl+D to quit`,
+		),
 	);
 	// In a TTY, readline intercepts Ctrl+C: abort the running turn if there is
 	// one, otherwise quit the REPL.

@@ -15,18 +15,19 @@ import { SseParser } from "./sse.ts";
 
 // Wire framing for summary messages, verbatim from pi's convertToLlm
 // (packages/agent/src/harness/messages.ts). Both summaries enter context as
-// user messages wrapped in <summary> tags.
-const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
+// user messages wrapped in <summary> tags. Exported so alternative transports
+// (P16) frame summary messages identically.
+export const COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>
 `;
-const COMPACTION_SUMMARY_SUFFIX = `
+export const COMPACTION_SUMMARY_SUFFIX = `
 </summary>`;
-const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
+export const BRANCH_SUMMARY_PREFIX = `The following is a summary of a branch that this conversation came back from:
 
 <summary>
 `;
-const BRANCH_SUMMARY_SUFFIX = `</summary>`;
+export const BRANCH_SUMMARY_SUFFIX = `</summary>`;
 
 export interface OpenAICompatConfig {
 	/** Base URL up to and including the version segment, e.g. "https://api.openai.com/v1". */
@@ -38,6 +39,12 @@ export interface OpenAICompatConfig {
 	contextWindow?: number;
 	/** Provider label recorded on assistant messages (pi's `provider` field). Defaults to "openai-compat". */
 	provider?: string;
+	/**
+	 * API label recorded on assistant messages (pi's `api` field). Defaults to
+	 * "openai-completions"; hosts assembling a non-OpenAI transport (P16) set it
+	 * so mid-stream partial messages carry the right lineage.
+	 */
+	api?: string;
 	/** Extra request headers, merged after the defaults. */
 	headers?: Record<string, string>;
 	/** Extra top-level body fields (temperature, provider-specific knobs, …). */
@@ -182,8 +189,9 @@ const DEFAULT_STALL_TIMEOUT_MS = 120_000;
  * Race a pending step against the stall clock. Losers are always cleaned up:
  * the sleep is aborted when the step wins, and a timed-out step's eventual
  * rejection is marked handled so it cannot become an unhandled rejection.
+ * Exported for alternative transports (P16) so they share the same watchdog.
  */
-async function withStallTimeout<T>(
+export async function withStallTimeout<T>(
 	step: Promise<T>,
 	platform: Platform,
 	stallTimeoutMs: number | undefined,
@@ -226,7 +234,7 @@ export async function* streamChatCompletion(
 	platform: Platform,
 	config: OpenAICompatConfig,
 	messages: AgentMessage[],
-	options?: { systemPrompt?: string; tools?: ToolDefinition[]; signal?: TauAbortSignal },
+	options?: { systemPrompt?: string; tools?: ToolDefinition[]; signal?: TauAbortSignal; maxTokens?: number },
 ): AsyncGenerator<ChatStreamEvent> {
 	throwIfAborted(options?.signal);
 
@@ -235,6 +243,7 @@ export async function* streamChatCompletion(
 		model: config.model,
 		messages: toWireMessages(options?.systemPrompt, messages),
 		stream: true,
+		...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
 		...config.extraBody,
 	};
 	if (config.includeUsage !== false) body.stream_options = { include_usage: true };
@@ -407,7 +416,7 @@ export async function* streamChatCompletion(
 	const message: AssistantMessage = {
 		role: "assistant",
 		content: blocks,
-		api: OPENAI_COMPLETIONS_API,
+		api: config.api ?? OPENAI_COMPLETIONS_API,
 		provider: config.provider ?? "openai-compat",
 		model: config.model,
 		usage: usage ?? emptyUsage(),
@@ -415,4 +424,40 @@ export async function* streamChatCompletion(
 		timestamp: Date.now(),
 	};
 	yield { type: "response_end", message };
+}
+
+// ---------------------------------------------------------------------------
+// Transport seam (P16): the agent loop and summarization speak to the LLM
+// through a single injectable function. The default wraps the OpenAI-compatible
+// client above with zero behavior change; protocol adapters (e.g.
+// @yophon/tau-ext-provider-anthropic) provide their own. A transport owns its
+// protocol config via closure — the kernel never sees baseUrl/apiKey.
+// ---------------------------------------------------------------------------
+
+export interface TransportRequest {
+	systemPrompt?: string;
+	/** Conversation in pi shape (D13); the transport converts to its wire format. */
+	messages: AgentMessage[];
+	tools?: ToolDefinition[];
+	signal?: TauAbortSignal;
+	/** Cap on generated tokens (summarization requests set it); maps to the protocol's own knob. */
+	maxTokens?: number;
+}
+
+/**
+ * Streams one LLM response. Yields the same event union as
+ * streamChatCompletion; failures must be normalized to TauError (D14) so the
+ * agent converts them into stopReason error/aborted messages.
+ */
+export type ChatTransport = (request: TransportRequest) => AsyncGenerator<ChatStreamEvent>;
+
+/** The default transport: the OpenAI-compatible client, verbatim. */
+export function createOpenAICompatTransport(platform: Platform, config: OpenAICompatConfig): ChatTransport {
+	return (request) =>
+		streamChatCompletion(platform, config, request.messages, {
+			systemPrompt: request.systemPrompt,
+			tools: request.tools,
+			signal: request.signal,
+			maxTokens: request.maxTokens,
+		});
 }
