@@ -32,7 +32,10 @@ for (const file of files) {
 				if (!wanted) failures.push(`${relative(root, file)}: ${name}@${spec} (internal deps use ^x.y.z lockstep)`);
 				continue;
 			}
-			if (!EXACT.test(spec)) {
+			// npm alias（如 quickjs-emscripten-legacy → npm:quickjs-emscripten@0.23.0，P17 老引擎载体）：
+			// 剥掉 npm:<name>@ 前缀后按同一精确版本规则校验
+			const version = spec.startsWith("npm:") ? spec.slice(spec.lastIndexOf("@") + 1) : spec;
+			if (!EXACT.test(version)) {
 				failures.push(`${relative(root, file)}: ${section}.${name} = "${spec}" is not an exact version`);
 			}
 		}

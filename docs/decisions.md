@@ -74,7 +74,9 @@ Node 原生 type-stripping **拒绝**处理 `node_modules` 下的 .ts（`ERR_UNS
 
 ## D18：引擎缺口由宿主层补，内核保持干净 ES2022（2026-07-16，P13）
 
-flutter_js 内置的 QuickJS 版本偏旧，缺若干 ES2022+ 内置方法（P13 真机实测确认缺 `Array.prototype.at`——内核 `openai.ts`/`agent.ts` 的流式组装用它，第二轮流式文本才踩中）。抉择：**改内核去掉 `.at()` 等** vs **宿主 bundle 补 polyfill**。选后者——`.at()` 是 ES2022 标准，内核的目标是"纯 ECMAScript 语言标准"，一个落后的嵌入引擎不该反向拉低内核基线；引擎缺口与 Platform 缺口同性质，都由宿主层补齐（`examples/flutter/app/js/polyfills.ts`，内核加载前 guarded 定义，引擎已有则不覆盖）。这与 D4 注入缝隙哲学一致：宿主负责把运行时垫到内核假设的语言基线。代价（已接受）：① 纯度门禁的 `smoke:quickjs` 用 quickjs-emscripten（较新，有 `.at()`），**不完全代表 flutter_js 的老 QuickJS**——真实引擎差异只能靠真机 e2e 兜底（风险 #1）；② 每个裸引擎宿主需自带匹配其引擎的 polyfill 集。若未来内核大量依赖更新的内置，再考虑收紧内核的语言基线声明。
+flutter_js 内置的 QuickJS 版本偏旧，缺若干 ES2022+ 内置方法（P13 真机实测确认缺 `Array.prototype.at`——内核 `openai.ts`/`agent.ts` 的流式组装用它，第二轮流式文本才踩中）。抉择：**改内核去掉 `.at()` 等** vs **宿主 bundle 补 polyfill**。选后者——`.at()` 是 ES2022 标准，内核的目标是"纯 ECMAScript 语言标准"，一个落后的嵌入引擎不该反向拉低内核基线；引擎缺口与 Platform 缺口同性质，都由宿主层补齐（polyfill fixture 在内核加载前 guarded 定义，引擎已有则不覆盖）。这与 D4 注入缝隙哲学一致：宿主负责把运行时垫到内核假设的语言基线。代价（已接受）：① 纯度门禁的 `smoke:quickjs` 用 quickjs-emscripten（较新，有 `.at()`），**不完全代表 flutter_js 的老 QuickJS**——真实引擎差异只能靠真机 e2e 兜底（风险 #1）；② 每个裸引擎宿主需自带匹配其引擎的 polyfill 集。若未来内核大量依赖更新的内置，再考虑收紧内核的语言基线声明。
+
+**P17 补记（2026-07-20）**：风险 #1 已收窄为机械门禁。调研确认 flutter_js 0.8.2 Android 端内嵌 QuickJS 2021-03-27（jitpack `fastdev-jsruntimes-quickjs:0.3.6` 源码证实），而 `quickjs-emscripten@0.23.0` 内嵌同代引擎——`smoke:quickjs:legacy` 以 devDependency alias（`quickjs-emscripten-legacy`）为载体入 CI，三段断言：载体真实性（内置确实缺失，引擎代际漂移即报警）、无 polyfill 预期失败（防门禁空转）、有 polyfill 全绿。polyfill 单源化至 `test-fixtures/quickjs/polyfills.ts`（flutter bundle 与门禁同源引用，grep 断言无副本）。门禁落地时的重要实测发现：裸引擎缺 `.at` **不再表现为崩溃**——P11 的流健壮性改造把流内 TypeError 转成 stopReason error 消息吞掉，症状是 finalText 为空、text_delta 消失的**静默劣化**，比 P13 真机事故时更隐蔽，机械门禁因此更必要。
 
 ## D19：token/成本诚实化的三点偏离（2026-07-17，P14）
 

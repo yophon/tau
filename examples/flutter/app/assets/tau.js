@@ -4,7 +4,7 @@
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-  // js/polyfills.ts
+  // ../../../test-fixtures/quickjs/polyfills.ts
   function define(target, name, value) {
     if (!(name in target)) {
       Object.defineProperty(target, name, { value, writable: true, configurable: true });
@@ -119,6 +119,13 @@
   }
 
   // ../../../packages/kernel/src/messages.ts
+  function computeUsageCost(usage, pricing) {
+    const input = usage.input / 1e6 * pricing.inputPerMTok;
+    const output = usage.output / 1e6 * pricing.outputPerMTok;
+    const cacheRead = pricing.cacheReadPerMTok === void 0 ? 0 : usage.cacheRead / 1e6 * pricing.cacheReadPerMTok;
+    const cacheWrite = pricing.cacheWritePerMTok === void 0 ? 0 : usage.cacheWrite / 1e6 * pricing.cacheWritePerMTok;
+    return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
+  }
   function emptyUsage() {
     return {
       input: 0,
@@ -139,6 +146,632 @@
   }
   function toolCallsOf(message) {
     return message.content.filter((block) => block.type === "toolCall");
+  }
+
+  // ../../../packages/kernel/src/compaction.ts
+  var DEFAULT_COMPACTION_SETTINGS = {
+    enabled: true,
+    reserveTokens: 16384,
+    keepRecentTokens: 2e4
+  };
+  function calculateContextTokens(usage) {
+    return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  }
+  function getAssistantUsage(message) {
+    if (message.role !== "assistant") return void 0;
+    if (message.stopReason === "aborted" || message.stopReason === "error") return void 0;
+    return calculateContextTokens(message.usage) > 0 ? message.usage : void 0;
+  }
+  var ESTIMATED_IMAGE_CHARS = 4800;
+  var ESTIMATED_IMAGE_TOKENS = ESTIMATED_IMAGE_CHARS / 4;
+  function estimateStringTokens(text) {
+    let cjk = 0;
+    let other = 0;
+    for (let i = 0; i < text.length; i++) {
+      const code = text.charCodeAt(i);
+      if (code >= 12288 && code <= 12543 || // CJK punctuation, hiragana, katakana
+      code >= 13312 && code <= 19903 || // CJK extension A
+      code >= 19968 && code <= 40959 || // CJK unified ideographs
+      code >= 44032 && code <= 55215 || // Hangul syllables
+      code >= 63744 && code <= 64255 || // CJK compatibility ideographs
+      code >= 65280 && code <= 65519) {
+        cjk++;
+      } else {
+        other++;
+      }
+    }
+    return cjk + Math.ceil(other / 4);
+  }
+  function contentTokens(content) {
+    if (typeof content === "string") return estimateStringTokens(content);
+    let tokens = 0;
+    for (const block of content) {
+      if (block.type === "text" && block.text) tokens += estimateStringTokens(block.text);
+      else if (block.type === "image") tokens += ESTIMATED_IMAGE_TOKENS;
+    }
+    return tokens;
+  }
+  function safeJsonStringify(value) {
+    try {
+      return JSON.stringify(value) ?? "undefined";
+    } catch {
+      return "[unserializable]";
+    }
+  }
+  function estimateTokens(message) {
+    switch (message.role) {
+      case "user":
+      case "custom":
+      case "toolResult":
+        return contentTokens(message.content);
+      case "assistant": {
+        let tokens = 0;
+        for (const block of message.content) {
+          if (block.type === "text") tokens += estimateStringTokens(block.text);
+          else if (block.type === "thinking") tokens += estimateStringTokens(block.thinking);
+          else if (block.type === "toolCall")
+            tokens += estimateStringTokens(block.name + safeJsonStringify(block.arguments));
+        }
+        return tokens;
+      }
+      case "compactionSummary":
+      case "branchSummary":
+        return estimateStringTokens(message.summary);
+    }
+  }
+  function estimateContextTokens(messages) {
+    let usageInfo;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const usage = getAssistantUsage(messages[i]);
+      if (usage) {
+        usageInfo = { usage, index: i };
+        break;
+      }
+    }
+    if (!usageInfo) {
+      let estimated = 0;
+      for (const message of messages) estimated += estimateTokens(message);
+      return { tokens: estimated, usageTokens: 0, trailingTokens: estimated, lastUsageIndex: null };
+    }
+    const usageTokens = calculateContextTokens(usageInfo.usage);
+    let trailingTokens = 0;
+    for (let i = usageInfo.index + 1; i < messages.length; i++) trailingTokens += estimateTokens(messages[i]);
+    return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageInfo.index };
+  }
+  function shouldCompact(contextTokens, contextWindow, settings) {
+    if (!settings.enabled) return false;
+    return contextTokens > contextWindow - settings.reserveTokens;
+  }
+  function entryMessage(entry) {
+    if (entry.type === "message") return entry.message;
+    if (entry.type === "branch_summary") {
+      return {
+        role: "branchSummary",
+        summary: entry.summary,
+        fromId: entry.fromId,
+        timestamp: Date.parse(entry.timestamp) || 0
+      };
+    }
+    if (entry.type === "custom_message") {
+      return {
+        role: "custom",
+        customType: entry.customType,
+        content: entry.content,
+        display: entry.display,
+        details: entry.details,
+        timestamp: Date.parse(entry.timestamp) || 0
+      };
+    }
+    return void 0;
+  }
+  function findValidCutPoints(entries, startIndex, endIndex) {
+    const cutPoints = [];
+    for (let i = startIndex; i < endIndex; i++) {
+      const entry = entries[i];
+      if (entry.type === "message" && entry.message.role !== "toolResult") cutPoints.push(i);
+      else if (entry.type === "custom_message" || entry.type === "branch_summary") cutPoints.push(i);
+    }
+    return cutPoints;
+  }
+  function findTurnStartIndex(entries, entryIndex, startIndex) {
+    for (let i = entryIndex; i >= startIndex; i--) {
+      const entry = entries[i];
+      if (entry.type === "custom_message" || entry.type === "branch_summary") return i;
+      if (entry.type === "message" && entry.message.role === "user") return i;
+    }
+    return -1;
+  }
+  function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
+    const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
+    if (cutPoints.length === 0) {
+      return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
+    }
+    let accumulatedTokens = 0;
+    let cutIndex = cutPoints[0];
+    for (let i = endIndex - 1; i >= startIndex; i--) {
+      const entry = entries[i];
+      if (entry.type !== "message") continue;
+      accumulatedTokens += estimateTokens(entry.message);
+      if (accumulatedTokens >= keepRecentTokens) {
+        for (const candidate of cutPoints) {
+          if (candidate >= i) {
+            cutIndex = candidate;
+            break;
+          }
+        }
+        break;
+      }
+    }
+    while (cutIndex > startIndex) {
+      const prevEntry = entries[cutIndex - 1];
+      if (prevEntry.type === "compaction" || prevEntry.type === "message") break;
+      cutIndex--;
+    }
+    const cutEntry = entries[cutIndex];
+    const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
+    const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+    return {
+      firstKeptEntryIndex: cutIndex,
+      turnStartIndex,
+      isSplitTurn: !isUserMessage && turnStartIndex !== -1
+    };
+  }
+  var SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
+
+Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
+  var SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
+
+Use this EXACT format:
+
+## Goal
+[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned by user]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Current work]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of what should happen next]
+
+## Critical Context
+- [Any data, examples, or references needed to continue]
+- [Or "(none)" if not applicable]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.
+Preserve all opaque identifiers exactly as written (UUIDs, commit hashes, file paths, URLs, session ids, tokens). Never shorten, reconstruct, or paraphrase them.`;
+  var UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+Update the existing structured summary with new information. RULES:
+- PRESERVE all existing information from the previous summary
+- ADD new progress, decisions, and context from the new messages
+- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
+- UPDATE "Next Steps" based on what was accomplished
+- PRESERVE exact file paths, function names, and error messages
+- If something is no longer relevant, you may remove it
+
+Use this EXACT format:
+
+## Goal
+[Preserve existing goals, add new ones if the task expanded]
+
+## Constraints & Preferences
+- [Preserve existing, add new ones discovered]
+
+## Progress
+### Done
+- [x] [Include previously done items AND newly completed items]
+
+### In Progress
+- [ ] [Current work - update based on progress]
+
+### Blocked
+- [Current blockers - remove if resolved]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale] (preserve all previous, add new)
+
+## Next Steps
+1. [Update based on current state]
+
+## Critical Context
+- [Preserve important context, add new if needed]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.
+Preserve all opaque identifiers exactly as written (UUIDs, commit hashes, file paths, URLs, session ids, tokens). Never shorten, reconstruct, or paraphrase them.`;
+  var TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix.`;
+  var TOOL_RESULT_MAX_CHARS = 2e3;
+  function truncateForSummary(text, maxChars) {
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, maxChars)}
+
+[... ${text.length - maxChars} more characters truncated]`;
+  }
+  function serializeConversation(messages) {
+    const parts = [];
+    for (const message of messages) {
+      switch (message.role) {
+        case "user":
+        case "custom": {
+          const content = messageText(message);
+          if (content) parts.push(`[User]: ${content}`);
+          break;
+        }
+        case "compactionSummary":
+        case "branchSummary":
+          parts.push(`[User]: ${message.summary}`);
+          break;
+        case "assistant": {
+          const textParts = [];
+          const thinkingParts = [];
+          const toolCalls = [];
+          for (const block of message.content) {
+            if (block.type === "text") textParts.push(block.text);
+            else if (block.type === "thinking") thinkingParts.push(block.thinking);
+            else if (block.type === "toolCall") {
+              const argsStr = Object.entries(block.arguments).map(([k, v]) => `${k}=${safeJsonStringify(v)}`).join(", ");
+              toolCalls.push(`${block.name}(${argsStr})`);
+            }
+          }
+          if (thinkingParts.length > 0) parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
+          if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
+          if (toolCalls.length > 0) parts.push(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
+          break;
+        }
+        case "toolResult": {
+          const content = messageText(message);
+          if (content) parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
+          break;
+        }
+      }
+    }
+    return parts.join("\n\n");
+  }
+  function extractFileOpsFromMessage(message, fileOps) {
+    if (message.role !== "assistant") return;
+    for (const block of message.content) {
+      if (block.type !== "toolCall") continue;
+      const path = typeof block.arguments.path === "string" ? block.arguments.path : void 0;
+      if (!path) continue;
+      if (block.name === "read") fileOps.read.add(path);
+      else if (block.name === "write") fileOps.written.add(path);
+      else if (block.name === "edit") fileOps.edited.add(path);
+    }
+  }
+  function computeFileLists(fileOps) {
+    const modified = /* @__PURE__ */ new Set([...fileOps.edited, ...fileOps.written]);
+    const readFiles = [...fileOps.read].filter((f) => !modified.has(f)).sort();
+    return { readFiles, modifiedFiles: [...modified].sort() };
+  }
+  function formatFileOperations(readFiles, modifiedFiles) {
+    const sections = [];
+    if (readFiles.length > 0) sections.push(`<read-files>
+${readFiles.join("\n")}
+</read-files>`);
+    if (modifiedFiles.length > 0) sections.push(`<modified-files>
+${modifiedFiles.join("\n")}
+</modified-files>`);
+    return sections.length === 0 ? "" : `
+
+${sections.join("\n\n")}`;
+  }
+  function prepareCompaction(pathEntries, settings, currentMessages) {
+    if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
+      return void 0;
+    }
+    let prevCompactionIndex = -1;
+    for (let i = pathEntries.length - 1; i >= 0; i--) {
+      if (pathEntries[i].type === "compaction") {
+        prevCompactionIndex = i;
+        break;
+      }
+    }
+    let previousSummary;
+    let boundaryStart = 0;
+    if (prevCompactionIndex >= 0) {
+      const prevCompaction = pathEntries[prevCompactionIndex];
+      if (prevCompaction.type === "compaction") {
+        previousSummary = prevCompaction.summary;
+        const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
+        boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
+      }
+    }
+    const boundaryEnd = pathEntries.length;
+    const tokensBefore = estimateContextTokens(currentMessages).tokens;
+    const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
+    const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
+    if (!firstKeptEntry?.id) return void 0;
+    const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
+    const messagesToSummarize = [];
+    for (let i = boundaryStart; i < historyEnd; i++) {
+      const message = entryMessage(pathEntries[i]);
+      if (message) messagesToSummarize.push(message);
+    }
+    const turnPrefixMessages = [];
+    if (cutPoint.isSplitTurn) {
+      for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
+        const message = entryMessage(pathEntries[i]);
+        if (message) turnPrefixMessages.push(message);
+      }
+    }
+    const fileOps = { read: /* @__PURE__ */ new Set(), written: /* @__PURE__ */ new Set(), edited: /* @__PURE__ */ new Set() };
+    for (const message of messagesToSummarize) extractFileOpsFromMessage(message, fileOps);
+    for (const message of turnPrefixMessages) extractFileOpsFromMessage(message, fileOps);
+    return {
+      firstKeptEntryId: firstKeptEntry.id,
+      messagesToSummarize,
+      turnPrefixMessages,
+      isSplitTurn: cutPoint.isSplitTurn,
+      tokensBefore,
+      previousSummary,
+      fileOps,
+      settings
+    };
+  }
+  async function completeText(transport, systemPrompt, promptText, maxTokens, signal) {
+    const stream = transport({
+      systemPrompt,
+      messages: [{ role: "user", content: promptText, timestamp: Date.now() }],
+      maxTokens,
+      signal
+    });
+    let final;
+    for await (const event of stream) {
+      if (event.type === "response_end") final = event.message;
+    }
+    if (!final) throw new TauError("compaction_failed", "Summarization returned no message");
+    return messageText(final);
+  }
+  async function generateSummary(transport, messages, options) {
+    const maxTokens = Math.floor(0.8 * options.reserveTokens);
+    let basePrompt = options.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
+    if (options.customInstructions) {
+      basePrompt = `${basePrompt}
+
+Additional focus: ${options.customInstructions}`;
+    }
+    let promptText = `<conversation>
+${serializeConversation(messages)}
+</conversation>
+
+`;
+    if (options.previousSummary) {
+      promptText += `<previous-summary>
+${options.previousSummary}
+</previous-summary>
+
+`;
+    }
+    promptText += basePrompt;
+    return completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal);
+  }
+  async function runCompaction(transport, preparation, customInstructions, signal) {
+    const { settings, previousSummary } = preparation;
+    let summary;
+    if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
+      const historySummary = preparation.messagesToSummarize.length > 0 ? await generateSummary(transport, preparation.messagesToSummarize, {
+        reserveTokens: settings.reserveTokens,
+        customInstructions,
+        previousSummary,
+        signal
+      }) : "No prior history.";
+      const prefixPrompt = `<conversation>
+${serializeConversation(preparation.turnPrefixMessages)}
+</conversation>
+
+${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+      const turnPrefixSummary = await completeText(
+        transport,
+        SUMMARIZATION_SYSTEM_PROMPT,
+        prefixPrompt,
+        Math.floor(0.5 * settings.reserveTokens),
+        signal
+      );
+      summary = `${historySummary}
+
+---
+
+**Turn Context (split turn):**
+
+${turnPrefixSummary}`;
+    } else {
+      summary = await generateSummary(transport, preparation.messagesToSummarize, {
+        reserveTokens: settings.reserveTokens,
+        customInstructions,
+        previousSummary,
+        signal
+      });
+    }
+    const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
+    summary += formatFileOperations(readFiles, modifiedFiles);
+    return {
+      summary,
+      firstKeptEntryId: preparation.firstKeptEntryId,
+      tokensBefore: preparation.tokensBefore,
+      details: { readFiles, modifiedFiles }
+    };
+  }
+
+  // ../../../packages/kernel/src/branch.ts
+  async function collectEntriesForBranchSummary(store, oldLeafId, targetId) {
+    if (!oldLeafId) {
+      return { entries: [], commonAncestorId: null };
+    }
+    const oldPath = new Set((await store.getPathToRoot(oldLeafId)).map((entry) => entry.id));
+    const targetPath = await store.getPathToRoot(targetId);
+    let commonAncestorId = null;
+    for (let i = targetPath.length - 1; i >= 0; i--) {
+      if (oldPath.has(targetPath[i].id)) {
+        commonAncestorId = targetPath[i].id;
+        break;
+      }
+    }
+    const entries = [];
+    let current = oldLeafId;
+    while (current && current !== commonAncestorId) {
+      const entry = await store.getEntry(current);
+      if (!entry) throw new SessionError("invalid_session", `Entry ${current} not found`);
+      entries.push(entry);
+      current = entry.parentId;
+    }
+    entries.reverse();
+    return { entries, commonAncestorId };
+  }
+  function getMessageFromEntry(entry) {
+    switch (entry.type) {
+      case "message":
+        if (entry.message.role === "toolResult") return void 0;
+        return entry.message;
+      case "custom_message":
+        return {
+          role: "custom",
+          customType: entry.customType,
+          content: entry.content,
+          display: entry.display,
+          details: entry.details,
+          timestamp: Date.parse(entry.timestamp) || 0
+        };
+      case "branch_summary":
+        return {
+          role: "branchSummary",
+          summary: entry.summary,
+          fromId: entry.fromId,
+          timestamp: Date.parse(entry.timestamp) || 0
+        };
+      case "compaction":
+        return {
+          role: "compactionSummary",
+          summary: entry.summary,
+          tokensBefore: entry.tokensBefore,
+          timestamp: Date.parse(entry.timestamp) || 0
+        };
+      case "custom":
+      case "session_info":
+      case "leaf":
+        return void 0;
+    }
+  }
+  function prepareBranchEntries(entries, tokenBudget = 0) {
+    const messages = [];
+    const fileOps = { read: /* @__PURE__ */ new Set(), written: /* @__PURE__ */ new Set(), edited: /* @__PURE__ */ new Set() };
+    let totalTokens = 0;
+    for (const entry of entries) {
+      if (entry.type === "branch_summary" && !entry.fromHook && entry.details) {
+        const details = entry.details;
+        if (Array.isArray(details.readFiles)) {
+          for (const file of details.readFiles) fileOps.read.add(file);
+        }
+        if (Array.isArray(details.modifiedFiles)) {
+          for (const file of details.modifiedFiles) fileOps.edited.add(file);
+        }
+      }
+    }
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      const message = getMessageFromEntry(entry);
+      if (!message) continue;
+      extractFileOpsFromMessage(message, fileOps);
+      const tokens = estimateTokens(message);
+      if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
+        if (entry.type === "compaction" || entry.type === "branch_summary") {
+          if (totalTokens < tokenBudget * 0.9) {
+            messages.unshift(message);
+            totalTokens += tokens;
+          }
+        }
+        break;
+      }
+      messages.unshift(message);
+      totalTokens += tokens;
+    }
+    return { messages, fileOps, totalTokens };
+  }
+  var BRANCH_SUMMARY_PREAMBLE = `The user explored a different conversation branch before returning here.
+Summary of that exploration:
+
+`;
+  var BRANCH_SUMMARY_PROMPT = `Create a structured summary of this conversation branch for context when returning later.
+
+Use this EXACT format:
+
+## Goal
+[What was the user trying to accomplish in this branch?]
+
+## Constraints & Preferences
+- [Any constraints, preferences, or requirements mentioned]
+- [Or "(none)" if none were mentioned]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes]
+
+### In Progress
+- [ ] [Work that was started but not finished]
+
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [What should happen next to continue this work]
+
+Keep each section concise. Preserve exact file paths, function names, and error messages.`;
+  async function generateBranchSummary(transport, entries, options) {
+    const reserveTokens = options?.reserveTokens ?? 16384;
+    const contextWindow = options?.contextWindow || 128e3;
+    const tokenBudget = contextWindow - reserveTokens;
+    const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget);
+    if (messages.length === 0) {
+      return { summary: "No content to summarize", readFiles: [], modifiedFiles: [] };
+    }
+    const conversationText = serializeConversation(messages);
+    let instructions;
+    if (options?.replaceInstructions && options.customInstructions) {
+      instructions = options.customInstructions;
+    } else if (options?.customInstructions) {
+      instructions = `${BRANCH_SUMMARY_PROMPT}
+
+Additional focus: ${options.customInstructions}`;
+    } else {
+      instructions = BRANCH_SUMMARY_PROMPT;
+    }
+    const promptText = `<conversation>
+${conversationText}
+</conversation>
+
+${instructions}`;
+    let summary = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
+    summary = BRANCH_SUMMARY_PREAMBLE + summary;
+    const { readFiles, modifiedFiles } = computeFileLists(fileOps);
+    summary += formatFileOperations(readFiles, modifiedFiles);
+    return { summary: summary || "No summary generated", readFiles, modifiedFiles };
   }
 
   // ../../../packages/kernel/src/sse.ts
@@ -314,6 +947,7 @@
       model: config.model,
       messages: toWireMessages(options?.systemPrompt, messages),
       stream: true,
+      ...options?.maxTokens !== void 0 ? { max_tokens: options.maxTokens } : {},
       ...config.extraBody
     };
     if (config.includeUsage !== false) body.stream_options = { include_usage: true };
@@ -467,7 +1101,7 @@
     const message = {
       role: "assistant",
       content: blocks,
-      api: OPENAI_COMPLETIONS_API,
+      api: config.api ?? OPENAI_COMPLETIONS_API,
       provider: config.provider ?? "openai-compat",
       model: config.model,
       usage: usage ?? emptyUsage(),
@@ -476,612 +1110,13 @@
     };
     yield { type: "response_end", message };
   }
-
-  // ../../../packages/kernel/src/compaction.ts
-  var DEFAULT_COMPACTION_SETTINGS = {
-    enabled: true,
-    reserveTokens: 16384,
-    keepRecentTokens: 2e4
-  };
-  function calculateContextTokens(usage) {
-    return usage.totalTokens || usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  }
-  function getAssistantUsage(message) {
-    if (message.role !== "assistant") return void 0;
-    if (message.stopReason === "aborted" || message.stopReason === "error") return void 0;
-    return calculateContextTokens(message.usage) > 0 ? message.usage : void 0;
-  }
-  var ESTIMATED_IMAGE_CHARS = 4800;
-  function contentChars(content) {
-    if (typeof content === "string") return content.length;
-    let chars = 0;
-    for (const block of content) {
-      if (block.type === "text" && block.text) chars += block.text.length;
-      else if (block.type === "image") chars += ESTIMATED_IMAGE_CHARS;
-    }
-    return chars;
-  }
-  function safeJsonStringify(value) {
-    try {
-      return JSON.stringify(value) ?? "undefined";
-    } catch {
-      return "[unserializable]";
-    }
-  }
-  function estimateTokens(message) {
-    let chars = 0;
-    switch (message.role) {
-      case "user":
-      case "custom":
-      case "toolResult":
-        chars = contentChars(message.content);
-        break;
-      case "assistant":
-        for (const block of message.content) {
-          if (block.type === "text") chars += block.text.length;
-          else if (block.type === "thinking") chars += block.thinking.length;
-          else if (block.type === "toolCall") chars += block.name.length + safeJsonStringify(block.arguments).length;
-        }
-        break;
-      case "compactionSummary":
-      case "branchSummary":
-        chars = message.summary.length;
-        break;
-    }
-    return Math.ceil(chars / 4);
-  }
-  function estimateContextTokens(messages) {
-    let usageInfo;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const usage = getAssistantUsage(messages[i]);
-      if (usage) {
-        usageInfo = { usage, index: i };
-        break;
-      }
-    }
-    if (!usageInfo) {
-      let estimated = 0;
-      for (const message of messages) estimated += estimateTokens(message);
-      return { tokens: estimated, usageTokens: 0, trailingTokens: estimated, lastUsageIndex: null };
-    }
-    const usageTokens = calculateContextTokens(usageInfo.usage);
-    let trailingTokens = 0;
-    for (let i = usageInfo.index + 1; i < messages.length; i++) trailingTokens += estimateTokens(messages[i]);
-    return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageInfo.index };
-  }
-  function shouldCompact(contextTokens, contextWindow, settings) {
-    if (!settings.enabled) return false;
-    return contextTokens > contextWindow - settings.reserveTokens;
-  }
-  function entryMessage(entry) {
-    if (entry.type === "message") return entry.message;
-    if (entry.type === "branch_summary") {
-      return {
-        role: "branchSummary",
-        summary: entry.summary,
-        fromId: entry.fromId,
-        timestamp: Date.parse(entry.timestamp) || 0
-      };
-    }
-    if (entry.type === "custom_message") {
-      return {
-        role: "custom",
-        customType: entry.customType,
-        content: entry.content,
-        display: entry.display,
-        details: entry.details,
-        timestamp: Date.parse(entry.timestamp) || 0
-      };
-    }
-    return void 0;
-  }
-  function findValidCutPoints(entries, startIndex, endIndex) {
-    const cutPoints = [];
-    for (let i = startIndex; i < endIndex; i++) {
-      const entry = entries[i];
-      if (entry.type === "message" && entry.message.role !== "toolResult") cutPoints.push(i);
-      else if (entry.type === "custom_message" || entry.type === "branch_summary") cutPoints.push(i);
-    }
-    return cutPoints;
-  }
-  function findTurnStartIndex(entries, entryIndex, startIndex) {
-    for (let i = entryIndex; i >= startIndex; i--) {
-      const entry = entries[i];
-      if (entry.type === "custom_message" || entry.type === "branch_summary") return i;
-      if (entry.type === "message" && entry.message.role === "user") return i;
-    }
-    return -1;
-  }
-  function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
-    const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
-    if (cutPoints.length === 0) {
-      return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
-    }
-    let accumulatedTokens = 0;
-    let cutIndex = cutPoints[0];
-    for (let i = endIndex - 1; i >= startIndex; i--) {
-      const entry = entries[i];
-      if (entry.type !== "message") continue;
-      accumulatedTokens += estimateTokens(entry.message);
-      if (accumulatedTokens >= keepRecentTokens) {
-        for (const candidate of cutPoints) {
-          if (candidate >= i) {
-            cutIndex = candidate;
-            break;
-          }
-        }
-        break;
-      }
-    }
-    while (cutIndex > startIndex) {
-      const prevEntry = entries[cutIndex - 1];
-      if (prevEntry.type === "compaction" || prevEntry.type === "message") break;
-      cutIndex--;
-    }
-    const cutEntry = entries[cutIndex];
-    const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
-    const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
-    return {
-      firstKeptEntryIndex: cutIndex,
-      turnStartIndex,
-      isSplitTurn: !isUserMessage && turnStartIndex !== -1
-    };
-  }
-  var SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
-
-Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.`;
-  var SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.
-
-Use this EXACT format:
-
-## Goal
-[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]
-
-## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned by user]
-- [Or "(none)" if none were mentioned]
-
-## Progress
-### Done
-- [x] [Completed tasks/changes]
-
-### In Progress
-- [ ] [Current work]
-
-### Blocked
-- [Issues preventing progress, if any]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale]
-
-## Next Steps
-1. [Ordered list of what should happen next]
-
-## Critical Context
-- [Any data, examples, or references needed to continue]
-- [Or "(none)" if not applicable]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-  var UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing structured summary with new information. RULES:
-- PRESERVE all existing information from the previous summary
-- ADD new progress, decisions, and context from the new messages
-- UPDATE the Progress section: move items from "In Progress" to "Done" when completed
-- UPDATE "Next Steps" based on what was accomplished
-- PRESERVE exact file paths, function names, and error messages
-- If something is no longer relevant, you may remove it
-
-Use this EXACT format:
-
-## Goal
-[Preserve existing goals, add new ones if the task expanded]
-
-## Constraints & Preferences
-- [Preserve existing, add new ones discovered]
-
-## Progress
-### Done
-- [x] [Include previously done items AND newly completed items]
-
-### In Progress
-- [ ] [Current work - update based on progress]
-
-### Blocked
-- [Current blockers - remove if resolved]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale] (preserve all previous, add new)
-
-## Next Steps
-1. [Update based on current state]
-
-## Critical Context
-- [Preserve important context, add new if needed]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-  var TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
-
-Summarize the prefix to provide context for the retained suffix:
-
-## Original Request
-[What did the user ask for in this turn?]
-
-## Early Progress
-- [Key decisions and work done in the prefix]
-
-## Context for Suffix
-- [Information needed to understand the retained recent work]
-
-Be concise. Focus on what's needed to understand the kept suffix.`;
-  var TOOL_RESULT_MAX_CHARS = 2e3;
-  function truncateForSummary(text, maxChars) {
-    if (text.length <= maxChars) return text;
-    return `${text.slice(0, maxChars)}
-
-[... ${text.length - maxChars} more characters truncated]`;
-  }
-  function serializeConversation(messages) {
-    const parts = [];
-    for (const message of messages) {
-      switch (message.role) {
-        case "user":
-        case "custom": {
-          const content = messageText(message);
-          if (content) parts.push(`[User]: ${content}`);
-          break;
-        }
-        case "compactionSummary":
-        case "branchSummary":
-          parts.push(`[User]: ${message.summary}`);
-          break;
-        case "assistant": {
-          const textParts = [];
-          const thinkingParts = [];
-          const toolCalls = [];
-          for (const block of message.content) {
-            if (block.type === "text") textParts.push(block.text);
-            else if (block.type === "thinking") thinkingParts.push(block.thinking);
-            else if (block.type === "toolCall") {
-              const argsStr = Object.entries(block.arguments).map(([k, v]) => `${k}=${safeJsonStringify(v)}`).join(", ");
-              toolCalls.push(`${block.name}(${argsStr})`);
-            }
-          }
-          if (thinkingParts.length > 0) parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
-          if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
-          if (toolCalls.length > 0) parts.push(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
-          break;
-        }
-        case "toolResult": {
-          const content = messageText(message);
-          if (content) parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
-          break;
-        }
-      }
-    }
-    return parts.join("\n\n");
-  }
-  function extractFileOpsFromMessage(message, fileOps) {
-    if (message.role !== "assistant") return;
-    for (const block of message.content) {
-      if (block.type !== "toolCall") continue;
-      const path = typeof block.arguments.path === "string" ? block.arguments.path : void 0;
-      if (!path) continue;
-      if (block.name === "read") fileOps.read.add(path);
-      else if (block.name === "write") fileOps.written.add(path);
-      else if (block.name === "edit") fileOps.edited.add(path);
-    }
-  }
-  function computeFileLists(fileOps) {
-    const modified = /* @__PURE__ */ new Set([...fileOps.edited, ...fileOps.written]);
-    const readFiles = [...fileOps.read].filter((f) => !modified.has(f)).sort();
-    return { readFiles, modifiedFiles: [...modified].sort() };
-  }
-  function formatFileOperations(readFiles, modifiedFiles) {
-    const sections = [];
-    if (readFiles.length > 0) sections.push(`<read-files>
-${readFiles.join("\n")}
-</read-files>`);
-    if (modifiedFiles.length > 0) sections.push(`<modified-files>
-${modifiedFiles.join("\n")}
-</modified-files>`);
-    return sections.length === 0 ? "" : `
-
-${sections.join("\n\n")}`;
-  }
-  function prepareCompaction(pathEntries, settings, currentMessages) {
-    if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
-      return void 0;
-    }
-    let prevCompactionIndex = -1;
-    for (let i = pathEntries.length - 1; i >= 0; i--) {
-      if (pathEntries[i].type === "compaction") {
-        prevCompactionIndex = i;
-        break;
-      }
-    }
-    let previousSummary;
-    let boundaryStart = 0;
-    if (prevCompactionIndex >= 0) {
-      const prevCompaction = pathEntries[prevCompactionIndex];
-      if (prevCompaction.type === "compaction") {
-        previousSummary = prevCompaction.summary;
-        const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
-        boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
-      }
-    }
-    const boundaryEnd = pathEntries.length;
-    const tokensBefore = estimateContextTokens(currentMessages).tokens;
-    const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
-    const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
-    if (!firstKeptEntry?.id) return void 0;
-    const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
-    const messagesToSummarize = [];
-    for (let i = boundaryStart; i < historyEnd; i++) {
-      const message = entryMessage(pathEntries[i]);
-      if (message) messagesToSummarize.push(message);
-    }
-    const turnPrefixMessages = [];
-    if (cutPoint.isSplitTurn) {
-      for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-        const message = entryMessage(pathEntries[i]);
-        if (message) turnPrefixMessages.push(message);
-      }
-    }
-    const fileOps = { read: /* @__PURE__ */ new Set(), written: /* @__PURE__ */ new Set(), edited: /* @__PURE__ */ new Set() };
-    for (const message of messagesToSummarize) extractFileOpsFromMessage(message, fileOps);
-    for (const message of turnPrefixMessages) extractFileOpsFromMessage(message, fileOps);
-    return {
-      firstKeptEntryId: firstKeptEntry.id,
-      messagesToSummarize,
-      turnPrefixMessages,
-      isSplitTurn: cutPoint.isSplitTurn,
-      tokensBefore,
-      previousSummary,
-      fileOps,
-      settings
-    };
-  }
-  async function completeText(platform2, config, systemPrompt, promptText, maxTokens, signal) {
-    const stream = streamChatCompletion(
-      platform2,
-      { ...config, extraBody: { ...config.extraBody, max_tokens: maxTokens } },
-      [{ role: "user", content: promptText, timestamp: Date.now() }],
-      { systemPrompt, signal }
-    );
-    let final;
-    for await (const event of stream) {
-      if (event.type === "response_end") final = event.message;
-    }
-    if (!final) throw new TauError("compaction_failed", "Summarization returned no message");
-    return messageText(final);
-  }
-  async function generateSummary(platform2, config, messages, options) {
-    const maxTokens = Math.floor(0.8 * options.reserveTokens);
-    let basePrompt = options.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
-    if (options.customInstructions) {
-      basePrompt = `${basePrompt}
-
-Additional focus: ${options.customInstructions}`;
-    }
-    let promptText = `<conversation>
-${serializeConversation(messages)}
-</conversation>
-
-`;
-    if (options.previousSummary) {
-      promptText += `<previous-summary>
-${options.previousSummary}
-</previous-summary>
-
-`;
-    }
-    promptText += basePrompt;
-    return completeText(platform2, config, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal);
-  }
-  async function runCompaction(platform2, config, preparation, customInstructions, signal) {
-    const { settings, previousSummary } = preparation;
-    let summary;
-    if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
-      const historySummary = preparation.messagesToSummarize.length > 0 ? await generateSummary(platform2, config, preparation.messagesToSummarize, {
-        reserveTokens: settings.reserveTokens,
-        customInstructions,
-        previousSummary,
-        signal
-      }) : "No prior history.";
-      const prefixPrompt = `<conversation>
-${serializeConversation(preparation.turnPrefixMessages)}
-</conversation>
-
-${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-      const turnPrefixSummary = await completeText(
-        platform2,
-        config,
-        SUMMARIZATION_SYSTEM_PROMPT,
-        prefixPrompt,
-        Math.floor(0.5 * settings.reserveTokens),
-        signal
-      );
-      summary = `${historySummary}
-
----
-
-**Turn Context (split turn):**
-
-${turnPrefixSummary}`;
-    } else {
-      summary = await generateSummary(platform2, config, preparation.messagesToSummarize, {
-        reserveTokens: settings.reserveTokens,
-        customInstructions,
-        previousSummary,
-        signal
-      });
-    }
-    const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
-    summary += formatFileOperations(readFiles, modifiedFiles);
-    return {
-      summary,
-      firstKeptEntryId: preparation.firstKeptEntryId,
-      tokensBefore: preparation.tokensBefore,
-      details: { readFiles, modifiedFiles }
-    };
-  }
-
-  // ../../../packages/kernel/src/branch.ts
-  async function collectEntriesForBranchSummary(store, oldLeafId, targetId) {
-    if (!oldLeafId) {
-      return { entries: [], commonAncestorId: null };
-    }
-    const oldPath = new Set((await store.getPathToRoot(oldLeafId)).map((entry) => entry.id));
-    const targetPath = await store.getPathToRoot(targetId);
-    let commonAncestorId = null;
-    for (let i = targetPath.length - 1; i >= 0; i--) {
-      if (oldPath.has(targetPath[i].id)) {
-        commonAncestorId = targetPath[i].id;
-        break;
-      }
-    }
-    const entries = [];
-    let current = oldLeafId;
-    while (current && current !== commonAncestorId) {
-      const entry = await store.getEntry(current);
-      if (!entry) throw new SessionError("invalid_session", `Entry ${current} not found`);
-      entries.push(entry);
-      current = entry.parentId;
-    }
-    entries.reverse();
-    return { entries, commonAncestorId };
-  }
-  function getMessageFromEntry(entry) {
-    switch (entry.type) {
-      case "message":
-        if (entry.message.role === "toolResult") return void 0;
-        return entry.message;
-      case "custom_message":
-        return {
-          role: "custom",
-          customType: entry.customType,
-          content: entry.content,
-          display: entry.display,
-          details: entry.details,
-          timestamp: Date.parse(entry.timestamp) || 0
-        };
-      case "branch_summary":
-        return {
-          role: "branchSummary",
-          summary: entry.summary,
-          fromId: entry.fromId,
-          timestamp: Date.parse(entry.timestamp) || 0
-        };
-      case "compaction":
-        return {
-          role: "compactionSummary",
-          summary: entry.summary,
-          tokensBefore: entry.tokensBefore,
-          timestamp: Date.parse(entry.timestamp) || 0
-        };
-      case "custom":
-      case "session_info":
-      case "leaf":
-        return void 0;
-    }
-  }
-  function prepareBranchEntries(entries, tokenBudget = 0) {
-    const messages = [];
-    const fileOps = { read: /* @__PURE__ */ new Set(), written: /* @__PURE__ */ new Set(), edited: /* @__PURE__ */ new Set() };
-    let totalTokens = 0;
-    for (const entry of entries) {
-      if (entry.type === "branch_summary" && !entry.fromHook && entry.details) {
-        const details = entry.details;
-        if (Array.isArray(details.readFiles)) {
-          for (const file of details.readFiles) fileOps.read.add(file);
-        }
-        if (Array.isArray(details.modifiedFiles)) {
-          for (const file of details.modifiedFiles) fileOps.edited.add(file);
-        }
-      }
-    }
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i];
-      const message = getMessageFromEntry(entry);
-      if (!message) continue;
-      extractFileOpsFromMessage(message, fileOps);
-      const tokens = estimateTokens(message);
-      if (tokenBudget > 0 && totalTokens + tokens > tokenBudget) {
-        if (entry.type === "compaction" || entry.type === "branch_summary") {
-          if (totalTokens < tokenBudget * 0.9) {
-            messages.unshift(message);
-            totalTokens += tokens;
-          }
-        }
-        break;
-      }
-      messages.unshift(message);
-      totalTokens += tokens;
-    }
-    return { messages, fileOps, totalTokens };
-  }
-  var BRANCH_SUMMARY_PREAMBLE = `The user explored a different conversation branch before returning here.
-Summary of that exploration:
-
-`;
-  var BRANCH_SUMMARY_PROMPT = `Create a structured summary of this conversation branch for context when returning later.
-
-Use this EXACT format:
-
-## Goal
-[What was the user trying to accomplish in this branch?]
-
-## Constraints & Preferences
-- [Any constraints, preferences, or requirements mentioned]
-- [Or "(none)" if none were mentioned]
-
-## Progress
-### Done
-- [x] [Completed tasks/changes]
-
-### In Progress
-- [ ] [Work that was started but not finished]
-
-### Blocked
-- [Issues preventing progress, if any]
-
-## Key Decisions
-- **[Decision]**: [Brief rationale]
-
-## Next Steps
-1. [What should happen next to continue this work]
-
-Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-  async function generateBranchSummary(platform2, config, entries, options) {
-    const reserveTokens = options?.reserveTokens ?? 16384;
-    const contextWindow = config.contextWindow || 128e3;
-    const tokenBudget = contextWindow - reserveTokens;
-    const { messages, fileOps } = prepareBranchEntries(entries, tokenBudget);
-    if (messages.length === 0) {
-      return { summary: "No content to summarize", readFiles: [], modifiedFiles: [] };
-    }
-    const conversationText = serializeConversation(messages);
-    let instructions;
-    if (options?.replaceInstructions && options.customInstructions) {
-      instructions = options.customInstructions;
-    } else if (options?.customInstructions) {
-      instructions = `${BRANCH_SUMMARY_PROMPT}
-
-Additional focus: ${options.customInstructions}`;
-    } else {
-      instructions = BRANCH_SUMMARY_PROMPT;
-    }
-    const promptText = `<conversation>
-${conversationText}
-</conversation>
-
-${instructions}`;
-    let summary = await completeText(platform2, config, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
-    summary = BRANCH_SUMMARY_PREAMBLE + summary;
-    const { readFiles, modifiedFiles } = computeFileLists(fileOps);
-    summary += formatFileOperations(readFiles, modifiedFiles);
-    return { summary: summary || "No summary generated", readFiles, modifiedFiles };
+  function createOpenAICompatTransport(platform2, config) {
+    return (request) => streamChatCompletion(platform2, config, request.messages, {
+      systemPrompt: request.systemPrompt,
+      tools: request.tools,
+      signal: request.signal,
+      maxTokens: request.maxTokens
+    });
   }
 
   // ../../../packages/kernel/src/platform.ts
@@ -1150,6 +1185,121 @@ ${instructions}`;
         }, ms);
         signal?.addEventListener("abort", fail, { once: true });
       }) : void 0
+    };
+  }
+
+  // ../../../packages/kernel/src/policy.ts
+  function resolvePolicyAction(mode, risk) {
+    switch (mode) {
+      case "bypass":
+        return "allow";
+      case "read-only":
+        return risk === "low" ? "allow" : "deny";
+      case "supervised":
+        return risk === "low" ? "allow" : "ask";
+      case "autonomous":
+        return risk === "high" ? "ask" : "allow";
+    }
+  }
+  var DEFAULT_PROTECTED_PATHS = [
+    ".git",
+    ".ssh",
+    ".env*",
+    "~/.tau/trust.json",
+    "~/.tau/permissions.json"
+  ];
+  var DEFAULT_DANGEROUS_PATTERNS = [
+    {
+      pattern: /\brm\s+(?:[^|;&>]*\s)?-(?:[a-z]*[rf][a-z]*|-recursive|-force|-no-preserve-root)\b/i,
+      label: "rm with recursive/force flags"
+    },
+    { pattern: /\bsudo\b/, label: "sudo" },
+    {
+      pattern: /\bch(?:mod|own)\b[^|;&]*\s(?:-[a-zA-Z]*R[a-zA-Z]*|--recursive)\b[^|;&]*\s\/(?:\s|$)/,
+      label: "recursive chmod/chown on /"
+    },
+    {
+      pattern: /\b(?:curl|wget)\b[^|;&]*\|\s*(?:sudo\s+)?(?:ba|z|da|fi)?sh\b/i,
+      label: "pipes a downloaded script into a shell"
+    },
+    { pattern: /\bgit\s+push\b[^|;&]*(?:--force\b(?!-)|\s-f\b)/, label: "git push --force" },
+    {
+      pattern: /(?:>\s*|\bdd\b[^|;&]*\bof=)\/dev\/(?!null\b|stdout\b|stderr\b|tty\b|zero\b)\w/i,
+      label: "writes to a raw device"
+    },
+    { pattern: /\bmkfs\b/i, label: "mkfs" },
+    {
+      pattern: /:\(\)\s*\{\s*:\s*\|\s*:|(\w+)\s*\(\)\s*\{[^}]*\b\1\s*\|\s*\1\b/,
+      label: "fork bomb"
+    }
+  ];
+  var PATH_PROBE_KEYS = ["path", "file_path", "file", "filename", "dest", "target"];
+  var COMMAND_PROBE_KEYS = ["command", "cmd", "script"];
+  var READ_TOOLS = /* @__PURE__ */ new Set(["read", "listDir"]);
+  var WRITE_TOOLS = /* @__PURE__ */ new Set(["write", "edit"]);
+  var BASH_TOOLS = /* @__PURE__ */ new Set(["bash"]);
+  function pathSegments(path) {
+    return path.replace(/\\/g, "/").toLowerCase().split("/").filter((segment) => segment !== "" && segment !== "." && segment !== "~");
+  }
+  function segmentMatches(pattern, segment) {
+    if (pattern.endsWith("*")) return segment.startsWith(pattern.slice(0, -1));
+    return segment === pattern;
+  }
+  function pathHitsEntry(segments, entrySegments) {
+    if (entrySegments.length === 0) return false;
+    outer: for (let start = 0; start + entrySegments.length <= segments.length; start++) {
+      for (let offset = 0; offset < entrySegments.length; offset++) {
+        if (!segmentMatches(entrySegments[offset], segments[start + offset])) continue outer;
+      }
+      return true;
+    }
+    return false;
+  }
+  function probeStrings(args, keys) {
+    const found = [];
+    for (const key of keys) {
+      const value = args[key];
+      if (typeof value === "string" && value !== "") found.push(value);
+    }
+    return found;
+  }
+  function createDefaultPolicy(options) {
+    const protectedEntries = [...DEFAULT_PROTECTED_PATHS, ...options?.protectedPaths ?? []].map((entry) => ({
+      entry,
+      segments: pathSegments(entry)
+    }));
+    const dangerousPatterns = [
+      ...DEFAULT_DANGEROUS_PATTERNS,
+      ...(options?.dangerousPatterns ?? []).map((pattern) => ({ pattern, label: "custom dangerous pattern" }))
+    ];
+    const classify = (call) => {
+      if (READ_TOOLS.has(call.toolName)) return { risk: "low" };
+      if (WRITE_TOOLS.has(call.toolName)) {
+        for (const target of probeStrings(call.args, PATH_PROBE_KEYS)) {
+          const segments = pathSegments(target);
+          for (const { entry, segments: entrySegments } of protectedEntries) {
+            if (pathHitsEntry(segments, entrySegments)) {
+              return { risk: "high", reason: `"${target}" touches protected path "${entry}"` };
+            }
+          }
+        }
+        return { risk: "medium" };
+      }
+      if (BASH_TOOLS.has(call.toolName)) {
+        for (const command of probeStrings(call.args, COMMAND_PROBE_KEYS)) {
+          for (const { pattern, label } of dangerousPatterns) {
+            if (pattern.test(command)) return { risk: "high", reason: `command matches: ${label}` };
+          }
+        }
+        return { risk: "medium" };
+      }
+      return { risk: call.declaredRisk ?? "medium" };
+    };
+    return {
+      assess(call, mode) {
+        const { risk, reason } = classify(call);
+        return { risk, action: resolvePolicyAction(mode, risk), reason };
+      }
     };
   }
 
@@ -1312,6 +1462,72 @@ ${instructions}`;
     return { messages, name };
   }
 
+  // ../../../packages/kernel/src/tools.ts
+  function schemaTypeOf(value) {
+    if (value === null) return "null";
+    if (Array.isArray(value)) return "array";
+    if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
+    if (typeof value === "string") return "string";
+    if (typeof value === "boolean") return "boolean";
+    return "object";
+  }
+  function typeAccepts(declared, actual) {
+    if (declared === actual) return true;
+    return declared === "number" && actual === "integer";
+  }
+  function validateValue(schema, value, path, problems) {
+    const label = path === "" ? "arguments" : path;
+    const declaredType = schema.type;
+    if (typeof declaredType === "string" || Array.isArray(declaredType)) {
+      const accepted = (Array.isArray(declaredType) ? declaredType : [declaredType]).filter(
+        (entry) => typeof entry === "string"
+      );
+      const actual = schemaTypeOf(value);
+      if (accepted.length > 0 && !accepted.some((entry) => typeAccepts(entry, actual))) {
+        problems.push(`${label}: expected ${accepted.join(" | ")}, got ${actual}`);
+        return;
+      }
+    }
+    const allowed = schema.enum;
+    if (Array.isArray(allowed) && allowed.length > 0 && !allowed.some((entry) => entry === value)) {
+      problems.push(`${label}: must be one of ${allowed.map((entry) => JSON.stringify(entry)).join(", ")}`);
+      return;
+    }
+    if (Array.isArray(value)) {
+      const items = schema.items;
+      if (items !== void 0 && items !== null && typeof items === "object" && !Array.isArray(items)) {
+        value.forEach((element, index) => {
+          validateValue(items, element, `${label}[${index}]`, problems);
+        });
+      }
+      return;
+    }
+    if (value !== null && typeof value === "object") {
+      const record = value;
+      const required = schema.required;
+      if (Array.isArray(required)) {
+        for (const key of required) {
+          if (typeof key === "string" && record[key] === void 0) {
+            problems.push(`${label}: missing required property "${key}"`);
+          }
+        }
+      }
+      const properties = schema.properties;
+      if (properties !== void 0 && properties !== null && typeof properties === "object") {
+        for (const [key, propertySchema] of Object.entries(properties)) {
+          if (record[key] === void 0) continue;
+          if (propertySchema === null || typeof propertySchema !== "object" || Array.isArray(propertySchema)) continue;
+          validateValue(propertySchema, record[key], path === "" ? key : `${label}.${key}`, problems);
+        }
+      }
+    }
+  }
+  function validateToolArgs(schema, args) {
+    const problems = [];
+    validateValue(schema, args, "", problems);
+    return problems;
+  }
+
   // ../../../packages/kernel/src/agent.ts
   var PendingMessageQueue = class {
     constructor(mode) {
@@ -1340,6 +1556,7 @@ ${instructions}`;
       __publicField(this, "messages", []);
       __publicField(this, "platform");
       __publicField(this, "config");
+      __publicField(this, "transport");
       __publicField(this, "systemPrompt");
       __publicField(this, "baseTools");
       __publicField(this, "extensions");
@@ -1351,6 +1568,10 @@ ${instructions}`;
       __publicField(this, "session");
       __publicField(this, "compactionSettings");
       __publicField(this, "retrySettings");
+      __publicField(this, "pricing");
+      __publicField(this, "permissionMode");
+      __publicField(this, "policy");
+      __publicField(this, "onApproval");
       /** Custom instructions of a requested compaction, or null when none is pending. */
       __publicField(this, "pendingCompaction", null);
       /** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
@@ -1369,6 +1590,7 @@ ${instructions}`;
       __publicField(this, "activeAbort");
       this.platform = options.platform ?? defaultPlatform();
       this.config = options.config;
+      this.transport = options.transport ?? createOpenAICompatTransport(this.platform, this.config);
       this.systemPrompt = options.systemPrompt;
       this.baseTools = [...options.tools ?? []];
       this.extensions = options.extensions;
@@ -1381,6 +1603,10 @@ ${instructions}`;
       this.session = options.session;
       this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
       this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
+      this.pricing = options.pricing;
+      this.permissionMode = options.permissionMode ?? "autonomous";
+      this.policy = options.policy ?? createDefaultPolicy();
+      this.onApproval = options.onApproval;
       const session = options.session;
       options.extensions?.attachHostActions({
         sendMessage: (input, sendOptions) => {
@@ -1480,6 +1706,7 @@ ${instructions}`;
     async runSubagent(prompt, options = {}, signal) {
       const child = new _Agent({
         config: this.config,
+        transport: this.transport,
         platform: this.platform,
         systemPrompt: options.systemPrompt ?? this.systemPrompt,
         tools: options.tools ?? this.baseTools,
@@ -1489,7 +1716,12 @@ ${instructions}`;
         maxTurnsPerPrompt: options.maxTurnsPerPrompt ?? this.maxTurnsPerPrompt,
         steeringMode: this.steeringQueue.mode,
         followUpMode: this.followUpQueue.mode,
-        compaction: this.compactionSettings
+        compaction: this.compactionSettings,
+        // Subagents inherit the permission stance — spawning a child must not
+        // be a policy escape hatch.
+        permissionMode: this.permissionMode,
+        policy: this.policy,
+        onApproval: this.onApproval
       });
       let text = "";
       let lastAssistantText = "";
@@ -1528,7 +1760,7 @@ ${instructions}`;
       const decision = this.extensions ? await this.extensions.runSessionBeforeCompact({ preparation, customInstructions, reason }, ctx) : {};
       if (decision.cancel) return void 0;
       const fromExtension = decision.result !== void 0;
-      const result = decision.result ?? await runCompaction(this.platform, this.config, preparation, customInstructions, signal);
+      const result = decision.result ?? await runCompaction(this.transport, preparation, customInstructions, signal);
       if (this.session) {
         await this.session.recordCompaction({ ...result, fromHook: fromExtension || void 0 });
         const path = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
@@ -1635,8 +1867,9 @@ ${instructions}`;
       let summaryDetails = hook.summary?.details;
       if (!summaryText && options?.summarize !== false && entries.length > 0) {
         try {
-          const generated = await generateBranchSummary(this.platform, this.config, entries, {
+          const generated = await generateBranchSummary(this.transport, entries, {
             customInstructions: hook.customInstructions ?? options?.customInstructions,
+            contextWindow: this.config.contextWindow,
             signal: options?.signal
           });
           summaryText = generated.summary;
@@ -1729,7 +1962,7 @@ ${instructions}`;
         const partial = {
           role: "assistant",
           content: [],
-          api: OPENAI_COMPLETIONS_API,
+          api: this.config.api ?? OPENAI_COMPLETIONS_API,
           provider: this.config.provider ?? "openai-compat",
           model: this.config.model,
           usage: emptyUsage(),
@@ -1740,8 +1973,9 @@ ${instructions}`;
         let assistantMessage;
         let streamFailure;
         const tools = this.currentTools();
-        const stream = streamChatCompletion(this.platform, this.config, request, {
+        const stream = this.transport({
           systemPrompt: systemPrompt === "" ? void 0 : systemPrompt,
+          messages: request,
           tools: tools.size > 0 ? [...tools.values()] : void 0,
           signal
         });
@@ -1779,6 +2013,7 @@ ${instructions}`;
               break;
             case "response_end":
               assistantMessage = event.message;
+              if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
               break;
           }
         }
@@ -1937,6 +2172,47 @@ ${instructions}`;
         }
         args = event.input;
       }
+      const problems = validateToolArgs(tool.parameters, args);
+      if (problems.length > 0) {
+        return {
+          result: { output: `Invalid arguments for ${toolCall.name}: ${problems.join("; ")}`, isError: true }
+        };
+      }
+      const policyDecision = this.policy.assess(
+        { toolName: toolCall.name, args, declaredRisk: tool.risk },
+        this.permissionMode
+      );
+      const riskText = policyDecision.reason ?? `${policyDecision.risk}-risk tool call in ${this.permissionMode} mode`;
+      if (policyDecision.action === "deny") {
+        return { result: { output: `Denied by policy: ${riskText}`, isError: true } };
+      }
+      if (policyDecision.action === "ask") {
+        const handler = this.onApproval ?? this.uiApprovalHandler();
+        if (!handler) {
+          return {
+            result: {
+              output: `Denied by policy: approval required (${riskText}), but no approval handler is available`,
+              isError: true
+            }
+          };
+        }
+        const request = {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          args,
+          risk: policyDecision.risk,
+          reason: policyDecision.reason
+        };
+        let approved;
+        try {
+          approved = await this.awaitApproval(handler, request, signal);
+        } catch (cause) {
+          return { result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true } };
+        }
+        if (!approved) {
+          return { result: { output: `Denied by policy: approval declined (${riskText})`, isError: true } };
+        }
+      }
       await this.extensions?.notifyToolExecutionStart({ toolCallId: toolCall.id, toolName: toolCall.name, args }, ctx);
       const updateNotifications = [];
       const emitUpdate = (partialOutput, stream) => {
@@ -1975,6 +2251,49 @@ ${instructions}`;
         result = { output: finalResult.output, isError: finalResult.isError };
       }
       return { result };
+    }
+    /** Default approval handler over the host UI; no UI means no handler (ask degrades to deny). */
+    uiApprovalHandler() {
+      const ui = this.ui;
+      if (!ui) return void 0;
+      return (request) => {
+        const summary = JSON.stringify(request.args) ?? "{}";
+        const detail = summary.length > 400 ? `${summary.slice(0, 400)}\u2026` : summary;
+        return ui.confirm(
+          `Allow ${request.toolName}? (${request.risk} risk)`,
+          request.reason ? `${request.reason}
+${detail}` : detail
+        );
+      };
+    }
+    /** Wait for an approval decision; an abort while waiting counts as a rejection. */
+    awaitApproval(handler, request, signal) {
+      const decision = handler(request);
+      if (!signal) return decision;
+      if (signal.aborted) return Promise.resolve(false);
+      return new Promise((resolve, reject) => {
+        let settled = false;
+        const onAbort = () => {
+          if (settled) return;
+          settled = true;
+          resolve(false);
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+        decision.then(
+          (value) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
+            resolve(value);
+          },
+          (cause) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
+            reject(cause);
+          }
+        );
+      });
     }
   };
 
@@ -2040,8 +2359,8 @@ ${instructions}`;
       };
       const api = {
         on,
-        registerTool: (tool) => {
-          this.tools.set(tool.name, tool);
+        registerTool: (tool, options) => {
+          this.tools.set(tool.name, options?.risk !== void 0 ? { ...tool, risk: options.risk } : tool);
         },
         registerCommand: (name, options) => {
           this.commands.set(name, { name, ...options });

@@ -1,6 +1,6 @@
 # Phase 17：验证矩阵收窄 规格书
 
-> 状态：草拟（待用户确认后动码）
+> 状态：已确认（2026-07-20，含开放问题 1 调研结论与方言槽位调整）
 > 对应 roadmap 阶段：Phase 17
 > 背景：2026-07-17 先天不足分析——三个"验证面与主张之间的缺口"：① "OpenAI 兼容"实际是 N 个厂商方言，CI 只有 mock provider，方言差异零覆盖；② 纯度门禁的 smoke:quickjs 用较新的 quickjs-emscripten，不代表 flutter_js 的老 QuickJS（D18 自认风险 #1，`Array.prototype.at` 事故为证）；③ P13 Android 三条 UI 路径代码就位未验（Backlog A 遗留）。本阶段是流程/工程阶段，可穿插在 P15/P16 等待决策的间隙执行。
 
@@ -25,6 +25,8 @@ npm run smoke:dialects
 #   TAU_DIALECT_DEEPSEEK_KEY / _MODEL（默认 deepseek-chat）
 #   TAU_DIALECT_OPENROUTER_KEY / _MODEL
 #   TAU_DIALECT_OLLAMA_BASE_URL / _MODEL（本地无 key）
+#   TAU_DIALECT_OPENAI_COMPAT_BASE_URL / _KEY / _MODEL（通用槽位：任意 OpenAI 兼容端点，
+#     2026-07-20 用户确认时新增——实际手头凭据为通用 OpenAI 兼容 key）
 # 每方言跑同一脚本化场景：两轮对话 + 一次工具回路 + 流式增量断言 +
 #   （deepseek）reasoning_content 增量非空断言 + usage 存在性断言
 # 产出逐方言 PASS/SKIP/FAIL 摘要，任一 FAIL 退出非零
@@ -62,16 +64,16 @@ npm run smoke:quickjs:legacy
 
 ## 验收清单
 
-- [ ] `smoke:dialects` 本地对至少两个真实方言（建议 DeepSeek + Ollama）实测 PASS，SKIP 路径明示
-- [ ] CI 可选 job 配置就位（无 secrets 时 skip 状态可见，不装绿）
-- [ ] `smoke:quickjs:legacy` 在与 flutter_js 同代引擎上：无 polyfill 预期失败、有 polyfill 全绿，入 CI 常绿
-- [ ] polyfills 单源化：flutter bundle 与 legacy smoke 引用同一 fixture（grep 断言无第二份副本）
+- [ ] `smoke:dialects` 本地对至少一个真实方言实测 PASS（用户当前凭据为通用 OpenAI 兼容 key，走 openai-compat 槽位；DeepSeek/Ollama 等凭据可得时再补测），SKIP 路径明示（SKIP/FAIL 路径已实测：全 SKIP 明示退出 0、坏端点 FAIL 逐条断言明细退出 1）
+- [x] CI 可选 job 配置就位（无 secrets 时 skip 状态可见，不装绿）
+- [x] `smoke:quickjs:legacy` 在与 flutter_js 同代引擎上：无 polyfill 预期失败、有 polyfill 全绿，入 CI 常绿（本地已验；实测发现裸跑形态为静默劣化而非崩溃——P11 流健壮化把 TypeError 转 stopReason error 吞掉，判据改为"完整期望不满足"，已记 D18 补记）
+- [x] polyfills 单源化：flutter bundle 与 legacy smoke 引用同一 fixture（脚本内置递归扫描断言全仓库仅 test-fixtures/quickjs/ 一份；flutter assets/tau.js 已从共享 fixture 重建）
 - [ ] Android 三条 UI 路径验证记录进 phase-13 规格书，roadmap Backlog A 清空
-- [ ] development.md / architecture.md / D18 补记归档
-- [ ] DoD 通用项（见 development.md）
+- [x] development.md / architecture.md / D18 补记归档
+- [ ] DoD 通用项（见 development.md）（check + 202 测试 + smoke:quickjs/legacy 本地全绿；push 后 CI 待验）
 
 ## 风险与开放问题
 
-- **开放问题 1（先调研后动手）**：老 QuickJS 的 Node 内载体。候选：`quickjs-emscripten` 的历史版本 variant（是否可 pin 到 flutter_js 同代待查）、`@jitl/quickjs-*` 系列旧包、flutter_js 上游 QuickJS 版本号确认后找对应 emscripten 构建。若均不可行，退路是"特性探测清单"门禁（列出 flutter_js 实测缺失的内置，对内核 bundle 做静态扫描），弱于真引擎但仍是机械门禁。
+- **开放问题 1（已解，2026-07-20 调研结论）**：flutter_js 0.8.2 Android 端经 jitpack `fastdev-jsruntimes-quickjs:0.3.6` 内嵌 QuickJS **2021-03-27**（该库 `quickjs/CMakeLists.txt` 的 `CONFIG_VERSION` 证实）。`quickjs-emscripten@0.23.0` 内嵌同代引擎（0.24.0 才升 quickjs 2023-12-09），实测其中 `Array.prototype.at`/`Object.hasOwn` 均缺失——与 P13 真机事故吻合。载体定为 devDependency alias `quickjs-emscripten-legacy@npm:quickjs-emscripten@0.23.0`，与现用 0.32.0 共存；退路方案（特性探测清单）不需要。"无 polyfill 预期失败"断言成立性核实：内核 agent 循环热路径使用 `.at(-1)`（agent.ts）。
 - 风险：真实端点方言 smoke 天然 flaky（限流、余额、端点变更）——因此不进必跑 gate，只做 on-demand + 可选 job；FAIL 与 SKIP 严格区分。
 - 风险：Android 手工验证依赖真机在手——若设备不可用，本阶段其余两项照常完成，该项单独滞留并在 roadmap 标注。

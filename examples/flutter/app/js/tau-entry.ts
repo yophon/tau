@@ -6,7 +6,7 @@
 //
 // Dart↔JS 通道（flutter_js）：JS→Dart 用 sendMessage(channel, jsonPayload)；
 // Dart→JS 用 evaluate 调 globalThis.__tau.* 方法。异步结果经回调 id 配对。
-import "./polyfills.ts"; // 必须最先——补齐 flutter_js QuickJS 缺的 ES2022+ 内置，内核加载前就位
+import "../../../../test-fixtures/quickjs/polyfills.ts"; // 必须最先——补齐 flutter_js QuickJS 缺的 ES2022+ 内置，内核加载前就位（P17 单源化：与 smoke:quickjs:legacy 同一 fixture）
 import { createHttpMcpExtension, type HttpMcpStatus } from "@yophon/tau-ext-mcp-http";
 import {
 	AbortHandle,

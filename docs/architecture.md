@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-07-20（P16 协议适配扩展层：内核 ChatTransport 注入缝 + `@yophon/tau-ext-provider-anthropic` 纯 Platform Anthropic Messages transport，D21）
+> 最后更新：2026-07-20（P17 验证矩阵收窄：smoke:quickjs:legacy 老引擎门禁 + polyfills 单源化 + smoke:dialects 方言冒烟）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -124,7 +124,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - `examples/flutter/app/`：Dart `TauEngine` 封装 flutter_js——加载 `assets/tau.js`（内核 + ext-mcp-http + guard 审批扩展的 esbuild iife bundle，提交进仓库），泵微任务，把 Dart↔JS 消息通道封装成事件流。**Platform 桥全在 Dart 侧**：`fetch` 用 `http.Client` 流式（chunk→base64 过桥，推转拉队列 + abort 双向桥，硬规则 8）、`sleep` 用 Timer、`randomBytes` 用 `Random.secure()` 预填熵、`UiCapability.confirm` 用弹窗。JS 侧经注入的 `__tau.*` 暴露 prompt/steer/abort/connect + 事件回调。
 - guard 审批扩展（P1 模式）：`tool_call` 对 `run_command`/`write_file` 经 `ctx.ui.confirm` 弹 Dart 确认框，拒绝 = block。
 - `examples/flutter/mcp-server/`：零 tau 依赖的 Node MCP server（read_file/write_file/list_dir/run_command，工作目录边界 + Bearer token），兼任 e2e fixture，可换成任何 Streamable HTTP MCP server。
-- **两个 flutter_js 实测差异**（引擎选型 spike，见 D18）：① onMessage 通道预先 jsonDecode（Dart 收 Map 非字符串）；② 内置 QuickJS 版本旧缺 `Array.prototype.at` 等 ES2022+ 内置——宿主层 `js/polyfills.ts` 在内核加载前 guarded 补齐，内核保持干净 ES2022。
+- **两个 flutter_js 实测差异**（引擎选型 spike，见 D18）：① onMessage 通道预先 jsonDecode（Dart 收 Map 非字符串）；② 内置 QuickJS 版本旧缺 `Array.prototype.at` 等 ES2022+ 内置——宿主层在内核加载前 guarded 补齐（polyfill 单源于 `test-fixtures/quickjs/polyfills.ts`，P17 起与 `smoke:quickjs:legacy` 门禁同源），内核保持干净 ES2022。
 - 裸引擎门禁 `smoke:quickjs:mcp`（入 CI）：QuickJS 内核 + ext-mcp-http 经 `test-fixtures/quickjs/http-bridge`（Node↔VM 真 HTTP fetch 桥，Flutter Platform 桥的预演）调真实 mcp-server，验证工具回路。Flutter app 本身不入 CI（toolchain 重），Dart 侧靠真机手工 e2e（Android 已验，iOS 推迟）。
 - **v1 约束**：仅局域网、内存对话、iOS 锁屏 ~30s 冻结（亮屏执行为前提）；key/token 明文存 `shared_preferences`，`run_command` 是 RCE 面（审批弹窗 + 工作目录边界 + 可信局域网为屏障）。
 
@@ -138,7 +138,8 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 
 **前提与注意（诚实边界）**：
 - **需要网络 + BYOK**：无本地模型支持（D3），真离线设备跑不了——它要够到一个 OpenAI 兼容端点。
-- **老/裸引擎可能要宿主补语言垫片**：内核以干净 ES2022 编写，但落后引擎缺新内置（如 flutter_js 的老 QuickJS 缺 `Array.prototype.at`）——由宿主层 polyfill 兜（D18），"纯 ECMAScript"在此等于"宿主补齐语言基线后成立"。纯度门禁的 `smoke:quickjs` 用较新的 quickjs-emscripten，不完全代表部署引擎，真实差异靠真机 e2e 兜底。
+- **老/裸引擎可能要宿主补语言垫片**：内核以干净 ES2022 编写，但落后引擎缺新内置（如 flutter_js 的老 QuickJS 缺 `Array.prototype.at`）——由宿主层 polyfill 兜（D18），"纯 ECMAScript"在此等于"宿主补齐语言基线后成立"。P17 起引擎代差有机械门禁：`smoke:quickjs:legacy` 在 flutter_js 同代老 QuickJS（2021-03-27，quickjs-emscripten@0.23.0 载体）上双态断言（无 polyfill 预期失败/有 polyfill 全绿），polyfill 单源于 `test-fixtures/quickjs/polyfills.ts`（flutter bundle 同源引用），不再只靠真机手工兜底。
+- **"OpenAI 兼容"是 N 个厂商方言**：CI 必跑门禁只有 mock provider；真实方言差异经 `smoke:dialects`（DeepSeek/OpenRouter/Ollama/通用槽位，env 驱动、缺凭据明示 SKIP）on-demand 覆盖 + CI 可选 job，不进必跑 gate（真端点天然 flaky）。
 - **架构支持 ≠ 已验证**：Flutter iOS/JSC 路径、RN Android/Hermes、ext-mcp-http 部分传输属代码就位未逐一 e2e（见各宿主 Backlog）。
 - **要有 JS 引擎**：没引擎或内存太小的裸 MCU 出局（QuickJS 足迹已很小，但仍需一个引擎）。
 

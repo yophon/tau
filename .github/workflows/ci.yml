@@ -36,6 +36,27 @@ jobs:
       - run: npm run smoke:weapp
       - run: npm run smoke:pack
       - run: npm run smoke:quickjs
+      - run: npm run smoke:quickjs:legacy
       - run: npm run smoke:quickjs:mcp
       - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:browser:runtime
       - run: npm run smoke:tui
+
+  # 方言冒烟(P17):真实端点,天然 flaky,不进必跑门禁。secrets 缺失时逐方言明示 SKIP
+  # (脚本对"全 SKIP"退出 0 但打印显式清单,不装绿)。手动触发或 secrets 就位的 push 才有实测值。
+  dialects:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run smoke:dialects
+        env:
+          TAU_DIALECT_DEEPSEEK_KEY: ${{ secrets.TAU_DIALECT_DEEPSEEK_KEY }}
+          TAU_DIALECT_OPENROUTER_KEY: ${{ secrets.TAU_DIALECT_OPENROUTER_KEY }}
+          TAU_DIALECT_OPENAI_COMPAT_BASE_URL: ${{ secrets.TAU_DIALECT_OPENAI_COMPAT_BASE_URL }}
+          TAU_DIALECT_OPENAI_COMPAT_KEY: ${{ secrets.TAU_DIALECT_OPENAI_COMPAT_KEY }}
+          TAU_DIALECT_OPENAI_COMPAT_MODEL: ${{ secrets.TAU_DIALECT_OPENAI_COMPAT_MODEL }}

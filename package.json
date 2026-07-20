@@ -23,7 +23,9 @@
 		"smoke:browser:runtime": "node scripts/smoke-browser-runtime.mjs",
 		"smoke:pack": "npm run build && node scripts/smoke-pack.mjs",
 		"smoke:quickjs": "node scripts/smoke-quickjs.mjs",
+		"smoke:quickjs:legacy": "node scripts/smoke-quickjs-legacy.mjs",
 		"smoke:quickjs:mcp": "node scripts/smoke-quickjs-mcp.mjs",
+		"smoke:dialects": "node scripts/smoke-dialects.mjs",
 		"smoke:tui": "node scripts/smoke-tui.mjs",
 		"smoke:weapp": "node scripts/build-weapp-demo.mjs --check",
 		"test": "node --test packages/kernel/test/*.test.ts packages/host-node/test/*.test.ts packages/host-browser/test/*.test.ts packages/host-weapp/test/*.test.ts packages/host-rn/test/*.test.ts packages/cli/test/*.test.ts packages/ext-subagents/test/*.test.ts packages/ext-mcp/test/*.test.ts packages/ext-mcp-http/test/*.test.ts packages/ext-provider-anthropic/test/*.test.ts packages/ext-resources/test/*.test.ts",
@@ -37,6 +39,7 @@
 		"@types/node": "22.19.19",
 		"esbuild": "0.28.1",
 		"quickjs-emscripten": "0.32.0",
+		"quickjs-emscripten-legacy": "npm:quickjs-emscripten@0.23.0",
 		"typescript": "5.9.3"
 	},
 	"engines": {

@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-20（P16 完成：ChatTransport 注入缝 + `@yophon/tau-ext-provider-anthropic`，记 D21；当前工作 = P17 验证矩阵收窄）
+> 最后更新：2026-07-20（P17 动工：smoke:quickjs:legacy 门禁与 smoke:dialects 落地入 CI；余真端点实测与 Android 手工补验）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -164,11 +164,13 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录（2026-07-20）**：202 测试全绿（+25：内核 transport 缝 4——fake transport 两轮工具循环/压缩走缝/失败语义/maxTokens 透传；ext 单测 17——thinking 流式与 signature、tool_use 累积 parse、CJK 跨 chunk、redacted、stop_reason 全映射、HTTP/SSE error/截断三失败路径、tool_result 图片 wire 断言、cache_control 落点、thinking clamp、transform 全路径、Agent 集成两轮回路；CLI e2e 4——真 CLI 全链路中文流式+工具+协议头断言、**同一 pi v3 会话文件 openai→anthropic→openai 三轮跨协议续写**、5xx 重试恢复+无重试 error 终态、flag/key 校验）。`npm run build` 11 包出 dist 正常。与规格偏差：无；规格草拟期的 cache_control 注释（"倒数第二条 user"）与风险条款（"抄 pi 落点"）矛盾，按风险条款修正为 pi 落点（末条 user）。真实端点手工验收（Anthropic API key）待用户执行后勾销。
 
-## Phase 17 ⬜ 验证矩阵收窄
+## Phase 17 🚧 验证矩阵收窄
 
-规格书：[specs/phase-17-verification-matrix.md](specs/phase-17-verification-matrix.md)（草拟，待确认）。工程阶段，可穿插在 P15/P16 间隙执行。
+规格书：[specs/phase-17-verification-matrix.md](specs/phase-17-verification-matrix.md)（已确认，2026-07-20 动工）。工程阶段。
 
-三个"架构支持 ≠ 已验证"缺口：`smoke:dialects`（DeepSeek/Ollama/OpenRouter 真实端点冒烟，env 驱动 + CI secrets 可选 job）；`smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁，polyfills 单源化，销 D18 风险 #1）；P13 Android 三条 UI 路径手工补验（审批弹窗/中止/重连，原 Backlog A 项并入）。
+三个"架构支持 ≠ 已验证"缺口：`smoke:dialects`（DeepSeek/OpenRouter/Ollama/通用 openai-compat 槽位真实端点冒烟，env 驱动 + CI secrets 可选 job）；`smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁，polyfills 单源化，销 D18 风险 #1）；P13 Android 三条 UI 路径手工补验（审批弹窗/中止/重连，原 Backlog A 项并入）。
+
+**进展记录（2026-07-20）**：脚本与门禁全部落地——开放问题 1 调研定案（flutter_js 0.8.2 内嵌 QuickJS 2021-03-27，`quickjs-emscripten@0.23.0` 同代，devDep alias 载体）；`smoke:quickjs:legacy` 三段断言（载体真实性/裸跑预期失败/polyfill 后全绿）本地通过并入 CI，polyfills 单源化至 `test-fixtures/quickjs/polyfills.ts`（flutter bundle 同源重建）；实测发现裸引擎缺 `.at` 在 P11 流健壮化后表现为**静默劣化**（finalText 空、text_delta 消失）而非崩溃，已记入 D18 补记；`smoke:dialects` 四槽位脚本落地（SKIP/FAIL 路径实测），CI 可选 job 就位。待办：真实方言端点实测 PASS（等用户凭据）、Android 三条 UI 路径手工验证（等真机）。
 
 ## Phase 18 ⬜ 工具并行执行（pi ToolExecutionMode 对齐）
 
