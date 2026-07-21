@@ -1,6 +1,6 @@
 # Phase 17：验证矩阵收窄 规格书
 
-> 状态：已确认（2026-07-20，含开放问题 1 调研结论与方言槽位调整）
+> 状态：已完成（2026-07-21）——三项缺口全部收口：legacy 门禁与方言冒烟入 CI（2026-07-20），openai-compat 真端点 PASS 与 Android 三路径真机补验（2026-07-21）
 > 对应 roadmap 阶段：Phase 17
 > 背景：2026-07-17 先天不足分析——三个"验证面与主张之间的缺口"：① "OpenAI 兼容"实际是 N 个厂商方言，CI 只有 mock provider，方言差异零覆盖；② 纯度门禁的 smoke:quickjs 用较新的 quickjs-emscripten，不代表 flutter_js 的老 QuickJS（D18 自认风险 #1，`Array.prototype.at` 事故为证）；③ P13 Android 三条 UI 路径代码就位未验（Backlog A 遗留）。本阶段是流程/工程阶段，可穿插在 P15/P16 等待决策的间隙执行。
 
@@ -68,9 +68,9 @@ npm run smoke:quickjs:legacy
 - [x] CI 可选 job 配置就位（无 secrets 时 skip 状态可见，不装绿）
 - [x] `smoke:quickjs:legacy` 在与 flutter_js 同代引擎上：无 polyfill 预期失败、有 polyfill 全绿，入 CI 常绿（本地已验；实测发现裸跑形态为静默劣化而非崩溃——P11 流健壮化把 TypeError 转 stopReason error 吞掉，判据改为"完整期望不满足"，已记 D18 补记）
 - [x] polyfills 单源化：flutter bundle 与 legacy smoke 引用同一 fixture（脚本内置递归扫描断言全仓库仅 test-fixtures/quickjs/ 一份；flutter assets/tau.js 已从共享 fixture 重建）
-- [ ] Android 三条 UI 路径验证记录进 phase-13 规格书，roadmap Backlog A 清空
+- [x] Android 三条 UI 路径验证记录进 phase-13 规格书，roadmap Backlog A 清空（2026-07-21：审批允许/拒绝、中止、重连三条真机全过，记录见 phase-13）
 - [x] development.md / architecture.md / D18 补记归档
-- [ ] DoD 通用项（见 development.md）（check + 202 测试 + smoke:quickjs/legacy 本地全绿；push 后 CI 待验）
+- [x] DoD 通用项（见 development.md）（check + 测试 + smoke 全绿；CI 于 49b464d 起三 job 常绿）
 
 ## 风险与开放问题
 

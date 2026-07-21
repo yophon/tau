@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-20（P18 完成：工具并行执行照抄 pi，记 D22；P17 余真端点实测与 Android 手工补验两项用户侧动作）
+> 最后更新：2026-07-21（P17 收口完成——真端点方言 PASS + Android 三路径真机补验；**P0–P18 全部 ✅**，无排期阶段，候选见 Backlog）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -164,13 +164,13 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录（2026-07-20）**：202 测试全绿（+25：内核 transport 缝 4——fake transport 两轮工具循环/压缩走缝/失败语义/maxTokens 透传；ext 单测 17——thinking 流式与 signature、tool_use 累积 parse、CJK 跨 chunk、redacted、stop_reason 全映射、HTTP/SSE error/截断三失败路径、tool_result 图片 wire 断言、cache_control 落点、thinking clamp、transform 全路径、Agent 集成两轮回路；CLI e2e 4——真 CLI 全链路中文流式+工具+协议头断言、**同一 pi v3 会话文件 openai→anthropic→openai 三轮跨协议续写**、5xx 重试恢复+无重试 error 终态、flag/key 校验）。`npm run build` 11 包出 dist 正常。与规格偏差：无；规格草拟期的 cache_control 注释（"倒数第二条 user"）与风险条款（"抄 pi 落点"）矛盾，按风险条款修正为 pi 落点（末条 user）。真实端点手工验收（Anthropic API key）待用户执行后勾销。**已勾销（2026-07-21）**：OpenAI 兼容网关 Anthropic 路由 + claude-sonnet-5 实测——工具回路、TUI thinking 原生流式、thinkingSignature 回传、cache_control 命中链路（首轮 cacheWrite 553 → 次轮 cacheRead 553）全部可见，记录见规格书。
 
-## Phase 17 🚧 验证矩阵收窄
+## Phase 17 ✅ 验证矩阵收窄（2026-07-21）
 
-规格书：[specs/phase-17-verification-matrix.md](specs/phase-17-verification-matrix.md)（已确认，2026-07-20 动工）。工程阶段。
+规格书：[specs/phase-17-verification-matrix.md](specs/phase-17-verification-matrix.md)（已完成）。工程阶段。
 
-三个"架构支持 ≠ 已验证"缺口：`smoke:dialects`（DeepSeek/OpenRouter/Ollama/通用 openai-compat 槽位真实端点冒烟，env 驱动 + CI secrets 可选 job）；`smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁，polyfills 单源化，销 D18 风险 #1）；P13 Android 三条 UI 路径手工补验（审批弹窗/中止/重连，原 Backlog A 项并入）。
+三个"架构支持 ≠ 已验证"缺口全部收口：`smoke:dialects`（DeepSeek/OpenRouter/Ollama/通用 openai-compat 槽位真实端点冒烟，env 驱动 + CI secrets 可选 job）；`smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁，polyfills 单源化，销 D18 风险 #1）；P13 Android 三条 UI 路径手工补验（原 Backlog A 项并入）。
 
-**进展记录（2026-07-20）**：脚本与门禁全部落地——开放问题 1 调研定案（flutter_js 0.8.2 内嵌 QuickJS 2021-03-27，`quickjs-emscripten@0.23.0` 同代，devDep alias 载体）；`smoke:quickjs:legacy` 三段断言（载体真实性/裸跑预期失败/polyfill 后全绿）本地通过并入 CI，polyfills 单源化至 `test-fixtures/quickjs/polyfills.ts`（flutter bundle 同源重建）；实测发现裸引擎缺 `.at` 在 P11 流健壮化后表现为**静默劣化**（finalText 空、text_delta 消失）而非崩溃，已记入 D18 补记；`smoke:dialects` 四槽位脚本落地（SKIP/FAIL 路径实测），CI 可选 job 就位。**真实方言实测 PASS（2026-07-21）**：openai-compat 槽位对真实 OpenAI 兼容网关（gpt-5.5）全场景通过。待办：Android 三条 UI 路径手工验证（等真机）——本阶段唯一剩余项。
+**完成记录**：脚本与门禁 2026-07-20 落地入 CI（详见规格书与 D18 补记；关键发现：裸引擎缺 `.at` 在 P11 流健壮化后表现为**静默劣化**而非崩溃）。2026-07-21 收口：openai-compat 槽位对真实网关（gpt-5.5）全场景 PASS；Android 真机（AAK-AN00）三条 UI 路径——审批允许/拒绝、中止、重连——用户确认全过（记录归档 phase-13 规格书）。与规格偏差：方言实测按用户实际凭据从"至少两方言"调整为"至少一方言 + 通用槽位"（规格确认时已裁决）。
 
 ## Phase 18 ✅ 工具并行执行（pi ToolExecutionMode 对齐）（2026-07-20）
 
@@ -182,7 +182,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 ## 未排期（Backlog）
 
-> P0–P16 全部 ✅；**当前工作 = P17**（P17–P18 已排期，见上；每阶段动工前规格书需经用户确认）。本表为未排期候选。
+> **P0–P18 全部 ✅（2026-07-21）**——路线图无排期阶段，本表为未排期候选；立项时按 development.md 流程先写规格书经用户确认。
 >
 > 原 A 组两项已消化（2026-07-17）：ext-mcp-http 发版随 v0.1.1 完成（2026-07-16，npm 实测 0.1.1 可装）；Android UI 补验并入 P17。
 

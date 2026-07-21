@@ -124,7 +124,7 @@ export function createHttpMcpExtension(options: {
 - ✅ **离线降级**：未配置 MCP server 时 app 正常起、状态条「电脑离线」、agent 可用（发消息不崩）。
 - ✅ **已连接指示**：`tools/list` 成功 → 状态条「电脑已连接 · 4 个工具」（绿点）。
 - ✅ **无 token 拒绝**：手机侧经隧道 curl MCP server 返回 401。
-- ⏳ **未逐路径手工验证**（代码就位，本次 e2e 未走）：run_command/write_file 审批弹窗的确认/拒绝双路径、中止按钮、重连按钮。iOS/JSC 路径整体推迟（用户裁决）。
+- ✅ **三条 UI 路径手工补验（2026-07-21，P17 收口；同真机 AAK-AN00，adb reverse 隧道 + 真实 OpenAI 兼容端点 gpt-5.5）**：① 审批弹窗双路径——run_command 弹框点允许后命令执行且结果回流，write_file 弹框点拒绝后得到失败回复、对话可继续；② 中止按钮——长回复流式中途中止，立即停止且 UI 恢复可输入；③ 重连按钮——server 停止后状态条转离线，server 重启后点重连恢复「已连接 · 4 个工具」。用户确认三条全过。iOS/JSC 路径整体推迟（用户裁决）不变。
 
 ## 风险与开放问题
 
