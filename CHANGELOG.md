@@ -2,6 +2,8 @@
 
 All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
+## [Unreleased]
+
 ## [0.2.0] - 2026-07-21
 
 ### ⚠ Breaking
