@@ -1,6 +1,6 @@
 {
 	"name": "@yophon/tau-ext-subagents",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Subagent task delegation extension for tau",
 	"type": "module",
 	"license": "MIT",
@@ -20,6 +20,6 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@yophon/tau-kernel": "^0.1.1"
+		"@yophon/tau-kernel": "^0.2.0"
 	}
 }

@@ -1,6 +1,6 @@
 {
 	"name": "@yophon/tau-kernel",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Runtime-agnostic agent kernel: pure ECMAScript plus an injectable platform seam",
 	"type": "module",
 	"license": "MIT",

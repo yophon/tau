@@ -1,6 +1,6 @@
 {
 	"name": "@yophon/tau-cli",
-	"version": "0.1.1",
+	"version": "0.2.0",
 	"description": "Minimal terminal frontend for the tau kernel",
 	"type": "module",
 	"license": "MIT",
@@ -27,8 +27,8 @@
 	},
 	"dependencies": {
 		"@earendil-works/pi-tui": "0.80.3",
-		"@yophon/tau-ext-provider-anthropic": "^0.1.1",
-		"@yophon/tau-host-node": "^0.1.1",
-		"@yophon/tau-kernel": "^0.1.1"
+		"@yophon/tau-ext-provider-anthropic": "^0.2.0",
+		"@yophon/tau-host-node": "^0.2.0",
+		"@yophon/tau-kernel": "^0.2.0"
 	}
 }
