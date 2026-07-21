@@ -72,6 +72,28 @@ export function mockToolCallTurn(name: string, args: Record<string, unknown>): M
 	};
 }
 
+/** One turn requesting several tool calls in a single batch (P18 parallel execution). */
+export function mockMultiToolCallTurn(calls: { name: string; args: Record<string, unknown> }[]): MockTurnResponse {
+	return {
+		payloads: [
+			{
+				choices: [
+					{
+						delta: {
+							tool_calls: calls.map((call, index) => ({
+								index,
+								id: `call_${index + 1}`,
+								function: { name: call.name, arguments: JSON.stringify(call.args) },
+							})),
+						},
+						finish_reason: "tool_calls",
+					},
+				],
+			},
+		],
+	};
+}
+
 export function mockTextTurn(text: string): MockTurnResponse {
 	return { payloads: [{ choices: [{ delta: { content: text }, finish_reason: "stop" }] }] };
 }

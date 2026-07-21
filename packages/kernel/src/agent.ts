@@ -45,7 +45,13 @@ import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.
 import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
 import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
-import { type Tool, type ToolResult, type ToolUpdateStream, validateToolArgs } from "./tools.ts";
+import {
+	type Tool,
+	type ToolExecutionMode,
+	type ToolResult,
+	type ToolUpdateStream,
+	validateToolArgs,
+} from "./tools.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
 export type QueueMode = "one-at-a-time" | "all";
@@ -126,6 +132,14 @@ export interface AgentOptions {
 	 * are absent, "ask" degrades to deny (D10 headless semantics).
 	 */
 	onApproval?: (request: ApprovalRequest) => Promise<boolean>;
+	/**
+	 * Tool batch execution mode (P18, mirrors pi AgentLoopConfig.toolExecution).
+	 * Default "parallel" — pi's default: preflight (hooks/policy/approval) stays
+	 * sequential in source order, then allowed tools execute concurrently. Any
+	 * tool marked executionMode:"sequential" in a batch downgrades that whole
+	 * batch to sequential (pi dispatch semantics).
+	 */
+	toolExecution?: ToolExecutionMode;
 }
 
 export type AgentEvent =
@@ -146,6 +160,10 @@ interface ToolUpdate {
 	stream?: ToolUpdateStream;
 }
 
+/** Outcome of the serial preflight stage (P18, mirrors pi's prepareToolCall shapes). */
+type PreparedToolCall = { kind: "prepared"; toolCall: ToolCall; tool: Tool; args: Record<string, unknown> };
+type ToolCallPreparation = PreparedToolCall | { kind: "immediate"; toolCall: ToolCall; result: ToolResult };
+
 const DEFAULT_MAX_TURNS = 50;
 
 /**
@@ -157,8 +175,15 @@ const DEFAULT_MAX_TURNS = 50;
  * Event ordering per turn (extensions are notified before the host sees the
  * corresponding AgentEvent, so extensions can rewrite content first):
  * turn_start → context → message_start → message_update* → message_end →
- * per tool [tool_call → tool_execution_start → tool_execution_update* →
- * tool_execution_end → tool_result] → drain steering → turn_end.
+ * tool batch → drain steering → turn_end.
+ *
+ * Tool batch ordering depends on the execution mode (P18). Sequential (explicit
+ * config, or any tool in the batch marked executionMode:"sequential"): per tool
+ * [tool_call → tool_execution_start → tool_execution_update* →
+ * tool_execution_end → tool_result], one tool at a time. Parallel (default,
+ * pi's): [tool_call → tool_execution_start] serially in source order for the
+ * whole batch, then execution_update/end in completion order interleaved, then
+ * tool_result messages committed in source order.
  */
 export class Agent {
 	readonly messages: AgentMessage[] = [];
@@ -180,6 +205,7 @@ export class Agent {
 	private readonly permissionMode: PermissionMode;
 	private readonly policy: ToolPolicy;
 	private readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
+	private readonly toolExecution: ToolExecutionMode;
 	/** Custom instructions of a requested compaction, or null when none is pending. */
 	private pendingCompaction: string | null = null;
 	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
@@ -217,6 +243,7 @@ export class Agent {
 		this.permissionMode = options.permissionMode ?? "autonomous";
 		this.policy = options.policy ?? createDefaultPolicy();
 		this.onApproval = options.onApproval;
+		this.toolExecution = options.toolExecution ?? "parallel";
 		const session = options.session;
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
@@ -351,6 +378,7 @@ export class Agent {
 			permissionMode: this.permissionMode,
 			policy: this.policy,
 			onApproval: this.onApproval,
+			toolExecution: this.toolExecution,
 		});
 		let text = "";
 		let lastAssistantText = "";
@@ -783,50 +811,15 @@ export class Agent {
 
 			const toolCalls = toolCallsOf(assistantMessage);
 			const toolResults: ToolResultMessage[] = [];
-			for (const toolCall of toolCalls) {
-				yield { type: "tool_start", toolCall };
-				const updates: ToolUpdate[] = [];
-				let wakeUpdate: (() => void) | undefined;
-				let executionDone = false;
-				const execution = this.executeToolCall(toolCall, ctx, signal, (update) => {
-					updates.push(update);
-					wakeUpdate?.();
-					wakeUpdate = undefined;
-				});
-				execution.then(
-					() => {
-						executionDone = true;
-						wakeUpdate?.();
-						wakeUpdate = undefined;
-					},
-					() => {
-						executionDone = true;
-						wakeUpdate?.();
-						wakeUpdate = undefined;
-					},
-				);
-				while (!executionDone || updates.length > 0) {
-					const update = updates.shift();
-					if (update) {
-						yield { type: "tool_update", toolCall, partialOutput: update.partialOutput, stream: update.stream };
-						continue;
-					}
-					await new Promise<void>((resolve) => {
-						wakeUpdate = resolve;
-					});
-				}
-				const { result } = await execution;
-				const toolResultMessage: ToolResultMessage = {
-					role: "toolResult",
-					toolCallId: toolCall.id,
-					toolName: toolCall.name,
-					content: [{ type: "text", text: result.output }],
-					isError: result.isError === true,
-					timestamp: Date.now(),
-				};
-				const committedToolResult = (await this.commitMessage(toolResultMessage, ctx)) as ToolResultMessage;
-				toolResults.push(committedToolResult);
-				yield { type: "tool_result", toolCall, result };
+			// pi dispatch semantics (agent-loop.ts): global sequential config or any
+			// sequential-marked tool in the batch downgrades the whole batch.
+			const forceSequential =
+				this.toolExecution === "sequential" ||
+				toolCalls.some((tc) => this.currentTools().get(tc.name)?.executionMode === "sequential");
+			if (forceSequential || toolCalls.length <= 1) {
+				yield* this.runToolBatchSequential(toolCalls, ctx, signal, toolResults);
+			} else {
+				yield* this.runToolBatchParallel(toolCalls, ctx, signal, toolResults);
 			}
 
 			for (const steered of this.steeringQueue.drain()) {
@@ -856,15 +849,172 @@ export class Agent {
 		throw new TauError("max_turns", `Prompt exceeded ${this.maxTurnsPerPrompt} turns without completing`);
 	}
 
+	/** Commit one tool result to messages/session and produce the AgentEvent pair tail. */
+	private async commitToolResult(
+		toolCall: ToolCall,
+		result: ToolResult,
+		ctx: ExtensionContext,
+		toolResults: ToolResultMessage[],
+	): Promise<AgentEvent> {
+		const toolResultMessage: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: toolCall.id,
+			toolName: toolCall.name,
+			content: [{ type: "text", text: result.output }],
+			isError: result.isError === true,
+			timestamp: Date.now(),
+		};
+		const committedToolResult = (await this.commitMessage(toolResultMessage, ctx)) as ToolResultMessage;
+		toolResults.push(committedToolResult);
+		return { type: "tool_result", toolCall, result };
+	}
+
+	/** Sequential batch: the pre-P18 behavior — full hook chain, execute, result, one tool at a time. */
+	private async *runToolBatchSequential(
+		toolCalls: ToolCall[],
+		ctx: ExtensionContext,
+		signal: TauAbortSignal | undefined,
+		toolResults: ToolResultMessage[],
+	): AsyncGenerator<AgentEvent> {
+		for (const toolCall of toolCalls) {
+			yield { type: "tool_start", toolCall };
+			const updates: ToolUpdate[] = [];
+			let wakeUpdate: (() => void) | undefined;
+			let executionDone = false;
+			const execution = this.executeToolCall(toolCall, ctx, signal, (update) => {
+				updates.push(update);
+				wakeUpdate?.();
+				wakeUpdate = undefined;
+			});
+			execution.then(
+				() => {
+					executionDone = true;
+					wakeUpdate?.();
+					wakeUpdate = undefined;
+				},
+				() => {
+					executionDone = true;
+					wakeUpdate?.();
+					wakeUpdate = undefined;
+				},
+			);
+			while (!executionDone || updates.length > 0) {
+				const update = updates.shift();
+				if (update) {
+					yield { type: "tool_update", toolCall, partialOutput: update.partialOutput, stream: update.stream };
+					continue;
+				}
+				await new Promise<void>((resolve) => {
+					wakeUpdate = resolve;
+				});
+			}
+			const { result } = await execution;
+			yield await this.commitToolResult(toolCall, result, ctx, toolResults);
+		}
+	}
+
+	/**
+	 * Parallel batch (P18, structure mirrors pi executeToolCallsParallel):
+	 * phase 1 — preflight serially in source order (tool_call hook, validation,
+	 * policy/approval, tool_execution_start; immediate outcomes settle here);
+	 * phase 2 — execute prepared tools concurrently, tool_execution_end and
+	 * tool_update stream in completion/arrival order; phase 3 — tool results
+	 * commit to messages/session in assistant source order (stable wire order).
+	 * Deviation from pi: no break on abort mid-preflight — every tool call gets
+	 * a result (existing tau sequential semantics; tools observe the signal and
+	 * settle fast), keeping the wire's call/result pairing always complete.
+	 */
+	private async *runToolBatchParallel(
+		toolCalls: ToolCall[],
+		ctx: ExtensionContext,
+		signal: TauAbortSignal | undefined,
+		toolResults: ToolResultMessage[],
+	): AsyncGenerator<AgentEvent> {
+		const preps: ToolCallPreparation[] = [];
+		for (const toolCall of toolCalls) {
+			yield { type: "tool_start", toolCall };
+			preps.push(await this.preflightToolCall(toolCall, ctx, signal));
+		}
+
+		type PumpItem = { kind: "update"; toolCall: ToolCall; update: ToolUpdate } | { kind: "done" };
+		const pump: PumpItem[] = [];
+		let wake: (() => void) | undefined;
+		const push = (item: PumpItem): void => {
+			pump.push(item);
+			wake?.();
+			wake = undefined;
+		};
+		const outcomes: ToolResult[] = new Array(preps.length);
+		let running = 0;
+		preps.forEach((prep, index) => {
+			if (prep.kind === "immediate") {
+				outcomes[index] = prep.result;
+				return;
+			}
+			running++;
+			this.executePreparedToolCall(prep, ctx, signal, (update) => {
+				push({ kind: "update", toolCall: prep.toolCall, update });
+			}).then(
+				(result) => {
+					outcomes[index] = result;
+					running--;
+					push({ kind: "done" });
+				},
+				(cause) => {
+					outcomes[index] = { output: toError(cause).message, isError: true };
+					running--;
+					push({ kind: "done" });
+				},
+			);
+		});
+		while (running > 0 || pump.length > 0) {
+			const item = pump.shift();
+			if (item) {
+				if (item.kind === "update") {
+					yield {
+						type: "tool_update",
+						toolCall: item.toolCall,
+						partialOutput: item.update.partialOutput,
+						stream: item.update.stream,
+					};
+				}
+				continue;
+			}
+			await new Promise<void>((resolve) => {
+				wake = resolve;
+			});
+		}
+
+		for (let index = 0; index < preps.length; index++) {
+			yield await this.commitToolResult(preps[index].toolCall, outcomes[index], ctx, toolResults);
+		}
+	}
+
 	private async executeToolCall(
 		toolCall: ToolCall,
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 		onUpdate?: (update: ToolUpdate) => void,
 	): Promise<{ result: ToolResult }> {
+		const prep = await this.preflightToolCall(toolCall, ctx, signal);
+		if (prep.kind === "immediate") return { result: prep.result };
+		return { result: await this.executePreparedToolCall(prep, ctx, signal, onUpdate) };
+	}
+
+	/**
+	 * Serial preflight of one tool call: tool_call hook (block/rewrite),
+	 * argument validation, policy gate, approval, and — for calls that will
+	 * execute — the tool_execution_start notification. Immediate outcomes
+	 * (unknown tool, block, invalid args, deny) never see execution hooks.
+	 */
+	private async preflightToolCall(
+		toolCall: ToolCall,
+		ctx: ExtensionContext,
+		signal?: TauAbortSignal,
+	): Promise<ToolCallPreparation> {
 		const tool = this.currentTools().get(toolCall.name);
 		if (!tool) {
-			return { result: { output: `Unknown tool: ${toolCall.name}`, isError: true } };
+			return { kind: "immediate", toolCall, result: { output: `Unknown tool: ${toolCall.name}`, isError: true } };
 		}
 		// Execution works on a copy so tool_call handlers can rewrite arguments
 		// without mutating the stored assistant message.
@@ -879,6 +1029,8 @@ export class Agent {
 			const decision = await this.extensions.runToolCall(event, ctx);
 			if (decision.blocked) {
 				return {
+					kind: "immediate",
+					toolCall,
 					result: { output: `Tool call blocked: ${decision.reason ?? "blocked by extension"}`, isError: true },
 				};
 			}
@@ -890,6 +1042,8 @@ export class Agent {
 		const problems = validateToolArgs(tool.parameters, args);
 		if (problems.length > 0) {
 			return {
+				kind: "immediate",
+				toolCall,
 				result: { output: `Invalid arguments for ${toolCall.name}: ${problems.join("; ")}`, isError: true },
 			};
 		}
@@ -903,12 +1057,14 @@ export class Agent {
 		);
 		const riskText = policyDecision.reason ?? `${policyDecision.risk}-risk tool call in ${this.permissionMode} mode`;
 		if (policyDecision.action === "deny") {
-			return { result: { output: `Denied by policy: ${riskText}`, isError: true } };
+			return { kind: "immediate", toolCall, result: { output: `Denied by policy: ${riskText}`, isError: true } };
 		}
 		if (policyDecision.action === "ask") {
 			const handler = this.onApproval ?? this.uiApprovalHandler();
 			if (!handler) {
 				return {
+					kind: "immediate",
+					toolCall,
 					result: {
 						output: `Denied by policy: approval required (${riskText}), but no approval handler is available`,
 						isError: true,
@@ -926,14 +1082,33 @@ export class Agent {
 			try {
 				approved = await this.awaitApproval(handler, request, signal);
 			} catch (cause) {
-				return { result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true } };
+				return {
+					kind: "immediate",
+					toolCall,
+					result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true },
+				};
 			}
 			if (!approved) {
-				return { result: { output: `Denied by policy: approval declined (${riskText})`, isError: true } };
+				return {
+					kind: "immediate",
+					toolCall,
+					result: { output: `Denied by policy: approval declined (${riskText})`, isError: true },
+				};
 			}
 		}
 
 		await this.extensions?.notifyToolExecutionStart({ toolCallId: toolCall.id, toolName: toolCall.name, args }, ctx);
+		return { kind: "prepared", toolCall, tool, args };
+	}
+
+	/** Execute a prepared tool call: updates stream, tool_execution_end, tool_result hook. */
+	private async executePreparedToolCall(
+		prep: PreparedToolCall,
+		ctx: ExtensionContext,
+		signal?: TauAbortSignal,
+		onUpdate?: (update: ToolUpdate) => void,
+	): Promise<ToolResult> {
+		const { toolCall, tool, args } = prep;
 		const updateNotifications: Promise<void>[] = [];
 		const emitUpdate = (partialOutput: string, stream?: ToolUpdateStream): void => {
 			if (this.extensions) {
@@ -974,7 +1149,7 @@ export class Agent {
 			);
 			result = { output: finalResult.output, isError: finalResult.isError };
 		}
-		return { result };
+		return result;
 	}
 
 	/** Default approval handler over the host UI; no UI means no handler (ask degrades to deny). */

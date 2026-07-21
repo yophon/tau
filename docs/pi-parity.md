@@ -48,7 +48,7 @@
 | Themes | TUI 主题系统 | 📍Backlog（P8D-2 整体延期，任务细目在 phase-8 规格书） |
 | `/reload` 热重载扩展 | 运行时重载 | ✅ P8（host-node 扩展 registry 与 resources reload；theme reload 随 Themes 延期 Backlog） |
 | `registerProvider` | 自定义 LLM provider（anthropic-messages 等协议） | ✅P16（以扩展层兑现 D3 预留口，**形状有意偏离**：`AgentOptions.transport` 装配注入而非扩展事件——协议选择是宿主装配决策，不做运行中热换，理由记 D21；内核内置协议仍 OpenAI 兼容 only，D3 不推翻。首个适配包 `@yophon/tau-ext-provider-anthropic`，消息/事件/stop_reason/usage 映射照抄 pi anthropic-messages.ts + transform-messages.ts） |
-| `toolExecution` / `Tool.executionMode` 并行工具执行 | `packages/agent` 的 `ToolExecutionMode = "sequential" \| "parallel"`（**pi 默认 parallel**）：preflight 串行 → 执行并发 → `tool_execution_end` 完成序 → toolResult 消息源序；per-tool 可强制 sequential | 📍P18（tau 现仅移植 sequential 路径——2026-07-17 立项核对时发现的漏登缺口，非有意偏离） |
+| `toolExecution` / `Tool.executionMode` 并行工具执行 | `packages/agent` 的 `ToolExecutionMode = "sequential" \| "parallel"`（**pi 默认 parallel**）：preflight 串行 → 执行并发 → `tool_execution_end` 完成序 → toolResult 消息源序；任一 sequential 标注整批降级；pi 内置工具不标注，edit/write 走 per-file mutation queue | ✅ P18（照抄含默认值与分派语义；tau 的 mutation queue 为内核纯 ES 版，无 realpath 归一——symlink 别名不去重，已知偏差） |
 | Shell 流式输出（`onStdout`/`onStderr`） | pi ExecutionEnv 有，tau Shell.exec 简化掉了 | ✅ P2 |
 | 扩展带 npm 依赖（with-deps 模式） | 扩展是完整 npm 包 | ✅ P7（`@yophon/tau-ext-mcp` 依赖 `@modelcontextprotocol/sdk`；workspace 包纳入 check/test） |
 | 浏览器宿主 | pi 的浏览器能力与产品层/proxy 绑定更深；tau 只提供 host capability | ✅ P9（OPFS/内存 FileSystem；session 复用 pi v3 JSONL；CORS 转发 proxy 后补于 demo 服务器，密钥托管 proxy 推迟） |

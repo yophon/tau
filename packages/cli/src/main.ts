@@ -27,6 +27,7 @@ import {
 	type SessionStore,
 	sessionDirSlug,
 	type ThinkingLevel,
+	type ToolExecutionMode,
 	thinkingText,
 	type UiCapability,
 } from "@yophon/tau-kernel";
@@ -60,6 +61,10 @@ Options:
                          supervised asks before medium/high-risk tools;
                          headless (piped) runs deny instead of asking.
                          read-only registers only the read tool.
+      --tool-execution <mode>  sequential | parallel
+                         (default: parallel, pi's default; env: TAU_TOOL_EXECUTION).
+                         parallel runs a multi-tool batch concurrently after
+                         sequential preflight (hooks/approval stay ordered).
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
@@ -90,6 +95,7 @@ interface CliOptions {
 	contextWindow?: number;
 	pricing?: ModelPricing;
 	permissionMode?: PermissionMode;
+	toolExecution?: ToolExecutionMode;
 	sessionPath?: string;
 	noSession: boolean;
 	help: boolean;
@@ -174,6 +180,15 @@ function parseArgs(argv: string[]): CliOptions {
 				options.permissionMode = value;
 				break;
 			}
+			case "--tool-execution": {
+				const value = next();
+				if (!isToolExecutionMode(value)) {
+					console.error(`--tool-execution must be one of: ${TOOL_EXECUTION_MODES.join(", ")}`);
+					process.exit(1);
+				}
+				options.toolExecution = value;
+				break;
+			}
 			case "--session":
 				options.sessionPath = next();
 				break;
@@ -232,6 +247,12 @@ const PERMISSION_MODES: readonly PermissionMode[] = ["read-only", "supervised", 
 
 function isPermissionMode(value: string): value is PermissionMode {
 	return (PERMISSION_MODES as readonly string[]).includes(value);
+}
+
+const TOOL_EXECUTION_MODES: readonly ToolExecutionMode[] = ["sequential", "parallel"];
+
+function isToolExecutionMode(value: string): value is ToolExecutionMode {
+	return (TOOL_EXECUTION_MODES as readonly string[]).includes(value);
 }
 
 const PROVIDERS = ["openai", "anthropic"] as const;
@@ -684,6 +705,12 @@ async function main(): Promise<void> {
 	// Interactive hosts default to supervised (P15 user ruling) — the kernel's
 	// own default stays autonomous for library consumers.
 	permissionMode ??= "supervised";
+	let toolExecution = options.toolExecution;
+	if (!toolExecution && process.env.TAU_TOOL_EXECUTION) {
+		const value = process.env.TAU_TOOL_EXECUTION;
+		if (isToolExecutionMode(value)) toolExecution = value;
+		else console.error(`Ignoring TAU_TOOL_EXECUTION="${value}" (expected one of: ${TOOL_EXECUTION_MODES.join(", ")})`);
+	}
 	const envMaxRetries = Number.parseInt(process.env.TAU_MAX_RETRIES ?? "", 10);
 	const envRetryDelay = Number.parseInt(process.env.TAU_RETRY_BASE_DELAY_MS ?? "", 10);
 	const retry = {
@@ -813,6 +840,7 @@ async function main(): Promise<void> {
 			retry,
 			pricing,
 			permissionMode,
+			toolExecution,
 			onApproval,
 		});
 	let agent = buildAgent(initialMessages, recorder);

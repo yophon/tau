@@ -10,6 +10,9 @@ export interface ToolResult {
 
 export type ToolUpdateStream = "stdout" | "stderr";
 
+/** Mirrors pi's ToolExecutionMode (agent/types.ts). */
+export type ToolExecutionMode = "sequential" | "parallel";
+
 export interface Tool extends ToolDefinition {
 	/**
 	 * Self-declared risk consulted by the default policy for tools without
@@ -17,6 +20,14 @@ export interface Tool extends ToolDefinition {
 	 * tool names (read/write/edit/bash) are classified by the policy itself.
 	 */
 	risk?: RiskLevel;
+	/**
+	 * pi semantics: "sequential" means this tool must execute one at a time —
+	 * any such tool in a batch downgrades the whole batch to sequential
+	 * execution (pi agent-loop.ts dispatch). Absent = follows the agent's
+	 * toolExecution mode (default parallel). Built-in tools stay unmarked,
+	 * mirroring pi: write/edit rely on the per-file mutation queue instead.
+	 */
+	executionMode?: ToolExecutionMode;
 	execute(
 		args: Record<string, unknown>,
 		signal?: TauAbortSignal,

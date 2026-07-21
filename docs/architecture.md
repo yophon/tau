@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-07-20（P17 验证矩阵收窄：smoke:quickjs:legacy 老引擎门禁 + polyfills 单源化 + smoke:dialects 方言冒烟）
+> 最后更新：2026-07-20（P18 工具并行执行：批次分派 + preflight 串行/执行并发事件序契约 + write/edit per-file mutation queue，D22）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -79,7 +79,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
   - `resources_discover`：扩展提供额外 skills/prompts/themes 路径；registry 按注册顺序汇总，资源加载由扩展包消费
   - `session_before_compact`（可取消 / 可返回 result 接管压缩）/ `session_compact`；ExtensionContext 提供 `getContextUsage()` 与 `compact()`（请求下轮前压缩）
   - `session_before_fork`（entry-targeted fork 前可取消）/ `session_before_tree`（树导航前可取消或接管摘要）/ `session_tree`（导航完成通知）
-- **单轮事件全序**（有约束力，hooks.test.ts 断言）：`turn_start → context → message_start → message_update* → message_end → 每工具 [tool_call → tool_execution_start → tool_execution_update* → tool_execution_end → tool_result] → 消费 steering → turn_end`；`input → before_agent_start → agent_start` 在循环前。
+- **单轮事件全序**（有约束力，hooks.test.ts / parallel-tools.test.ts 断言）：`turn_start → context → message_start → message_update* → message_end → 工具批次 → 消费 steering → turn_end`；`input → before_agent_start → agent_start` 在循环前。工具批次分两种（P18，pi 语义）：**sequential**（显式配置，或批次内任一工具标 `executionMode:"sequential"`）= 每工具 `[tool_call → tool_execution_start → tool_execution_update* → tool_execution_end → tool_result]` 严格串行；**parallel**（默认，照抄 pi）= `[tool_call → tool_execution_start]` 按 assistant 源序逐个 preflight（钩子/校验/策略/审批不并发），然后执行并发——`tool_execution_update`/`tool_execution_end` 按完成序交错，最后 toolResult 消息按**源序**入对话与 wire（会话文件与 sequential 模式不可区分）。write/edit 内置同文件互斥（per-file mutation queue，键为词法规范化路径）。
 - 处理器按注册顺序链式执行，transform/替换串联，block/handled 短路。
 - `registerTool(tool)`（同名后注册者覆盖）、`registerCommand(name, options)`、`registerFlag(name, options)`/`getFlag(name)`（值由宿主 `setFlagValues` 提供）。
 - `ExtensionContext.capabilities` 暴露宿主 facade：`fs?` / `shell?` / `platform`；`Tool.execute` 第四参收到同一个 ctx。Agent 每次请求与工具执行动态合并当前 extension tools，因此 `session_start` 等异步初始化后注册的工具也能参与后续 turn。

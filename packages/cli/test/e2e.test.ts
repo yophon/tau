@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { mockTextTurn, mockToolCallTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
+import {
+	mockMultiToolCallTurn,
+	mockTextTurn,
+	mockToolCallTurn,
+	startMockOpenAI,
+} from "../../../test-fixtures/mock-openai.ts";
 
 const CLI_PATH = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 
@@ -135,6 +140,49 @@ test("CLI runs a full tool round-trip against a mock provider", async () => {
 			await cli.waitForExit();
 			assert.ok(cli.output().includes("tool said: e2e-roundtrip-ok"), cli.output());
 			assert.equal(mock.requests.length, 2);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("parallel tool batch executes concurrently and keeps wire order stable (P18)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		// 并发判定用跨进程信号：call_1 轮询等 call_2 创建的 flag 文件（上限 5s 后放行），
+		// call_2 立即创建 flag。并行 → call_1 亚秒完成；串行 → call_1 空转满 5s。
+		// 断言总时长 < 4.5s（含 CLI 启动 1–2s），串行必然超过 6s——判据方向性强且余量足。
+		const mock = await startMockOpenAI([
+			() =>
+				mockMultiToolCallTurn([
+					{
+						name: "bash",
+						args: { command: "for i in $(seq 1 100); do [ -f flag ] && break; sleep 0.05; done; echo t1" },
+					},
+					{ name: "bash", args: { command: "touch flag && echo t2" } },
+				]),
+			(request) => {
+				const messages = request.messages as { role: string; content: string | null }[];
+				const toolOutputs = messages
+					.filter((m) => m.role === "tool")
+					.map((m) => (m.content ?? "").trim())
+					.join(",");
+				return mockTextTurn(`tools: ${toolOutputs}`);
+			},
+		]);
+		try {
+			const started = Date.now();
+			const cli = startCli(["-p", "run them"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			const elapsed = Date.now() - started;
+			assert.ok(elapsed < 4500, `expected concurrent execution, took ${elapsed}ms`);
+			// tool 消息按 assistant 源序上 wire（t1,t2），与完成序（t2 先）无关
+			assert.ok(cli.output().includes("tools: t1,t2"), cli.output());
+			assert.equal(mock.requests.length, 2);
+			const secondRequest = mock.requests[1] as { messages: { role: string; tool_call_id?: string }[] };
+			assert.deepEqual(
+				secondRequest.messages.filter((m) => m.role === "tool").map((m) => m.tool_call_id),
+				["call_1", "call_2"],
+			);
 		} finally {
 			await mock.close();
 		}

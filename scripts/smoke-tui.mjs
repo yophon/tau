@@ -24,6 +24,7 @@ async function main() {
 		await runExtensionAndReloadSmoke(root, mock.baseUrl);
 		await runSelectorSmoke(root, mock.baseUrl);
 		await runExtensionAbortSmoke(root, mock.baseUrl);
+		await runParallelToolsSmoke(root, mock.baseUrl);
 		await runPricingFooterSmoke(root, mock.baseUrl);
 		await runApprovalSmoke(root, mock.baseUrl);
 		await runTrustDigestSmoke(root, mock.baseUrl);
@@ -316,6 +317,30 @@ class TmuxSession {
 	}
 }
 
+// P18 验收：一批两个 bash 工具并发执行——快工具（PAR_B）在慢工具（PAR_A，1s）
+// 仍在跑时就完成并渲染，两张工具卡片互不串扰；全部完成后模型收到两个结果收尾。
+async function runParallelToolsSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "parallel-tools", true);
+	const session = await startTui("parallel-tools", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau", 10_000);
+		await session.send("parallel smoke", "Enter");
+		// 快工具先完成——此刻慢工具必然未完成（1s sleep），即并发证据
+		await session.waitFor("PAR_B_2", 10_000);
+		const midway = await session.capture();
+		if (midway.includes("PAR_A_2")) {
+			throw new Error(`slow tool finished before fast tool rendered — no concurrency evidence:\n${midway}`);
+		}
+		await session.waitFor("PAR_A_2", 10_000);
+		await session.waitFor("SMOKE_PARALLEL_DONE", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok parallel tools");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P14 验收：mock provider 返回 usage，TAU_PRICING 注入单价后 footer 显示真实成本
 // （2M input × $0.5/MTok + 1M output × $2/MTok = $3.0000）；无 pricing 时为 "cost unknown"。
 async function runPricingFooterSmoke(root, baseUrl) {
@@ -471,6 +496,12 @@ async function startMockOpenAI() {
 
 function responseFor(request) {
 	const messages = Array.isArray(request.messages) ? request.messages : [];
+	const toolContents = messages
+		.filter((message) => message.role === "tool")
+		.map((message) => String(message.content ?? ""));
+	if (toolContents.some((c) => c.includes("PAR_A_2")) && toolContents.some((c) => c.includes("PAR_B_2"))) {
+		return textTurn("SMOKE_PARALLEL_DONE");
+	}
 	const lastMessage = messages.at(-1);
 	if (lastMessage?.role === "tool") {
 		const content = String(lastMessage.content ?? "");
@@ -495,6 +526,33 @@ function responseFor(request) {
 		});
 	}
 	if (content.includes("custom smoke tool")) return toolCallTurn("smoke_tool", {});
+	if (content.includes("parallel smoke")) {
+		return {
+			payloads: [
+				{
+					choices: [
+						{
+							delta: {
+								tool_calls: [
+									{
+										index: 0,
+										id: "call_par_a",
+										function: { name: "bash", arguments: '{"command":"sleep 1 && echo PAR_A_$((1+1))"}' },
+									},
+									{
+										index: 1,
+										id: "call_par_b",
+										function: { name: "bash", arguments: '{"command":"echo PAR_B_$((1+1))"}' },
+									},
+								],
+							},
+							finish_reason: "tool_calls",
+						},
+					],
+				},
+			],
+		};
+	}
 	if (content.includes("ext abort smoke")) {
 		return { payloads: [{ choices: [{ delta: { content: "EXT_ABORT_TRIGGER " } }] }], hold: true };
 	}

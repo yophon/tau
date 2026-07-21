@@ -224,6 +224,7 @@ export {
 	optionalNumber,
 	requireString,
 	type Tool,
+	type ToolExecutionMode,
 	type ToolResult,
 	validateToolArgs,
 } from "./tools.ts";

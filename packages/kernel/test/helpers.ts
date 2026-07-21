@@ -168,3 +168,23 @@ export function toolCallTurn(name: string, args: Record<string, unknown>): unkno
 export function textTurn(text: string): unknown[] {
 	return [{ choices: [{ delta: { content: text }, finish_reason: "stop" }] }];
 }
+
+/** SSE payloads for a turn requesting several tool calls in one batch (P18). */
+export function multiToolCallTurn(calls: { name: string; args?: Record<string, unknown>; id?: string }[]): unknown[] {
+	return [
+		{
+			choices: [
+				{
+					delta: {
+						tool_calls: calls.map((call, index) => ({
+							index,
+							id: call.id ?? `call_${index + 1}`,
+							function: { name: call.name, arguments: JSON.stringify(call.args ?? {}) },
+						})),
+					},
+					finish_reason: "tool_calls",
+				},
+			],
+		},
+	];
+}

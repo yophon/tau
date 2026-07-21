@@ -31,6 +31,7 @@
 6. **不擅自 commit**：commit 前询问用户。
 7. **文档即接口**：行为与文档冲突时，要么改代码要么改文档，不允许悬置。发现文档间不一致，当场修。
 8. **适配器信号桥接义务**（P10，原技术债 #7）：内核造的 `TauAbortSignal` 是结构子集，原生传输层普遍拒收（undici/expo fetch 要真 `AbortSignal`；wx 要 `RequestTask.abort()`）。写新 `Platform` 适配器必须按需双向桥接，且 abort 后 pending read 必须 reject（abort 才能传回内核转成 aborted 消息）。参照实现：kernel `platform.ts` 的 `bridgeSignal`、`host-rn`（正向）、`host-weapp`（反向）。
+9. **扩展工具默认并发执行**（P18/D22）：多工具批次默认 parallel，工具 `execute` 可能与同批其他工具并发跑——execute 内部的共享状态与主动 `ctx.ui` 调用由工具作者自负并发安全；需要独占执行的工具声明 `executionMode: "sequential"`（整批降级）。preflight（tool_call 钩子/审批）恒串行，无需担心审批并发。
 
 ## 阶段执行流程（每个 Phase 依此走完）
 

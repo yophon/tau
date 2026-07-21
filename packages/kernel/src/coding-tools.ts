@@ -32,6 +32,43 @@ function wrapExecute(execute: Tool["execute"]): Tool["execute"] {
 	};
 }
 
+// ---- Per-file mutation queue (P18, mirrors pi coding-agent file-mutation-queue.ts) ----
+// Serializes write/edit targeting the same file while different files run in
+// parallel — pi's answer to concurrent tool batches instead of marking the
+// tools sequential. Deviation from pi: no host realpath in the kernel, so the
+// key is a lexically normalized path — symlink aliases of the same file are
+// not deduplicated (documented in the P18 spec).
+const fileMutationQueues = new Map<string, Promise<void>>();
+
+function mutationQueueKey(path: string): string {
+	const isAbsolute = path.startsWith("/");
+	const segments: string[] = [];
+	for (const segment of path.split("/")) {
+		if (segment === "" || segment === ".") continue;
+		if (segment === ".." && segments.length > 0 && segments[segments.length - 1] !== "..") segments.pop();
+		else segments.push(segment);
+	}
+	return (isAbsolute ? "/" : "") + segments.join("/");
+}
+
+async function withFileMutationQueue<T>(path: string, fn: () => Promise<T>): Promise<T> {
+	const key = mutationQueueKey(path);
+	const previous = fileMutationQueues.get(key) ?? Promise.resolve();
+	let release!: () => void;
+	const gate = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	const tail = previous.then(() => gate);
+	fileMutationQueues.set(key, tail);
+	await previous;
+	try {
+		return await fn();
+	} finally {
+		release();
+		if (fileMutationQueues.get(key) === tail) fileMutationQueues.delete(key);
+	}
+}
+
 function createReadTool(fs: FileSystem): Tool {
 	return {
 		name: "read",
@@ -79,7 +116,7 @@ function createWriteTool(fs: FileSystem): Tool {
 			const path = requireString(args, "path");
 			const content = args.content;
 			if (typeof content !== "string") return errorResult('Missing or invalid required string argument "content"');
-			await fs.writeTextFile(path, content);
+			await withFileMutationQueue(path, () => fs.writeTextFile(path, content));
 			return { output: `Wrote ${content.length} characters to ${path}` };
 		}),
 	};
@@ -103,14 +140,16 @@ function createEditTool(fs: FileSystem): Tool {
 			const oldText = requireString(args, "oldText");
 			const newText = args.newText;
 			if (typeof newText !== "string") return errorResult('Missing or invalid required string argument "newText"');
-			const content = await fs.readTextFile(path);
-			const occurrences = countOccurrences(content, oldText);
-			if (occurrences === 0) return errorResult(`oldText not found in ${path}`);
-			if (occurrences > 1) {
-				return errorResult(`oldText matches ${occurrences} locations in ${path}; add context to make it unique`);
-			}
-			await fs.writeTextFile(path, content.replace(oldText, newText));
-			return { output: `Edited ${path}` };
+			return withFileMutationQueue(path, async () => {
+				const content = await fs.readTextFile(path);
+				const occurrences = countOccurrences(content, oldText);
+				if (occurrences === 0) return errorResult(`oldText not found in ${path}`);
+				if (occurrences > 1) {
+					return errorResult(`oldText matches ${occurrences} locations in ${path}; add context to make it unique`);
+				}
+				await fs.writeTextFile(path, content.replace(oldText, newText));
+				return { output: `Edited ${path}` };
+			});
 		}),
 	};
 }

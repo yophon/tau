@@ -5,6 +5,16 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel/CLI/TUI: multi-tool batches now execute **in parallel by default**
+  (P18, pi's `ToolExecutionMode` default). Preflight (extension `tool_call`
+  hooks, validation, policy/approval) stays sequential in assistant source
+  order and tool results still land on the wire in source order, but
+  `tool_execution_update`/`tool_execution_end` extension events and TUI tool
+  cards now interleave in completion order. Event-order observers (extensions,
+  renderers) that assumed strict per-tool sequencing are affected. Restore the
+  old behavior with `AgentOptions.toolExecution: "sequential"`,
+  `--tool-execution sequential`, or `TAU_TOOL_EXECUTION=sequential`; a tool
+  marked `executionMode: "sequential"` downgrades its whole batch.
 - Kernel: `runCompaction`, `generateSummary`, `completeText`, and
   `generateBranchSummary` now take a `ChatTransport` instead of
   `(platform, config)` (P16); `generateBranchSummary` reads the token budget
