@@ -8,7 +8,7 @@
 // for any client holding the token. LAN + token is the only barrier — do not
 // expose this beyond a trusted network.
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readdir, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { networkInterfaces } from "node:os";
@@ -16,22 +16,34 @@ import { dirname, resolve, sep } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { CallToolRequestSchema, isInitializeRequest, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import { startQuickTunnel } from "./tunnel.mjs";
 
 const MAX_OUTPUT_CHARS = 64_000;
 const COMMAND_TIMEOUT_MS = 120_000;
 
 function parseArgs(argv) {
-	const options = { dir: process.cwd(), port: 8720, host: "0.0.0.0", token: process.env.MCP_TOKEN };
+	// Default host is loopback since P19 (breaking change from 0.0.0.0): the
+	// remote story is a tunnel over 127.0.0.1; LAN exposure is an explicit
+	// opt-in (--host 0.0.0.0) that the banner warns about.
+	const options = { dir: process.cwd(), port: 8720, host: "127.0.0.1", token: process.env.MCP_TOKEN, tunnel: false };
 	for (let i = 2; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--dir") options.dir = argv[++i];
 		else if (arg === "--port") options.port = Number(argv[++i]);
 		else if (arg === "--host") options.host = argv[++i];
 		else if (arg === "--token") options.token = argv[++i];
+		else if (arg === "--tunnel") options.tunnel = true;
 		else {
-			console.error(`Unknown argument: ${arg}\nUsage: node server.mjs [--dir <path>] [--port <n>] [--host <ip>] [--token <secret>]`);
+			console.error(
+				`Unknown argument: ${arg}\nUsage: node server.mjs [--dir <path>] [--port <n>] [--host <ip>] [--token <secret>] [--tunnel]`,
+			);
 			process.exit(1);
 		}
+	}
+	if (options.tunnel && options.host !== "127.0.0.1") {
+		// The tunnel is the exposure surface; a wider bind would silently add a second one.
+		console.error(`--tunnel implies --host 127.0.0.1 (ignoring --host ${options.host})`);
+		options.host = "127.0.0.1";
 	}
 	return options;
 }
@@ -165,12 +177,53 @@ function reject(res, status, message) {
 	res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: -32000, message }, id: null }));
 }
 
+// ---- Auth hardening (P19): the token is the only barrier once tunneled ----
+// Constant-time comparison via sha256 digests (equal length by construction,
+// so timingSafeEqual applies and token length never leaks).
+const tokenDigest = createHash("sha256").update(token).digest();
+function tokenMatches(header) {
+	if (typeof header !== "string" || !header.startsWith("Bearer ")) return false;
+	const presented = createHash("sha256").update(header.slice("Bearer ".length)).digest();
+	return timingSafeEqual(presented, tokenDigest);
+}
+
+// Per-IP exponential backoff against online token brute force: after
+// AUTH_FAIL_THRESHOLD consecutive failures, further attempts are refused for
+// 2^n seconds (capped) — a success clears the slate. In-memory by design
+// (resets on restart; the threat model is a single token being ground down).
+const AUTH_FAIL_THRESHOLD = 5;
+const AUTH_LOCK_CAP_MS = 60_000;
+const authFailures = new Map();
+function authLockedMs(ip, now) {
+	const entry = authFailures.get(ip);
+	return entry && entry.lockedUntil > now ? entry.lockedUntil - now : 0;
+}
+function recordAuthFailure(ip, now) {
+	const entry = authFailures.get(ip) ?? { failures: 0, lockedUntil: 0 };
+	entry.failures++;
+	if (entry.failures >= AUTH_FAIL_THRESHOLD) {
+		const lockMs = Math.min(2 ** (entry.failures - AUTH_FAIL_THRESHOLD + 1) * 1000, AUTH_LOCK_CAP_MS);
+		entry.lockedUntil = now + lockMs;
+	}
+	authFailures.set(ip, entry);
+}
+
 const httpServer = createServer(async (req, res) => {
 	try {
-		if (req.headers.authorization !== `Bearer ${token}`) {
+		const ip = req.socket.remoteAddress ?? "unknown";
+		const now = Date.now();
+		const lockedMs = authLockedMs(ip, now);
+		if (lockedMs > 0) {
+			res.setHeader("retry-after", String(Math.ceil(lockedMs / 1000)));
+			reject(res, 429, "Too many failed authentication attempts; retry later");
+			return;
+		}
+		if (!tokenMatches(req.headers.authorization)) {
+			recordAuthFailure(ip, now);
 			reject(res, 401, "Unauthorized: missing or invalid bearer token");
 			return;
 		}
+		authFailures.delete(ip);
 		const sessionId = req.headers["mcp-session-id"];
 		const existing = typeof sessionId === "string" ? transports.get(sessionId) : undefined;
 		if (existing) {
@@ -206,7 +259,7 @@ function lanAddresses() {
 		.map((iface) => iface.address);
 }
 
-httpServer.listen(options.port, options.host, () => {
+httpServer.listen(options.port, options.host, async () => {
 	const actualPort = httpServer.address().port; // differs from options.port when --port 0 (e2e)
 	const hosts = options.host === "0.0.0.0" ? lanAddresses() : [options.host];
 	console.log("tau Flutter demo — computer-side MCP server");
@@ -216,7 +269,30 @@ httpServer.listen(options.port, options.host, () => {
 	}
 	console.log(`  token          : ${token}`);
 	console.log("");
-	console.log("⚠ run_command executes arbitrary shell commands in the work directory for");
-	console.log("  any client holding this token. LAN + token is the only barrier — do not");
-	console.log("  expose this server beyond a trusted network.");
+	if (options.host === "127.0.0.1" && !options.tunnel) {
+		console.log("ℹ Listening on loopback only (the safe default). Reach it from a phone via");
+		console.log("  --tunnel (Cloudflare Quick Tunnel, no account) or --host 0.0.0.0 for LAN.");
+	}
+	if (options.host !== "127.0.0.1") {
+		console.log("⚠ run_command executes arbitrary shell commands in the work directory for");
+		console.log("  any client holding this token. Network reach + token is the only barrier —");
+		console.log("  never expose this server beyond a trusted network.");
+	}
+	if (options.tunnel) {
+		console.log("  starting Cloudflare Quick Tunnel (no account; URL changes every start) ...");
+		try {
+			const { url } = await startQuickTunnel(actualPort, {
+				onExit: (code) => console.error(`⚠ cloudflared exited (code ${code}); the public URL is dead. Restart to get a new one.`),
+			});
+			console.log("");
+			console.log(`  public URL     : ${url}`);
+			console.log(`  token          : ${token}`);
+			console.log("  Enter both in the phone app's settings. The URL is public internet —");
+			console.log("  the token is the only barrier, and run_command is remote code execution.");
+			console.log("  Treat the token like a password and rotate it when in doubt.");
+		} catch (cause) {
+			console.error(cause instanceof Error ? cause.message : String(cause));
+			process.exit(1);
+		}
+	}
 });

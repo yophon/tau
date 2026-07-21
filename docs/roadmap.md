@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-07-21（P17 收口完成——真端点方言 PASS + Android 三路径真机补验；**P0–P18 全部 ✅**，无排期阶段，候选见 Backlog）
+> 最后更新：2026-07-21（P19 公网远程访问动工并完成实现：mcp-server `--tunnel` Quick Tunnel + 认证硬化；余真机蜂窝 e2e 一项；P0–P18 全部 ✅）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -180,6 +180,12 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录（2026-07-20）**：211 测试全绿（+8 内核 parallel-tools.test.ts：并发重叠（deferred 信号非计时）、显式 sequential 全序、sequential 标注整批降级、start 源序/end 完成序/toolResult 源序、错误隔离、钩子 block 局部生效、abort 后每 call 恒有结果、write 同文件互斥异文件并行）；CLI e2e +1（flag 文件跨进程信号证并发 + wire tool 消息源序断言）；smoke:tui 新增 parallel tools 场景（快工具卡片先渲染时慢工具未完成为并发证据，九场景全过）。内核：`ToolExecutionMode`/`Tool.executionMode`/`AgentOptions.toolExecution`（默认 parallel）；`executeToolCall` 拆 `preflightToolCall`（串行段：钩子/校验/策略/审批/execution_start）+ `executePreparedToolCall`（并发段）；批次分派照抄 pi（任一 sequential 整批降级）；coding-tools 增纯 ES per-file mutation queue（write/edit 包裹）。CLI：`--tool-execution`/`TAU_TOOL_EXECUTION`（flag 非法即退出、env 非法警告降级）。与规格偏差：无（规格草拟期两处误读在实现前重读 pi 时已按实况修订并记录——分派语义、内置工具标注策略）；有意偏离 pi 一处（abort 不 break preflight，保 wire 配对完整，记 D22）。CHANGELOG 醒目标注默认行为变更。
 
+## Phase 19 🚧 公网远程访问（cloudflared Quick Tunnel）
+
+规格书：[specs/phase-19-remote-access.md](specs/phase-19-remote-access.md)（已确认；范围经用户两轮收窄——只做 Quick Tunnel 单路线，frp/SSH/Tailscale 指南与扫码配对等全部出局；参考调研 hello-halo（抄其路线）与 orca（反面参照，验证不自建中继））。
+
+**进展记录（2026-07-21）**：实现全部落地——mcp-server `--tunnel`（spawn 系统 cloudflared，URL 解析纯函数 + 3 单测，退出联动无残留实测，缺二进制报错含安装提示 exit 1）；硬化三项（`--host` 默认收紧 127.0.0.1 **破坏性变更**、sha256+timingSafeEqual 常数时间 token 比较、按 IP 认证失败指数退避锁定 5 次起封顶 60s）；`smoke:quickjs:mcp` 增认证断言（401×5 → 429+retry-after → 锁定期内正确 token 也拒 → 冷却后恢复通行）；本地真隧道实测（brew 装 cloudflared，公网 trycloudflare URL 完整 MCP 回路：initialize/session 头透传/read_file 中文内容原样回流，SSE 无缓冲问题）；README 两处 + phase-13/architecture 补注。**待办**：真机蜂窝 e2e（用户执行：手机关 Wi-Fi，app 填 trycloudflare URL + token 跑完整工具回路含审批弹窗）。
+
 ## 未排期（Backlog）
 
 > **P0–P18 全部 ✅（2026-07-21）**——路线图无排期阶段，本表为未排期候选；立项时按 development.md 流程先写规格书经用户确认。
@@ -191,7 +197,7 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 - **Flutter 会话持久化**：手机对话现在仅内存、重开即清。落 pi v3 JSONL over Dart FileSystem 桥，补"重开恢复"（与 iOS 锁屏冻结的产品约束配套）。
 - **TUI Themes**（P8D-2 整体延期）：schema 设计、内置 light/dark、加载入口、reload 刷新，任务细目在 phase-8 规格书。
 - **`@tau/pi-compat` 垫片**（D9）：让 pi 社区扩展直接跑在 tau 上，扩大生态。
-- **公网/中转/内网穿透**：Flutter 现仅局域网，走出去需中转层（可基于 browser demo 的 `/proxy` 扩展）。
+- ~~公网/中转/内网穿透~~ → **P19 立项并完成实现（2026-07-21，见下方 Phase 19）**。
 
 ### C. 已裁决推迟
 

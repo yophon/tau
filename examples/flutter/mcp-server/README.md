@@ -10,7 +10,27 @@ node server.mjs --dir ~/code/my-project
 # 打印局域网 endpoint 与 token，手机 app 设置页照抄填入
 ```
 
-参数：`--dir`（工具的工作目录边界，默认 cwd）、`--port`（默认 8720）、`--host`（默认 0.0.0.0 供局域网访问）、`--token`（默认随机生成；也可用环境变量 `MCP_TOKEN`）。
+参数：`--dir`（工具的工作目录边界，默认 cwd）、`--port`（默认 8720）、`--host`（**默认 127.0.0.1**，P19 起的安全默认——局域网访问需显式 `--host 0.0.0.0`）、`--token`（默认随机生成；也可用环境变量 `MCP_TOKEN`）、`--tunnel`（Cloudflare Quick Tunnel，见下）。
+
+> **破坏性变更（P19）**：`--host` 默认从 `0.0.0.0` 收紧为 `127.0.0.1`。手机走局域网直连的旧用法现在需要显式 `--host 0.0.0.0`。
+
+## 走出局域网（`--tunnel`）
+
+```bash
+brew install cloudflared        # 一次性；Linux 见 cloudflared 官方下载页
+node server.mjs --dir ~/code/my-project --tunnel
+# 横幅打印 https://<随机词>.trycloudflare.com 公网 URL + token，手机 app 设置页照抄
+```
+
+Cloudflare **Quick Tunnel**：免账号、免 VPS、免域名、免证书，TLS 由 Cloudflare 终结。实测 MCP Streamable HTTP 的 SSE 响应过隧道不被缓冲（含中文内容）。
+
+预期管理与安全须知：
+
+- **URL 每次重启都变**（随机子域名）——重启后手机要重填。想要固定域名需 Cloudflare 账号 + named tunnel（本示例不做）。
+- Quick Tunnel **无 SLA**，流量经 Cloudflare 基础设施——适合个人使用，别当生产依赖。
+- 公网 URL 下 **token 是唯一防线**，而 `run_command` 是远程代码执行。像对待密码一样对待 token，怀疑泄露立即重启换新；`--dir` 按最小暴露原则选（别指向 `~`）。
+- 服务端已内置：常数时间 token 比较、认证失败按 IP 指数退避锁定（5 次起，封顶 60s）。这些是缓解不是豁免——上一条仍然成立。
+- `--tunnel` 强制只听 `127.0.0.1`（隧道即全部暴露面）；cloudflared 随服务退出自动终止。
 
 > 在 tau 仓库内运行时可跳过 `npm install`（依赖解析命中仓库根的 node_modules）。
 

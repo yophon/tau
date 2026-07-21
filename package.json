@@ -28,7 +28,7 @@
 		"smoke:dialects": "node scripts/smoke-dialects.mjs",
 		"smoke:tui": "node scripts/smoke-tui.mjs",
 		"smoke:weapp": "node scripts/build-weapp-demo.mjs --check",
-		"test": "node --test packages/kernel/test/*.test.ts packages/host-node/test/*.test.ts packages/host-browser/test/*.test.ts packages/host-weapp/test/*.test.ts packages/host-rn/test/*.test.ts packages/cli/test/*.test.ts packages/ext-subagents/test/*.test.ts packages/ext-mcp/test/*.test.ts packages/ext-mcp-http/test/*.test.ts packages/ext-provider-anthropic/test/*.test.ts packages/ext-resources/test/*.test.ts",
+		"test": "node --test packages/kernel/test/*.test.ts packages/host-node/test/*.test.ts packages/host-browser/test/*.test.ts packages/host-weapp/test/*.test.ts packages/host-rn/test/*.test.ts packages/cli/test/*.test.ts packages/ext-subagents/test/*.test.ts packages/ext-mcp/test/*.test.ts packages/ext-mcp-http/test/*.test.ts packages/ext-provider-anthropic/test/*.test.ts packages/ext-resources/test/*.test.ts examples/flutter/mcp-server/test/*.test.mjs",
 		"tau": "node --disable-warning=ExperimentalWarning packages/cli/src/main.ts",
 		"version:major": "npm version major -ws --no-git-tag-version --ignore-scripts --no-workspaces-update && node scripts/sync-versions.mjs && npm install --package-lock-only --ignore-scripts && npm run shrinkwrap:cli",
 		"version:minor": "npm version minor -ws --no-git-tag-version --ignore-scripts --no-workspaces-update && node scripts/sync-versions.mjs && npm install --package-lock-only --ignore-scripts && npm run shrinkwrap:cli",

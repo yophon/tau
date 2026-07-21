@@ -4,6 +4,17 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### ⚠ Breaking
+- examples/flutter/mcp-server (not an npm package): `--host` now defaults to
+  `127.0.0.1` (P19). LAN access needs an explicit `--host 0.0.0.0`; the new
+  `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
+
+### Added
+- examples/flutter/mcp-server: `--tunnel` — spawns the system `cloudflared`
+  for a public https Quick Tunnel URL (printed with the token for the phone
+  app); auth hardening (constant-time token compare, per-IP exponential
+  lockout after repeated failures).
+
 ## [0.2.0] - 2026-07-21
 
 ### ⚠ Breaking

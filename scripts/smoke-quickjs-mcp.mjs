@@ -133,6 +133,40 @@ while (raw === "(pending)") {
 }
 context.dispose();
 runtime.dispose();
+
+// ---- P19 认证硬化断言（放在主链路后，锁定不影响上面的 e2e）----
+// 错 token 401 ×5 → 触发锁定 → 第 6 次 429（含 retry-after）→ 冷却期内正确
+// token 也 429（锁定是真锁定）→ 冷却过后正确 token 恢复通行。
+const initBody = JSON.stringify({
+	jsonrpc: "2.0",
+	id: 1,
+	method: "initialize",
+	params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "auth-probe", version: "0" } },
+});
+async function mcpPost(bearer) {
+	return fetch(mcpUrl, {
+		method: "POST",
+		headers: {
+			authorization: `Bearer ${bearer}`,
+			"content-type": "application/json",
+			accept: "application/json, text/event-stream",
+		},
+		body: initBody,
+	});
+}
+for (let i = 0; i < 5; i++) {
+	const res = await mcpPost("wrong-token");
+	if (res.status !== 401 && res.status !== 429) fail(`auth probe ${i}: expected 401/429, got ${res.status}`);
+}
+const locked = await mcpPost("wrong-token");
+if (locked.status !== 429) fail(`expected 429 during lockout, got ${locked.status}`);
+if (!locked.headers.get("retry-after")) fail("lockout response must carry retry-after");
+const lockedCorrect = await mcpPost("smoke-token");
+if (lockedCorrect.status !== 429) fail(`lockout must also refuse the correct token, got ${lockedCorrect.status}`);
+await new Promise((resolve) => setTimeout(resolve, 4_200)); // 连续失败后锁定最长 2^2s，等它过期
+const recovered = await mcpPost("smoke-token");
+if (recovered.status !== 200) fail(`correct token must recover after cooldown, got ${recovered.status}`);
+
 mcpServer.kill();
 llmServer.close();
 

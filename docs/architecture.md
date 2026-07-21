@@ -126,7 +126,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - `examples/flutter/mcp-server/`：零 tau 依赖的 Node MCP server（read_file/write_file/list_dir/run_command，工作目录边界 + Bearer token），兼任 e2e fixture，可换成任何 Streamable HTTP MCP server。
 - **两个 flutter_js 实测差异**（引擎选型 spike，见 D18）：① onMessage 通道预先 jsonDecode（Dart 收 Map 非字符串）；② 内置 QuickJS 版本旧缺 `Array.prototype.at` 等 ES2022+ 内置——宿主层在内核加载前 guarded 补齐（polyfill 单源于 `test-fixtures/quickjs/polyfills.ts`，P17 起与 `smoke:quickjs:legacy` 门禁同源），内核保持干净 ES2022。
 - 裸引擎门禁 `smoke:quickjs:mcp`（入 CI）：QuickJS 内核 + ext-mcp-http 经 `test-fixtures/quickjs/http-bridge`（Node↔VM 真 HTTP fetch 桥，Flutter Platform 桥的预演）调真实 mcp-server，验证工具回路。Flutter app 本身不入 CI（toolchain 重），Dart 侧靠真机手工 e2e（Android 已验，iOS 推迟）。
-- **v1 约束**：仅局域网、内存对话、iOS 锁屏 ~30s 冻结（亮屏执行为前提）；key/token 明文存 `shared_preferences`，`run_command` 是 RCE 面（审批弹窗 + 工作目录边界 + 可信局域网为屏障）。
+- **v1 约束**：内存对话、iOS 锁屏 ~30s 冻结（亮屏执行为前提）；key/token 明文存 `shared_preferences`，`run_command` 是 RCE 面（审批弹窗 + 工作目录边界 + 可信网络为屏障）。局域网之外：P19 起 mcp-server `--tunnel` 走 Cloudflare Quick Tunnel（免账号公网 https；服务端配常数时间 token 比较 + 按 IP 失败锁定，`--host` 默认收紧 127.0.0.1）。
 
 ## 可移植性：广度、前提与边界
 

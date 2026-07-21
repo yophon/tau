@@ -31,9 +31,14 @@
 **1. 电脑侧起 MCP server**（见 `../mcp-server/README.md`）：
 
 ```bash
-cd ../mcp-server && node server.mjs --dir ~/code/my-project
+cd ../mcp-server && node server.mjs --dir ~/code/my-project --host 0.0.0.0
 # 记下打印的 endpoint（http://<局域网 IP>:8720/）与 token
+# （P19 起默认只听 127.0.0.1，局域网直连需显式 --host 0.0.0.0）
 ```
+
+> 不在同一局域网？`node server.mjs --dir ... --tunnel` 走 Cloudflare Quick Tunnel
+> （免账号，公网 https URL），手机在蜂窝网络也能连——用法与安全须知见
+> [`../mcp-server/README.md`](../mcp-server/README.md) 的「走出局域网」一节。
 
 **2. 手机 app**（手机与电脑同一局域网）：
 
@@ -60,7 +65,7 @@ node js/build.mjs      # 重写 assets/tau.js（产物提交进仓库）
 
 ## 已知约束（v1）
 
-- **仅局域网**：公网/中转后续做。Android manifest 全量放行 cleartext（demo）；生产应用 networkSecurityConfig 精确限定网段。
+- **局域网直连或 Quick Tunnel**：P19 起 `--tunnel` 提供公网路径（Cloudflare Quick Tunnel，https）；局域网直连仍是 cleartext——Android manifest 全量放行 cleartext（demo）；生产应用 networkSecurityConfig 精确限定网段。
 - **对话仅内存**：不落盘、无多会话；重开即清空。
 - **iOS 锁屏 ~30s 冻结**：agent 循环活在手机进程，任务执行时请保持亮屏（Android 可后续用前台服务缓解）。iOS/JSC 路径本阶段未实测（用户裁决推迟）。
 - **安全**：key/token 明文存 `shared_preferences`；`run_command` 是远程代码执行，手机侧有审批弹窗兜底，但仅在可信局域网使用。
