@@ -64,7 +64,7 @@ npm run smoke:quickjs:legacy
 
 ## 验收清单
 
-- [ ] `smoke:dialects` 本地对至少一个真实方言实测 PASS（用户当前凭据为通用 OpenAI 兼容 key，走 openai-compat 槽位；DeepSeek/Ollama 等凭据可得时再补测），SKIP 路径明示（SKIP/FAIL 路径已实测：全 SKIP 明示退出 0、坏端点 FAIL 逐条断言明细退出 1）
+- [x] `smoke:dialects` 本地对至少一个真实方言实测 PASS（2026-07-21：openai-compat 槽位，真实 OpenAI 兼容网关 + gpt-5.5，两轮对话/工具回路/流式/usage 断言全过；DeepSeek/Ollama 等凭据可得时再补测），SKIP 路径明示（SKIP/FAIL 路径已实测：全 SKIP 明示退出 0、坏端点 FAIL 逐条断言明细退出 1）
 - [x] CI 可选 job 配置就位（无 secrets 时 skip 状态可见，不装绿）
 - [x] `smoke:quickjs:legacy` 在与 flutter_js 同代引擎上：无 polyfill 预期失败、有 polyfill 全绿，入 CI 常绿（本地已验；实测发现裸跑形态为静默劣化而非崩溃——P11 流健壮化把 TypeError 转 stopReason error 吞掉，判据改为"完整期望不满足"，已记 D18 补记）
 - [x] polyfills 单源化：flutter bundle 与 legacy smoke 引用同一 fixture（脚本内置递归扫描断言全仓库仅 test-fixtures/quickjs/ 一份；flutter assets/tau.js 已从共享 fixture 重建）

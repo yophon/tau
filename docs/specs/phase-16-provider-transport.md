@@ -1,6 +1,6 @@
 # Phase 16：协议适配扩展层（ChatTransport 缝 + Anthropic 扩展）规格书
 
-> 状态：已完成（2026-07-20）——除"真实端点手工验收"一项待用户执行（需 Anthropic API key），其余验收全过；完成记录见 roadmap.md P16
+> 状态：已完成（2026-07-20；真实端点手工验收 2026-07-21 补毕）——完成记录见 roadmap.md P16
 > 对应 roadmap 阶段：Phase 16
 > 背景：2026-07-17 先天不足分析——"OpenAI 兼容 only"是最低公分母协议：工具结果图片降级为 `[image omitted]`（openai.ts）、thinking 只兼容 DeepSeek 方言、prompt cache 不可控、usage 的 cacheRead/cacheWrite 恒为零。D3 当年预留的口子（"如将来需要，作为扩展/插件层协议适配，不进内核"）本阶段兑现。
 
@@ -95,7 +95,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 - [x] e2e：同一会话文件先后用 openai/anthropic transport 续写，restore 正常（格式兼容证明——实测三轮 openai→anthropic→openai）
 - [x] 失败语义：mock 5xx/断流 → stopReason error 消息 + 重试路径（D14/P11 行为在新 transport 上复验；2×500 退避后恢复、503 无重试 error 终态、SSE error 事件、message_stop 截断皆有断言）
 - [x] 纯度 smoke：ext 包 esbuild neutral 打包零 external 通过（check:purity 扩面为 PURE_PACKAGES 三包门禁，ext-mcp-http 一并纳入）
-- [ ] 真实端点手工验收一轮（Anthropic API key，thinking + 工具 + 缓存命中在响应 usage 中可见）——待用户执行：`npm run tau -- --provider anthropic -k <key> -m claude-sonnet-5 -p "..."`
+- [x] 真实端点手工验收一轮（2026-07-21，OpenAI 兼容网关的 Anthropic 路由 + claude-sonnet-5）：`-p` 工具回路（bash `$((6*7))` 计算值回传正确，usage 9 in/62 out）；TUI `/thinking low` 后 thinking 原生流式渲染；会话文件两轮 assistant 均含 thinking 块且 `thinkingSignature` 回传、`provider: anthropic`/`api: anthropic-messages` lineage 正确；**缓存命中链路可见**——第 1 轮 `cacheWrite: 553`（cache_control 打点生效）、第 2 轮 `cacheRead: 553` + `cacheWrite: 387`（前缀命中 + 增量写入）
 - [x] pi-parity / decisions / architecture（代码地图 + 分层图加 ext-provider-anthropic）归档（D3 补记 + D21 新增）
 - [x] DoD 通用项（见 development.md）：check 全绿、202 测试全绿；push 后 CI 复核为遗留动作（不擅自 commit）
 
