@@ -1,6 +1,6 @@
 # Phase 19：公网远程访问（cloudflared Quick Tunnel 单路线）规格书
 
-> 状态：已确认（2026-07-21；开放问题 1/2 均按倾向裁决——host 默认收紧、cloudflared 用系统二进制）
+> 状态：已完成（2026-07-21；开放问题 1/2 均按倾向裁决——host 默认收紧、cloudflared 用系统二进制）
 > 对应 roadmap 阶段：Phase 19
 > 背景：P13 手机 agent 仅局域网（v1 约束）。原 Backlog B "公网/中转/内网穿透"立项。**范围经用户两轮裁决收窄（2026-07-21）**：先否决 Tailscale 默认路线（需第三方账号），再裁决"只做 cloudflared Quick Tunnel"——frp/SSH/Tailscale 指南、扫码配对、审计日志等全部出局（参考调研见下）。
 
@@ -59,14 +59,14 @@ node server.mjs [--dir <path>] [--port <n>] [--host <ip>] [--token <secret>] [--
 
 ## 验收清单
 
-- [ ] `node server.mjs --tunnel` 一条命令拿到公网 https URL，横幅含 URL + token；Ctrl+C 后 cloudflared 子进程无残留
-- [ ] cloudflared 缺失时报错含安装提示，退出非零
-- [ ] 硬化三项落地；默认 127.0.0.1 下 `smoke:quickjs:mcp` 常绿；401/限速/通行自动化断言通过
-- [ ] URL 解析纯函数单测通过
-- [ ] 本地实测：SSE 流式（工具回路含流式回复）过 Quick Tunnel 不被缓冲截断
-- [ ] **真机蜂窝 e2e（用户执行）**：手机关 Wi-Fi，app 填 trycloudflare URL + token，完整工具回路（含审批弹窗路径）跑通；记录回本规格书
-- [ ] README 两处成文；phase-13 规格书 v1 约束"仅局域网"处补注指向本阶段
-- [ ] roadmap Backlog B 该项勾销 + DoD 通用项（见 development.md）
+- [x] `node server.mjs --tunnel` 一条命令拿到公网 https URL，横幅含 URL + token；Ctrl+C 后 cloudflared 子进程无残留（实测）
+- [x] cloudflared 缺失时报错含安装提示，退出非零（PATH 剥离实测）
+- [x] 硬化三项落地；默认 127.0.0.1 下 `smoke:quickjs:mcp` 常绿；401×5 → 429+retry-after → 锁定期拒正确 token → 冷却恢复，全链断言通过
+- [x] URL 解析纯函数单测通过（3 用例，入 npm test）
+- [x] 本地实测：真实 Quick Tunnel 公网 URL 完整 MCP 回路（initialize/session 头透传/read_file 中文原样回流），SSE 无缓冲问题
+- [x] **真机蜂窝 e2e（2026-07-21，用户确认全部 ok）**：AAK-AN00 关 Wi-Fi 走蜂窝，app 填 trycloudflare URL + token——「电脑已连接 · 4 个工具」、read_file 内容回流、run_command 审批弹窗允许后结果回流
+- [x] README 两处成文；phase-13 规格书与 architecture.md"仅局域网"处补注指向本阶段
+- [x] roadmap Backlog B 该项勾销 + DoD 通用项（check + 214 测试 + smoke:quickjs:mcp 全绿；push 后 CI 复核）
 
 ## 风险与开放问题
 
