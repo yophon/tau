@@ -1,3 +1,5 @@
+
+
 # tau
 
 **English** | [简体中文](README.zh-CN.md)
@@ -99,7 +101,7 @@ npm run tau                       # readline REPL
 npm run tau -- --tui              # TUI mode (streaming markdown, /tree, /fork, /model, …)
 npm run tau -- -p "list the files here and summarize"
 
-# Or speak the Anthropic Messages API natively (base URL optional)
+# Or speak the Anthropic Messages API natively (--base-url still required)
 npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
 ```
 
