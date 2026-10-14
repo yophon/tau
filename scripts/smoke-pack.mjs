@@ -8,15 +8,25 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { withPublishManifest } from "./release-lib.mjs";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const kernelDir = join(root, "packages/kernel");
 const workDir = join(tmpdir(), `tau-pack-smoke-${Date.now()}`);
 mkdirSync(workDir, { recursive: true });
 
+function commandForPlatform(command) {
+	return process.platform === "win32" && (command === "npm" || command === "npx") ? `${command}.cmd` : command;
+}
+
 function run(command, args, options = {}) {
-	const result = spawnSync(command, args, { cwd: options.cwd, encoding: "utf8", stdio: ["inherit", "pipe", "pipe"] });
+	const result = spawnSync(commandForPlatform(command), args, {
+		cwd: options.cwd,
+		encoding: "utf8",
+		shell: process.platform === "win32",
+		stdio: ["inherit", "pipe", "pipe"],
+	});
 	if (result.status !== 0) {
 		throw new Error(`Command failed: ${command} ${args.join(" ")}\n${result.stdout}\n${result.stderr}`);
 	}

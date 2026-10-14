@@ -1,6 +1,6 @@
 # pi 生命周期/钩子特性对照清单
 
-> 最后更新：2026-07-19（P15：权限与审批系统落地——pi 无对应物的 tau 原创面登记，D20）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
+> 最后更新：2026-08-28（P20：pi-feishu Node-only 渠道扩展移植完成）。来源：pi `packages/coding-agent/src/core/extensions/types.ts`（31 个事件 + API 面）与 `packages/agent/docs/hooks.md`。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期延期 · ❌ 决策排除（注明 D 编号）。
 > **维护规则**：实现或排除任何一项时更新本表；发现 pi 新增事件时（pi 是移动靶）追加。
 
@@ -55,6 +55,18 @@
 | 移动/嵌入引擎宿主 | pi 无先例（跑 Node/浏览器） | ✅ P13（tau 原创面：flutter_js Android/QuickJS 真机跑通内核 + 纯 Platform MCP client；引擎缺口宿主 polyfill 补，D18） |
 | 纯 Platform MCP client（Streamable HTTP） | pi 用官方 SDK（假设 Node/浏览器全局） | ✅ P13（`ext-mcp-http` 抄协议不抄 SDK，零依赖进裸引擎；SDK 版 `ext-mcp` 并存服务 Node stdio） |
 | 权限与审批系统 | **pi 无对应物**（grep 证毕；pi 哲学 = 审批留给扩展） | ✅ P15（tau 原创面，D20：`PermissionMode` 四档 × 静态风险分级 → allow/ask/deny 矩阵，审批门挂 `tool_call` 钩子后；概念参照 yo-agent PolicyEngine 纯 ES 重写。内核默认 autonomous / CLI·TUI 默认 supervised；顺还 trust digest / 参数 schema 校验 / 保护路径三笔安全债） |
+
+## pi-feishu 扩展移植（P20）
+
+`@yophon/tau-ext-feishu` 是独立的 Node-only 扩展包，按
+[surenkid/pi-feishu](https://github.com/surenkid/pi-feishu) 的公开行为移植到
+tau 的 `ExtensionAPI`：官方 SDK WebSocket/REST、入站消息与媒体解析、去重和
+过期过滤、Typing/CrossMark Reaction、工具进度卡片、Markdown 分块、
+`/new`/`/stop`/`/queue`/`/compact`/`/status`/`/help` 与 `/feishu` 管理命令，以及
+三个主动发送工具均已覆盖。由于 tau 当前只有一个 Agent，多个 Feishu chat
+共享同一会话并由扩展 FIFO 串行化；这与 pi-feishu 的产品意图一致，但不声称为
+每个 chat 创建独立 Agent。CLI 的动态加载器只扫描 `.tau/extensions` 目录，使用
+该包时需要一个 wrapper `import`；wrapper 仍受项目扩展信任门保护。
 
 ## 安全缺口（已修复）
 

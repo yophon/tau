@@ -79,6 +79,18 @@ export function computeUsageCost(usage: Usage, pricing: ModelPricing): UsageCost
 
 export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
+/** What a host/extension hands to `Agent.prompt()`: plain text, or text + image blocks (P20: channel media). */
+export type UserContent = string | (TextContent | ImageContent)[];
+
+/** Text projection of user content — what input hooks, before_agent_start and renderers see. */
+export function userContentText(content: UserContent): string {
+	if (typeof content === "string") return content;
+	return content
+		.filter((block): block is TextContent => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
+}
+
 export interface UserMessage {
 	role: "user";
 	content: string | (TextContent | ImageContent)[];

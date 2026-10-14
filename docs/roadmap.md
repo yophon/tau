@@ -1,10 +1,10 @@
 # tau 路线图
 
-> 最后更新：2026-07-21（P19 完成并真机蜂窝验收——手机 agent 经 Quick Tunnel 走出局域网；**P0–P19 全部 ✅**，无排期阶段，候选见 Backlog）
+> 最后更新：2026-08-28（P20 飞书/Lark 渠道扩展完成；**P0–P20 全部 ✅**，无排期阶段，候选见 Backlog）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
-**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核。**执行顺序调整（2026-07-14 用户裁决）**：P11 基础夯实先行，P10 适配器实施推后至其后；P12 发布工程收尾。**P14–P18（2026-07-17 先天不足分析立项）**：P14 独立先行（量级最小）；P15 依赖既有 tool_call 钩子（已定型）；P16 只加内核缝 + 独立扩展包；P17 为工程阶段可穿插执行；P18 的审批交互依赖 P15 先落地（审批在串行 preflight 段的语义），排最后。
+**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核。**执行顺序调整（2026-07-14 用户裁决）**：P11 基础夯实先行，P10 适配器实施推后至其后；P12 发布工程收尾。**P14–P18（2026-07-17 先天不足分析立项）**：P14 独立先行（量级最小）；P15 依赖既有 tool_call 钩子（已定型）；P16 只加内核缝 + 独立扩展包；P17 为工程阶段可穿插执行；P18 的审批交互依赖 P15 先落地（审批在串行 preflight 段的语义），排最后。P20 为 Node-only 外部渠道扩展，不改 kernel，只依赖已定型的扩展 API 和发布工程。
 
 ## Phase 0 ✅ 内核种子（2026-07-04）
 
@@ -186,9 +186,25 @@ pi 镜像的扩展 API：input/tool_call/tool_result/agent_start/agent_end/turn_
 
 **完成记录**：214 测试全绿（+3 tunnel URL 解析单测）。mcp-server `--tunnel`（spawn 系统 cloudflared，免账号公网 https，退出联动无残留，缺二进制报错含安装提示 exit 1）；硬化三项（`--host` 默认收紧 127.0.0.1 **破坏性变更**、sha256+timingSafeEqual 常数时间 token 比较、按 IP 认证失败指数退避锁定 5 次起封顶 60s）；`smoke:quickjs:mcp` 增全链认证断言（401×5 → 429+retry-after → 锁定期拒正确 token → 冷却恢复）；本地真隧道实测 MCP 回路 + SSE 无缓冲；**真机蜂窝 e2e 用户确认全过**（AAK-AN00 关 Wi-Fi：已连接指示、read_file 回流、run_command 审批弹窗允许后结果回流）。与规格偏差：无。
 
+## Phase 20 ✅ 飞书/Lark 渠道扩展（2026-08-28）
+
+规格书：[specs/phase-20-feishu-extension.md](specs/phase-20-feishu-extension.md)。
+
+新增 `@yophon/tau-ext-feishu`，完整移植
+[pi-feishu](https://github.com/surenkid/pi-feishu) 的 Feishu/Lark WebSocket + REST
+工作流：入站文本/富文本/媒体/卡片解析，媒体下载，消息去重与过期过滤，Typing 和
+CrossMark Reaction，可编辑工具进度卡片，中间/最终文本回传与分块，`/new`、
+`/stop`、`/queue`、`/compact`、`/status`、`/help` 和 `/feishu` 管理命令，以及
+三个主动发送工具。配置兼容 pi/tau settings、环境变量和 CLI flags；官方 SDK、
+媒体目录、时钟、WS/client 均可注入测试。扩展接入类型检查、测试和发布列表。
+
+tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIFO 串行处理；CLI 需
+通过 `.tau/extensions` wrapper 导入该 workspace 包。验证：扩展单测与全仓
+`check`/`test`/`build`。**2026-10-14 收口**：图片入站所需的 `UserContent`（`prompt`/`sendUserMessage`/`submitPrompt` 接受文本 + 图片块）落进内核；Windows 上 `HOME` 覆盖与 e2e 清理修复；仓库统一 LF。
+
 ## 未排期（Backlog）
 
-> **P0–P19 全部 ✅（2026-07-21）**——路线图无排期阶段，本表为未排期候选；立项时按 development.md 流程先写规格书经用户确认。
+> **P0–P20 全部 ✅（2026-08-28）**——路线图无排期阶段，本表为未排期候选；立项时按 development.md 流程先写规格书经用户确认。
 >
 > 原 A 组两项已消化（2026-07-17）：ext-mcp-http 发版随 v0.1.1 完成（2026-07-16，npm 实测 0.1.1 可装）；Android UI 补验并入 P17。
 

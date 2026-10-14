@@ -48,6 +48,8 @@ import {
 	type ShellExecResult,
 	type ThinkingLevel,
 	type UiCapability,
+	type UserContent,
+	userContentText,
 } from "@yophon/tau-kernel";
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
@@ -595,8 +597,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	// to every active registry (initial and after each /reload).
 	function attachTuiHostActions(registry: ExtensionRegistry): void {
 		registry.attachHostActions({
-			submitPrompt: (text) => {
-				if (runningTask === undefined) void runPrompt(text);
+			submitPrompt: (content) => {
+				if (runningTask === undefined) void runPrompt(content);
 			},
 			resumeTurn: () => {
 				if (runningTask === undefined) void runPrompt(null);
@@ -1258,7 +1260,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		}
 	}
 
-	async function runPrompt(input: string | null): Promise<void> {
+	async function runPrompt(input: UserContent | null): Promise<void> {
 		runningTask = "turn";
 		activeStatus = "working";
 		steeringCount = 0;
@@ -1266,7 +1268,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		controller = new AbortController();
 		setFooter();
 		setStatus(cyan("Working..."));
-		if (input !== null) appendText(bold(`> ${input}`));
+		if (input !== null) appendText(bold(`> ${userContentText(input)}`));
 		let assistantComponent: Markdown | undefined;
 		let assistantText = "";
 		const toolComponents = new Map<string, Component>();

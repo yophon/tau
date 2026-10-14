@@ -121,7 +121,8 @@ async function withSandbox(run: (dirs: { cwd: string; home: string }) => Promise
 		await mkdir(home, { recursive: true });
 		await run({ cwd, home });
 	} finally {
-		await rm(root, { recursive: true, force: true });
+		// Windows: a just-exited child may still hold its cwd for a few ms → EBUSY on rmdir.
+		await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 	}
 }
 
@@ -612,7 +613,9 @@ test("/fork branches into a new file and the two branches evolve independently",
 	});
 });
 
-test("SIGINT aborts the running turn and the REPL keeps working", async () => {
+// Windows: child.kill("SIGINT") terminates the process outright (no signal delivery), so Ctrl+C
+// cannot be driven from a test there; the abort path itself is covered by the kernel abort tests.
+test("SIGINT aborts the running turn and the REPL keeps working", { skip: process.platform === "win32" }, async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([
 			() => ({

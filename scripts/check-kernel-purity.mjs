@@ -6,9 +6,10 @@
 // kernel left external.
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 // dir (under packages/), entry, and externals allowed in the neutral bundle.
 const PURE_PACKAGES = [

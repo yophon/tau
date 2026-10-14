@@ -3,10 +3,11 @@
 // 泵微任务——与 flutter_js 的 executePendingJob 运行模型一致。
 // 这是 D4「注入缝隙在非 WinterTC 环境成立」的机械门禁（Phase 10）。
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { getQuickJS } from "quickjs-emscripten";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 const bundle = await build({
 	entryPoints: [join(root, "test-fixtures/quickjs/vm-entry.ts")],

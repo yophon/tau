@@ -398,7 +398,10 @@ class JsonlSessionStore implements SessionStore {
 
 /** Session directory naming mirrors pi: `--<cwd with / replaced by ->--`. */
 export function sessionDirSlug(cwd: string): string {
-	return `--${cwd.replaceAll("/", "-").replace(/^-+/, "")}--`;
+	// Windows drive paths use backslashes; keep both separators out of the slug so
+	// the resulting directory name stays valid on every platform (a colon in a
+	// Windows directory name is rejected by the filesystem).
+	return `--${cwd.replaceAll("/", "-").replaceAll("\\", "-").replace(/^-+/, "").replaceAll(":", "")}--`;
 }
 
 export class JsonlSessionRepo implements SessionRepo {
@@ -433,7 +436,7 @@ export class JsonlSessionRepo implements SessionRepo {
 		const timestamp = new Date().toISOString();
 		const header: SessionHeader = { type: "session", version: 3, id, timestamp, cwd: this.cwd };
 		const fileName = `${timestamp.replaceAll(":", "-")}_${id}.jsonl`;
-		const filePath = `${this.sessionsDir}/${fileName}`;
+		const filePath = joinSessionPath(this.sessionsDir, fileName);
 		await this.fs.writeTextFile(filePath, `${JSON.stringify(header)}\n`);
 		return new JsonlSessionStore(this.fs, filePath, header, new EntryTree(), this.platform.randomBytes);
 	}
@@ -482,7 +485,7 @@ export class JsonlSessionRepo implements SessionRepo {
 			parentSession: source.filePath,
 		};
 		const fileName = `${timestamp.replaceAll(":", "-")}_${id}.jsonl`;
-		const filePath = `${this.sessionsDir}/${fileName}`;
+		const filePath = joinSessionPath(this.sessionsDir, fileName);
 		const lines = [header, ...entries].map((line) => JSON.stringify(line));
 		await this.fs.writeTextFile(filePath, `${lines.join("\n")}\n`);
 		return this.loadStore(filePath);
@@ -683,4 +686,15 @@ function collectMessages(path: SessionEntry[]): RestoredSession {
 		}
 	}
 	return { messages, name };
+}
+
+/**
+ * Join a session file onto its directory with the directory's own separator.
+ * The kernel is pure ES (no node:path); on Windows the host hands us a
+ * backslash directory, and mixing `/` into it made recorded paths
+ * (`parentSession`) disagree with the host's `path.join` of the same file.
+ */
+function joinSessionPath(dir: string, fileName: string): string {
+	const sep = dir.includes("\\") && !dir.includes("/") ? "\\" : "/";
+	return dir.endsWith(sep) ? `${dir}${fileName}` : `${dir}${sep}${fileName}`;
 }

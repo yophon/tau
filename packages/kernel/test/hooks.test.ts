@@ -215,3 +215,35 @@ test("host receives tool_update events for streaming tools", async () => {
 	}
 	assert.deepEqual(updates, ["stdout:part1", "stderr:part2"]);
 });
+
+test("prompt() accepts text + image blocks: input hooks see the text, a rewrite keeps the images, images reach the wire", async () => {
+	const seen: string[] = [];
+	const rewrite: Extension = (api) => {
+		api.on("input", (event) => {
+			seen.push(event.text);
+			return { action: "transform", text: `${event.text} (rewritten)` };
+		});
+	};
+	const requests: unknown[] = [];
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake" },
+		platform: fakePlatform([makeSseResponse(textTurn("ok"))], requests),
+		extensions: await ExtensionRegistry.load([rewrite]),
+	});
+	for await (const _event of agent.prompt([
+		{ type: "text", text: "what is this" },
+		{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+	])) {
+		// drain
+	}
+	assert.deepEqual(seen, ["what is this"]);
+	const stored = agent.messages.find((m) => m.role === "user");
+	assert.ok(stored && Array.isArray(stored.content));
+	assert.deepEqual(stored.content, [
+		{ type: "text", text: "what is this (rewritten)" },
+		{ type: "image", data: "aGVsbG8=", mimeType: "image/png" },
+	]);
+	const wire = (requests[0] as { messages: { role: string; content: unknown }[] }).messages;
+	const user = wire.find((m) => m.role === "user");
+	assert.ok(JSON.stringify(user).includes("data:image/png;base64,aGVsbG8="));
+});

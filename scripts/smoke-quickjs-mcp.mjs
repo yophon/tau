@@ -8,11 +8,12 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { getQuickJS } from "quickjs-emscripten";
 import { attachHttpBridge } from "../test-fixtures/quickjs/http-bridge.host.mjs";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const FILE_CONTENT = "hello from the phone's computer 电脑侧内容\n";
 const FINAL_TEXT = "hello.txt 的内容是：hello from the phone's computer 电脑侧内容 ✅";
 

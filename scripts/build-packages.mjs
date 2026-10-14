@@ -4,10 +4,11 @@
 // node_modules, so published packages must ship JS.
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { PUBLISHABLE_PACKAGES } from "./release-lib.mjs";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 // tsc's rewriteRelativeImportExtensions only rewrites JS emit; declaration
 // files keep the source's ".ts" specifiers, which consumer typecheckers cannot
@@ -26,13 +27,18 @@ function rewriteDeclarationImports(distDir) {
 	}
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function commandForPlatform(command) {
+	return process.platform === "win32" ? `${command}.cmd` : command;
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
 	for (const dir of PUBLISHABLE_PACKAGES) {
 		const pkgDir = join(root, "packages", dir);
 		rmSync(join(pkgDir, "dist"), { recursive: true, force: true });
 		console.log(`building packages/${dir} ...`);
-		const result = spawnSync("npx", ["tsc", "-p", join(pkgDir, "tsconfig.build.json")], {
+		const result = spawnSync(commandForPlatform("npx"), ["tsc", "-p", join(pkgDir, "tsconfig.build.json")], {
 			cwd: root,
+			shell: process.platform === "win32",
 			stdio: "inherit",
 		});
 		if (result.status !== 0) {

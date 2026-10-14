@@ -53,6 +53,30 @@ MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的�
 | `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的 Streamable HTTP MCP client——零依赖，能进 SDK 进不了的裸引擎 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | 完全构建在 `Platform` 缝隙上的 Anthropic Messages `ChatTransport`——thinking 原生流式、prompt 缓存、工具结果携带图片 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
+| `@yophon/tau-ext-feishu` | 飞书/Lark WebSocket 桥接，支持媒体、Reaction、进度卡片和主动发送工具 | 是——飞书 SDK 与 Node 文件系统 |
+
+### 飞书/Lark 桥接
+
+可选包 `@yophon/tau-ext-feishu` 将
+[pi-feishu](https://github.com/surenkid/pi-feishu) 的工作流移植到 tau：接收
+文本、富文本、图片、文件、语音、视频、表情和卡片消息，自动下载入站媒体，
+用可编辑卡片实时显示工具进度，并注册 `send_to_feishu`、
+`send_image_to_feishu`、`send_file_to_feishu` 三个工具。
+
+在运行 tau 的项目中安装后，在 `.tau/extensions/feishu.ts`（或
+`~/.tau/extensions/`）写一个包装入口：
+
+```ts
+import createFeishuExtension from "@yophon/tau-ext-feishu";
+
+export default createFeishuExtension();
+```
+
+用 `FEISHU_APP_ID`、`FEISHU_APP_SECRET`（或对应的 `--feishu-*` 标志）配置凭证。
+扩展也会读取 `~/.pi/agent/settings.json`、`~/.tau/settings.json`、项目
+`.pi/settings.json` 和项目 `.tau/settings.json` 中的 `feishu` 字段，后者覆盖前者。
+当前 tau 只有一个 Agent，因此不同飞书聊天共享 tau 当前会话，并通过每个聊天的
+FIFO 队列串行处理。
 
 ## 设计规则
 
@@ -176,9 +200,9 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 
 - [docs/development.md](docs/development.md)——流程唯一事实源：命令、硬规则、规格书先行的阶段流程、Definition of Done
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
-- [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P13）：状态、依赖、技术债登记
+- [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D18）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D22）
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

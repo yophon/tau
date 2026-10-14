@@ -16,8 +16,29 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-mcp-http",
 	"ext-provider-anthropic",
 	"ext-resources",
+	"ext-feishu",
 	"cli",
 ];
+
+function publishExportTarget(target) {
+	if (typeof target !== "string") return target;
+	const distTarget = target.replace(/^\.\/src\//, "./dist/").replace(/\.ts$/, ".js");
+	return {
+		types: distTarget.replace(/\.js$/, ".d.ts"),
+		default: distTarget,
+	};
+}
+
+function publishSubpathExports(pkg) {
+	const exportsField = pkg.exports;
+	if (!exportsField || typeof exportsField !== "object" || Array.isArray(exportsField)) return {};
+	const result = {};
+	for (const [subpath, target] of Object.entries(exportsField)) {
+		if (subpath === "." || subpath === "./package.json") continue;
+		result[subpath] = publishExportTarget(target);
+	}
+	return result;
+}
 
 /** Rewrite dev-time (src) entry points to the published dist/ shape. */
 export function toPublishManifest(pkg, dir) {
@@ -29,6 +50,7 @@ export function toPublishManifest(pkg, dir) {
 	} else {
 		out.exports = {
 			".": { types: "./dist/index.d.ts", default: "./dist/index.js" },
+			...publishSubpathExports(pkg),
 			"./package.json": "./package.json",
 		};
 	}

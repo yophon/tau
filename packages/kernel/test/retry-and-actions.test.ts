@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
 import { TauError } from "../src/errors.ts";
 import { ExtensionRegistry } from "../src/extensions.ts";
-import type { AssistantMessage } from "../src/messages.ts";
+import { type AssistantMessage, userContentText } from "../src/messages.ts";
 import type { Platform } from "../src/platform.ts";
 import { isContextOverflowError, isRetryableAssistantError } from "../src/retry.ts";
 import { InMemorySessionRepo, restoreSession, SessionRecorder } from "../src/session.ts";
@@ -277,7 +277,7 @@ test("sendUserMessage steers while running and submits via the host while idle",
 			});
 		},
 	]);
-	registry.attachHostActions({ submitPrompt: (text) => submitted.push(text) });
+	registry.attachHostActions({ submitPrompt: (content) => submitted.push(userContentText(content)) });
 	const echoTool = {
 		name: "echo",
 		description: "echo",

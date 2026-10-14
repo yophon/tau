@@ -1,7 +1,7 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError } from "./errors.ts";
-import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage } from "./messages.ts";
+import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserContent } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
@@ -575,7 +575,7 @@ export interface ExtensionAPI {
 	 * follow-up while streaming, and submits a fresh prompt via the host when
 	 * idle (requires a host that provides submitPrompt).
 	 */
-	sendUserMessage(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+	sendUserMessage(content: UserContent, options?: { deliverAs?: "steer" | "followUp" }): void;
 
 	/** Persist extension state as a session entry that never enters LLM context. */
 	appendEntry(customType: string, data: unknown): void;
@@ -679,13 +679,13 @@ export interface SendMessageOptions {
 /** Actions an attached Agent/host provides to back the extension action methods. */
 export interface ExtensionHostActions {
 	sendMessage?(message: CustomMessageInput, options?: SendMessageOptions): void;
-	sendUserMessage?(content: string, options?: { deliverAs?: "steer" | "followUp" }): void;
+	sendUserMessage?(content: UserContent, options?: { deliverAs?: "steer" | "followUp" }): void;
 	appendEntry?(customType: string, data: unknown): void;
 	setSessionName?(name: string): void;
 	/** Abort the current agent operation (ctx.abort backing). */
 	abort?(): void;
 	/** Host-run submission of a fresh prompt (backs sendUserMessage while idle). */
-	submitPrompt?(text: string): void;
+	submitPrompt?(content: UserContent): void;
 	/** Host-run continuation without new user input (backs sendMessage triggerTurn while idle). */
 	resumeTurn?(): void;
 }

@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-07-20（P18 工具并行执行：批次分派 + preflight 串行/执行并发事件序契约 + write/edit per-file mutation queue，D22）
+> 最后更新：2026-08-28（P20 飞书/Lark 渠道扩展：Node-only WebSocket/REST 桥接与发布包接入）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -30,6 +30,8 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 │  @yophon/tau-ext-resources  skills / prompt templates   │
 │  @yophon/tau-ext-provider-anthropic 纯 Platform          │
 │                  Anthropic Messages transport    │
+│  @yophon/tau-ext-feishu  Feishu/Lark WebSocket bridge   │
+│                  media / cards / reactions       │
 ├─ 内核层（禁止碰运行时，门禁强制）──────────────┤
 │  @yophon/tau-kernel     agent 循环 · ChatTransport 缝    │
 │                  （默认 OpenAI 兼容流式客户端）·  │
@@ -94,6 +96,8 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - `@yophon/tau-ext-resources`：导出 `createResourcesExtension(options)`；通过 `ctx.capabilities.fs/paths` 加载 `.tau` / `.pi` skills 与 prompt templates，skills 走 `before_agent_start` 注入 `<available_skills>`，prompt templates 动态注册 slash commands 并通过 `{ action:"prompt" }` 触发一轮 prompt；TUI `/reload` 时使用 `resources_discover("reload")` 重建 prompt commands。
 - `@yophon/tau-ext-mcp-http`（P13）：导出 `createHttpMcpExtension({ servers, platform, onStatus })`，返回 `{ extension, connect }`。手写 Streamable HTTP MCP client（JSON-RPC over POST，响应 application/json 或 text/event-stream 用内核 `SseParser` 解），**零依赖、纯 Platform**——官方 SDK 假设 Node/浏览器全局进不了裸引擎，故抄协议不抄 SDK。为移动场景设计的连接生命周期：`connect()` 幂等可重入，离线经 `onStatus` 静默降级（零工具继续对话），404 自动重握手重放；协议锁 `2025-06-18` 接受协商回落。与 SDK 版 `ext-mcp` 并存（后者服务 Node stdio）。
 - `@yophon/tau-ext-provider-anthropic`（P16）：导出 `createAnthropicTransport(config, platform)`（返回内核 `ChatTransport`）与 `transformMessagesForAnthropic`/`messagesToWire`/`buildRequestBody`（可单测的转换层）。手写 Anthropic Messages 流式协议（`anthropic-version: 2023-06-01` 锁定）——**零依赖、纯 Platform**，ext-mcp-http 同款"抄协议不抄 SDK"路线；消息/事件/stop_reason/usage 映射照抄 pi 的 `anthropic-messages.ts` + `transform-messages.ts`（D13 红利：tau 消息即 pi 形状，转换近乎逐字移植）。能力：thinking 原生流式（signature 累积回传、redacted 块）、tool_result 图片以 base64 block 上 wire（本路径消除 `[image omitted]` 降级）、`cache_control: "auto"` 打点（system + tools 末项 + 末条 user，pi 落点）、usage cacheRead/cacheWrite 真值、error/aborted 轮跳过 + 孤儿 tool call 合成结果 + 跨模型内容降级。config 对象按请求读取（宿主可在轮间改 `model`/`thinking`）。
+
+ - `@yophon/tau-ext-feishu`（P20）：导出 `createFeishuExtension(options?)`（默认导出也可直接加载）与 `FeishuClient`。基于官方 `@larksuiteoapi/node-sdk` 建立 Feishu/Lark WebSocket 长连接与 REST 桥：入站 text/post/image/file/audio/video/sticker/interactive 消息解析、媒体下载、消息去重与过期过滤、Typing/CrossMark Reaction、可编辑工具进度卡片、Markdown 文本分块，以及 `send_to_feishu` / `send_image_to_feishu` / `send_file_to_feishu` 工具。配置按 defaults → 全局 settings → 项目 settings → options → 环境变量 → CLI flags 合并，兼容 `.pi` 与 `.tau` settings。它是 Node-only 能力扩展；tau 当前单 Agent 共享上下文，不同 chat 通过 FIFO 队列串行处理。CLI 不会自动发现 workspace npm 包，需在 `.tau/extensions` 或 `~/.tau/extensions` 写 wrapper import；项目 wrapper 仍经过信任门。
 
 ## TUI 宿主（P8）
 
@@ -179,7 +183,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 
 ## 发布工程（P12）
 
-- 十一个包（kernel / host-node / host-browser / host-weapp / host-rn / ext-subagents / ext-mcp / ext-mcp-http / ext-provider-anthropic / ext-resources / cli）以 `@yophon/tau-*` 锁步版本发布到 npm。
+- 十二个包（kernel / host-node / host-browser / host-weapp / host-rn / ext-subagents / ext-mcp / ext-mcp-http / ext-provider-anthropic / ext-resources / ext-feishu / cli）以 `@yophon/tau-*` 锁步版本发布到 npm。
 - **dist 双轨（D17）**：开发期零构建跑 src；发布物是 tsc 产物（Node 不 strip node_modules 的 .ts）。仓库 manifest 保持 src exports，publish/pack 时经 `withPublishManifest` 临时改写为 dist 形态；构建后处理把 d.ts 里的 `.ts` 说明符改写为 `.js`。
 - 供应链门禁（入 `npm run check` 与 CI）：`check:pinned-deps`（全仓依赖精确版本，内部依赖 `^x.y.z` 锁步，examples 豁免）、`check:shrinkwrap`（cli 的 npm-shrinkwrap.json 与根 lockfile 同步、拒绝带 install script 的依赖）；`smoke:pack`（内核 tarball 装进裸消费者项目运行 + 严格类型检查）。
 - `@yophon/tau-cli` 发布带 `bin: tau`（dist JS，无 ExperimentalWarning——原技术债 #5）与 npm-shrinkwrap.json。
@@ -197,6 +201,6 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 | **扩展（extension）** | `(api: ExtensionAPI) => void` 纯函数（静态值）。经 `ExtensionRegistry.load` 汇集，钩入循环事件 |
 | **钩子/事件（hook/event）** | 扩展经 `api.on()` 订阅的循环生命周期点，命名与语义照抄 pi |
 | **turn（轮）** | 一次 LLM 请求 + 其全部工具执行。一次 `prompt()` 含 ≥1 个 turn |
-| **阶段（Phase）** | roadmap 的交付单元，编号 P0–P12，流程见 development.md |
+| **阶段（Phase）** | roadmap 的交付单元，编号 P0–P20，流程见 development.md |
 
 > 包命名注：正式 scope 为 `@yophon/tau-*`（P12 用户裁决，锁步版本发布）；P0–P11 期间的占位 scope `@tau/*` 仅存在于历史文档记录中。

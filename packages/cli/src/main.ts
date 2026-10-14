@@ -1,6 +1,17 @@
 #!/usr/bin/env node
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+
+/**
+ * User-level tau directory root. Honors `HOME` when set (tests and sandboxes
+ * override it); on Windows `os.homedir()` reads USERPROFILE and ignores HOME,
+ * which made e2e runs load the real ~/.tau/extensions.
+ */
+function userHome(): string {
+	const home = process.env.HOME?.trim();
+	return home ? home : homedir();
+}
+
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
@@ -30,6 +41,7 @@ import {
 	type ToolExecutionMode,
 	thinkingText,
 	type UiCapability,
+	type UserContent,
 } from "@yophon/tau-kernel";
 import { createStartupTuiUi, runTui } from "./tui.ts";
 
@@ -294,7 +306,7 @@ interface PermissionRule {
 }
 
 function permissionsStorePath(): string {
-	return join(homedir(), ".tau", "permissions.json");
+	return join(userHome(), ".tau", "permissions.json");
 }
 
 function approvalFingerprint(request: ApprovalRequest): string {
@@ -338,16 +350,24 @@ function resolveExtensionFlags(registry: ExtensionRegistry, extras: string[]): R
 			console.error(`Unexpected argument: ${token}`);
 			process.exit(1);
 		}
-		const name = token.slice(2);
+		const equals = token.indexOf("=", 2);
+		const name = token.slice(2, equals === -1 ? undefined : equals);
 		const flag = registry.flags.get(name);
 		if (!flag) {
 			console.error(`Unknown option: ${token}`);
 			process.exit(1);
 		}
 		if (flag.type === "boolean") {
+			if (equals !== -1) {
+				const inline = token.slice(equals + 1).toLowerCase();
+				if (inline !== "" && inline !== "true") {
+					console.error(`Boolean option ${token} does not accept a value other than true`);
+					process.exit(1);
+				}
+			}
 			values[name] = true;
 		} else {
-			const value = extras[++i];
+			const value = equals === -1 ? extras[++i] : token.slice(equals + 1);
 			if (value === undefined || value.startsWith("--")) {
 				console.error(`Missing value for ${token}`);
 				process.exit(1);
@@ -405,7 +425,7 @@ interface TrustStore {
 }
 
 function trustStorePath(): string {
-	return join(homedir(), ".tau", "trust.json");
+	return join(userHome(), ".tau", "trust.json");
 }
 
 function readTrustStore(): TrustStore {
@@ -466,7 +486,7 @@ async function isProjectTrusted(
 }
 
 async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<ExtensionRegistry> {
-	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(homedir(), ".tau", "extensions")));
+	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")));
 	const extensionsDir = join(cwd, ".tau", "extensions");
 	const projectExtensions = await loadExtensionsFromDir(extensionsDir);
 	if (projectExtensions.length === 0) return registry;
@@ -511,8 +531,36 @@ function setThinkingLevelInConfig(config: OpenAICompatConfig, level: ThinkingLev
 
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
+/** Resolver for the single readline line currently awaited by an approval gate. */
+let pendingApproval: { resolve: (choice: ApprovalChoice) => void } | undefined;
+/** Marks the current readline event when an approval answer was consumed. */
+let approvalLineConsumed = false;
 
-async function runTurn(agent: Agent, input: string | null, readline: Readline): Promise<void> {
+function consumeApprovalLine(line: string): boolean {
+	const pending = pendingApproval;
+	if (!pending) return false;
+	pendingApproval = undefined;
+	const answer = line.trim().toLowerCase();
+	const choice: ApprovalChoice =
+		answer === "a" || answer === "always" ? "always" : answer === "y" || answer === "yes" ? "once" : "deny";
+	pending.resolve(choice);
+	approvalLineConsumed = true;
+	// When a turn owns the readline listener there is no outer REPL loop to clear
+	// this marker; let the current event finish before resetting it.
+	setTimeout(() => {
+		approvalLineConsumed = false;
+	}, 0);
+	return true;
+}
+
+function cancelPendingApproval(): void {
+	const pending = pendingApproval;
+	if (!pending) return;
+	pendingApproval = undefined;
+	pending.resolve("deny");
+}
+
+async function runTurn(agent: Agent, input: UserContent | null, readline: Readline): Promise<void> {
 	const controller = new AbortController();
 	turnState.controller = controller;
 	const onSigint = (): void => {
@@ -522,6 +570,9 @@ async function runTurn(agent: Agent, input: string | null, readline: Readline): 
 	// Lines typed while the turn is running become steering messages.
 	const onLine = (line: string): void => {
 		const text = line.trim();
+		// An approval question uses the same readline stream.  Do not turn its
+		// answer into a steering message for the agent that is waiting on it.
+		if (approvalLineConsumed || consumeApprovalLine(text) || pendingApproval) return;
 		if (text !== "") agent.steer(text);
 	};
 	readline.on("line", onLine);
@@ -596,6 +647,7 @@ async function runTurn(agent: Agent, input: string | null, readline: Readline): 
 		const message = error instanceof Error ? error.message : String(error);
 		process.stdout.write(`\n${red(`Error: ${message}`)}\n`);
 	} finally {
+		cancelPendingApproval();
 		turnState.controller = null;
 		readline.removeListener("line", onLine);
 		process.removeListener("SIGINT", onSigint);
@@ -751,7 +803,7 @@ async function main(): Promise<void> {
 	const sessionRepo = new JsonlSessionRepo(
 		new NodeFileSystem("/"),
 		platform,
-		join(homedir(), ".tau", "sessions", sessionDirSlug(cwd)),
+		join(userHome(), ".tau", "sessions", sessionDirSlug(cwd)),
 		cwd,
 	);
 	let store: SessionStore | undefined;
@@ -807,9 +859,13 @@ async function main(): Promise<void> {
 			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk)`)}`);
 			if (request.reason) console.log(dim(request.reason));
 			console.log(dim(firstLine(JSON.stringify(request.args), 200)));
-			const answer = (await readline.question("Allow? [y]es once / [a]lways / [N]o ")).trim().toLowerCase();
-			if (answer === "a" || answer === "always") return "always";
-			return answer === "y" || answer === "yes" ? "once" : "deny";
+			process.stdout.write("\nAllow? [y]es once / [a]lways / [N]o ");
+			return await new Promise<ApprovalChoice>((resolve) => {
+				// Tool preflight is serial, but resolving a stale gate defensively keeps
+				// an aborted/closed turn from blocking the next one forever.
+				cancelPendingApproval();
+				pendingApproval = { resolve };
+			});
 		};
 	}
 	const buildAgent = (
@@ -830,7 +886,7 @@ async function main(): Promise<void> {
 				shell,
 				paths: {
 					cwd,
-					userTauDir: join(homedir(), ".tau"),
+					userTauDir: join(userHome(), ".tau"),
 					projectTauDir: join(cwd, ".tau"),
 					projectPiDir: join(cwd, ".pi"),
 				},
@@ -895,9 +951,9 @@ async function main(): Promise<void> {
 	// triggerTurn while idle). Closures read the live `agent` binding, so they
 	// stay correct across /fork agent swaps.
 	extensions.attachHostActions({
-		submitPrompt: (text) => {
+		submitPrompt: (content) => {
 			if (turnState.controller) return; // already running: extensions steer instead
-			void runTurn(agent, text, readline);
+			void runTurn(agent, content, readline);
 		},
 		resumeTurn: () => {
 			if (turnState.controller) return;
@@ -928,6 +984,17 @@ async function main(): Promise<void> {
 			break;
 		}
 		const input = line.trim();
+		// A Feishu-triggered run can start while this outer question is pending.
+		// Its line listener (above) has already handled the line as steering (or
+		// the approval question has consumed it).  Wait for that run to finish
+		// before opening another `readline.question`; concurrent questions are what
+		// previously caused approval answers to launch a second prompt().
+		const approvalConsumed = approvalLineConsumed || consumeApprovalLine(input);
+		approvalLineConsumed = false;
+		if (turnState.controller || approvalConsumed) {
+			while (turnState.controller) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+			continue;
+		}
 		if (input === "") continue;
 		if (input === "exit" || input === "quit") break;
 		if (input.startsWith("/")) {

@@ -6,8 +6,9 @@
 // tarball URLs (they publish in the same lockstep release).
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const cliDir = join(root, "packages/cli");
 const shrinkwrapPath = join(cliDir, "npm-shrinkwrap.json");
 const INTERNAL_PREFIX = "@yophon/tau-";

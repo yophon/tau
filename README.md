@@ -61,6 +61,31 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-ext-mcp-http` | Streamable HTTP MCP client written entirely on the `Platform` seam — zero dependencies, runs on bare engines where the SDK cannot | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
+| `@yophon/tau-ext-feishu` | Feishu/Lark WebSocket bridge with media, reactions, progress cards, and outbound tools | Yes — Feishu SDK and Node filesystem |
+
+### Feishu/Lark bridge
+
+The optional `@yophon/tau-ext-feishu` package ports the
+[pi-feishu](https://github.com/surenkid/pi-feishu) workflow to tau. It accepts
+text, post, image, file, audio, video, sticker, and card messages; downloads
+inbound media; streams tool progress through an editable card; and exposes
+`send_to_feishu`, `send_image_to_feishu`, and `send_file_to_feishu` tools.
+
+Install it in the project that runs tau, then add a wrapper under
+`.tau/extensions/feishu.ts` (or `~/.tau/extensions/`):
+
+```ts
+import createFeishuExtension from "@yophon/tau-ext-feishu";
+
+export default createFeishuExtension();
+```
+
+Configure `FEISHU_APP_ID` and `FEISHU_APP_SECRET` (or the corresponding
+`--feishu-*` flags). The extension also reads `feishu` from
+`~/.pi/agent/settings.json`, `~/.tau/settings.json`, project `.pi/settings.json`,
+and project `.tau/settings.json`, in that order from lower to higher priority.
+The tau runtime currently has one Agent, so Feishu chats share the active tau
+conversation and are serialized through per-chat FIFO queues.
 
 ## Design rules
 
@@ -194,9 +219,9 @@ Living docs under [docs/](docs/) — start here when picking up development:
 
 - [docs/development.md](docs/development.md) — process source of truth: commands, hard rules, spec-first phase workflow, Definition of Done
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
-- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P13) with status, dependencies, and tech-debt register
+- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D18)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D22)
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

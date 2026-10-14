@@ -1,0 +1,28 @@
+{
+	"name": "@yophon/tau-ext-feishu",
+	"version": "0.2.0",
+	"description": "Feishu/Lark WebSocket chat bridge extension for tau",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/yophon/tau.git",
+		"directory": "packages/ext-feishu"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./client": "./src/feishu-client.ts",
+		"./types": "./src/types.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@larksuiteoapi/node-sdk": "1.66.1",
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}

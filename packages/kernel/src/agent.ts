@@ -32,7 +32,9 @@ import {
 	type ToolCall,
 	type ToolResultMessage,
 	toolCallsOf,
+	type UserContent,
 	type UserMessage,
+	userContentText,
 } from "./messages.ts";
 import {
 	type ChatStreamEvent,
@@ -474,7 +476,7 @@ export class Agent {
 		this.followUpQueue.clear();
 	}
 
-	async *prompt(input: string, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
+	async *prompt(input: UserContent, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
 		if (this.running) throw new TauError("busy", "prompt() is already running");
 		this.running = true;
 		const handle = new AbortHandle();
@@ -577,22 +579,28 @@ export class Agent {
 		return { cancelled: false };
 	}
 
-	private async *runPrompt(input: string, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
+	private async *runPrompt(input: UserContent, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
 		const ctx = this.extensionContext();
 
-		let finalInput = input;
+		// Input hooks (pi semantics) operate on text. Image blocks ride along untouched:
+		// a rewrite replaces the text blocks with the rewritten text and keeps the images.
+		let finalInput: UserContent = input;
 		if (this.extensions) {
-			const inputResult = await this.extensions.runInput(input, ctx);
+			const inputText = userContentText(input);
+			const inputResult = await this.extensions.runInput(inputText, ctx);
 			if (inputResult.handled) {
 				yield { type: "agent_end", messages: this.messages };
 				return;
 			}
-			finalInput = inputResult.text;
+			if (typeof input === "string") finalInput = inputResult.text;
+			else if (inputResult.text !== inputText) {
+				finalInput = [{ type: "text", text: inputResult.text }, ...input.filter((block) => block.type === "image")];
+			}
 		}
 
 		let systemPrompt = this.systemPrompt ?? "";
 		if (this.extensions) {
-			const beforeStart = await this.extensions.runBeforeAgentStart(finalInput, systemPrompt, ctx);
+			const beforeStart = await this.extensions.runBeforeAgentStart(userContentText(finalInput), systemPrompt, ctx);
 			systemPrompt = beforeStart.systemPrompt;
 			for (const injected of beforeStart.messages) {
 				await this.commitMessage(

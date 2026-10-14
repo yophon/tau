@@ -5,11 +5,36 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel: `Agent.prompt()`, extension `sendUserMessage()` and the host action
+  `submitPrompt()` now take `UserContent` (`string | (TextContent | ImageContent)[]`)
+  instead of `string` (P20). Input hooks still receive the text projection and a
+  rewrite keeps the image blocks. Hosts implementing `submitPrompt` must accept
+  content arrays (`userContentText()` projects them back to text).
 - examples/flutter/mcp-server (not an npm package): `--host` now defaults to
   `127.0.0.1` (P19). LAN access needs an explicit `--host 0.0.0.0`; the new
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- `@yophon/tau-ext-feishu` (P20): Feishu/Lark WebSocket + REST channel extension
+  ported from pi-feishu — inbound text/post/media/card parsing, media download,
+  dedupe/expiry, Typing + CrossMark reactions, editable tool-progress card,
+  chunked replies, `/new` `/stop` `/queue` `/compact` `/status` `/help` `/feishu`
+  commands, and `send_to_feishu` / `send_image_to_feishu` / `send_file_to_feishu`
+  tools. Inbound images are handed to the kernel as image blocks.
+- Kernel: `UserContent` type and `userContentText()` helper exported.
+
+### Fixed
+- CLI: the user-level `~/.tau` directory now honors `HOME` when set. On Windows
+  `os.homedir()` reads `USERPROFILE` and ignored the override, so e2e runs loaded
+  the real `~/.tau/extensions` (and hung on a Feishu WebSocket).
+- CLI e2e: sandbox teardown retries `rm` on Windows `EBUSY` (a just-exited child
+  still holding its cwd).
+- Kernel: session file paths reuse the host directory's separator (Windows: a
+  mixed `C:\...\dir/file` `parentSession` no longer disagrees with `path.join`).
+- CLI e2e: the SIGINT test is skipped on Windows (`child.kill("SIGINT")` cannot
+  deliver a signal there).
+- Repo: `.gitattributes` pins LF line endings (Windows `core.autocrlf` produced
+  phantom modifications across the tree).
 - examples/flutter/mcp-server: `--tunnel` — spawns the system `cloudflared`
   for a public https Quick Tunnel URL (printed with the token for the phone
   app); auth hardening (constant-time token compare, per-IP exponential

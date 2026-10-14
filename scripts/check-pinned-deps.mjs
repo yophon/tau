@@ -4,8 +4,9 @@
 // examples/ (unpublished demo apps; expo requires ranges).
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const SECTIONS = ["dependencies", "devDependencies", "optionalDependencies"];
 const EXACT = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "examples"]);

@@ -1,0 +1,14 @@
+# 统一 LF：Windows 上 core.autocrlf=true 会把检出文件转成 CRLF，biome/tsc 产物与 git 状态都会冒出幻影改动。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.jar binary
+*.keystore binary
+*.zip binary

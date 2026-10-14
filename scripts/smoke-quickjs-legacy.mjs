@@ -6,10 +6,11 @@
 // 另附单源化 grep 断言：polyfills.ts 全仓库仅 test-fixtures/quickjs/ 一份。
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { getQuickJS } from "quickjs-emscripten-legacy";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 
 function fail(message) {
 	console.error(`QuickJS legacy smoke FAILED: ${message}`);

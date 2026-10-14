@@ -6,9 +6,10 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PUBLISHABLE_PACKAGES, withPublishManifest } from "./release-lib.mjs";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const dryRun = process.argv.includes("--dry-run");
 const unknownArgs = process.argv.slice(2).filter((arg) => arg !== "--dry-run");
 if (unknownArgs.length > 0) {
@@ -25,6 +26,7 @@ function run(command, args, options = {}) {
 	const result = spawnSync(commandForPlatform(command), args, {
 		cwd: options.cwd,
 		encoding: "utf8",
+		shell: process.platform === "win32",
 		stdio: options.capture ? ["inherit", "pipe", "pipe"] : "inherit",
 	});
 	if (result.status !== 0) {
@@ -37,6 +39,7 @@ function run(command, args, options = {}) {
 function isPublished(name, version) {
 	const result = spawnSync(commandForPlatform("npm"), ["view", `${name}@${version}`, "version", "--json"], {
 		encoding: "utf8",
+		shell: process.platform === "win32",
 		stdio: ["inherit", "pipe", "pipe"],
 	});
 	if (result.status === 0 && result.stdout.trim()) return true;

@@ -133,6 +133,7 @@ export {
 	type UserBashEventResult,
 	type WidgetPlacement,
 } from "./extensions.ts";
+export type { UserContent } from "./messages.ts";
 export {
 	type AgentMessage,
 	type AssistantMessage,
@@ -154,6 +155,7 @@ export {
 	type Usage,
 	type UsageCost,
 	type UserMessage,
+	userContentText,
 } from "./messages.ts";
 export {
 	BRANCH_SUMMARY_PREFIX,

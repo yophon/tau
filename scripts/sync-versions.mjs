@@ -3,8 +3,9 @@
 // dependency at ^<version>.
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = new URL("..", import.meta.url).pathname;
+const root = fileURLToPath(new URL("..", import.meta.url));
 const packagesDir = join(root, "packages");
 const INTERNAL_PREFIX = "@yophon/tau-";
 
