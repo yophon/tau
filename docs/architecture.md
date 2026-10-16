@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-08-28（P20 飞书/Lark 渠道扩展：Node-only WebSocket/REST 桥接与发布包接入）
+> 最后更新：2026-10-15（P21：pi 参照重锚到 v1.2.0；P21-HF 修复批）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -52,7 +52,9 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序）、pi 的 Usage/StopReason、消息级 timestamp。Thinking 块含可选 `thinkingSignature`/`redacted`（pi 形状，P16 补齐——Anthropic thinking 回放需要 signature）。联合 = user/assistant/toolResult/custom（**无 system**——system prompt 是独立参数）。helpers：messageText/toolCallsOf/thinkingText。`ModelPricing`/`computeUsageCost`（D19-3）：宿主注入单价则 `AgentOptions.pricing` 在 response_end 填 `usage.cost`，缺失维持零值，tau 不带定价数据 |
 | `agent.ts` | `Agent` 类：`prompt(input, signal)` 返回 AsyncGenerator<AgentEvent>。循环 = 发请求 → 流式收 → 执行工具 → 消费 steering 队列 → 重复，直到无工具调用且无 followUp。**所有 LLM 请求（对话/压缩/分支摘要）经 `AgentOptions.transport` 注入的 ChatTransport 发出**（缺省 = OpenAI 兼容包装；子 agent 继承；不支持运行中热换——协议中途切换会打断 usage/缓存语义，D21）。`steer()`/`followUp()` 队列照抄 pi 的 PendingMessageQueue（`QueueMode = "one-at-a-time" \| "all"`）。扩展钩子挂在循环各点，**扩展先于宿主 yield 收到事件**（可改写内容）。工具执行前依次过参数校验（validateToolArgs）与权限门（policy.assess → allow/ask/deny，ask 走 `onApproval` ?? `ui.confirm`，都缺则 deny），deny 是普通 isError 工具结果、循环不断；子 agent 继承 permissionMode/policy/onApproval |
 | `policy.ts` | **权限与审批（P15，tau 原创面，D20）**：`PermissionMode`（read-only/supervised/autonomous/bypass）× `RiskLevel`（low/medium/high）→ allow/ask/deny 矩阵（`resolvePolicyAction`）；`createDefaultPolicy({protectedPaths?, dangerousPatterns?})` 静态规则——read 类 low、write/edit 命中保护路径（`.git`/`.ssh`/`.env*`/`~/.tau/{trust,permissions}.json`）high、bash 命中危险模式（rm -rf/sudo/管道下载执行/force push/写裸设备/mkfs/fork 炸弹）high、其余 medium；扩展工具可经 `registerTool(tool, { risk })` 自声明（内置名不可被降级）。内核默认 autonomous（库消费者行为不破坏），CLI/TUI 默认 supervised |
-| `tools.ts` | `Tool = ToolDefinition + execute(args, signal, onUpdate?, ctx?)`（onUpdate 产生 tool_execution_update，ctx 给扩展工具访问 facade，`risk?` 自声明风险），`ToolResult = { output, isError? }`，参数校验辅助函数；`validateToolArgs`（JSON Schema 子集：type/properties/required/enum/items，宽松放行未知关键字与多余属性，供模型自纠） |
+| `transform.ts` | `transformMessages()`：pi 的跨模型回放规则（P21-HF-6）。同模型的推理按原字段回放，换模型或换协议时 thinking 转成文本、跳过 error/aborted 轮、给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Anthropic 扩展共用 |
+| `json.ts` | `repairJson()` / `parseJsonWithRepair()`：照抄 pi v0.80.3，修复工具参数里的裸控制字符与非法转义（P21-HF-7） |
+| `tools.ts` | `Tool = ToolDefinition + execute(args, signal, onUpdate?, ctx?)`（onUpdate 产生 tool_execution_update，ctx 给扩展工具访问 facade，`risk?` 自声明风险），`ToolResult = { output, isError? }`，参数校验辅助函数；`assertToolSchema` 拒绝没有 `parameters` 对象的工具（`invalid_tool`，P21-HF-8）；`validateToolArgs`（JSON Schema 子集：type/properties/required/enum/items，宽松放行未知关键字与多余属性，供模型自纠） |
 | `capabilities.ts` | 能力接口：`FileSystem`（readTextFile/writeTextFile/appendFile/listDir/stat/remove + cwd）、`Shell`（exec，含 onStdout/onStderr 流式回调，照抄 pi ExecutionEnv）。**能力可选**：宿主不提供就少注册工具 |
 | `coding-tools.ts` | 默认工具四件套 read/write/edit/bash（`createCodingTools({ fs?, shell? }, { mode? })`），edit 要求 oldText 唯一匹配；`mode: "read-only"` 时只注册 read（写类工具根本不上 wire），Agent 的策略矩阵兜底其余注册路径 |
 | `extensions.ts` | 扩展系统，**API 形状照抄 pi**（见下节） |
@@ -61,7 +63,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `utf8.ts` | `createIncrementalUtf8Decoder()`：纯 ES 增量 UTF-8 解码器（跨 chunk 多字节、无效序列 U+FFFD、flush 半截字符），供无 TextDecoder 的宿主接 `Platform.createUtf8Decoder`（weapp iOS JSC / Hermes / 裸 QuickJS）。tau 原创（pi 跑在 Node 上用不着）；`defaultPlatform()` 仍优先全局 TextDecoder |
 | `compaction.ts` | **pi 压缩算法整体移植**：token 估算（usage+启发式双层；启发式为 CJK 加权 `estimateStringTokens`——CJK 1 token/字 + 其余 chars/4，偏离 pi 的纯 chars/4，D19-1）、切点选择（split-turn 感知）、摘要 prompt（pi 逐字 + 追加标识符保护条款，D19-2）、迭代更新、runCompaction 编排。摘要请求走 Agent 的同一 ChatTransport（P16——"摘要用同一模型"的 D3 约定由此自然保持），输出上限经 `TransportRequest.maxTokens` 传递 |
 | `branch.ts` | **pi 分支摘要算法移植**：最深公共祖先收集、预算裁剪、文件操作列表继承、branch summary prompt/preamble；供 `/tree` 放弃分支摘要与 `Agent.navigateTo()` 使用。摘要请求同走 transport，token 预算经 `options.contextWindow`（P16 签名改造） |
-| `session.ts` | **pi v3 会话格式**：SessionHeader/树形 SessionEntry（message/custom/custom_message/session_info/leaf）；`SessionStore`/`SessionRepo` 接口镜像 pi；`InMemorySessionRepo` 与 `JsonlSessionRepo`（后者只依赖 FileSystem 能力，纯内核）；`SessionRecorder`（维护 parentId 链）+ `restoreSession`（leaf→root 重建对话） |
+| `session.ts` | **pi v3 会话格式**：SessionHeader/树形 SessionEntry（message/custom/custom_message/session_info/leaf）；`SessionStore`/`SessionRepo` 接口镜像 pi；`InMemorySessionRepo` 与 `JsonlSessionRepo`（后者只依赖 FileSystem 能力，纯内核）；`SessionRecorder`（维护 parentId 链）+ `restoreSession`（leaf→root 重建对话）。JSONL 新会话在第一条 message 条目时才写文件，之前的条目暂存在内存；`SessionMetadata.modified` = 最新条目时间，`list()` 按它排序（P21-HF-16） |
 
 ## 扩展系统（照抄 pi）
 
@@ -78,15 +80,16 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
   - `tool_result`：按字段覆盖 `{output?, isError?}`
   - `agent_start` / `agent_end` / `turn_start`（turnIndex, timestamp）/ `turn_end`（带该轮 toolResults）
   - `project_trust`：宿主决定是否加载项目扩展时触发，首个非 undecided 答案生效
-  - `resources_discover`：扩展提供额外 skills/prompts/themes 路径；registry 按注册顺序汇总，资源加载由扩展包消费
+  - `resources_discover`：扩展提供额外 skills/prompts 路径（pi 的 themes 字段不消费，Themes 已否决）；registry 按注册顺序汇总，资源加载由扩展包消费
   - `session_before_compact`（可取消 / 可返回 result 接管压缩）/ `session_compact`；ExtensionContext 提供 `getContextUsage()` 与 `compact()`（请求下轮前压缩）
   - `session_before_fork`（entry-targeted fork 前可取消）/ `session_before_tree`（树导航前可取消或接管摘要）/ `session_tree`（导航完成通知）
 - **单轮事件全序**（有约束力，hooks.test.ts / parallel-tools.test.ts 断言）：`turn_start → context → message_start → message_update* → message_end → 工具批次 → 消费 steering → turn_end`；`input → before_agent_start → agent_start` 在循环前。工具批次分两种（P18，pi 语义）：**sequential**（显式配置，或批次内任一工具标 `executionMode:"sequential"`）= 每工具 `[tool_call → tool_execution_start → tool_execution_update* → tool_execution_end → tool_result]` 严格串行；**parallel**（默认，照抄 pi）= `[tool_call → tool_execution_start]` 按 assistant 源序逐个 preflight（钩子/校验/策略/审批不并发），然后执行并发——`tool_execution_update`/`tool_execution_end` 按完成序交错，最后 toolResult 消息按**源序**入对话与 wire（会话文件与 sequential 模式不可区分）。write/edit 内置同文件互斥（per-file mutation queue，键为词法规范化路径）。
 - 处理器按注册顺序链式执行，transform/替换串联，block/handled 短路。
-- `registerTool(tool)`（同名后注册者覆盖）、`registerCommand(name, options)`、`registerFlag(name, options)`/`getFlag(name)`（值由宿主 `setFlagValues` 提供）。
+- `registerTool(tool)`（无 `parameters` schema 即抛 `invalid_tool`；同名后注册者覆盖，对齐 pi 的先注册者胜排在 P23）、`registerCommand(name, options)`、`registerFlag(name, options)`/`getFlag(name)`（值由宿主 `setFlagValues` 提供）。
 - `ExtensionContext.capabilities` 暴露宿主 facade：`fs?` / `shell?` / `platform`；`Tool.execute` 第四参收到同一个 ctx。Agent 每次请求与工具执行动态合并当前 extension tools，因此 `session_start` 等异步初始化后注册的工具也能参与后续 turn。
 - `ExtensionContext.runSubagent(prompt, options?, signal?)` 运行不共享父 session 的子 Agent，默认复用父 Agent 的 config/platform/base tools；子 Agent 消息不混入父 messages，结果通过工具结果回到父对话。
 - 动作（P3/P8，经 Agent 的 `attachHostActions` 支撑）：`sendMessage`（custom 消息进上下文，user 角色发送，同 pi convertToLlm）、`appendEntry`（持久化不进上下文）、`setSessionName`；会话事件 `session_start`（startup/resume/reload）/ `session_shutdown` / `session_info_changed`。`before_agent_start` 可注入 custom 消息；`message_start/end` 覆盖全部消息角色（update 仍仅 assistant 流式）。
+- 错误隔离（P21-HF-12）：宿主经 `ExtensionRegistry.setErrorSink()` 接管通知类处理器（agent/turn/message/tool/session 事件）的异常，一个处理器失败不影响其余处理器。CLI 打到 stderr，TUI 写进转录。循环自发的压缩失败发 `session_compact_failed` 与 `compaction_failed`，不抛出（D14）。
 - UI 走可选 `UiCapability`（confirm/input/select/notify）：宿主提供则扩展可交互，不提供（headless）则扩展走降级路径。CLI 在非 TTY stdin 时故意不提供。
 
 ## 标杆扩展包（P7）
@@ -101,11 +104,11 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 
 ## TUI 宿主（P8）
 
-- `@yophon/tau-cli` 的 `--tui` 模式，基于 `@earendil-works/pi-tui@0.80.3`（差分渲染；Node ≥ 22.19 因此而来）。readline REPL 与 `-p` 单次模式保留。
+- `@yophon/tau-cli` 的 `--tui` 模式，基于 `@earendil-works/pi-tui@0.80.3`（差分渲染；Node ≥ 22.19 因此而来）。pi-tui 版本与参照快照解耦（D23），升级排在 P24 之后。readline REPL 与 `-p` 单次模式保留。
 - 交互面：assistant markdown/text 流式、工具折叠/展开（全局 + 单项）、`!`/`!!` 用户 bash（stdout/stderr 增量分区）、steering（运行中输入）、Ctrl+C 中断轮、Esc 中断压缩、autocomplete（slash + 文件路径）、`/model`·`/thinking`·`/compact`·`/tree`·`/fork`·`/sessions`·`/resume`·`/name`·`/reload`·`/help`·`/diagnostics`。
 - `UiCapability` 的 TUI 实现（confirm/input/select/notify），startup project trust 走同一路径。
 - 扩展 surfaces：message/entry/tool renderer、widgets（editor 上下）、header/footer items、shortcuts——错误一律隔离降级，不打断 TUI。`/reload` 重建 registry 并触发 `session_start(reload)` / `resources_discover("reload")`。
-- Themes 延期（Backlog）。冒烟自动化：`npm run smoke:tui`（tmux 驱动，覆盖上述关键路径）。
+- Themes 已否决（2026-07-20 用户裁定），不再排期。冒烟自动化：`npm run smoke:tui`（tmux 驱动，覆盖上述关键路径）。
 
 ## 浏览器宿主（P9）
 

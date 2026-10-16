@@ -46,6 +46,8 @@ pi 扩展 API 类型 1638 行，暴露 TUI/typebox/ModelRegistry/session manager
 
 ## D11：pi 参照系锁定为本地快照 v0.80.3
 
+> **版本号已推翻，见 D23**（2026-10-15）。「锁定一个快照、升级是显式决策」的机制保留。
+
 pi 是 0.x 移动靶（minor 即 breaking）。tau 所有"照抄 pi"以 `../pi` 本地快照（**v0.80.3**，非 git 仓库）为准，保证任何会话读到的参照一致。升级快照 = 显式决策：在本文件追加记录新版本号，并重新核对 pi-parity.md 全表。
 
 ## D12：阶段规格书先行（spec-first）
@@ -55,6 +57,8 @@ pi 是 0.x 移动靶（minor 即 breaking）。tau 所有"照抄 pi"以 `../pi` 
 ## D13：消息形状照抄 pi（推翻 Phase 0 的 wire 镜像设计）（2026-07-04，用户裁决）
 
 Phase 0 曾把消息模型设计成 OpenAI wire 格式的直接镜像（string content + reasoning/toolCalls 平行字段）。P3 规格评审时用户质询，重新用 D7 检验后推翻：**消息形状是纯数据建模，不是运行时耦合，不属于允许偏离的范畴**。现对齐 pi：内容块数组（Text/Thinking/ToolCall/Image，保留交错顺序）、pi 的 Usage 形状（cacheRead/cacheWrite/cost，cost 先填零——无定价库）、StopReason 枚举、消息级 timestamp、api/provider/model 字段。收益：会话文件真正 pi v3 兼容（消除了 P3 规格原有的"永久格式分歧"风险）、P4/P5 的 compaction/分支算法可照搬、多模态不需要 breaking change。教训：对"偏离仅限运行时耦合"要逐字段检验，wire 格式的实现便利不构成偏离理由。
+
+> **P21 补记（2026-10-15，用户裁定，不推翻）**：①P22 照抄 pi 1.2.0 的会话模型——会话日志是 provider 上下文的唯一来源，请求前从日志重建，system prompt 与工具声明以 system 消息进入转录，线格式按协议折叠。②会话兼容收窄为**单向**：tau 能读 pi 会话、条目形状照抄；不保证 pi 能恢复 tau 写出的会话（例如 tau 的 leaf 条目）。格式改动在 P22 做。
 
 ## D14：失败语义照抄 pi——错误变消息，`prompt()` 不抛 provider 错误（2026-07-15，P11）
 
@@ -117,3 +121,28 @@ D3 预留的"扩展层协议适配"口子兑现为内核 `ChatTransport` 注入�
 3. **内置工具不标 executionMode，照抄 pi**（用户裁决 2026-07-20）：pi 内置工具（含 bash）全部默认并行，写冲突由独立机制兜——edit/write 执行体包 per-file mutation queue（同文件串行、异文件并行）。tau 在内核以纯 ES 复刻该队列；无宿主 realpath，以词法规范化路径为键，**symlink 别名不去重**（已知偏差，接受）。扩展工具默认并行，需要串行的自行声明 `executionMode`；工具 execute 内部主动调 ctx.ui 的并发安全由扩展作者自负（development.md 明示）。
 
 有意偏离 pi 一处：abort 时 pi 在 preflight 循环内 break（剩余 tool_call 无结果），tau 不 break——每个 tool_call 恒有配对 toolResult（工具经 signal 快速收尾），保持 wire 的 call/result 配对完整性与既有 sequential 语义一致。
+
+## D23：pi 参照系重锚到 v1.2.0（2026-10-15，P21，用户确认）
+
+版本号推翻 D11，机制保留。
+
+- 参照为 pi tag **v1.2.0**（2026-10-12）。快照位于 `../pi`，用 `git clone --depth 1 --branch v1.2.0 https://github.com/earendil-works/pi ../pi` 重建（仓库已由 `pi-mono` 更名为 `pi`）。
+- 只照抄打过 tag 的版本。Unreleased 与 main 只作信息，不作照抄依据。
+- 快照内漏抄（旧快照已有、tau 未镜像）按 D7 直接补，不需单独决策。快照后新增的成员，由所属阶段的规格书逐项照抄或排除。
+- pi-parity.md 以快照 `types.ts` 抽取的成员集合为行集合，每行必须有状态。
+- **pi-tui 与本决策解耦**：TUI 是 D7 列出的运行时耦合点，CLI 依赖的 pi-tui 版本由宿主维护阶段显式升级（排在 P24 之后），不随参照快照走。
+- 下次重锚的触发条件：pi 发大版本，或某阶段规格书需要快照之外的成员。阶段进行中不换参照。
+
+## D24：MCP 服务器认证只走请求头（2026-10-15，P21）
+
+MCP OAuth 授权码流需要本机回环回调服务器，裸引擎和手机宿主做不到，而且是一块随规范持续变动的安全面。tau 的两个 MCP 扩展只支持请求头认证（Bearer 等）。需要 OAuth 的服务器经进程外的 stdio 桥接入，例如 mcp-remote。重开条件：出现一个能在 Node 宿主内以扩展形态完成 OAuth、且不进内核的成熟实现。
+
+这不是 D2 的补记。D2 针对模型提供方的订阅登录，MCP 服务器认证是另一回事。
+
+## D25：不做约束采样（2026-10-15，P21）
+
+pi 按模型能力表决定是否给工具 schema 发 `strict`，以及是否用 grammar 工具。tau 没有模型库，内核能连的每个端点在 pi 看来都是「未知的 OpenAI 兼容端点」，pi 自己从 0.87.0 起对这类端点也不发 `strict`。tau 的两个 transport 都只发非 strict schema。重开条件：宿主配置能声明端点的 strict 能力，且有一个具体收益场景。
+
+## D26：方言补位按端点嗅探，协议选择仍不嗅探（2026-10-15，P21，用户裁定）
+
+P16 的「显式、不嗅探」针对协议选择（OpenAI 兼容还是 Anthropic），保持不变。同一协议内的方言补位照抄 pi，按 baseUrl 缺省开启、配置可覆盖：DeepSeek 端点（host 含 deepseek.com）回放 assistant 轮时补 `reasoning_content: ""`（`OpenAICompatConfig.replayEmptyReasoning`，P21-HF-6）。P23 的 Chat Completions `finish_reason` 严格语义同理：缺省严格，`supportsFinishReason: false` 与对应环境变量作逃生口，与 D20-1、D22-1 同类处理。

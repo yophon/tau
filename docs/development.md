@@ -17,8 +17,9 @@
 
 ## pi 参照系
 
-- pi 快照位于本仓库同级目录 `../pi`（即 `~/Desktop/atlasandecho/yophon/pi`，2026-07-19 仓库迁址后更新），**版本 v0.80.3，非 git 仓库**。快照若丢失，用 `git clone --depth 1 --branch v0.80.3 https://github.com/earendil-works/pi-mono ../pi && rm -rf ../pi/.git` 重建（2026-07-14 曾因仓库搬家丢失过一次，按此重建）
-- "先读 pi / 照抄 pi" 一律以该快照为准（decisions.md D11）。若快照被更新到新版本，必须在 decisions.md 追加记录并重新核对 pi-parity.md
+- pi 快照位于本仓库同级目录 `../pi`，**tag v1.2.0**（D23，2026-10-15 重锚；此前为 v0.80.3，见 D11）。快照不在仓库里，丢失或换机后用 `git clone --depth 1 --branch v1.2.0 https://github.com/earendil-works/pi ../pi` 重建（上游已由 `pi-mono` 更名为 `pi`）。核对：`../pi/packages/coding-agent/package.json` 的 version 为 1.2.0
+- "先读 pi / 照抄 pi" 一律以该快照为准。只照抄打过 tag 的版本，Unreleased 与 main 只作信息。升级快照 = 在 decisions.md 追加记录，并重跑 `node scripts/check-pi-parity.mjs`（从快照 `types.ts` 抽取扩展面成员，与 pi-parity.md 三张表比对；不进 `npm run check`，CI 没有快照）
+- CLI 依赖的 `@earendil-works/pi-tui` 版本与参照快照解耦（D23），由宿主维护阶段显式升级
 - roadmap 每个阶段列有"先读 pi"的具体文件清单；读了清单之外的关键文件，补记进该阶段规格书
 
 ## 硬规则
@@ -32,6 +33,7 @@
 7. **文档即接口**：行为与文档冲突时，要么改代码要么改文档，不允许悬置。发现文档间不一致，当场修。
 8. **适配器信号桥接义务**（P10，原技术债 #7）：内核造的 `TauAbortSignal` 是结构子集，原生传输层普遍拒收（undici/expo fetch 要真 `AbortSignal`；wx 要 `RequestTask.abort()`）。写新 `Platform` 适配器必须按需双向桥接，且 abort 后 pending read 必须 reject（abort 才能传回内核转成 aborted 消息）。参照实现：kernel `platform.ts` 的 `bridgeSignal`、`host-rn`（正向）、`host-weapp`（反向）。
 9. **扩展工具默认并发执行**（P18/D22）：多工具批次默认 parallel，工具 `execute` 可能与同批其他工具并发跑——execute 内部的共享状态与主动 `ctx.ui` 调用由工具作者自负并发安全；需要独占执行的工具声明 `executionMode: "sequential"`（整批降级）。preflight（tool_call 钩子/审批）恒串行，无需担心审批并发。
+10. **扩展作者规则**（P21）：扩展工厂可以是 async，宿主逐个 await；工厂里只注册，不启动进程、socket、timer——连接与资源放进 `session_start`，在 `session_shutdown` 里关闭（含在途连接）。工具必须声明 `parameters` JSON Schema 对象，否则注册即抛 `invalid_tool`。`input`、`before_agent_start` 期间不要调 `sendUserMessage`（抛 `busy`），改用 `sendMessage({ deliverAs })`。通知类处理器抛错时，宿主装了 error sink 就只报告不中断（CLI 打到 stderr），没装则照常抛出
 
 ## 阶段执行流程（每个 Phase 依此走完）
 

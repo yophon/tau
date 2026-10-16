@@ -1,10 +1,10 @@
 # tau 路线图
 
-> 最后更新：2026-08-28（P20 飞书/Lark 渠道扩展完成；**P0–P20 全部 ✅**，无排期阶段，候选见 Backlog）
+> 最后更新：2026-10-15（P21 pi 参照重锚完成，修复批 P21-HF 落地；**当前工作 = P22**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
-**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核。**执行顺序调整（2026-07-14 用户裁决）**：P11 基础夯实先行，P10 适配器实施推后至其后；P12 发布工程收尾。**P14–P18（2026-07-17 先天不足分析立项）**：P14 独立先行（量级最小）；P15 依赖既有 tool_call 钩子（已定型）；P16 只加内核缝 + 独立扩展包；P17 为工程阶段可穿插执行；P18 的审批交互依赖 P15 先落地（审批在串行 preflight 段的语义），排最后。P20 为 Node-only 外部渠道扩展，不改 kernel，只依赖已定型的扩展 API 和发布工程。
+**阶段依赖**：P2 是 P3–P8 的 API 地基（钩子定型）；P3→P4→P5 严格串行（会话格式 → 压缩 → 分支）；P6 在 P7 补齐扩展表达力后以扩展包完成；P8 依赖 P2 的 steering 与 tool_execution_update；P9/P10 只依赖内核。**执行顺序调整（2026-07-14 用户裁决）**：P11 基础夯实先行，P10 适配器实施推后至其后；P12 发布工程收尾。**P14–P18（2026-07-17 先天不足分析立项）**：P14 独立先行（量级最小）；P15 依赖既有 tool_call 钩子（已定型）；P16 只加内核缝 + 独立扩展包；P17 为工程阶段可穿插执行；P18 的审批交互依赖 P15 先落地（审批在串行 preflight 段的语义），排最后。P20 为 Node-only 外部渠道扩展，不改 kernel，只依赖已定型的扩展 API 和发布工程。**P21–P25（2026-10-15 主线计划）**：P21 重锚 pi 参照并产出下游输入；P22 → P23 → P24 严格串行（日志即事实 → 循环与接缝 → PTC/codemode），三者的规格书直接引用 P21 附录 A 的条目 id；P25 起是产品层。
 
 ## Phase 0 ✅ 内核种子（2026-07-04）
 
@@ -202,9 +202,36 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 通过 `.tau/extensions` wrapper 导入该 workspace 包。验证：扩展单测与全仓
 `check`/`test`/`build`。**2026-10-14 收口**：图片入站所需的 `UserContent`（`prompt`/`sendUserMessage`/`submitPrompt` 接受文本 + 图片块）落进内核；Windows 上 `HOME` 覆盖与 e2e 清理修复；仓库统一 LF。
 
+## Phase 21 ✅ pi 参照重锚（v0.80.3 → v1.2.0）（2026-10-15）
+
+规格书：[specs/phase-21-pi-realign.md](specs/phase-21-pi-realign.md)。只改文档与决策。审计 pi v0.80.3 → v1.2.0 的 329 条变更并逐条判定去向；参照重锚到 tag v1.2.0（D23，`../pi` 按命令重建），D24（MCP 认证只走请求头）、D25（不做约束采样）、D26（方言补位按端点嗅探）入档，D13 补记会话模型与单向兼容；pi-parity.md 按 91 个扩展面成员重写，`scripts/check-pi-parity.mjs` 机械核对行集合；九个开放问题按建议裁定（2026-10-15 用户确认）。
+
+**修复批 P21-HF（0.3.0 发布阻断，已全部落地）**：按 bugfix 纪律先写复现测试再修，三个提交——
+- 安全（99807c1）：HF-1 项目扩展先判信任再 import；HF-2 端点与密钥环境变量按协议隔离（⚠ Breaking）；HF-3 Windows 危险命令分级；HF-4 abort 拦住未开始的工具调用。
+- 线格式（cfb6eac）：HF-5 Anthropic adaptive thinking + effort、签名空块回放；HF-6 Chat Completions 推理字段读取与回放、`transformMessages` 进内核、usage 去重（⚠ Breaking）。
+- 循环与宿主（acb8c3c）：HF-7 工具参数 JSON 修复；HF-8 拒绝无 schema 工具；HF-9 循环内压缩失败不抛；HF-10 resume 应用 before_agent_start；HF-11 启动窗口 sendUserMessage 抛 busy；HF-12 通知处理器错误隔离 + ext-mcp 单服务器失败隔离；HF-13 edit 不解释 `$` 替换模式；HF-14 Windows 路径归一；HF-15 图片校验；HF-16 会话文件延迟创建、`--continue` 按最近活跃、系统提示按实际工具生成。
+
+剩余：发 **0.3.0**（`npm run release -- minor`，不是 0.2.1：`[Unreleased]` 含 Breaking）。
+
+## Phase 22 ⬜ 事件日志内核：日志即唯一事实
+
+输入：P21 附录 A 中阶段为 P22 的 27 条。照抄 pi 1.2.0 会话模型：会话日志是 provider 上下文的唯一来源，请求前从日志重建；system prompt 与工具声明以 system 消息进入转录，线格式按协议折叠；SessionEntry 增 `usage`、`context_edit`；`ToolCall.arguments`/`details` 限定为 JSON 值；会话兼容收窄为单向读（D13 补记）。镜像 `ctx.sessionManager`、`ctx.getSystemPrompt()`、`setLabel`、`context_with_system`。
+
+## Phase 23 ⬜ 循环显式化、接缝与 fail-closed
+
+输入：附录 A 中阶段为 P23 的 72 条。主干：内核 active 工具集与 `get/set/getAllTools`；`terminate` 与 prompt/resume/compact/navigateTo 的统一 busy 互斥（`isIdle`、`signal`、`hasPendingMessages`）；扩展同名冲突先注册者胜、加载失败回滚（⚠ Breaking）；`isProjectTrusted` 与信任门扩到 settings、skills、prompts、mcp.json；`finish_reason` 缺省严格（D26 逃生口）与 `normalizeToolCallId`；`ToolResult` 收敛为 pi 的 `{content, details}`（⚠ Breaking）；agent_before_settle/agent_settled、可操作的 turn_end、user_bash fail-closed、`pi.on()` 返回取消函数、thinkingLevel 与 model 入缝。
+
+## Phase 24 ⬜ PTC 与 codemode
+
+输入：附录 A 中阶段为 P24 的 28 条。第 0 步把两个 MCP 扩展收敛到一个纯 ES 核心并退役官方 SDK；内核只加 `ctx.executeTool` 嵌套调用门面、`Tool.outputSchema` 与 `structuredContent`、exposure/namespace 数据字段；QuickJS 沙箱留在扩展包，精确钉版 `@earendil-works/pi-codemode`；纳入 tool_search；MCP 工具名 `mcp__<server>__<tool>`。之后的第一个宿主维护阶段升级 pi-tui（D23 解耦）。
+
+## Phase 25+ ⬜ 产品层
+
+P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
+
 ## 未排期（Backlog）
 
-> **P0–P20 全部 ✅（2026-08-28）**——路线图无排期阶段，本表为未排期候选；立项时按 development.md 流程先写规格书经用户确认。
+> 本表为未排期候选；立项时按 development.md 流程先写规格书经用户确认。P21 审计判为「以后」的 32 条也属此列，详见其附录 A。
 >
 > 原 A 组两项已消化（2026-07-17）：ext-mcp-http 发版随 v0.1.1 完成（2026-07-16，npm 实测 0.1.1 可装）；Android UI 补验并入 P17。
 
@@ -220,6 +247,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
 - P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
+- pi parity 📍Backlog 行（P21）：`before_provider_request`/`after_provider_response`、`provider_stream_event`、`ui_prompt_start/end`、`registerMarkdownTransformer`、`pi.events`、项目上下文文件 AGENTS.md
+- MCP 2026-07-28 新规范适配（pi 1.2.0 仍协商 2025-11-25，单独立项）
 
 ## 技术债登记
 
@@ -229,5 +258,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 |---|---|---|---|
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
+| 11 | 项目级 settings 与资源（skills、prompts、mcp.json、ext-feishu 非凭据设置）未过信任门即读取（**安全**，P21 审计） | 不可信仓库可影响提示词与工具配置（凭据已在 HF-1 堵住） | 绑定 P23 信任门扩展 |
+| 12 | `/model` 切换后仍用全局单一 pricing | 换模型后 footer 成本失真 | 绑定 P23（model 入缝） |
+| 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 首发以 P23 信任修复为前提（发布阻断） |
+| 14 | extensions.ts 的 entry/tool renderer 与 pi 1.2 形状不一致，偏离未注释 | 照抄核对困难 | 绑定 P23 |
+| 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | 绑定 pi-tui 升级（P24 之后） |
 
 （#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

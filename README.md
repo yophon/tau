@@ -9,7 +9,7 @@ client; other protocols plug in through the `ChatTransport` seam — an Anthropi
 Messages transport ships as an extension package.
 
 Architecture and interface design are heavily inspired by
-[pi](https://github.com/earendil-works/pi-mono) (MIT), pushed one step further:
+[pi](https://github.com/earendil-works/pi) (MIT), pushed one step further:
 where pi's kernel is browser-safe, tau's kernel assumes nothing beyond the
 language standard — every non-ECMAScript API is resolved through the `Platform`
 interface, so hosts like WeChat mini-programs or React Native only need to
