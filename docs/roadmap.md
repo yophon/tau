@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-16（P22 完成；**当前工作 = P23**，先写规格书）
+> 最后更新：2026-10-16（P23 规格书确认；**当前工作 = P23 实施**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -226,6 +226,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 **完成记录**：全量 287 个测试，286 通过、1 跳过（Windows 上本来就跳过的 SIGINT 测试）；新增 projection、transcript、compaction-log、session-pi、barrel 五个测试文件。e2e：mock 服务器 + 真 CLI 的 `/tree`、自动压缩 + `--continue` 两条路径随新语义更新后通过；真实 DeepSeek（deepseek-flash）冒烟：带 read 工具调用的一轮 + `--continue` 续答，会话文件只有一条 system 消息（`prompt` + 4 个工具），第二轮 prompt 与工具未变、没有追加。QuickJS 三项 smoke 与 weapp bundle 检查通过，Flutter bundle 已重建。提交：6c3eae5（22a/b）、4539d13 + 18428bc（22c）、ebb62e1（22d）、22e 归档提交。与规格的偏差（详见规格书「实施记录」）：`ctx.sessionManager` 按 pi 只读、不带 `appendContextEdit`；`JsonObject` 照抄 pi 为可变；新增条目深冻结；pi 会话样本的期望值按 pi 源码人工推导（本机未装 pi 依赖）。附带修复：条目 id 原先截取 uuidv7 的时钟位，65 秒内除首条外全部退回完整 UUID；barrel 漏导出 5 个公开名字。
 
 ## Phase 23 ⬜ 循环显式化、接缝与 fail-closed
+
+规格书：[specs/phase-23-loop-seams.md](specs/phase-23-loop-seams.md)（2026-10-16 确认，五步 23a–23e）。
 
 输入：附录 A 中阶段为 P23 的 72 条。主干：内核 active 工具集与 `get/set/getAllTools`；`terminate` 与 prompt/resume/compact/navigateTo 的统一 busy 互斥（`isIdle`、`signal`、`hasPendingMessages`）；扩展同名冲突先注册者胜、加载失败回滚（⚠ Breaking）；`isProjectTrusted` 与信任门扩到 settings、skills、prompts、mcp.json；`finish_reason` 缺省严格（D26 逃生口）与 `normalizeToolCallId`；`ToolResult` 收敛为 pi 的 `{content, details}`（⚠ Breaking）；agent_before_settle/agent_settled、可操作的 turn_end、user_bash fail-closed、`pi.on()` 返回取消函数、thinkingLevel 与 model 入缝。
 
