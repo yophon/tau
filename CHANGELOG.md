@@ -5,6 +5,19 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P22, D21 seam reshape, pi TranscriptContext): `TransportRequest` is
+  `{ messages, signal?, maxTokens? }`. The prompt and tool declarations travel
+  as system messages inside `messages`; a transport folds them with
+  `resolveTranscript()` (or `collapseSystemMessages()` + `getCurrentTools()`).
+  `streamChatCompletion(platform, config, messages, { signal, maxTokens })`
+  lost its `systemPrompt`/`tools` options for the same reason. The wire format
+  is unchanged by default.
+- Kernel (P22): `Agent.messages` starts with a system message carrying the
+  prompt (section `prompt`) and the tool declarations; later system messages
+  appear when either changes. Hosts that render or count `messages` should skip
+  `role: "system"`. `context` handlers no longer see system messages (pi); the
+  new `context_with_system` event does. Logged entries are deep-frozen, so an
+  in-place edit of `ctx.messages` throws.
 - Kernel (P22, session log is the only truth): `Agent.messages` is now a
   read-only projection of the session log (a frozen array replaced after every
   write). Code that pushed onto it must call `agent.appendMessage(message)`;
@@ -61,6 +74,16 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P22): system prompt and tools enter the transcript (pi 0.86.0). The
+  agent appends a system message only when the effective prompt — including a
+  `before_agent_start` rewrite (D27) — or the tool set changes; compaction
+  checkpoints them in `CompactionEntry.systemMessage`.
+  `OpenAICompatConfig.midConversationSystemMessages` sends later system
+  messages in place instead of folding them into the first one.
+- Kernel (P22): `AgentOptions.verifyTranscript` (default on): before every
+  request the projection is rebuilt from a JSON round trip of the session log
+  and must equal what is about to be sent; a mismatch throws
+  `TauError("invalid_state")`. `context_with_system` extension event.
 - Kernel (P22): `projection.ts` — `buildSessionProjection()` /
   `buildContextEntries()` (pi session-manager) and the transcript helpers
   `getCurrentSystemMessage`, `getCurrentTools`, `collapseSystemMessages`,
@@ -121,6 +144,9 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
 
 ### Fixed
+- Kernel (P22): session entry ids were sliced from a uuidv7, whose leading
+  digits are the clock: every entry after the first within ~65 s fell back to a
+  full UUID. Ids are now 8 random hex digits, as in pi.
 - Kernel (P22): an auto-retried failure used to be popped from memory only,
   so a resumed session sent the abandoned attempt to the model again. It now
   leaves the context through a `context_edit` omission (pi
