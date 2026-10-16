@@ -11,6 +11,12 @@ const SRC = join(import.meta.dirname, "..", "src");
 const INTERNAL = new Set([
 	// One summarization call; callers use generateSummaryWithUsage / generateBranchSummary.
 	"compaction.ts:completeText",
+	// The agent's tool batch machinery (P23b split); tools and hooks are the public surface.
+	"tool-batch.ts:ToolBatchHost",
+	"tool-batch.ts:ToolBatch",
+	"tool-batch.ts:ToolOutcome",
+	"tool-batch.ts:ToolBatchRunner",
+	"tool-batch.ts:normalizeToolOutcome",
 ]);
 
 function exportedNames(source: string): string[] {

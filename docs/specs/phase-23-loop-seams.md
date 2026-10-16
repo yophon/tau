@@ -402,3 +402,14 @@ interface AgentOptions {
 | `tools-0.85.0-ctx-cwd` | tools | 23c / 23e | ctx.cwd（23c）；mutation 键按 cwd 拼接（23e） |
 | `tools-0.86.0-signal-terminated-shell` | tools | 23e | host-node 信号终止 exitCode=128+signo |
 | `mcp-results-and-permissions-0.99.0` | mcp | 23e / P24 | 20KB 中段截断、structuredContent 去重、destructiveHint 只升；CallToolResult 归 P24 |
+
+## 实施记录
+
+逐步记录与本规格的偏差，阶段完成时补全。
+
+- **23a**（2eaea0e）：摘要失败判定照抄 pi 1.2.0 的 `getSummarizationFailure` 实际代码，只判 `error`/`length`；审计条目里「响应带工具调用也判失败」在 pi 源码里不存在，未做（摘要请求不带工具，不会出现）。`compact()` 被扩展取消时抛 `TauError("cancelled")`，为此新增错误码 `cancelled`。
+- **23b**（dd3004b、d14e11f、拆分提交）：
+  - `agent-loop.ts` 没有拆。循环步骤要用到 Agent 约 30 个内部成员（日志写入器、两个队列、压缩、声明 loadout、校验、重试、边界、暂存消息等），拆出去只是把它们换成一个同样大的宿主接口。改为在 agent.ts 内按 pi runLoop 的步骤组织（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤，`runTurnEndBoundary`、`endRun` 各管一处）；工具批是边界清楚的一块，拆到 `tool-batch.ts`（`ToolBatchRunner`），agent.ts 从 2234 行降到约 1830 行。
+  - `finishTurn` 返回 `end` 只结束当次 run；队列里已有的消息仍由续跑 run 处理，与 pi（AgentSession 的 post-run 检查）一致。
+  - pi 的扩展 `ToolResultEventResult` 没有 `terminate`，照抄 pi 不加；工具结果自带的 `terminate` 穿过 tool_result 处理器链保留。
+  - 运行中 `sendUserMessage` 经 `input` 处理器后才入队（异步），入队时刻比原来晚一个微任务链；同一轮内的相对顺序不变。
