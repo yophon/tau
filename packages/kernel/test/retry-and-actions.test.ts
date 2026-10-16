@@ -87,12 +87,29 @@ test("a retryable failure backs off exponentially, retries, and resets on succes
 			["auto_retry_end", 2, true],
 		],
 	);
-	// In-memory conversation keeps only the successful turn; the session keeps the failures too.
+	// The failed attempts stay in the log but leave the context through context_edit
+	// omissions (pi _omitRecoveryAttempt). Before P22 they were only popped from memory,
+	// so a resumed session sent them to the model again.
 	const errorInMemory = agent.messages.some((m) => m.role === "assistant" && m.stopReason === "error");
 	assert.equal(errorInMemory, false);
 	const restored = await restoreSession(store);
-	const errorsInSession = restored.messages.filter((m) => m.role === "assistant" && m.stopReason === "error");
-	assert.equal(errorsInSession.length, 2);
+	assert.equal(
+		restored.messages.some((m) => m.role === "assistant" && m.stopReason === "error"),
+		false,
+		"a resumed session must not replay abandoned attempts",
+	);
+	const entries = await store.getEntries();
+	const failed = entries.filter(
+		(entry) => entry.type === "message" && entry.message.role === "assistant" && entry.message.stopReason === "error",
+	);
+	assert.equal(failed.length, 2, "the log keeps both failures");
+	const omitted = entries.flatMap((entry) =>
+		entry.type === "context_edit" && entry.replacement === null ? [entry.targetId] : [],
+	);
+	assert.deepEqual(
+		omitted,
+		failed.map((entry) => entry.id),
+	);
 });
 
 test("retries exhaust into a final error message and a failure auto_retry_end", async () => {

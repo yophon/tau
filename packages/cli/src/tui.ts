@@ -1185,8 +1185,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			component.setText(`${cyan(`${effectiveRecordInContext ? "!" : "!!"} ${effectiveCommand}`)}\n${displayOutput}`);
 			if (effectiveRecordInContext) {
 				const message = createUserBashMessage(effectiveCommand, result, output);
-				agent.messages.push(message);
-				await recorder?.recordMessage(message);
+				await agent.appendMessage(message);
 				appendText(dim("Bash output added to context."));
 			}
 		} catch (error) {

@@ -24,6 +24,7 @@ import {
 	emptyUsage,
 	HttpError,
 	type ImageContent,
+	type JsonObject,
 	type Platform,
 	type PlatformResponse,
 	parseJsonWithRepair,
@@ -347,6 +348,9 @@ export function messagesToWire(messages: AgentMessage[]): WireMessage[] {
 				if (content !== undefined) wire.push({ role: "user", content });
 				break;
 			}
+			case "system":
+				// Collapsed into the top-level system field before conversion (P22).
+				break;
 			case "compactionSummary":
 				wire.push({ role: "user", content: COMPACTION_SUMMARY_PREFIX + msg.summary + COMPACTION_SUMMARY_SUFFIX });
 				break;
@@ -532,6 +536,8 @@ type StreamingToolCall = ToolCall & { partialJson?: string };
 export function createAnthropicTransport(config: AnthropicTransportConfig, platform: Platform): ChatTransport {
 	return async function* streamAnthropicMessages(request: TransportRequest): AsyncGenerator<ChatStreamEvent> {
 		throwIfAborted(request.signal);
+		// pi stamps the message at request start.
+		const startedAt = Date.now();
 
 		const baseUrl = (config.baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, "");
 		const headers: Record<string, string> = {
@@ -577,7 +583,12 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 		const usage = emptyUsage();
 		// Object-held so closure writes are visible to the post-loop checks
 		// (TypeScript does not track closure assignments to a plain let).
-		const finalState: { stopReason: StopReason; errorMessage?: string } = { stopReason: "stop" };
+		const finalState: {
+			stopReason: StopReason;
+			errorMessage?: string;
+			rawStopReason?: string;
+			responseId?: string;
+		} = { stopReason: "stop" };
 		let sawMessageStart = false;
 		let done = false;
 		const pendingEvents: ChatStreamEvent[] = [];
@@ -614,6 +625,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 			switch (event.type) {
 				case "message_start": {
 					sawMessageStart = true;
+					if (event.message?.id) finalState.responseId = event.message.id;
 					applyUsage(event.message?.usage);
 					break;
 				}
@@ -644,7 +656,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 							name: block.name ?? "",
 							arguments:
 								block.input !== null && typeof block.input === "object" && !Array.isArray(block.input)
-									? (block.input as Record<string, unknown>)
+									? (block.input as JsonObject)
 									: {},
 							partialJson: "",
 						};
@@ -683,7 +695,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 							try {
 								const parsed: unknown = parseJsonWithRepair(block.partialJson);
 								if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-									block.arguments = parsed as Record<string, unknown>;
+									block.arguments = parsed as JsonObject;
 								}
 							} catch {
 								// Malformed arguments stay {}; tool-side validation reports the miss.
@@ -698,6 +710,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 					if (event.delta?.stop_reason) {
 						const mapped = mapStopReason(event.delta.stop_reason, event.delta.stop_details);
 						finalState.stopReason = mapped.stopReason;
+						finalState.rawStopReason = event.delta.stop_reason;
 						if (mapped.errorMessage) finalState.errorMessage = mapped.errorMessage;
 					}
 					applyUsage(event.usage);
@@ -761,7 +774,9 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 			model: config.model,
 			usage,
 			stopReason: finalState.stopReason,
-			timestamp: Date.now(),
+			...(finalState.rawStopReason !== undefined ? { rawStopReason: finalState.rawStopReason } : {}),
+			...(finalState.responseId !== undefined ? { responseId: finalState.responseId } : {}),
+			timestamp: startedAt,
 		};
 		yield { type: "response_end", message };
 	};

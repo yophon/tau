@@ -45,8 +45,9 @@ import {
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
+import { buildSessionProjection, normalizeMessageContent } from "./projection.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
-import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
+import { InMemorySessionStore, SessionRecorder } from "./session.ts";
 import {
 	assertToolSchema,
 	hasToolSchema,
@@ -56,6 +57,7 @@ import {
 	type ToolUpdateStream,
 	validateToolArgs,
 } from "./tools.ts";
+import { uuidv7 } from "./uuid.ts";
 
 /** How queued steering/follow-up messages are drained, as in pi. */
 export type QueueMode = "one-at-a-time" | "all";
@@ -109,9 +111,18 @@ export interface AgentOptions {
 	ui?: UiCapability;
 	/** Host capabilities exposed to extensions through ctx.capabilities. */
 	capabilities?: Omit<ExtensionCapabilities, "platform"> & { platform?: Platform };
-	/** Seed conversation state, e.g. restored from a session. */
+	/**
+	 * Seed conversation. Without `session` the messages are appended to the
+	 * agent's in-memory log. With `session` the log is the session itself and
+	 * this only serves as the `messages` view until the session's projection is
+	 * loaded (hosts pass what restoreSession returned).
+	 */
 	initialMessages?: AgentMessage[];
-	/** Session recorder; when present, conversation messages are persisted as they happen. */
+	/**
+	 * Session the agent logs to. The log is the only source of model context
+	 * (P22): `messages` is its projection and every request is rebuilt from it.
+	 * Absent = a private InMemorySessionStore, so there is one code path.
+	 */
 	session?: SessionRecorder;
 	/** Safety valve for runaway tool loops within a single prompt. Defaults to 50. */
 	maxTurnsPerPrompt?: number;
@@ -158,7 +169,7 @@ export type AgentEvent =
 	| { type: "compaction_failed"; reason: "manual" | "threshold"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "agent_end"; messages: AgentMessage[] };
+	| { type: "agent_end"; messages: readonly AgentMessage[] };
 
 interface ToolUpdate {
 	partialOutput: string;
@@ -168,6 +179,8 @@ interface ToolUpdate {
 /** Outcome of the serial preflight stage (P18, mirrors pi's prepareToolCall shapes). */
 type PreparedToolCall = { kind: "prepared"; toolCall: ToolCall; tool: Tool; args: Record<string, unknown> };
 type ToolCallPreparation = PreparedToolCall | { kind: "immediate"; toolCall: ToolCall; result: ToolResult };
+/** A tool result plus how long tool.execute took (absent when it never ran). */
+type ToolOutcome = ToolResult & { durationMs?: number };
 
 const DEFAULT_MAX_TURNS = 50;
 
@@ -186,8 +199,9 @@ function lastPromptText(messages: readonly AgentMessage[]): string {
 /**
  * Minimal agent loop: send conversation, stream the reply, execute requested
  * tools, repeat until the model stops asking for tools and no follow-up is
- * queued. Conversation state lives in `messages`; hosts persist it however
- * they like.
+ * queued. Conversation state lives in the session log (P22): every write is an
+ * append, `messages` is the log's projection, and each LLM request is built
+ * from it.
  *
  * Event ordering per turn (extensions are notified before the host sees the
  * corresponding AgentEvent, so extensions can rewrite content first):
@@ -203,7 +217,10 @@ function lastPromptText(messages: readonly AgentMessage[]): string {
  * tool_result messages committed in source order.
  */
 export class Agent {
-	readonly messages: AgentMessage[] = [];
+	/** Projection of the session log (frozen; replaced after every write). */
+	private projection: readonly AgentMessage[] = Object.freeze([]);
+	/** Source entry of each projected message (pi _entryIdsByMessage). */
+	private entryIds = new WeakMap<AgentMessage, string>();
 	private readonly platform: Platform;
 	private readonly config: OpenAICompatConfig;
 	private readonly transport: ChatTransport;
@@ -215,7 +232,7 @@ export class Agent {
 	private readonly maxTurnsPerPrompt: number;
 	private readonly steeringQueue: PendingMessageQueue;
 	private readonly followUpQueue: PendingMessageQueue;
-	private readonly session: SessionRecorder | undefined;
+	private readonly session: SessionRecorder;
 	private readonly compactionSettings: CompactionSettings;
 	private readonly retrySettings: RetrySettings;
 	private readonly pricing: ModelPricing | undefined;
@@ -227,8 +244,13 @@ export class Agent {
 	private pendingCompaction: string | null = null;
 	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
 	private readonly pendingNextTurn: CustomMessage[] = [];
-	/** Serializes session writes triggered by sync extension actions. */
-	private pendingRecording: Promise<void> = Promise.resolve();
+	/**
+	 * The single writer: every log append (and the projection refresh after it)
+	 * runs here in order. Sync extension actions enqueue without awaiting; their
+	 * failure is held in `writeFailure` and rethrown at the next flushWrites().
+	 */
+	private writes: Promise<unknown> = Promise.resolve();
+	private writeFailure: Error | undefined;
 	/** True while a prompt() generator is being consumed (guards navigateTo). */
 	private running = false;
 	/**
@@ -250,11 +272,27 @@ export class Agent {
 		this.extensions = options.extensions;
 		this.ui = options.ui;
 		this.capabilities = { ...options.capabilities, platform: this.platform };
-		if (options.initialMessages) this.messages.push(...options.initialMessages);
+		const seed = (options.initialMessages ?? []).map(normalizeMessageContent);
+		this.projection = Object.freeze(seed);
+		if (options.session) {
+			this.session = options.session;
+			this.enqueueBackground(() => this.refresh());
+		} else {
+			const store = new InMemorySessionStore(
+				{ id: uuidv7(this.platform.randomBytes), cwd: "/", timestamp: new Date().toISOString() },
+				this.platform.randomBytes,
+			);
+			this.session = SessionRecorder.attach(store, null);
+			if (seed.length > 0) {
+				this.enqueueBackground(async () => {
+					for (const message of seed) await this.session.recordMessage(message);
+					await this.refresh();
+				});
+			}
+		}
 		this.maxTurnsPerPrompt = options.maxTurnsPerPrompt ?? DEFAULT_MAX_TURNS;
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
-		this.session = options.session;
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		this.pricing = options.pricing;
@@ -262,7 +300,6 @@ export class Agent {
 		this.policy = options.policy ?? createDefaultPolicy();
 		this.onApproval = options.onApproval;
 		this.toolExecution = options.toolExecution ?? "parallel";
-		const session = options.session;
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
 				const message: CustomMessage = {
@@ -285,8 +322,7 @@ export class Agent {
 					else this.steeringQueue.enqueue(message);
 					return;
 				}
-				this.messages.push(message);
-				if (session) this.pendingRecording = this.pendingRecording.then(() => session.recordMessage(message));
+				this.enqueueBackground(() => this.appendAndRefresh(message));
 				if (sendOptions?.triggerTurn) this.extensions?.hostAction("resumeTurn")?.();
 			},
 			sendUserMessage: (content, sendOptions) => {
@@ -312,10 +348,10 @@ export class Agent {
 				submit(content);
 			},
 			appendEntry: (customType, data) => {
-				if (session) this.pendingRecording = this.pendingRecording.then(() => session.appendCustom(customType, data));
+				this.enqueueBackground(() => this.session.appendCustom(customType, data));
 			},
 			setSessionName: (name) => {
-				if (session) this.pendingRecording = this.pendingRecording.then(() => session.setName(name));
+				this.enqueueBackground(() => this.session.setName(name));
 				void this.extensions?.notifySessionInfoChanged(name, this.extensionContext());
 			},
 			abort: () => {
@@ -330,30 +366,97 @@ export class Agent {
 		return tools;
 	}
 
-	/** Persist a message, after any queued extension-triggered writes. */
-	private async recordMessage(message: AgentMessage): Promise<void> {
-		if (!this.session) return;
-		await this.pendingRecording;
-		await this.session.recordMessage(message);
+	/** The model-visible conversation: the session log's projection (read-only; P22). */
+	get messages(): readonly AgentMessage[] {
+		return this.projection;
 	}
 
-	/** Fire message_start/message_end for a non-streamed message, then store and persist it. */
+	/** Run a log write after every earlier one; its failure goes to the caller. */
+	private enqueueWrite<T>(write: () => Promise<T>): Promise<T> {
+		const run = this.writes.then(write);
+		this.writes = run.then(
+			() => undefined,
+			() => undefined,
+		);
+		return run;
+	}
+
+	/** Enqueue a write nobody awaits (sync extension actions); a failure surfaces at the next flushWrites(). */
+	private enqueueBackground(write: () => Promise<unknown>): void {
+		this.enqueueWrite(write).catch((error: unknown) => {
+			this.writeFailure ??= toError(error);
+		});
+	}
+
+	/** Wait for every queued write; rethrow a background write's failure. */
+	private async flushWrites(): Promise<void> {
+		await this.writes;
+		const failure = this.writeFailure;
+		if (failure) {
+			this.writeFailure = undefined;
+			throw failure;
+		}
+	}
+
+	/** Rebuild `messages` from the log's active path (pi _refreshFinalizedContext). */
+	private async refresh(): Promise<void> {
+		const path = await this.session.store.getPathToRoot(this.session.currentLeafId);
+		const projection = buildSessionProjection(path);
+		const entryIds = new WeakMap<AgentMessage, string>();
+		for (const entry of projection.entries) {
+			for (const message of entry.messages) entryIds.set(message, entry.sourceEntry.id);
+		}
+		this.entryIds = entryIds;
+		this.projection = Object.freeze(projection.messages);
+	}
+
+	/** Append a message to the log and refresh the projection; returns its entry id. Call inside the writer. */
+	private async appendAndRefresh(message: AgentMessage): Promise<string> {
+		const entry = await this.session.recordMessage(message);
+		await this.refresh();
+		return entry.id;
+	}
+
+	/** Log a message after every queued write; returns its entry id. */
+	private record(message: AgentMessage): Promise<string> {
+		return this.enqueueWrite(() => this.appendAndRefresh(message));
+	}
+
+	/**
+	 * Append a message the host produced outside the loop (e.g. the TUI's `!`
+	 * user bash) to the log. Replaces pushing onto `messages`, which is now a
+	 * read-only projection.
+	 */
+	async appendMessage(message: AgentMessage): Promise<void> {
+		if (this.looping) throw new TauError("busy", "appendMessage() while the agent loop is running");
+		await this.flushWrites();
+		await this.record(normalizeMessageContent(message));
+	}
+
+	/** Session entry id a projected message came from (undefined for messages not in `messages`). */
+	entryIdOf(message: AgentMessage): string | undefined {
+		return this.entryIds.get(message);
+	}
+
+	/** Fire message_start/message_end for a non-streamed message, then log it. */
 	private async commitMessage(message: AgentMessage, ctx: ExtensionContext): Promise<AgentMessage> {
 		let final = message;
 		if (this.extensions) {
 			await this.extensions.notifyMessageStart(final, ctx);
 			final = await this.extensions.runMessageEnd(final, ctx);
 		}
-		this.messages.push(final);
-		await this.recordMessage(final);
+		await this.record(final);
 		return final;
 	}
 
 	/** Context handed to extension handlers; also usable by hosts to dispatch extension commands. */
 	extensionContext(): ExtensionContext {
+		const agent = this;
 		return {
 			ui: this.ui,
-			messages: this.messages,
+			get messages() {
+				return agent.messages;
+			},
 			capabilities: this.capabilities,
 			getContextUsage: () => this.getContextUsage(),
 			compact: (customInstructions) => {
@@ -420,8 +523,8 @@ export class Agent {
 
 	/**
 	 * Compact the conversation now: summarize old history (session_before_compact
-	 * may cancel or take over), record a compaction entry when a session is
-	 * attached, and rewrite messages to [summary, ...kept].
+	 * may cancel or take over) and append a compaction entry; the projection
+	 * becomes [summary, ...kept].
 	 */
 	async compact(
 		customInstructions?: string,
@@ -429,20 +532,8 @@ export class Agent {
 		signal?: TauAbortSignal,
 	): Promise<CompactionResult | undefined> {
 		const ctx = this.extensionContext();
-		let pathEntries: SessionEntry[];
-		if (this.session) {
-			await this.pendingRecording;
-			pathEntries = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
-		} else {
-			// In-memory pseudo entries: ids are 1-based message indices.
-			pathEntries = this.messages.map((message, i) => ({
-				type: "message" as const,
-				id: String(i + 1),
-				parentId: i === 0 ? null : String(i),
-				timestamp: "",
-				message,
-			}));
-		}
+		await this.flushWrites();
+		const pathEntries = await this.session.store.getPathToRoot(this.session.currentLeafId);
 		const preparation = prepareCompaction(pathEntries, this.compactionSettings, this.messages);
 		if (!preparation) return undefined;
 
@@ -453,25 +544,10 @@ export class Agent {
 		const fromExtension = decision.result !== undefined;
 		const result = decision.result ?? (await runCompaction(this.transport, preparation, customInstructions, signal));
 
-		if (this.session) {
+		await this.enqueueWrite(async () => {
 			await this.session.recordCompaction({ ...result, fromHook: fromExtension || undefined });
-			const path = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
-			this.messages.length = 0;
-			this.messages.push(...messagesFromPath(path).messages);
-		} else {
-			const keptStart = Number(result.firstKeptEntryId) - 1;
-			const kept = Number.isInteger(keptStart) && keptStart >= 0 ? this.messages.slice(keptStart) : [];
-			this.messages.length = 0;
-			this.messages.push(
-				{
-					role: "compactionSummary",
-					summary: result.summary,
-					tokensBefore: result.tokensBefore,
-					timestamp: Date.now(),
-				},
-				...kept,
-			);
-		}
+			await this.refresh();
+		});
 		await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
 		return result;
 	}
@@ -505,6 +581,7 @@ export class Agent {
 		handle.follow(signal);
 		this.activeAbort = handle;
 		try {
+			await this.flushWrites();
 			yield* this.runPrompt(input, handle.signal);
 		} finally {
 			this.running = false;
@@ -525,6 +602,7 @@ export class Agent {
 		handle.follow(signal);
 		this.activeAbort = handle;
 		try {
+			await this.flushWrites();
 			const ctx = this.extensionContext();
 			const systemPrompt = await this.applyBeforeAgentStart(lastPromptText(this.messages), ctx);
 			await this.extensions?.notifyAgentStart(ctx);
@@ -548,9 +626,8 @@ export class Agent {
 		entryId: string,
 		options?: { summarize?: boolean; customInstructions?: string; signal?: TauAbortSignal },
 	): Promise<{ cancelled: boolean }> {
-		if (!this.session) throw new TauError("no_session", "navigateTo() requires a session");
 		if (this.running) throw new TauError("busy", "navigateTo() requires an idle agent");
-		await this.pendingRecording;
+		await this.flushWrites();
 		const store = this.session.store;
 		const oldLeafId = await store.getLeafId();
 		if (oldLeafId === entryId) return { cancelled: false };
@@ -590,14 +667,17 @@ export class Agent {
 		}
 
 		const fromExtension = hook.summary !== undefined;
-		const summaryEntry = await this.session.moveTo(
-			entryId,
-			summaryText ? { summary: summaryText, details: summaryDetails, fromHook: fromExtension || undefined } : undefined,
-		);
+		const summaryEntry = await this.enqueueWrite(async () => {
+			const entry = await this.session.moveTo(
+				entryId,
+				summaryText
+					? { summary: summaryText, details: summaryDetails, fromHook: fromExtension || undefined }
+					: undefined,
+			);
+			await this.refresh();
+			return entry;
+		});
 		const newLeafId = await store.getLeafId();
-		const path = await store.getPathToRoot(newLeafId);
-		this.messages.length = 0;
-		this.messages.push(...messagesFromPath(path).messages);
 		await this.extensions?.notifySessionTree({ newLeafId, oldLeafId, summaryEntry, fromExtension }, ctx);
 		return { cancelled: false };
 	}
@@ -683,7 +763,7 @@ export class Agent {
 			// Abort observed between turns (e.g. signalled during tool execution) ends
 			// the prompt before the next LLM call instead of waiting to fail inside it.
 			if (signal?.aborted) {
-				await this.pendingRecording;
+				await this.flushWrites();
 				await this.extensions?.notifyAgentEnd(this.messages, ctx);
 				yield { type: "agent_end", messages: this.messages };
 				return;
@@ -735,9 +815,11 @@ export class Agent {
 				provider: this.config.provider ?? "openai-compat",
 				model: this.config.model,
 				usage: emptyUsage(),
-				stopReason: "stop",
+				// A streaming partial is unfinished (pi 0.83.0); the final message lands a concrete reason.
+				stopReason: "pending",
 				timestamp: Date.now(),
 			};
+			const requestStart = partial.timestamp;
 			await this.extensions?.notifyMessageStart(partial, ctx);
 
 			let assistantMessage: AssistantMessage | undefined;
@@ -786,6 +868,9 @@ export class Agent {
 						break;
 					case "response_end":
 						assistantMessage = event.message;
+						// Measured by the agent for every transport alike (pi 1.1.0); Date.now()
+						// differences, where pi uses performance.now() (kernel purity).
+						assistantMessage.durationMs = Math.max(0, Date.now() - requestStart);
 						if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
 						break;
 				}
@@ -794,21 +879,22 @@ export class Agent {
 				// As in pi (agent-loop.ts streamAssistantResponse): a stream failure does not
 				// throw — it becomes an assistant message with stopReason error/aborted that
 				// enters the conversation and the session, then the prompt ends normally.
+				// The partial keeps its request-start timestamp (pi), whatever the failure time.
 				partial.stopReason = streamFailure.code === "aborted" ? "aborted" : "error";
 				partial.errorMessage = streamFailure.message;
-				partial.timestamp = Date.now();
+				partial.durationMs = Math.max(0, Date.now() - requestStart);
 				let finalMessage: AssistantMessage = partial;
 				if (this.extensions) {
 					finalMessage = (await this.extensions.runMessageEnd(finalMessage, ctx)) as AssistantMessage;
 				}
-				this.messages.push(finalMessage);
-				await this.recordMessage(finalMessage);
+				const failedEntryId = await this.record(finalMessage);
 				yield { type: "assistant_message", message: finalMessage };
 				await this.extensions?.notifyTurnEnd(turnIndex, finalMessage, [], ctx);
 
-				// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff,
-				// the error message leaves the in-memory conversation but stays in the
-				// session history, and the backoff sleep is abortable.
+				// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff and
+				// an abortable sleep. The failed attempt stays in the log and leaves the
+				// context through a context_edit omission (pi _omitRecoveryAttempt), so a
+				// resumed session no longer replays it.
 				const retryEligible =
 					finalMessage.stopReason === "error" &&
 					this.retrySettings.enabled &&
@@ -825,14 +911,17 @@ export class Agent {
 					};
 					await this.extensions?.notifyAutoRetryStart(startEvent, ctx);
 					yield { type: "auto_retry_start", ...startEvent };
-					if (this.messages.at(-1) === finalMessage) this.messages.pop();
+					await this.enqueueWrite(async () => {
+						await this.session.appendContextEdit(failedEntryId, null);
+						await this.refresh();
+					});
 					try {
 						await this.platform.sleep?.(delayMs, signal);
 					} catch {
 						const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
 						await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
 						yield { type: "auto_retry_end", ...endEvent };
-						await this.pendingRecording;
+						await this.flushWrites();
 						await this.extensions?.notifyAgentEnd(this.messages, ctx);
 						yield { type: "agent_end", messages: this.messages };
 						return;
@@ -845,7 +934,7 @@ export class Agent {
 					await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
 					yield { type: "auto_retry_end", ...endEvent };
 				}
-				await this.pendingRecording;
+				await this.flushWrites();
 				await this.extensions?.notifyAgentEnd(this.messages, ctx);
 				yield { type: "agent_end", messages: this.messages };
 				return;
@@ -856,8 +945,7 @@ export class Agent {
 			if (this.extensions) {
 				assistantMessage = (await this.extensions.runMessageEnd(assistantMessage, ctx)) as AssistantMessage;
 			}
-			this.messages.push(assistantMessage);
-			await this.recordMessage(assistantMessage);
+			await this.record(assistantMessage);
 			yield { type: "assistant_message", message: assistantMessage };
 			if (retryAttempt > 0) {
 				// A clean response after retries closes the cycle (pi resets on success).
@@ -897,7 +985,7 @@ export class Agent {
 					}
 					continue;
 				}
-				await this.pendingRecording;
+				await this.flushWrites();
 				await this.extensions?.notifyAgentEnd(this.messages, ctx);
 				yield { type: "agent_end", messages: this.messages };
 				return;
@@ -910,10 +998,11 @@ export class Agent {
 	/** Commit one tool result to messages/session and produce the AgentEvent pair tail. */
 	private async commitToolResult(
 		toolCall: ToolCall,
-		result: ToolResult,
+		outcome: ToolOutcome,
 		ctx: ExtensionContext,
 		toolResults: ToolResultMessage[],
 	): Promise<AgentEvent> {
+		const { durationMs, ...result } = outcome;
 		const toolResultMessage: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: toolCall.id,
@@ -921,6 +1010,7 @@ export class Agent {
 			content: [{ type: "text", text: result.output }],
 			isError: result.isError === true,
 			timestamp: Date.now(),
+			...(durationMs !== undefined ? { durationMs } : {}),
 		};
 		const committedToolResult = (await this.commitMessage(toolResultMessage, ctx)) as ToolResultMessage;
 		toolResults.push(committedToolResult);
@@ -1002,7 +1092,7 @@ export class Agent {
 			wake?.();
 			wake = undefined;
 		};
-		const outcomes: ToolResult[] = new Array(preps.length);
+		const outcomes: ToolOutcome[] = new Array(preps.length);
 		let running = 0;
 		preps.forEach((prep, index) => {
 			if (prep.kind === "immediate") {
@@ -1053,7 +1143,7 @@ export class Agent {
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 		onUpdate?: (update: ToolUpdate) => void,
-	): Promise<{ result: ToolResult }> {
+	): Promise<{ result: ToolOutcome }> {
 		const prep = await this.preflightToolCall(toolCall, ctx, signal);
 		if (prep.kind === "immediate") return { result: prep.result };
 		return { result: await this.executePreparedToolCall(prep, ctx, signal, onUpdate) };
@@ -1076,7 +1166,9 @@ export class Agent {
 		}
 		// Execution works on a copy so tool_call handlers can rewrite arguments
 		// without mutating the stored assistant message.
-		let args: Record<string, unknown> = { ...toolCall.arguments };
+		// Deep copy: a handler rewriting nested arguments in place must not reach the
+		// logged assistant message (P22: the log is what the model saw).
+		let args: Record<string, unknown> = JSON.parse(JSON.stringify(toolCall.arguments)) as Record<string, unknown>;
 		if (this.extensions) {
 			const event: ToolCallEvent = {
 				type: "tool_call",
@@ -1179,7 +1271,7 @@ export class Agent {
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 		onUpdate?: (update: ToolUpdate) => void,
-	): Promise<ToolResult> {
+	): Promise<ToolOutcome> {
 		const { toolCall, tool, args } = prep;
 		const updateNotifications: Promise<void>[] = [];
 		const emitUpdate = (partialOutput: string, stream?: ToolUpdateStream): void => {
@@ -1199,19 +1291,26 @@ export class Agent {
 		};
 
 		let result: ToolResult;
+		let durationMs: number | undefined;
 		if (signal?.aborted) {
 			// Prepared before the abort (e.g. while a later call of the parallel batch was
 			// waiting for approval): never start it, report it like any aborted call.
 			result = abortedResult();
 		} else {
+			// durationMs covers tool.execute only: preflight and approval ran before (pi 1.1.0).
+			const startedAt = Date.now();
 			try {
 				result = await tool.execute(args, signal, emitUpdate, ctx);
 			} catch (cause) {
 				result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
 			}
+			durationMs = Math.max(0, Date.now() - startedAt);
 		}
 		await Promise.all(updateNotifications);
-		await this.extensions?.notifyToolExecutionEnd({ toolCallId: toolCall.id, toolName: toolCall.name, result }, ctx);
+		await this.extensions?.notifyToolExecutionEnd(
+			{ toolCallId: toolCall.id, toolName: toolCall.name, result, ...(durationMs !== undefined ? { durationMs } : {}) },
+			ctx,
+		);
 
 		if (this.extensions) {
 			const finalResult = await this.extensions.runToolResult(
@@ -1227,7 +1326,7 @@ export class Agent {
 			);
 			result = { output: finalResult.output, isError: finalResult.isError };
 		}
-		return result;
+		return durationMs !== undefined ? { ...result, durationMs } : result;
 	}
 
 	/** Default approval handler over the host UI; no UI means no handler (ask degrades to deny). */

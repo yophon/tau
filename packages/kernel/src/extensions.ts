@@ -182,6 +182,8 @@ export interface ToolExecutionEndEvent {
 	toolCallId: string;
 	toolName: string;
 	result: ToolResult;
+	/** Milliseconds tool.execute took (pi 1.1.0). */
+	durationMs?: number;
 }
 
 /** Fired by hosts to decide whether a project directory's extensions may be loaded. */

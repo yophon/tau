@@ -38,8 +38,8 @@ yo-agent（收割对象）：`packages/store` 的 EventStore 以单调 cursor �
 ### 消息模型（messages.ts，照抄 pi，D13）
 
 ```ts
-export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
-export type JsonObject = { readonly [key: string]: JsonValue };
+export type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
+export type JsonObject = { [key: string]: JsonValue }; // pi ai/types.ts，可变
 
 export interface SystemMessage {
 	role: "system";
@@ -166,5 +166,5 @@ interface TransportRequest {
 **风险。**
 
 - 改动面大：`Agent.messages` 从可写数组变成投影，宿主里所有直接 push 或改写它的地方都要改（TUI 用户 bash、/fork 重建、测试夹具）。22b 先跑一遍 grep 清单再动手。
-- pi 的 `_preparePromptAndToolLoadout` 依赖它的 sections 化系统提示；tau 的系统提示是整串文本。照抄差分算法，但 section 只有 `prompt`、`project_context`（P21a）两个，粒度比 pi 粗。
+- pi 的 `_preparePromptAndToolLoadout` 依赖它的 sections 化系统提示；tau 的系统提示是整串文本（宿主把 AGENTS.md 等项目上下文拼进 `systemPrompt` 再交给内核，P21a）。照抄差分算法，但内核只有一个 section `prompt`：首条 system 消息的 `content` 为空、`sections.prompt` 为有效提示，渲染结果与今天的整串提示逐字节相同。更细的 section 需要宿主 API，留给 P25。
 - 预计 Breaking 有五处：消息联合加 system、JsonValue 收窄、`Agent.messages` 只读、SessionEntry 联合扩大、TransportRequest 改形。建议与 P23d（ToolResult 收敛）一起发 0.4.0，不单独发版。

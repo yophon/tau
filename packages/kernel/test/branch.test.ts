@@ -323,14 +323,16 @@ test("navigateTo: summarize false moves the leaf without a summary", async () =>
 	);
 });
 
-test("navigateTo: guards — no session, unknown entry, current leaf no-op, busy agent", async () => {
+test("navigateTo: guards — unknown entry (also without a host session), current leaf no-op, busy agent", async () => {
+	// P22: an agent without a host session logs to a private in-memory store, so
+	// navigateTo works there too and only rejects entries that do not exist.
 	const noSession = new Agent({
 		config: { baseUrl: "http://mock/v1", apiKey: "k", model: "m" },
 		platform: fakePlatform([]),
 	});
 	await assert.rejects(
 		() => noSession.navigateTo("x"),
-		(error: unknown) => error instanceof TauError && error.code === "no_session",
+		(error: unknown) => error instanceof SessionError && error.code === "not_found",
 	);
 
 	const { agent, store } = await twoTurnAgent([makeSseResponse(textTurn("busy turn"))]);

@@ -134,7 +134,7 @@ test("resume() applies before_agent_start like prompt() (HF-10)", async () => {
 	registry.attachHostActions({ resumeTurn: () => {} });
 	agent.extensionContext();
 	// An idle custom message (what sendMessage({ triggerTurn }) records) then a resumed run.
-	agent.messages.push({ role: "custom", customType: "note", content: "ping", display: true, timestamp: 1 });
+	await agent.appendMessage({ role: "custom", customType: "note", content: "ping", display: true, timestamp: 1 });
 	await drain(agent.resume());
 	const request = requests[0] as { messages: { role: string; content: string }[] };
 	assert.equal(request.messages[0].role, "system");

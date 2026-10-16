@@ -52,7 +52,9 @@ export function calculateContextTokens(usage: Usage): number {
 
 function getAssistantUsage(message: AgentMessage): Usage | undefined {
 	if (message.role !== "assistant") return undefined;
-	if (message.stopReason === "aborted" || message.stopReason === "error") return undefined;
+	if (message.stopReason === "aborted" || message.stopReason === "error" || message.stopReason === "pending") {
+		return undefined;
+	}
 	return calculateContextTokens(message.usage) > 0 ? message.usage : undefined;
 }
 
@@ -126,11 +128,20 @@ export function estimateTokens(message: AgentMessage): number {
 		case "compactionSummary":
 		case "branchSummary":
 			return estimateStringTokens(message.summary);
+		case "system": {
+			// pi estimateTokens: content, live sections, and the declared tools' JSON.
+			let tokens = contentTokens(message.content);
+			for (const section of Object.values(message.sections ?? {})) {
+				if (section) tokens += estimateStringTokens(section);
+			}
+			if (message.toolsAdded) tokens += estimateStringTokens(safeJsonStringify(message.toolsAdded));
+			return tokens;
+		}
 	}
 }
 
 /** Estimate context tokens: last valid assistant usage + heuristic for trailing messages. */
-export function estimateContextTokens(messages: AgentMessage[]): ContextUsageEstimate {
+export function estimateContextTokens(messages: readonly AgentMessage[]): ContextUsageEstimate {
 	let usageInfo: { usage: Usage; index: number } | undefined;
 	for (let i = messages.length - 1; i >= 0; i--) {
 		const usage = getAssistantUsage(messages[i]);
@@ -401,6 +412,9 @@ export function serializeConversation(messages: AgentMessage[]): string {
 				if (content) parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
 				break;
 			}
+			case "system":
+				// Prompt state, not conversation (pi): the compaction entry checkpoints it.
+				break;
 		}
 	}
 	return parts.join("\n\n");
@@ -456,7 +470,7 @@ export interface CompactionPreparation {
 export function prepareCompaction(
 	pathEntries: SessionEntry[],
 	settings: CompactionSettings,
-	currentMessages: AgentMessage[],
+	currentMessages: readonly AgentMessage[],
 ): CompactionPreparation | undefined {
 	if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
 		return undefined;

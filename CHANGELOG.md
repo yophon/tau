@@ -5,6 +5,24 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P22, session log is the only truth): `Agent.messages` is now a
+  read-only projection of the session log (a frozen array replaced after every
+  write). Code that pushed onto it must call `agent.appendMessage(message)`;
+  `ctx.messages` follows the projection. An Agent without `session` logs to a
+  private `InMemorySessionStore` (one code path), so `navigateTo()` no longer
+  throws `no_session`. With `session`, `initialMessages` only serves as the
+  view until the session is loaded.
+- Kernel (P22, pi 0.86.0 / 0.83.0): `AgentMessage` gains `SystemMessage`
+  (`role: "system"`); `StopReason` gains `"pending"` (streaming partials seen
+  in `message_start`/`message_update` now carry it instead of `"stop"`);
+  `ToolCall.arguments` is `JsonObject` and `ToolResultMessage.details` is
+  `JsonValue`. Exhaustive switches over `role` or `stopReason` need the new
+  members.
+- Kernel (P22, pi 1.2.0 session format): `SessionEntry` gains `usage`,
+  `context_edit`, `label`, `model_change` and `thinking_level_change`;
+  `compaction` gains `usage`/`systemMessage` and `branch_summary` gains
+  `usage`. `SessionRecorder` methods return the appended entry, and entries are
+  JSON-cloned on append.
 - Kernel: `Agent.prompt()`, extension `sendUserMessage()` and the host action
   `submitPrompt()` now take `UserContent` (`string | (TextContent | ImageContent)[]`)
   instead of `string` (P20). Input hooks still receive the text projection and a
@@ -43,6 +61,17 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P22): `projection.ts` — `buildSessionProjection()` /
+  `buildContextEntries()` (pi session-manager) and the transcript helpers
+  `getCurrentSystemMessage`, `getCurrentTools`, `collapseSystemMessages`,
+  `getToolStateChanges`, `diffSystemPromptSections` (pi transcript.ts).
+  `SessionRecorder.appendContextEdit()` / `appendLabel()` / `attach()`,
+  `Agent.appendMessage()` / `entryIdOf()`.
+- Kernel (P22, pi 1.1.0 / 1.2.0): `AssistantMessage.rawStopReason` (both
+  transports), `durationMs` (measured by the agent for every transport);
+  `ToolResultMessage.durationMs` and `tool_execution_end.durationMs` (covers
+  `tool.execute` only); `ToolResultMessage.usage`. The Anthropic transport now
+  records `responseId` and stamps the message at request start.
 - Kernel + CLI (P21a): project context files. `loadProjectContextFiles(fs, { cwd, globalDir })`
   finds `AGENTS.override.md` / `AGENTS.md` / `CLAUDE.md` (pi order, first per
   directory) in the global dir and every directory from the root down to cwd;
@@ -92,6 +121,22 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
 
 ### Fixed
+- Kernel (P22): an auto-retried failure used to be popped from memory only,
+  so a resumed session sent the abandoned attempt to the model again. It now
+  leaves the context through a `context_edit` omission (pi
+  `_omitRecoveryAttempt`) and stays in the log.
+- Kernel (P22): a session file with a malformed line (a crash mid-write) no
+  longer fails to open — the line is skipped (pi `parseSessionEntryLine`) — and
+  a missing final newline is repaired before the next append (pi 0.84.4).
+  Unknown entry types stay in the tree as chain links instead of orphaning
+  their children, so sessions written by pi open. `content: null` normalizes
+  to empty content (pi 0.80.4).
+- Kernel (P22): OpenAI-compatible tool-call fragments are attributed as in pi
+  (index, then id, else a new call; id and name set once). A server that omits
+  `index` used to merge two calls into one named e.g. `readbash`. A bare
+  arguments fragment continues the latest call (tau deviation).
+- Kernel (P22): a `tool_call` handler rewriting nested arguments in place no
+  longer mutates the logged assistant message (deep copy).
 - CLI/ext-provider-anthropic (P21-HF-5): `/thinking` on `--provider anthropic`
   sent `budget_tokens` for every level, which current Claude models (Opus 4.7+,
   Sonnet 5.x, Haiku 5.5, Fable) reject with HTTP 400. Levels now map to adaptive

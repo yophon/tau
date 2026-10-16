@@ -185,7 +185,7 @@ test("JsonlSessionRepo fork: new file with parentSession header, lineage survive
 	}
 });
 
-test("JsonlSessionRepo rejects bad headers and bad entry lines with line numbers", async () => {
+test("JsonlSessionRepo rejects bad headers; skips malformed lines and repairs a missing final newline (P22)", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "tau-session-bad-"));
 	try {
 		const fs = new NodeFileSystem(dir);
@@ -195,14 +195,25 @@ test("JsonlSessionRepo rejects bad headers and bad entry lines with line numbers
 			() => repo.open({ id: "x", cwd: "/test", timestamp: "t", filePath: `${dir}/bad-header.jsonl` }),
 			(error: unknown) => error instanceof SessionError && error.code === "invalid_session",
 		);
-		await fs.writeTextFile(
-			`${dir}/bad-entry.jsonl`,
-			'{"type":"session","version":3,"id":"a","timestamp":"t","cwd":"/test"}\nnot-json\n',
+		// A crash mid-write leaves a malformed line and no final newline (pi parseSessionEntryLine,
+		// session-jsonl-trailing-newline-0.84.4): the session still opens, and the next append
+		// starts on a fresh line instead of gluing onto the half-written one.
+		const header = '{"type":"session","version":3,"id":"a","timestamp":"t","cwd":"/test"}';
+		const user =
+			'{"type":"message","id":"u1","parentId":null,"timestamp":"2026-10-16T00:00:00.000Z","message":{"role":"user","content":"hi","timestamp":1}}';
+		const filePath = `${dir}/bad-entry.jsonl`;
+		await fs.writeTextFile(filePath, `${header}\nnot-json\n${user}\n{"type":"message","id":"u2","par`);
+		const store = await repo.open({ id: "a", cwd: "/test", timestamp: "t", filePath });
+		assert.deepEqual(
+			(await store.getEntries()).map((entry) => entry.id),
+			["u1"],
 		);
-		await assert.rejects(
-			() => repo.open({ id: "a", cwd: "/test", timestamp: "t", filePath: `${dir}/bad-entry.jsonl` }),
-			(error: unknown) =>
-				error instanceof SessionError && error.code === "invalid_entry" && /line 2/.test(error.message),
+		const recorder = await SessionRecorder.open(store);
+		await recorder.recordMessage({ role: "user", content: "again", timestamp: 2 });
+		const reopened = await repo.open({ id: "a", cwd: "/test", timestamp: "t", filePath });
+		assert.deepEqual(
+			(await restoreSession(reopened)).messages.map((message) => messageText(message)),
+			["hi", "again"],
 		);
 	} finally {
 		await rm(dir, { recursive: true, force: true });

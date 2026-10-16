@@ -4,6 +4,20 @@
  * timestamps. Wire-format conversion lives in openai.ts, not here.
  */
 
+/** JSON values (pi ai/types.ts): what tool arguments and details are limited to, so the log replays exactly. */
+export type JsonValue = null | boolean | number | string | readonly JsonValue[] | JsonObject;
+export type JsonObject = { [key: string]: JsonValue };
+
+/** JSON Schema for tool parameters, kept structural to stay dependency-free. */
+export type JsonSchema = Record<string, unknown>;
+
+/** What the model is told about a tool (pi's Tool declaration): no executable or display-only fields. */
+export interface ToolDefinition {
+	name: string;
+	description: string;
+	parameters: JsonSchema;
+}
+
 export interface TextContent {
 	type: "text";
 	text: string;
@@ -34,7 +48,7 @@ export interface ToolCall {
 	type: "toolCall";
 	id: string;
 	name: string;
-	arguments: Record<string, unknown>;
+	arguments: JsonObject;
 }
 
 export interface UsageCost {
@@ -77,7 +91,8 @@ export function computeUsageCost(usage: Usage, pricing: ModelPricing): UsageCost
 	return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
 }
 
-export type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
+/** "pending" marks a streaming partial; the final message always carries one of the others (pi 0.83.0). */
+export type StopReason = "pending" | "stop" | "length" | "toolUse" | "error" | "aborted";
 
 /** What a host/extension hands to `Agent.prompt()`: plain text, or text + image blocks (P20: channel media). */
 export type UserContent = string | (TextContent | ImageContent)[];
@@ -89,6 +104,22 @@ export function userContentText(content: UserContent): string {
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
 		.join("\n");
+}
+
+/**
+ * System instructions and tool declarations at one point in the transcript (pi ai/types.ts).
+ * The leading system message is the system prompt; later ones change it: `content` adds
+ * instructions, `sections` replace or remove (`null`) named prompt sections, and
+ * `toolsAdded`/`toolsRemoved` change the tool set. Replaying every system message in
+ * order yields the current prompt and tools (projection.ts).
+ */
+export interface SystemMessage {
+	role: "system";
+	content: string | TextContent[];
+	sections?: Record<string, string | null>;
+	toolsAdded?: ToolDefinition[];
+	toolsRemoved?: { name: string }[];
+	timestamp: number;
 }
 
 export interface UserMessage {
@@ -110,7 +141,14 @@ export interface AssistantMessage {
 	responseId?: string;
 	/** Model the provider says answered (may differ from the requested `model`), when reported. */
 	responseModel?: string;
+	/** The provider's own finish/stop reason, verbatim, when the wire reports one (pi 1.2.0). */
+	rawStopReason?: string;
+	/** Thinking level the agent requested for this response (pi 1.1.0); absent when unmanaged. */
+	thinkingLevel?: string;
+	/** Request start, Unix ms. */
 	timestamp: number;
+	/** Milliseconds from `timestamp` until the response ended (pi 1.1.0). */
+	durationMs?: number;
 }
 
 export interface ToolResultMessage {
@@ -118,9 +156,13 @@ export interface ToolResultMessage {
 	toolCallId: string;
 	toolName: string;
 	content: (TextContent | ImageContent)[];
-	details?: unknown;
+	details?: JsonValue;
+	/** Usage of the tool execution itself (e.g. a subagent's LLM calls); not part of context accounting. */
+	usage?: Usage;
 	isError: boolean;
 	timestamp: number;
+	/** Milliseconds tool.execute took (pi 1.1.0); absent for results that never executed. */
+	durationMs?: number;
 }
 
 /** Extension-injected message. Participates in LLM context as a user-role message. */
@@ -151,6 +193,7 @@ export interface CompactionSummaryMessage {
 }
 
 export type AgentMessage =
+	| SystemMessage
 	| UserMessage
 	| AssistantMessage
 	| ToolResultMessage
@@ -169,20 +212,18 @@ export function emptyUsage(): Usage {
 	};
 }
 
+/** Text of string or block content: text blocks joined by `separator`, other blocks skipped (pi's contentText). */
+export function contentText(content: string | readonly { type: string; text?: string }[], separator = ""): string {
+	if (typeof content === "string") return content;
+	const parts: string[] = [];
+	for (const block of content) if (block.type === "text" && block.text !== undefined) parts.push(block.text);
+	return parts.join(separator);
+}
+
 /** Concatenated text of a message's text blocks (string content returned as-is). */
 export function messageText(message: AgentMessage): string {
 	if (message.role === "compactionSummary" || message.role === "branchSummary") return message.summary;
-	if (message.role === "user" || message.role === "custom") {
-		if (typeof message.content === "string") return message.content;
-		return message.content
-			.filter((block): block is TextContent => block.type === "text")
-			.map((block) => block.text)
-			.join("");
-	}
-	return message.content
-		.filter((block): block is TextContent => block.type === "text")
-		.map((block) => block.text)
-		.join("");
+	return contentText(message.content);
 }
 
 /** Tool calls requested by an assistant message, in content order. */

@@ -1,14 +1,28 @@
 import type { FileSystem } from "./capabilities.ts";
 import { SessionError, toError } from "./errors.ts";
-import type { AgentMessage, CustomMessage, ImageContent, TextContent } from "./messages.ts";
+import type {
+	AgentMessage,
+	AssistantMessage,
+	CustomMessage,
+	ImageContent,
+	SystemMessage,
+	TextContent,
+	ToolResultMessage,
+	Usage,
+	UserMessage,
+} from "./messages.ts";
 import type { Platform } from "./platform.ts";
+import { buildSessionProjection } from "./projection.ts";
 import { uuidv7 } from "./uuid.ts";
 
 /**
  * Session persistence in pi's v3 JSONL format (coding-agent/docs/
  * session-format.md): a header line followed by tree entries linked via
- * id/parentId. tau writes a subset of pi's entry types; readers skip unknown
- * types, so the files stay pi-v3 compatible.
+ * id/parentId. Entry shapes follow pi 1.2.0. tau reads every pi entry type it
+ * knows (model_change and thinking_level_change are kept as chain links but
+ * not produced until P23) and skips unknown ones. Compatibility is one-way
+ * (D13 addendum ②): tau reads pi sessions; pi need not resume tau's, which may
+ * contain tau's `leaf` entries.
  */
 
 export interface SessionHeader {
@@ -26,9 +40,34 @@ export interface SessionEntryBase {
 	timestamp: string;
 }
 
+/** Content an append-only context edit may replace without changing message metadata (pi). */
+export type ContextEditableContent =
+	| UserMessage["content"]
+	| AssistantMessage["content"]
+	| ToolResultMessage["content"]
+	| CustomMessage["content"];
+
 export type SessionEntry =
 	| (SessionEntryBase & { type: "message"; message: AgentMessage })
 	| (SessionEntryBase & { type: "custom"; customType: string; data: unknown })
+	| (SessionEntryBase & { type: "thinking_level_change"; thinkingLevel: string })
+	| (SessionEntryBase & { type: "model_change"; provider: string; modelId: string })
+	| (SessionEntryBase & {
+			type: "usage";
+			/** Arbitrary usage category, e.g. "cache_warm". Counted in session totals, never in context. */
+			kind: string;
+			provider: string;
+			model: string;
+			usage: Usage;
+			note?: string;
+	  })
+	| (SessionEntryBase & {
+			type: "context_edit";
+			targetId: string;
+			/** Null omits the target from model context; a value replaces only its content. */
+			replacement: { content: ContextEditableContent } | null;
+	  })
+	| (SessionEntryBase & { type: "label"; targetId: string; label: string | undefined })
 	| (SessionEntryBase & {
 			type: "custom_message";
 			customType: string;
@@ -43,7 +82,11 @@ export type SessionEntry =
 			firstKeptEntryId: string;
 			tokensBefore: number;
 			details?: unknown;
+			/** Usage of the summarization call(s). */
+			usage?: Usage;
 			fromHook?: boolean;
+			/** Complete prompt and tool state at this boundary; replaces the system messages it summarizes. */
+			systemMessage?: SystemMessage;
 	  })
 	| (SessionEntryBase & {
 			type: "branch_summary";
@@ -51,12 +94,16 @@ export type SessionEntry =
 			fromId: string;
 			summary: string;
 			details?: unknown;
+			usage?: Usage;
 			fromHook?: boolean;
 	  })
 	| (SessionEntryBase & { type: "leaf"; leafId: string | null });
 
 /** Omit that distributes over unions (plain Omit collapses SessionEntry to its common fields). */
 type DistributiveOmit<T, K extends keyof T> = T extends unknown ? Omit<T, K> : never;
+
+/** A session entry before the recorder assigns id, parentId and timestamp. */
+export type SessionEntryDraft = DistributiveOmit<SessionEntry, "id" | "parentId" | "timestamp">;
 
 export interface SessionMetadata {
 	id: string;
@@ -99,16 +146,6 @@ export interface ForkOptions {
 	position?: "before" | "at";
 	id?: string;
 }
-
-const ENTRY_TYPES = new Set([
-	"message",
-	"custom",
-	"custom_message",
-	"session_info",
-	"leaf",
-	"compaction",
-	"branch_summary",
-]);
 
 /** Entries a fork copies, verbatim from pi's getEntriesToFork (session/repo-utils.ts). */
 export async function getEntriesToFork(store: SessionStore, options: ForkOptions): Promise<SessionEntry[]> {
@@ -299,19 +336,16 @@ function parseEntryLine(line: string, filePath: string, lineNumber: number): Ses
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(line);
-	} catch (error) {
-		throw new SessionError(
-			"invalid_entry",
-			`Invalid session file ${filePath}: line ${lineNumber} is not valid JSON`,
-			toError(error),
-		);
+	} catch {
+		// pi parseSessionEntryLine: a malformed line (typically the half-written last
+		// line of a crashed run) is skipped instead of making the whole session unreadable.
+		return undefined;
 	}
-	if (parsed === null || typeof parsed !== "object") {
-		throw new SessionError("invalid_entry", `Invalid session file ${filePath}: line ${lineNumber} is not an object`);
-	}
+	if (parsed === null || typeof parsed !== "object") return undefined;
 	const entry = parsed as Record<string, unknown>;
-	// pi-v3 files may contain entry types tau doesn't produce; skip them.
-	if (typeof entry.type !== "string" || !ENTRY_TYPES.has(entry.type)) return undefined;
+	// Entry types tau does not know (a newer pi) stay in the tree as opaque chain links:
+	// skipping them would orphan their children. Projection and compaction ignore them.
+	if (typeof entry.type !== "string") return undefined;
 	if (typeof entry.id !== "string" || typeof entry.timestamp !== "string") {
 		throw new SessionError(
 			"invalid_entry",
@@ -341,6 +375,8 @@ class JsonlSessionStore implements SessionStore {
 	 * never prompts leaves no empty file behind for --continue to pick (pi 0.99.0, HF-16).
 	 */
 	private persisted: boolean;
+	/** The loaded file lacks a final newline (crash mid-write); the first append adds one (pi 0.84.4). */
+	private missingNewline: boolean;
 
 	constructor(
 		fs: FileSystem,
@@ -349,6 +385,7 @@ class JsonlSessionStore implements SessionStore {
 		tree: EntryTree,
 		randomBytes: Platform["randomBytes"],
 		persisted = true,
+		missingNewline = false,
 	) {
 		this.fs = fs;
 		this.filePath = filePath;
@@ -356,6 +393,7 @@ class JsonlSessionStore implements SessionStore {
 		this.tree = tree;
 		this.randomBytes = randomBytes;
 		this.persisted = persisted;
+		this.missingNewline = missingNewline;
 	}
 
 	async getMetadata(): Promise<SessionMetadata> {
@@ -391,7 +429,9 @@ class JsonlSessionStore implements SessionStore {
 
 	async appendEntry(entry: SessionEntry): Promise<void> {
 		if (this.persisted) {
-			await this.fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`);
+			const prefix = this.missingNewline ? "\n" : "";
+			await this.fs.appendFile(this.filePath, `${prefix}${JSON.stringify(entry)}\n`);
+			this.missingNewline = false;
 		} else if (entry.type === "message") {
 			const lines = [this.header, ...this.tree.entries, entry].map((line) => JSON.stringify(line));
 			await this.fs.writeTextFile(this.filePath, `${lines.join("\n")}\n`);
@@ -445,7 +485,15 @@ export class JsonlSessionRepo implements SessionRepo {
 			const entry = parseEntryLine(lines[i], filePath, i + 1);
 			if (entry) tree.add(entry);
 		}
-		return new JsonlSessionStore(this.fs, filePath, header, tree, this.platform.randomBytes);
+		return new JsonlSessionStore(
+			this.fs,
+			filePath,
+			header,
+			tree,
+			this.platform.randomBytes,
+			true,
+			!text.endsWith("\n"),
+		);
 	}
 
 	async create(options?: { id?: string }): Promise<SessionStore> {
@@ -513,7 +561,11 @@ export class JsonlSessionRepo implements SessionRepo {
 // Recording and restoring conversations.
 // ---------------------------------------------------------------------------
 
-/** Appends conversation state to a SessionStore, maintaining the parentId chain. */
+/**
+ * Appends to a SessionStore, maintaining the parentId chain. Every entry is
+ * JSON-cloned on the way in: the log holds exactly what a JSONL file would
+ * replay, and later mutation of the caller's objects cannot reach it (P22).
+ */
 export class SessionRecorder {
 	readonly store: SessionStore;
 	private leafId: string | null;
@@ -527,19 +579,24 @@ export class SessionRecorder {
 		return new SessionRecorder(store, await store.getLeafId());
 	}
 
+	/** Recorder over a store whose leaf is already known (a fresh store: null). */
+	static attach(store: SessionStore, leafId: string | null): SessionRecorder {
+		return new SessionRecorder(store, leafId);
+	}
+
 	get currentLeafId(): string | null {
 		return this.leafId;
 	}
 
-	private async append(entry: DistributiveOmit<SessionEntry, "id" | "parentId" | "timestamp">): Promise<void> {
+	/** Append an entry at the current leaf and return it as stored. */
+	async append(draft: SessionEntryDraft): Promise<SessionEntry> {
 		const id = await this.store.createEntryId();
-		await this.store.appendEntry({
-			...entry,
-			id,
-			parentId: this.leafId,
-			timestamp: new Date().toISOString(),
-		} as SessionEntry);
+		const entry = JSON.parse(
+			JSON.stringify({ ...draft, id, parentId: this.leafId, timestamp: new Date().toISOString() }),
+		) as SessionEntry;
+		await this.store.appendEntry(entry);
 		this.leafId = id;
+		return entry;
 	}
 
 	async recordCompaction(result: {
@@ -547,31 +604,46 @@ export class SessionRecorder {
 		firstKeptEntryId: string;
 		tokensBefore: number;
 		details?: unknown;
+		usage?: Usage;
 		fromHook?: boolean;
-	}): Promise<void> {
-		await this.append({ type: "compaction", ...result });
+		systemMessage?: SystemMessage;
+	}): Promise<SessionEntry> {
+		return this.append({ type: "compaction", ...result });
 	}
 
-	async recordMessage(message: AgentMessage): Promise<void> {
+	/** Record a message; custom messages become custom_message entries (pi). Returns the entry. */
+	async recordMessage(message: AgentMessage): Promise<SessionEntry> {
 		if (message.role === "custom") {
-			await this.append({
+			return this.append({
 				type: "custom_message",
 				customType: message.customType,
 				content: message.content,
 				display: message.display,
 				details: message.details,
 			});
-			return;
 		}
-		await this.append({ type: "message", message });
+		return this.append({ type: "message", message });
 	}
 
-	async appendCustom(customType: string, data: unknown): Promise<void> {
-		await this.append({ type: "custom", customType, data });
+	/** Omit (null) or replace the content of an entry in future context; the entry itself stays (pi 0.87.0). */
+	async appendContextEdit(
+		targetId: string,
+		replacement: { content: ContextEditableContent } | null,
+	): Promise<SessionEntry> {
+		return this.append({ type: "context_edit", targetId, replacement });
 	}
 
-	async setName(name: string): Promise<void> {
-		await this.append({ type: "session_info", name });
+	/** Bookmark an entry; an undefined label clears it (pi LabelEntry). */
+	async appendLabel(targetId: string, label: string | undefined): Promise<SessionEntry> {
+		return this.append({ type: "label", targetId, label });
+	}
+
+	async appendCustom(customType: string, data: unknown): Promise<SessionEntry> {
+		return this.append({ type: "custom", customType, data });
+	}
+
+	async setName(name: string): Promise<SessionEntry> {
+		return this.append({ type: "session_info", name });
 	}
 
 	/**
@@ -616,93 +688,16 @@ export interface RestoredSession {
 }
 
 /**
- * Rebuild conversation messages from path entries, honoring compaction as in
- * pi's buildContextEntries: with a compaction entry on the path, context =
- * [compaction summary, entries from firstKeptEntryId to the compaction,
- * entries after the compaction].
+ * Model context of a path — the session projection (projection.ts, pi
+ * buildSessionContext) — plus the session name from the full path.
  */
 export function messagesFromPath(path: SessionEntry[]): RestoredSession {
-	let compactionIndex = -1;
-	for (let i = path.length - 1; i >= 0; i--) {
-		if (path[i].type === "compaction") {
-			compactionIndex = i;
-			break;
-		}
-	}
-	let selected = path;
-	let summaryMessage: AgentMessage | undefined;
-	if (compactionIndex >= 0) {
-		const compaction = path[compactionIndex];
-		if (compaction.type === "compaction") {
-			summaryMessage = {
-				role: "compactionSummary",
-				summary: compaction.summary,
-				tokensBefore: compaction.tokensBefore,
-				timestamp: Date.parse(compaction.timestamp) || 0,
-			};
-			let firstKeptIndex = path.findIndex((entry) => entry.id === compaction.firstKeptEntryId);
-			if (firstKeptIndex < 0) firstKeptIndex = compactionIndex + 1;
-			selected = [...path.slice(firstKeptIndex, compactionIndex), ...path.slice(compactionIndex + 1)];
-		}
-	}
-	const restored = collectMessages(selected);
-	// Session name comes from the full path, not just the retained segment.
-	const name = lastSessionNameFromPath(path) ?? restored.name;
-	if (summaryMessage) restored.messages.unshift(summaryMessage);
-	return { messages: restored.messages, name };
-}
-
-function lastSessionNameFromPath(path: SessionEntry[]): string | undefined {
-	for (let i = path.length - 1; i >= 0; i--) {
-		const entry = path[i];
-		if (entry.type === "session_info") return entry.name;
-	}
-	return undefined;
+	return { messages: buildSessionProjection(path).messages, name: lastSessionName(path) };
 }
 
 /** Rebuild conversation state from the store's active path (leaf → root). */
 export async function restoreSession(store: SessionStore): Promise<RestoredSession> {
 	return messagesFromPath(await store.getPathToRoot(await store.getLeafId()));
-}
-
-function collectMessages(path: SessionEntry[]): RestoredSession {
-	const messages: AgentMessage[] = [];
-	let name: string | undefined;
-	for (const entry of path) {
-		switch (entry.type) {
-			case "message":
-				messages.push(entry.message);
-				break;
-			case "custom_message": {
-				const message: CustomMessage = {
-					role: "custom",
-					customType: entry.customType,
-					content: entry.content,
-					display: entry.display,
-					details: entry.details,
-					timestamp: Date.parse(entry.timestamp) || 0,
-				};
-				messages.push(message);
-				break;
-			}
-			case "session_info":
-				name = entry.name;
-				break;
-			case "branch_summary":
-				messages.push({
-					role: "branchSummary",
-					summary: entry.summary,
-					fromId: entry.fromId,
-					timestamp: Date.parse(entry.timestamp) || 0,
-				});
-				break;
-			case "custom":
-			case "leaf":
-			case "compaction":
-				break;
-		}
-	}
-	return { messages, name };
 }
 
 /**

@@ -6,12 +6,15 @@ import {
 	type AssistantMessage,
 	emptyUsage,
 	type ImageContent,
+	type JsonObject,
 	type StopReason,
 	type TextContent,
 	type ToolCall,
+	type ToolDefinition,
 	type Usage,
 } from "./messages.ts";
 import type { Platform, PlatformResponse, TauAbortSignal } from "./platform.ts";
+import { renderSystemMessageUpdate } from "./projection.ts";
 import { SseParser } from "./sse.ts";
 import { transformMessages } from "./transform.ts";
 
@@ -72,14 +75,7 @@ export interface OpenAICompatConfig {
 /** The `api` field recorded on assistant messages, as in pi. */
 export const OPENAI_COMPLETIONS_API = "openai-completions";
 
-/** JSON Schema for tool parameters, kept structural to stay dependency-free. */
-export type JsonSchema = Record<string, unknown>;
-
-export interface ToolDefinition {
-	name: string;
-	description: string;
-	parameters: JsonSchema;
-}
+export type { JsonSchema, ToolDefinition } from "./messages.ts";
 
 export type ChatStreamEvent =
 	| { type: "text_delta"; delta: string }
@@ -179,6 +175,9 @@ function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Re
 		}
 		case "toolResult":
 			return { role: "tool", tool_call_id: message.toolCallId, content: toolResultContentToWire(message.content) };
+		case "system":
+			// Only reached with midConversationSystemMessages; otherwise the transcript is collapsed first.
+			return { role: "system", content: renderSystemMessageUpdate(message) };
 	}
 }
 
@@ -348,9 +347,13 @@ export async function* streamChatCompletion(
 	const parser = new SseParser();
 
 	// Content blocks accumulate in arrival order; raw tool-call fragments are
-	// keyed by wire index and parsed once complete.
+	// attributed as in pi's ensureToolCallBlock (index first, then id, else a new
+	// call; id and name are set once) and parsed once complete.
 	const blocks: AssistantMessage["content"] = [];
-	const rawToolCalls = new Map<number, { id: string; name: string; argumentsText: string }>();
+	type RawToolCall = { id: string; name: string; argumentsText: string };
+	const rawToolCalls: RawToolCall[] = [];
+	const rawByIndex = new Map<number, RawToolCall>();
+	const rawById = new Map<string, RawToolCall>();
 	let finishReason: string | undefined;
 	let usage: Usage | undefined;
 	let responseId: string | undefined;
@@ -406,14 +409,24 @@ export async function* streamChatCompletion(
 			pendingEvents.push({ type: "reasoning_delta", delta: reasoningDelta });
 		}
 		for (const wireToolCall of delta.tool_calls ?? []) {
-			const index = wireToolCall.index ?? 0;
-			let entry = rawToolCalls.get(index);
+			const index = typeof wireToolCall.index === "number" ? wireToolCall.index : undefined;
+			const id = wireToolCall.id || undefined;
+			const name = wireToolCall.function?.name || undefined;
+			let entry = index !== undefined ? rawByIndex.get(index) : undefined;
+			if (!entry && id) entry = rawById.get(id);
+			// tau deviation: a bare arguments fragment (no index, id or name) continues the
+			// latest call. pi opens a nameless call for it and the arguments are lost.
+			if (!entry && index === undefined && !id && !name) entry = rawToolCalls.at(-1);
 			if (!entry) {
 				entry = { id: "", name: "", argumentsText: "" };
-				rawToolCalls.set(index, entry);
+				rawToolCalls.push(entry);
 			}
-			if (wireToolCall.id) entry.id = wireToolCall.id;
-			if (wireToolCall.function?.name) entry.name += wireToolCall.function.name;
+			if (index !== undefined && !rawByIndex.has(index)) rawByIndex.set(index, entry);
+			if (id && !entry.id) {
+				entry.id = id;
+				rawById.set(id, entry);
+			}
+			if (name && !entry.name) entry.name = name;
 			if (wireToolCall.function?.arguments) entry.argumentsText += wireToolCall.function.arguments;
 		}
 	};
@@ -455,15 +468,15 @@ export async function* streamChatCompletion(
 		}
 	}
 
-	const toolCalls: ToolCall[] = [...rawToolCalls.entries()]
-		.sort(([a], [b]) => a - b)
+	const toolCalls: ToolCall[] = rawToolCalls
+		.map((raw, index) => [index, raw] as const)
 		.filter(([, raw]) => raw.name !== "")
 		.map(([index, raw]) => {
-			let parsedArguments: Record<string, unknown> = {};
+			let parsedArguments: JsonObject = {};
 			try {
 				const parsed: unknown = raw.argumentsText === "" ? {} : parseJsonWithRepair(raw.argumentsText);
 				if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-					parsedArguments = parsed as Record<string, unknown>;
+					parsedArguments = parsed as JsonObject;
 				}
 			} catch {
 				// Malformed arguments become {}; tool-side validation reports the miss.
@@ -489,6 +502,7 @@ export async function* streamChatCompletion(
 		model: config.model,
 		usage: usage ?? emptyUsage(),
 		stopReason: toStopReason(finishReason, toolCalls.length > 0),
+		...(finishReason !== undefined ? { rawStopReason: finishReason } : {}),
 		...(responseId !== undefined ? { responseId } : {}),
 		...(responseModel !== undefined ? { responseModel } : {}),
 		timestamp: startedAt,

@@ -221,3 +221,32 @@ test("tool arguments with raw control characters or invalid escapes are repaired
 	}
 	assert.deepEqual(toolCall?.arguments, { pattern: "\\d+\\.ts", note: "line1\nline2" });
 });
+
+test("tool-call fragments without index are attributed by id, never merged (pi ensureToolCallBlock, P22)", async () => {
+	const chunk = (toolCall: Record<string, unknown>, finish?: string) => ({
+		choices: [{ delta: { tool_calls: [toolCall] }, finish_reason: finish ?? null }],
+	});
+	const stream = streamChatCompletion(
+		fakePlatform([
+			makeSseResponse([
+				// A llama.cpp-style server: no index, two complete calls in separate chunks.
+				chunk({ id: "c1", function: { name: "read", arguments: '{"path":' } }),
+				// A bare arguments fragment continues the latest call (tau deviation).
+				chunk({ function: { arguments: '"a.txt"}' } }),
+				chunk({ id: "c2", function: { name: "bash", arguments: '{"command":"ls"}' } }, "tool_calls"),
+			]),
+		]),
+		{ baseUrl: "https://fake.test/v1", model: "fake" },
+		[{ role: "user", content: "go", timestamp: 1 }],
+	);
+	let final: AssistantMessage | undefined;
+	for await (const event of stream) if (event.type === "response_end") final = event.message;
+	assert.deepEqual(
+		final?.content.map((block) => (block.type === "toolCall" ? [block.id, block.name, block.arguments] : block.type)),
+		[
+			["c1", "read", { path: "a.txt" }],
+			["c2", "bash", { command: "ls" }],
+		],
+	);
+	assert.equal(final?.rawStopReason, "tool_calls");
+});
