@@ -69,6 +69,16 @@ test("dangerous bash commands are high", () => {
 	assert.equal(riskOf("bash", { command: "mkfs.ext4 /dev/sdb1" }), "high");
 	assert.equal(riskOf("bash", { command: ":(){ :|:& };:" }), "high");
 	assert.equal(riskOf("bash", { command: "bomb() { bomb | bomb & }; bomb" }), "high");
+	// Windows (HF-3): the Node host sends these to cmd.exe / PowerShell, where they really run.
+	assert.equal(riskOf("bash", { command: "rd /s /q C:\\work\\build" }), "high");
+	assert.equal(riskOf("bash", { command: "rmdir /S node_modules" }), "high");
+	assert.equal(riskOf("bash", { command: "del /s /q *.log" }), "high");
+	assert.equal(riskOf("bash", { command: "erase /f secrets.txt" }), "high");
+	assert.equal(riskOf("bash", { command: "format D: /q" }), "high");
+	assert.equal(riskOf("bash", { command: "diskpart /s wipe.txt" }), "high");
+	assert.equal(riskOf("bash", { command: "reg delete HKCU\\Software\\X /f" }), "high");
+	assert.equal(riskOf("bash", { command: 'powershell -c "Remove-Item -Recurse -Force C:\\x"' }), "high");
+	assert.equal(riskOf("bash", { command: "pwsh -c 'ri .\\out -r'" }), "high");
 });
 
 test("benign lookalike commands stay medium", () => {
@@ -79,6 +89,10 @@ test("benign lookalike commands stay medium", () => {
 	assert.equal(riskOf("bash", { command: "echo done > /dev/null" }), "medium");
 	assert.equal(riskOf("bash", { command: "curl https://api.test/data | jq ." }), "medium");
 	assert.equal(riskOf("bash", { command: "echo transform | sha256sum" }), "medium");
+	assert.equal(riskOf("bash", { command: "del old.txt" }), "medium");
+	assert.equal(riskOf("bash", { command: "rmdir empty-dir" }), "medium");
+	assert.equal(riskOf("bash", { command: 'powershell -c "Remove-Item out.txt"' }), "medium");
+	assert.equal(riskOf("bash", { command: "npm run format -- src" }), "medium");
 });
 
 test("high-risk decisions carry a reason; deny/ask propagate through assess", () => {

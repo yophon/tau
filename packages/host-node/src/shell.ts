@@ -10,8 +10,11 @@ interface ShellSpec {
 	args: string[];
 }
 
+// Only names that are unambiguously Windows-native. Names that also exist in Git Bash
+// (set, type, path, tree, fc, whoami, ver, call, cls, start, rmdir, ...) stay in bash:
+// routing them to cmd.exe broke ordinary POSIX commands such as `set -e` or `type node`.
 const WINDOWS_COMMAND_NAMES =
-	"cmd(?:\\.exe)?|command(?:\\.com)?|powershell(?:\\.exe)?|pwsh(?:\\.exe)?|where(?:\\.exe)?|findstr(?:\\.exe)?|dir(?:\\.exe)?|type(?:\\.exe)?|copy(?:\\.exe)?|move(?:\\.exe)?|del(?:\\.exe)?|erase(?:\\.exe)?|ren(?:\\.exe)?|rmdir(?:\\.exe)?|rd(?:\\.exe)?|cls(?:\\.exe)?|set(?:\\.exe)?|setx(?:\\.exe)?|taskkill(?:\\.exe)?|start(?:\\.exe)?|call(?:\\.exe)?|assoc(?:\\.exe)?|attrib(?:\\.exe)?|ipconfig(?:\\.exe)?|whoami(?:\\.exe)?|ver(?:\\.exe)?|path(?:\\.exe)?|tree(?:\\.exe)?|fc(?:\\.exe)?|icacls(?:\\.exe)?|schtasks(?:\\.exe)?";
+	"cmd(?:\\.exe)?|command\\.com|powershell(?:\\.exe)?|pwsh(?:\\.exe)?|where(?:\\.exe)?|findstr(?:\\.exe)?|dir|copy|move|del|erase|ren|rd|setx(?:\\.exe)?|taskkill(?:\\.exe)?|assoc|attrib(?:\\.exe)?|ipconfig(?:\\.exe)?|icacls(?:\\.exe)?|schtasks(?:\\.exe)?";
 
 const WINDOWS_COMMAND_AT_BOUNDARY = new RegExp(`(?:^|[;&|()\\r\\n])\\s*@?(?:${WINDOWS_COMMAND_NAMES})(?=\\s|$)`, "i");
 
@@ -21,16 +24,22 @@ const WINDOWS_COMMAND_AT_BOUNDARY = new RegExp(`(?:^|[;&|()\\r\\n])\\s*@?(?:${WI
  * (`dir`, `where`, `cmd /c`, ...). Keep those commands in cmd.exe; sending a
  * drive path or a batch file through MSYS bash changes its meaning.
  */
-function isWindowsStyleCommand(command: string): boolean {
+export function isWindowsStyleCommand(command: string): boolean {
 	const trimmed = command.trim();
 	if (trimmed === "") return false;
 	if (WINDOWS_COMMAND_AT_BOUNDARY.test(trimmed)) return true;
 	if (/\bcd(?:\.exe)?\s+\/[dD](?:\s|$)/.test(trimmed)) return true;
+	// rmdir exists in both shells; cmd's switch syntax (`rmdir /s /q x`) means cmd.
+	if (/(?:^|[;&|()\r\n])\s*rmdir\s+\/[a-z](?=\s|$)/i.test(trimmed)) return true;
 	if (/(?:^|[\s("'])[A-Za-z]:[\\/]/.test(trimmed)) return true;
 	if (/(?:^|[\s("'])\\\\[^\\s"']+/.test(trimmed)) return true;
 	if (/(?:^|[\s"'(])[^\s"']+\.(?:bat|cmd)(?=[\s"')]|$)/i.test(trimmed)) return true;
-	if (/%[^%\r\n]+%/.test(trimmed)) return true;
-	if (/\b(?:nul|con|prn|aux|com[1-9]|lpt[1-9])\b/i.test(trimmed)) return true;
+	// cmd-style env expansion (%PATH%) only as a whole word: `date +%Y-%m` and printf
+	// format strings must stay in bash.
+	if (/(?:^|[\s"'=(])%[A-Za-z_][A-Za-z0-9_]*%(?=$|[\s"';)\\/])/.test(trimmed)) return true;
+	// Redirecting to the NUL device is cmd syntax (bash uses /dev/null). A bare word such
+	// as `aux` in `ps aux` is not.
+	if (/[12]?>\s*nul\b/i.test(trimmed)) return true;
 	return false;
 }
 

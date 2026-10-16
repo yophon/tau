@@ -20,7 +20,14 @@ import {
 	type AnthropicTransportConfig,
 	createAnthropicTransport,
 } from "@yophon/tau-ext-provider-anthropic";
-import { digestDirectory, loadExtensionsFromDir, NodeFileSystem, NodeShell } from "@yophon/tau-host-node";
+import {
+	digestDirectory,
+	importExtensionFiles,
+	listExtensionFiles,
+	loadExtensionsFromDir,
+	NodeFileSystem,
+	NodeShell,
+} from "@yophon/tau-host-node";
 import {
 	Agent,
 	type ApprovalRequest,
@@ -50,9 +57,13 @@ const USAGE = `tau - minimal OpenAI-compatible coding agent
 Usage: tau [options] [-p "prompt"]
 
 Options:
-  -b, --base-url <url>   API base URL (env: TAU_BASE_URL, OPENAI_BASE_URL;
-                         optional with --provider anthropic)
-  -k, --api-key <key>    API key (env: TAU_API_KEY, OPENAI_API_KEY)
+  -b, --base-url <url>   API base URL (env: TAU_BASE_URL, then OPENAI_BASE_URL /
+                         ANTHROPIC_BASE_URL per protocol; optional with
+                         --provider anthropic)
+  -k, --api-key <key>    API key (env: TAU_API_KEY, then OPENAI_API_KEY /
+                         ANTHROPIC_API_KEY per protocol). TAU_BASE_URL and
+                         TAU_API_KEY apply only to the protocol TAU_PROVIDER
+                         names (openai when unset).
   -m, --model <model>    Model id (env: TAU_MODEL)
       --provider <name>  Wire protocol: openai (default) | anthropic
                          (env: TAU_PROVIDER). anthropic speaks the Anthropic
@@ -488,12 +499,14 @@ async function isProjectTrusted(
 async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<ExtensionRegistry> {
 	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")));
 	const extensionsDir = join(cwd, ".tau", "extensions");
-	const projectExtensions = await loadExtensionsFromDir(extensionsDir);
-	if (projectExtensions.length === 0) return registry;
+	// List first, decide trust, and only then import: importing runs the modules' top-level
+	// code, so an untrusted directory must never get that far (cd into a repo ≠ run its code).
+	const projectFiles = await listExtensionFiles(extensionsDir);
+	if (projectFiles.length === 0) return registry;
 	if (await isProjectTrusted(registry, cwd, ui, extensionsDir)) {
-		await registry.add(projectExtensions);
+		await registry.add(await importExtensionFiles(projectFiles));
 	} else {
-		console.log(dim(`Skipped ${projectExtensions.length} project extension(s): directory not trusted.`));
+		console.log(dim(`Skipped ${projectFiles.length} project extension(s): directory not trusted.`));
 	}
 	return registry;
 }
@@ -693,16 +706,27 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const baseUrl = options.baseUrl ?? process.env.TAU_BASE_URL ?? process.env.OPENAI_BASE_URL;
-	const apiKey = options.apiKey ?? process.env.TAU_API_KEY ?? process.env.OPENAI_API_KEY;
 	const model = options.model ?? process.env.TAU_MODEL;
-	let provider = options.provider;
-	if (!provider && process.env.TAU_PROVIDER) {
+	let envProvider: ProviderKind | undefined;
+	if (process.env.TAU_PROVIDER) {
 		const value = process.env.TAU_PROVIDER;
-		if (isProvider(value)) provider = value;
+		if (isProvider(value)) envProvider = value;
 		else console.error(`Ignoring TAU_PROVIDER="${value}" (expected one of: ${PROVIDERS.join(", ")})`);
 	}
-	provider ??= "openai";
+	const provider: ProviderKind = options.provider ?? envProvider ?? "openai";
+	// Endpoint and credential env vars are scoped to one wire protocol, so a key
+	// configured for one vendor is never sent to another vendor's host: OPENAI_* only
+	// feed openai, ANTHROPIC_* only feed anthropic, and TAU_BASE_URL/TAU_API_KEY only
+	// the protocol TAU_PROVIDER names (openai when unset). Explicit flags always win.
+	const tauEnvApplies = (envProvider ?? "openai") === provider;
+	const vendorEnv =
+		provider === "anthropic"
+			? { baseUrl: process.env.ANTHROPIC_BASE_URL, apiKey: process.env.ANTHROPIC_API_KEY }
+			: { baseUrl: process.env.OPENAI_BASE_URL, apiKey: process.env.OPENAI_API_KEY };
+	const baseUrl =
+		options.baseUrl ?? (tauEnvApplies ? process.env.TAU_BASE_URL : undefined) ?? (vendorEnv.baseUrl || undefined);
+	const apiKey =
+		options.apiKey ?? (tauEnvApplies ? process.env.TAU_API_KEY : undefined) ?? (vendorEnv.apiKey || undefined);
 	// anthropic has a well-known default endpoint; the OpenAI-compatible world does not.
 	if (!model || (provider === "openai" && !baseUrl)) {
 		console.error("Missing --base-url and/or --model (or TAU_BASE_URL / TAU_MODEL env vars).\n");
@@ -710,7 +734,9 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 	if (provider === "anthropic" && !apiKey) {
-		console.error("--provider anthropic requires an API key (--api-key or TAU_API_KEY).");
+		console.error(
+			"--provider anthropic requires an API key (--api-key, ANTHROPIC_API_KEY, or TAU_API_KEY with TAU_PROVIDER=anthropic).",
+		);
 		process.exit(1);
 	}
 

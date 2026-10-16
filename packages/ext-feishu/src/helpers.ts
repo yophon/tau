@@ -60,6 +60,13 @@ function uniquePaths(paths: string[]): string[] {
  * Resolve configuration with the same precedence as pi-feishu:
  * defaults < global settings < project settings < explicit config < env.
  * CLI flags are applied by the extension after this function returns.
+ *
+ * Deviation from pi-feishu (security): project settings live inside the
+ * working tree, which may be an untrusted repository, so they can only set
+ * non-credential fields (`domain`, `botOpenId`). App id/secret, encrypt key
+ * and verification token come from global settings, explicit config or env —
+ * otherwise cloning a repo could silently rebind the user's bot to someone
+ * else's app.
  * Both tau and pi settings locations are accepted so an existing pi setup can
  * be moved to tau without duplicating credentials.
  */
@@ -76,7 +83,12 @@ export function loadFeishuConfig(options: FeishuConfigLoadOptions = {}): FeishuC
 		: uniquePaths([join(projectPiDir, "settings.json"), join(projectTauDir, "settings.json")]);
 
 	let values: Partial<FeishuConfig> = {};
-	for (const path of [...globalPaths, ...projectPaths]) values = { ...values, ...readFeishuFromSettingsFile(path) };
+	for (const path of globalPaths) values = { ...values, ...readFeishuFromSettingsFile(path) };
+	for (const path of projectPaths) {
+		const project = readFeishuFromSettingsFile(path);
+		if (project.domain !== undefined) values.domain = project.domain;
+		if (project.botOpenId !== undefined) values.botOpenId = project.botOpenId;
+	}
 	if (options.config) values = { ...values, ...options.config };
 
 	const env = options.env ?? process.env;

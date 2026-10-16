@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -203,6 +204,18 @@ test("project extensions are skipped in headless mode until trusted", async () =
 				"",
 			].join("\n"),
 		);
+		// Top-level code of an untrusted project extension must never run (HF-1: it used to be
+		// imported before the trust decision, so cd-ing into a repo executed its code).
+		const marker = join(cwd, "sidefx-ran");
+		await writeFile(
+			join(cwd, ".tau", "extensions", "sidefx.ts"),
+			[
+				'import { writeFileSync } from "node:fs";',
+				`writeFileSync(${JSON.stringify(marker)}, "x");`,
+				"export default () => {};",
+				"",
+			].join("\n"),
+		);
 		const turns = [() => mockToolCallTurn("bash", { command: "echo trust-check-ran" }), () => mockTextTurn("done")];
 
 		// Headless + no trust record: extension must NOT load, bash executes.
@@ -210,8 +223,9 @@ test("project extensions are skipped in headless mode until trusted", async () =
 		try {
 			const cli = startCli(["-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
 			await cli.waitForExit();
-			assert.ok(cli.output().includes("Skipped 1 project extension"), cli.output());
+			assert.ok(cli.output().includes("Skipped 2 project extension"), cli.output());
 			assert.ok(cli.output().includes("trust-check-ran"), cli.output());
+			assert.equal(existsSync(marker), false, "untrusted extension top-level code ran");
 		} finally {
 			await mock.close();
 		}

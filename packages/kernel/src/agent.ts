@@ -1045,6 +1045,11 @@ export class Agent {
 			args = event.input;
 		}
 
+		// Abort check (pi v0.80.3 prepareToolCall): once the run is aborted, no further
+		// call is validated, approved or started. The call still gets a result so the
+		// wire's call/result pairing stays complete.
+		if (signal?.aborted) return { kind: "immediate", toolCall, result: abortedResult() };
+
 		// Argument validation before the policy (P15): malformed calls fail fast
 		// so the model can self-correct, and policy rules never fire on junk.
 		const problems = validateToolArgs(tool.parameters, args);
@@ -1135,10 +1140,16 @@ export class Agent {
 		};
 
 		let result: ToolResult;
-		try {
-			result = await tool.execute(args, signal, emitUpdate, ctx);
-		} catch (cause) {
-			result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
+		if (signal?.aborted) {
+			// Prepared before the abort (e.g. while a later call of the parallel batch was
+			// waiting for approval): never start it, report it like any aborted call.
+			result = abortedResult();
+		} else {
+			try {
+				result = await tool.execute(args, signal, emitUpdate, ctx);
+			} catch (cause) {
+				result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
+			}
 		}
 		await Promise.all(updateNotifications);
 		await this.extensions?.notifyToolExecutionEnd({ toolCallId: toolCall.id, toolName: toolCall.name, result }, ctx);
@@ -1180,9 +1191,9 @@ export class Agent {
 		request: ApprovalRequest,
 		signal?: TauAbortSignal,
 	): Promise<boolean> {
+		if (signal?.aborted) return Promise.resolve(false);
 		const decision = handler(request);
 		if (!signal) return decision;
-		if (signal.aborted) return Promise.resolve(false);
 		return new Promise<boolean>((resolve, reject) => {
 			let settled = false;
 			const onAbort = (): void => {
@@ -1207,4 +1218,9 @@ export class Agent {
 			);
 		});
 	}
+}
+
+/** Result for a tool call that was never started because its run was aborted. */
+function abortedResult(): ToolResult {
+	return { output: "Operation aborted", isError: true };
 }

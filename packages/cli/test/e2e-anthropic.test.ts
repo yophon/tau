@@ -40,6 +40,13 @@ function startCli(
 			TAU_MODEL: "mock-model",
 			TAU_API_KEY: "test",
 			TAU_PERMISSION_MODE: "autonomous",
+			// TAU_BASE_URL/TAU_API_KEY only feed the protocol TAU_PROVIDER names (HF-2).
+			...(args.includes("anthropic") ? { TAU_PROVIDER: "anthropic" } : {}),
+			// Never let the developer's real vendor env leak into a test run.
+			OPENAI_API_KEY: "",
+			OPENAI_BASE_URL: "",
+			ANTHROPIC_API_KEY: "",
+			ANTHROPIC_BASE_URL: "",
 			...options.env,
 		},
 		stdio: ["pipe", "pipe", "pipe"],
@@ -246,7 +253,7 @@ test("--provider validation: bad flag exits, anthropic without a key exits", asy
 			["--disable-warning=ExperimentalWarning", CLI_PATH, "--provider", "anthropic", "-p", "x"],
 			{
 				cwd,
-				env: { ...process.env, HOME: home, TAU_MODEL: "m", TAU_API_KEY: "", OPENAI_API_KEY: "" },
+				env: { ...process.env, HOME: home, TAU_MODEL: "m", TAU_API_KEY: "", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "" },
 				stdio: ["pipe", "pipe", "pipe"],
 			},
 		);
@@ -268,5 +275,39 @@ test("--provider validation: bad flag exits, anthropic without a key exits", asy
 		});
 		assert.notEqual(code, 0);
 		assert.ok(output.includes("requires an API key"), output);
+	});
+});
+
+test("credentials never cross protocols: OpenAI env is ignored by --provider anthropic and vice versa (HF-2)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		// 1) Only an OpenAI key in the env: --provider anthropic must refuse instead of sending it.
+		const openaiOnly = startCli(["--provider", "anthropic", "-p", "x", "--no-session"], {
+			cwd,
+			home,
+			baseUrl: "http://127.0.0.1:9",
+			env: { TAU_PROVIDER: "", TAU_API_KEY: "", OPENAI_API_KEY: "sk-openai-secret" },
+		});
+		assert.notEqual(await openaiOnly.waitForExit(), 0);
+		assert.ok(openaiOnly.output().includes("requires an API key"), openaiOnly.output());
+
+		// 2) TAU_BASE_URL points at an OpenAI relay (TAU_PROVIDER unset = openai). An explicit
+		// Anthropic key with --provider anthropic must go to ANTHROPIC_BASE_URL, never the relay.
+		const relay = await startMockOpenAI([() => mockTextTurn("relay must not be called")]);
+		const anthropic = await startMockAnthropic([() => anthropicTextTurn("anthropic-host-ok")]);
+		try {
+			const cli = startCli(["--provider", "anthropic", "-k", "sk-ant-secret", "-p", "hi", "--no-session"], {
+				cwd,
+				home,
+				baseUrl: relay.baseUrl,
+				env: { TAU_PROVIDER: "", ANTHROPIC_BASE_URL: anthropic.baseUrl },
+			});
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			assert.ok(cli.output().includes("anthropic-host-ok"), cli.output());
+			assert.equal(relay.requests.length, 0, "Anthropic key was sent to the OpenAI relay");
+			assert.equal(anthropic.headers[0]["x-api-key"], "sk-ant-secret");
+		} finally {
+			await relay.close();
+			await anthropic.close();
+		}
 	});
 });

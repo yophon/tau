@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createCodingTools, FileError } from "@yophon/tau-kernel";
+import { listExtensionFiles, loadExtensionsFromDir } from "../src/extension-loader.ts";
 import { NodeFileSystem } from "../src/fs.ts";
-import { NodeShell } from "../src/shell.ts";
+import { isWindowsStyleCommand, NodeShell } from "../src/shell.ts";
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
 	const dir = await mkdtemp(join(tmpdir(), "tau-test-"));
@@ -85,4 +86,56 @@ test("coding tools work end-to-end against the node host", async () => {
 		const bash = await byName.get("bash")?.execute({ command: "cat a.txt" });
 		assert.equal(bash?.output, "one\nTWO\nthree");
 	});
+});
+
+test("extension listing skips directories named like modules and .d.ts files, without importing", async () => {
+	await withTempDir(async (dir) => {
+		await mkdir(join(dir, "three.js"));
+		await writeFile(join(dir, "types.d.ts"), "export {};\n");
+		await writeFile(join(dir, "notes.md"), "# not an extension\n");
+		await writeFile(join(dir, "b.ts"), "export default () => {};\n");
+		await writeFile(join(dir, "a.mjs"), "export default () => {};\n");
+		const files = await listExtensionFiles(dir);
+		assert.deepEqual(
+			files.map((f) => f.slice(dir.length + 1)),
+			["a.mjs", "b.ts"],
+		);
+		// A directory named three.js used to crash the loader with ERR_UNSUPPORTED_DIR_IMPORT.
+		assert.equal((await loadExtensionsFromDir(dir)).length, 2);
+		assert.deepEqual(await listExtensionFiles(join(dir, "missing")), []);
+	});
+});
+
+test("Windows routing heuristic sends only unambiguous cmd syntax to cmd.exe", () => {
+	for (const command of [
+		"dir",
+		"cmd /c echo hi",
+		"where node",
+		"del /q x.log",
+		"rd /s /q build",
+		"rmdir /s build",
+		"C:\\tools\\x.exe --version",
+		"echo %PATH%",
+		"dir > nul",
+		"build.bat release",
+		"cd /d D:\\work",
+		"powershell -c Get-Date",
+	]) {
+		assert.equal(isWindowsStyleCommand(command), true, command);
+	}
+	for (const command of [
+		"set -e; ls",
+		"ps aux",
+		"date +%Y-%m-%d",
+		"printf '%s\\n' a b",
+		"type node",
+		"tree -L 2",
+		"whoami",
+		"rmdir empty-dir",
+		"ls /c/Users",
+		"echo 50% done",
+		"git commit -m 'path fix'",
+	]) {
+		assert.equal(isWindowsStyleCommand(command), false, command);
+	}
 });

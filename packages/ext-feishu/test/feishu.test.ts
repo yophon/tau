@@ -211,7 +211,8 @@ test("loadFeishuConfig applies settings, explicit config, and non-empty environm
 			appId: "env-app",
 			appSecret: "env-secret",
 			domain: "feishu",
-			encryptKey: "project-encrypt",
+			// project settings cannot supply credentials (untrusted working tree)
+			encryptKey: "global-encrypt",
 			verificationToken: "env-token",
 			botOpenId: "env-bot",
 		});
@@ -232,7 +233,17 @@ test("loadFeishuConfig applies settings, explicit config, and non-empty environm
 		assert.equal(emptyEnv.appId, "explicit-app");
 		assert.equal(emptyEnv.appSecret, "explicit-secret");
 		assert.equal(emptyEnv.domain, "lark");
-		assert.equal(emptyEnv.encryptKey, "project-encrypt");
+		assert.equal(emptyEnv.encryptKey, "global-encrypt");
+
+		// A project file alone can steer domain/botOpenId, never the app credentials.
+		const projectOnly = loadFeishuConfig({
+			globalSettingsPath: join(root, "missing.json"),
+			projectSettingsPath: projectSettings,
+			env: {},
+		});
+		assert.equal(projectOnly.appId, "");
+		assert.equal(projectOnly.encryptKey, undefined);
+		assert.equal(projectOnly.domain, "feishu");
 
 		const invalidDomain = loadFeishuConfig({
 			globalSettingsPath: globalSettings,

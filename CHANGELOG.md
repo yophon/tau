@@ -10,6 +10,19 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   instead of `string` (P20). Input hooks still receive the text projection and a
   rewrite keeps the image blocks. Hosts implementing `submitPrompt` must accept
   content arrays (`userContentText()` projects them back to text).
+- CLI (security, P21-HF-2): endpoint and key env vars are scoped to one wire
+  protocol. `OPENAI_BASE_URL`/`OPENAI_API_KEY` only feed `--provider openai`,
+  `ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY` only feed `--provider anthropic`, and
+  `TAU_BASE_URL`/`TAU_API_KEY` only the protocol `TAU_PROVIDER` names (openai when
+  unset). Previously an OpenAI key in the env was sent to api.anthropic.com, or an
+  Anthropic `-k` key to the OpenAI relay in `TAU_BASE_URL`. If you ran
+  `--provider anthropic` with only `TAU_*` set, add `TAU_PROVIDER=anthropic` or
+  use the `ANTHROPIC_*` names. Explicit `-b`/`-k` flags are unchanged.
+- ext-feishu (security, P21-HF-1): project-level settings files
+  (`.tau/settings.json`, `.pi/settings.json`) can no longer supply credentials
+  (`appId`, `appSecret`, `encryptKey`, `verificationToken`) — only `domain` and
+  `botOpenId`. A cloned repository could otherwise rebind your bot to another
+  app. Deviation from pi-feishu.
 - examples/flutter/mcp-server (not an npm package): `--host` now defaults to
   `127.0.0.1` (P19). LAN access needs an explicit `--host 0.0.0.0`; the new
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
@@ -23,7 +36,32 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   tools. Inbound images are handed to the kernel as image blocks.
 - Kernel: `UserContent` type and `userContentText()` helper exported.
 
+### Security
+- CLI (P21-HF-1): project extensions under `.tau/extensions` were imported — and
+  their top-level code executed — **before** the trust decision, so entering an
+  untrusted directory ran its code even though the CLI then reported the
+  extensions as skipped. Affects 0.1.0–0.2.0, including `/reload`. Trust is now
+  decided first and files are imported only when trusted. The loader also only
+  lists regular files (a directory named `x.js` used to abort startup).
+  host-node exports `listExtensionFiles()` / `importExtensionFiles()` for hosts
+  that gate on trust.
+- Kernel (P21-HF-3): the default policy rates Windows destructive commands high
+  risk — `rd`/`rmdir /s`, `del`/`erase /s|/q|/f`, `format X:`, `diskpart`,
+  `reg delete`, PowerShell `Remove-Item -Recurse/-Force`. The Node host routes
+  such commands to cmd.exe, where autonomous mode previously ran them without
+  approval.
+- Kernel (P21-HF-4): an abort now stops tool calls that have not started yet.
+  Calls prepared before the abort (e.g. while a later call of a parallel batch
+  waited for approval) and the remaining calls of a sequential batch used to run
+  anyway; they now return `Operation aborted`. An aborted run no longer asks
+  the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
+
 ### Fixed
+- host-node: the Windows cmd.exe routing heuristic only matches unambiguous
+  cmd syntax. `set -e`, `type`, `tree`, `whoami`, `ps aux` (the word `aux`),
+  `date +%Y-%m` and printf format strings used to be sent to cmd.exe instead of
+  Git Bash. `rmdir /s`, `%VAR%` as a word, `>nul`, drive paths, `.bat` and the
+  Windows-only command names still route to cmd.exe.
 - CLI: the user-level `~/.tau` directory now honors `HOME` when set. On Windows
   `os.homedir()` reads `USERPROFILE` and ignored the override, so e2e runs loaded
   the real `~/.tau/extensions` (and hung on a Feishu WebSocket).

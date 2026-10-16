@@ -107,6 +107,16 @@ const DEFAULT_DANGEROUS_PATTERNS: readonly DangerousPattern[] = [
 		pattern: /:\(\)\s*\{\s*:\s*\|\s*:|(\w+)\s*\(\)\s*\{[^}]*\b\1\s*\|\s*\1\b/,
 		label: "fork bomb",
 	},
+	// Windows: the Node host routes native commands to cmd.exe, so these run for real there.
+	{ pattern: /\b(?:rd|rmdir)\b[^|&\r\n]*\s\/s\b/i, label: "recursive directory removal (rd /s)" },
+	{ pattern: /\b(?:del|erase)\b[^|&\r\n]*\s\/[sqf]\b/i, label: "recursive/forced delete (del /s, /q, /f)" },
+	{ pattern: /\bformat(?:\.com)?\s+[a-z]:/i, label: "format drive" },
+	{ pattern: /\bdiskpart\b/i, label: "diskpart" },
+	{ pattern: /\breg(?:\.exe)?\s+delete\b/i, label: "registry delete" },
+	{
+		pattern: /\b(?:Remove-Item|ri)\b[^|;\r\n]*\s-(?:Recurse|Force|r|fo)\b/i,
+		label: "PowerShell Remove-Item -Recurse/-Force",
+	},
 ];
 
 /** Argument keys probed for target paths on write/edit-shaped calls (content fields are deliberately excluded). */
