@@ -249,6 +249,48 @@ test("project extensions are skipped in headless mode until trusted", async () =
 	});
 });
 
+test("-p exits 1 on a truncated reply and warns on stderr; strict arguments refuse '128k' and a flag as a value (P23e)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([
+			() => ({ payloads: [{ choices: [{ delta: { content: "half of the ans" }, finish_reason: "length" }] }] }),
+		]);
+		try {
+			const cli = startCli(["-p", "go", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 1, cli.output());
+			assert.ok(cli.output().includes("half of the ans"), cli.output());
+			assert.ok(cli.output().includes("hit the output token limit"), cli.output());
+		} finally {
+			await mock.close();
+		}
+
+		const badWindow = startCli(["-w", "128k", "-p", "go"], { cwd, home, baseUrl: "http://127.0.0.1:9" });
+		assert.equal(await badWindow.waitForExit(), 1);
+		assert.ok(badWindow.output().includes("--context-window must be a positive integer"), badWindow.output());
+
+		const flagAsValue = startCli(["--model", "--no-session", "-p", "go"], { cwd, home, baseUrl: "http://127.0.0.1:9" });
+		assert.equal(await flagAsValue.waitForExit(), 1);
+		assert.ok(flagAsValue.output().includes("Missing value for --model"), flagAsValue.output());
+	});
+});
+
+test("--tools narrows the declared built-in tools (P23e)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			const cli = startCli(["--tools", "read,ls", "-p", "go", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
+			assert.deepEqual(
+				(request.tools ?? []).map((tool) => tool.function.name),
+				["read"],
+				"ls is not a built-in tool here; only read survives",
+			);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("untrusted project settings and skills are ignored headless; a broken extension is skipped, not fatal (P23c)", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		await mkdir(join(cwd, ".tau", "skills", "local"), { recursive: true });

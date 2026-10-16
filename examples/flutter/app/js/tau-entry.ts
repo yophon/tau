@@ -319,6 +319,11 @@ async function runPrompt(text: string): Promise<void> {
 		emit("tau_event", { type: "error", message: cause instanceof Error ? cause.message : String(cause) });
 	} finally {
 		currentAbort = undefined;
+		// Queues survive an abort (kernel contract): drop what the run left so it is not
+		// replayed into the next prompt, and tell Dart how many were dropped (P23e).
+		const leftover = agent.clearQueue();
+		const dropped = leftover.steering.length + leftover.followUp.length;
+		if (dropped > 0) emit("tau_event", { type: "queue_dropped", count: dropped });
 	}
 }
 
@@ -349,7 +354,7 @@ const tau: TauBridge = {
 		runPrompt(text);
 	},
 	steer: (text) => {
-		agent?.steer(text);
+		void agent?.steer(text);
 	},
 	abort: () => {
 		currentAbort?.abort("user");

@@ -669,13 +669,13 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 				const code = errorCode(error);
 				if (runtime.client === current && runtime.clientGeneration === generation) runtime.kernelBusy = false;
 				if (!state.invalidated) invalidateChatState(state, true);
-				// Submission can fail after Typing was added (for example while the host
-				// actions are still attaching).  Remove it before retrying the item.
+				// Submission can fail after Typing was added. Remove it before retrying the item.
 				await current.stopTyping(chatId, true).catch(() => {});
-				// The CLI attaches submitPrompt after session_start. Keep the message
-				// queued and retry briefly if that host action is not attached yet.
-				if ((code === "no_host" || code === "busy") && ownsClient(current, generation)) {
-					scheduleFlush(code === "busy" ? 250 : 100);
+				// Busy: the host is compacting or navigating (it refuses instead of dropping the
+				// prompt); keep the message queued and retry. Hosts attach their actions before
+				// session_start (P23e), so a missing host action is a real error, not a race.
+				if (code === "busy" && ownsClient(current, generation)) {
+					scheduleFlush(250);
 				} else {
 					if (ownsClient(current, generation)) {
 						await sendFeishuMessage(chatId, `无法提交给 tau: ${errorText(error)}`, item.msgId);
@@ -975,11 +975,14 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 				await finishChatState(state, true);
 				flashStatus("飞书: ✅ 完成");
 			}
+		});
+
+		// The prompt has fully settled — retries, follow-ups, continuation runs are over
+		// (P23b). A prompt submitted here starts after every agent_settled handler
+		// returned, so no timer is needed any more.
+		api.on("agent_settled", async () => {
 			runtime.kernelBusy = false;
-			// Agent.notifyAgentEnd runs while Agent.looping is still true. Defer the
-			// submission until the host has returned from the current prompt, or
-			// tau would classify it as a steering message and never start a turn.
-			if (!runtime.shuttingDown) scheduleFlush(0);
+			if (!runtime.shuttingDown) await flushQueues();
 		});
 
 		api.on("session_compact", () => scheduleFlush(500));

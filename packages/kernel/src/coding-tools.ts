@@ -40,10 +40,13 @@ function wrapExecute(execute: Tool["execute"]): Tool["execute"] {
 // not deduplicated (documented in the P18 spec).
 const fileMutationQueues = new Map<string, Promise<void>>();
 
-export function mutationQueueKey(path: string): string {
+export function mutationQueueKey(path: string, cwd?: string): string {
+	// A relative path names the same file as its absolute spelling: resolve it against
+	// the filesystem's cwd first (P23e; pure string work, still no realpath, D22).
+	const joined = cwd && !isAbsolutePath(path) ? `${cwd.replace(/[\\/]+$/, "")}/${path}` : path;
 	// Windows spellings of the same file must share one queue (HF-14): backslashes
 	// fold to "/", and a drive letter's case is irrelevant (C:\a.ts === c:/a.ts).
-	const unified = path
+	const unified = joined
 		.replace(/\\/g, "/")
 		.replace(/^([A-Za-z]):/, (_match, drive: string) => `${drive.toLowerCase()}:`);
 	const drive = /^[a-z]:/.exec(unified)?.[0] ?? "";
@@ -58,8 +61,12 @@ export function mutationQueueKey(path: string): string {
 	return drive + (isAbsolute ? "/" : "") + segments.join("/");
 }
 
-async function withFileMutationQueue<T>(path: string, fn: () => Promise<T>): Promise<T> {
-	const key = mutationQueueKey(path);
+function isAbsolutePath(path: string): boolean {
+	return path.startsWith("/") || path.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(path);
+}
+
+async function withFileMutationQueue<T>(path: string, cwd: string | undefined, fn: () => Promise<T>): Promise<T> {
+	const key = mutationQueueKey(path, cwd);
 	const previous = fileMutationQueues.get(key) ?? Promise.resolve();
 	let release!: () => void;
 	const gate = new Promise<void>((resolve) => {
@@ -123,7 +130,7 @@ function createWriteTool(fs: FileSystem): Tool {
 			const path = requireString(args, "path");
 			const content = args.content;
 			if (typeof content !== "string") return errorResult('Missing or invalid required string argument "content"');
-			await withFileMutationQueue(path, () => fs.writeTextFile(path, content));
+			await withFileMutationQueue(path, fs.cwd, () => fs.writeTextFile(path, content));
 			return textResult(`Wrote ${content.length} characters to ${path}`);
 		}),
 	};
@@ -147,7 +154,7 @@ function createEditTool(fs: FileSystem): Tool {
 			const oldText = requireString(args, "oldText");
 			const newText = args.newText;
 			if (typeof newText !== "string") return errorResult('Missing or invalid required string argument "newText"');
-			return withFileMutationQueue(path, async () => {
+			return withFileMutationQueue(path, fs.cwd, async () => {
 				const content = await fs.readTextFile(path);
 				const occurrences = countOccurrences(content, oldText);
 				if (occurrences === 0) return errorResult(`oldText not found in ${path}`);

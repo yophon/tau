@@ -224,7 +224,8 @@ test("anthropic transport failures retry with backoff and finally surface the er
 			await flaky.close();
 		}
 
-		// Retries disabled: the failure becomes a stopReason-error message (no throw).
+		// Retries disabled: the failure becomes a stopReason-error message (no throw), and -p
+		// exits 1 with the error on stderr (P23e, pi print mode).
 		const dead = await startMockAnthropic([() => ({ status: 503, bodyText: "unavailable" })]);
 		try {
 			const cli = startCli(["--provider", "anthropic", "-p", "try", "--no-session"], {
@@ -234,7 +235,7 @@ test("anthropic transport failures retry with backoff and finally surface the er
 				env: { TAU_MAX_RETRIES: "0" },
 			});
 			const code = await cli.waitForExit();
-			assert.equal(code, 0, cli.output());
+			assert.equal(code, 1, cli.output());
 			assert.ok(cli.output().includes("Error: HTTP 503"), cli.output());
 		} finally {
 			await dead.close();

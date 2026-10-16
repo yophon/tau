@@ -290,6 +290,7 @@ export {
 	assertToolSchema,
 	errorResult,
 	hasToolSchema,
+	limitToolText,
 	optionalNumber,
 	requireString,
 	type Tool,
@@ -298,6 +299,7 @@ export {
 	type ToolUpdateStream,
 	textResult,
 	toolResultText,
+	truncateMiddle,
 	validateToolArgs,
 } from "./tools.ts";
 export { type TransformTarget, transformMessages } from "./transform.ts";

@@ -1,7 +1,33 @@
+import { randomBytes } from "node:crypto";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Extension, JsonSchema, TauAbortSignal, Tool, ToolResult } from "@yophon/tau-kernel";
+import {
+	type Extension,
+	type JsonSchema,
+	limitToolText,
+	type TauAbortSignal,
+	type Tool,
+	type ToolResult,
+} from "@yophon/tau-kernel";
+
+/** Model-facing text of an MCP result beyond this is cut in the middle (pi MCP_OUTPUT_MAX_BYTES). */
+export const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
+
+/** Save a truncated result's full text where the model can read it: a new 0600 temp file (pi 1.0.3 output files). */
+function saveFullOutput(text: string): string {
+	try {
+		const path = join(tmpdir(), `tau-mcp-${randomBytes(8).toString("hex")}.txt`);
+		// `wx` never follows a link someone else placed at the path.
+		writeFileSync(path, text, { mode: 0o600, flag: "wx" });
+		return `[Full output: ${path} (read it with offset/limit)]`;
+	} catch (error) {
+		return `[Could not save the full output: ${error instanceof Error ? error.message : String(error)}]`;
+	}
+}
 
 export interface McpServerConfig {
 	name: string;
@@ -12,6 +38,12 @@ export interface McpServerConfig {
 	toolPrefix?: string;
 	cwd?: string;
 	env?: Record<string, string>;
+	/**
+	 * Let this server's tool annotations raise risk: `destructiveHint: true` makes a
+	 * tool high risk. Hints are the server's own claims, so they never lower risk
+	 * (D20); off by default — opt in per server you trust to label its tools.
+	 */
+	riskFromAnnotations?: boolean;
 }
 
 export interface McpExtensionOptions {
@@ -70,7 +102,9 @@ function toolOutput(result: McpCallResult): string {
 			parts.push(JSON.stringify(block));
 		}
 	}
-	if (result.structuredContent) parts.push(JSON.stringify(result.structuredContent));
+	// Servers send structuredContent with a text rendering of it (MCP spec): only fall
+	// back to the JSON when there is nothing else, instead of sending it twice.
+	if (result.structuredContent && parts.length === 0) parts.push(JSON.stringify(result.structuredContent));
 	return parts.join("\n").trim() || "(empty MCP tool result)";
 }
 
@@ -122,7 +156,13 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 			for (const tool of listed.tools) {
 				const name = tauToolName(config, tool.name);
 				connected.toolsByTauName.set(name, tool.name);
-				api.registerTool(createTauTool(connected, name, tool.name, tool.description, tool.inputSchema));
+				const destructive =
+					config.riskFromAnnotations === true &&
+					(tool as { annotations?: { destructiveHint?: boolean } }).annotations?.destructiveHint === true;
+				api.registerTool(
+					createTauTool(connected, name, tool.name, tool.description, tool.inputSchema),
+					destructive ? { risk: "high" } : undefined,
+				);
 			}
 		};
 
@@ -182,7 +222,8 @@ function createTauTool(
 					undefined,
 					abortSignal ? { signal: abortSignal } : undefined,
 				)) as McpCallResult;
-				return { content: [{ type: "text", text: toolOutput(result) }], isError: result.isError === true };
+				const text = limitToolText(toolOutput(result), MCP_OUTPUT_MAX_BYTES, saveFullOutput);
+				return { content: [{ type: "text", text }], isError: result.isError === true };
 			} catch (cause) {
 				return {
 					content: [{ type: "text", text: cause instanceof Error ? cause.message : String(cause) }],

@@ -27,7 +27,8 @@ function stringValue(value: unknown): string | undefined {
 export function readFeishuFromSettingsFile(filePath: string): Partial<FeishuConfig> {
 	try {
 		if (!existsSync(filePath)) return {};
-		const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8"));
+		// A BOM (Windows PowerShell's "UTF8") made JSON.parse fail and the credentials vanish silently.
+		const parsed: unknown = JSON.parse(readFileSync(filePath, "utf8").replace(/^\uFEFF/, ""));
 		if (parsed === null || typeof parsed !== "object") return {};
 		const section = (parsed as { feishu?: unknown }).feishu;
 		if (section === null || typeof section !== "object") return {};

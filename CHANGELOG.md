@@ -5,6 +5,22 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- CLI (P23e, pi print mode): `tau -p` exits 1 when the final reply errored, was
+  aborted or hit the output limit (it used to exit 0), and errors go to stderr.
+  Integer flags are strict (`-w 128k` is an error; env values like
+  `TAU_STALL_TIMEOUT_MS=120s` are ignored with a warning instead of becoming 120);
+  a flag cannot be taken as the previous flag's value (`--model --tui`).
+- CLI (P23e): extension commands typed while a turn runs are refused instead of
+  queued as text; queued input left by an aborted turn is restored to the TUI
+  editor (the REPL lists what it dropped) instead of being replayed into the next
+  prompt.
+- ext-feishu (P23e): busy/idle follows `agent_settled`; a missing host action is
+  reported to the chat instead of being polled. Downloaded media lives in a 0700
+  directory as 0600 files (a planted or foreign-owned default directory is
+  replaced by a fresh private one).
+- ext-mcp / ext-mcp-http (P23e, pi): results over 20 KB are cut in the middle
+  with pi's warning header (ext-mcp saves the full text to a 0600 temp file);
+  `structuredContent` is only sent when a result has no other content.
 - Kernel (P23d, pi Chat Completions semantics, P21 ruling 8): a stream that
   ends without `finish_reason` is an error ("Stream ended without finish_reason",
   retried), and `content_filter` or any unknown finish reason is an error
@@ -175,6 +191,18 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- CLI (P23e): `--tools/-t <list>` (names pick built-ins, `*` all, `+name`/`-name`)
+  and `--no-tools`; `/tree <id> --no-summary` in the REPL and a no-summary
+  fallback in the TUI when a branch summary fails; REPL `/compact` and `/tree`
+  can be cancelled with Ctrl+C; hosts attach their actions before `session_start`
+  and support `ctx.shutdown()`. host-node reports a command killed by a signal as
+  exit code 128 + signo. ext-resources follows pi 1.2.0 template arguments
+  (`${N:-default}`, one pass), strips UTF-8 BOMs, warns on unclosed frontmatter and
+  ends long fallback descriptions with "..."; the CLI trust and permission stores
+  and ext-feishu settings tolerate a BOM. MCP tool annotations can raise a tool
+  to high risk with `riskFromAnnotations` (never lower it). Kernel:
+  `truncateMiddle()`, `limitToolText()`; the write/edit mutation queue resolves
+  relative paths against the filesystem cwd.
 - Kernel (P23d): `before_provider_headers` (pi 0.80.4; every provider call,
   summaries included), `Agent.model`/`setModel()`, `Agent.thinkingLevel`/
   `setThinkingLevel()` (logged as `model_change`/`thinking_level_change`),

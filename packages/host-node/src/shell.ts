@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { type Shell, ShellError, type ShellExecResult, type TauAbortSignal, toError } from "@yophon/tau-kernel";
 
@@ -229,13 +230,27 @@ export class NodeShell implements Shell {
 			child.on("error", (error) => {
 				settle({ ok: false, error: new ShellError("spawn_error", toError(error).message, error) });
 			});
-			child.on("close", (code) => {
+			child.on("close", (code, signal) => {
 				if (timedOut) {
 					settle({ ok: false, error: new ShellError("timeout", `Command timed out after ${timeoutSeconds}s`) });
 					return;
 				}
 				if (options?.signal?.aborted) {
 					settle({ ok: false, error: new ShellError("aborted", "aborted") });
+					return;
+				}
+				// Killed by a signal we did not send (OOM killer, kill -9, a crash): not a success.
+				// POSIX convention 128 + signal number (pi 0.86.0); the output says which signal.
+				if (code === null && signal) {
+					const number = osConstants.signals[signal] ?? 0;
+					settle({
+						ok: true,
+						value: {
+							stdout,
+							stderr: `${stderr}${stderr.endsWith("\n") || stderr === "" ? "" : "\n"}Terminated by signal ${signal}`,
+							exitCode: 128 + number,
+						},
+					});
 					return;
 				}
 				settle({ ok: true, value: { stdout, stderr, exitCode: code ?? 0 } });

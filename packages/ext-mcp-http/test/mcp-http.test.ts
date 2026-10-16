@@ -388,3 +388,22 @@ test("degrades without response headers: sniffs JSON and SSE bodies", async () =
 	const result = await tool.execute({});
 	assert.deepEqual(result, { content: [{ type: "text", text: "sniffed" }], isError: false });
 });
+
+test("a result over 20KB is cut in the middle, pi's format, no file in this client (P23e)", async () => {
+	const big = `${"A".repeat(15_000)}${"B".repeat(15_000)}`;
+	const platform = fakePlatform(
+		scriptedHandler({
+			requests: [],
+			tools: [ECHO_TOOL],
+			onToolCall: (_request, id) => jsonResponse(callResult(id, big, false)),
+		}),
+	);
+	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
+	await handle.connect();
+	const result = await registry.tools.get("srv_echo")?.execute({ text: "x" });
+	const text = result ? toolResultText(result) : "";
+	assert.match(text, /^Warning: truncated output/);
+	assert.match(text, /A+…\d+ chars truncated…B+/);
+	assert.ok(text.endsWith("[Full output not saved: this MCP client has no file access]"));
+	assert.ok(text.length < 21_000);
+});

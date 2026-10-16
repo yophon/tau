@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-16（P23 规格书确认；**当前工作 = P23 实施**）
+> 最后更新：2026-10-16（P23 完成；**当前工作 = 发 0.4.0，然后 P24**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -225,11 +225,13 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 287 个测试，286 通过、1 跳过（Windows 上本来就跳过的 SIGINT 测试）；新增 projection、transcript、compaction-log、session-pi、barrel 五个测试文件。e2e：mock 服务器 + 真 CLI 的 `/tree`、自动压缩 + `--continue` 两条路径随新语义更新后通过；真实 DeepSeek（deepseek-flash）冒烟：带 read 工具调用的一轮 + `--continue` 续答，会话文件只有一条 system 消息（`prompt` + 4 个工具），第二轮 prompt 与工具未变、没有追加。QuickJS 三项 smoke 与 weapp bundle 检查通过，Flutter bundle 已重建。提交：6c3eae5（22a/b）、4539d13 + 18428bc（22c）、ebb62e1（22d）、22e 归档提交。与规格的偏差（详见规格书「实施记录」）：`ctx.sessionManager` 按 pi 只读、不带 `appendContextEdit`；`JsonObject` 照抄 pi 为可变；新增条目深冻结；pi 会话样本的期望值按 pi 源码人工推导（本机未装 pi 依赖）。附带修复：条目 id 原先截取 uuidv7 的时钟位，65 秒内除首条外全部退回完整 UUID；barrel 漏导出 5 个公开名字。
 
-## Phase 23 ⬜ 循环显式化、接缝与 fail-closed
+## Phase 23 ✅ 循环显式化、接缝与 fail-closed（2026-10-16）
 
-规格书：[specs/phase-23-loop-seams.md](specs/phase-23-loop-seams.md)（2026-10-16 确认，五步 23a–23e）。
+规格书：[specs/phase-23-loop-seams.md](specs/phase-23-loop-seams.md)（2026-10-16 确认并完成，五步 23a–23e）。
 
 输入：附录 A 中阶段为 P23 的 72 条。主干：内核 active 工具集与 `get/set/getAllTools`；`terminate` 与 prompt/resume/compact/navigateTo 的统一 busy 互斥（`isIdle`、`signal`、`hasPendingMessages`）；扩展同名冲突先注册者胜、加载失败回滚（⚠ Breaking）；`isProjectTrusted` 与信任门扩到 settings、skills、prompts、mcp.json；`finish_reason` 缺省严格（D26 逃生口）与 `normalizeToolCallId`；`ToolResult` 收敛为 pi 的 `{content, details}`（⚠ Breaking）；agent_before_settle/agent_settled、可操作的 turn_end、user_bash fail-closed、`pi.on()` 返回取消函数、thinkingLevel 与 model 入缝。
+
+**完成记录**：全量 357 个测试，354 通过、3 跳过（Windows 上本来就跳过的 SIGINT，加上新增的 kill -9 与 0600 权限测试，CI Linux 跑）；新增 run-slot、loop-steps、registry、wire-strict 四个测试文件与若干 e2e。23a 运行槽与取消（2eaea0e）；23b 循环按 pi runLoop 重排、续跑与 settle 边界（dd3004b）、ToolResult 收敛与出入口（d14e11f）、工具批拆到 tool-batch.ts（b3a08a2）；23c 扩展注册 fail-closed 与信任门（363ae06）；23d 严格 Chat Completions 与 transport 缝（e9db42b）；23e 宿主与扩展包收尾。真实 DeepSeek：smoke:dialects（含摘要请求）PASS，CLI `-p` 工具调用与 `--continue` 正常。偏差见规格书「实施记录」，主要两条：`agent-loop.ts` 未拆（循环留在 agent.ts、按 pi 步骤组织）；轮中输入命中扩展命令时拒绝排队（照抄 pi）。债 #11、#12、#14、#16 已销账，#13 解除阻断。
 
 ## Phase 24 ⬜ PTC 与 codemode
 
@@ -268,7 +270,7 @@ P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
 |---|---|---|---|
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
-| 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 信任修复已随 P23c 完成；媒体目录 owner-only 随 P23e，之后可首发 |
+| 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 阻断已解除（P23c 信任门、P23e 媒体 owner-only）；随下次发版首发 |
 | 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | 绑定 pi-tui 升级（P24 之后） |
 | 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |

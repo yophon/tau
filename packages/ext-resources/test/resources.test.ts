@@ -190,3 +190,34 @@ test("project skills reach the prompt only from a trusted project (P23c)", async
 		assert.ok((await systemPromptFor(true)).includes("<name>local</name>"));
 	});
 });
+
+test("template arguments follow pi 1.2.0: defaults, one pass, slices (P23e)", () => {
+	// "$" + "{" keeps template placeholders out of the source (as the test above does).
+	const d = "$" + "{";
+	assert.equal(substituteArgs(`Hi ${d}1:-there}!`, []), "Hi there!");
+	assert.equal(substituteArgs(`Hi ${d}1:-there}!`, ["you"]), "Hi you!");
+	assert.equal(substituteArgs(`All: ${d}@:-nothing}`, []), "All: nothing");
+	assert.equal(substituteArgs(`All: ${d}ARGUMENTS:-x}`, ["a", "b"]), "All: a b");
+	// An argument containing "$@" is not expanded again.
+	assert.equal(substituteArgs("$1 then $@", ["$@"]), "$@ then $@");
+	assert.equal(substituteArgs(`${d}@:2:1}`, ["a", "b", "c"]), "b");
+});
+
+test("a SKILL.md with a BOM loads; a long first line becomes a 60-char description with ...; unclosed frontmatter warns (P23e)", async () => {
+	await withTempDir(async (dir) => {
+		await mkdir(join(dir, "skills", "bom"), { recursive: true });
+		await writeFile(join(dir, "skills", "bom", "SKILL.md"), "\uFEFF---\ndescription: With a BOM\n---\nBody");
+		const skills = await loadSkills(new NodeFileSystem(dir), [join(dir, "skills")]);
+		assert.deepEqual(
+			skills.skills.map((skill) => skill.description),
+			["With a BOM"],
+		);
+		await mkdir(join(dir, "prompts"), { recursive: true });
+		await writeFile(join(dir, "prompts", "long.md"), `${"w".repeat(80)}\nrest`);
+		await writeFile(join(dir, "prompts", "open.md"), "---\ndescription: never closed\nbody");
+		const prompts = await loadPromptTemplates(new NodeFileSystem(dir), [join(dir, "prompts")]);
+		const long = prompts.promptTemplates.find((template) => template.name === "long");
+		assert.equal(long?.description, `${"w".repeat(60)}...`);
+		assert.ok(prompts.diagnostics.some((diagnostic) => diagnostic.code === "invalid_frontmatter"));
+	});
+});

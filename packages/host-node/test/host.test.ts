@@ -153,3 +153,17 @@ test("MSYS / Cygwin / WSL drive paths map to Windows drives on win32 only (HF-14
 	// POSIX hosts never rewrite.
 	assert.equal(normalizeWindowsShellPath("/c/Users/x", "linux"), "/c/Users/x");
 });
+
+test(
+	"a command killed by a signal is not reported as success (P23e, pi 0.86.0)",
+	{ skip: process.platform === "win32" },
+	async () => {
+		await withTempDir(async (dir) => {
+			const shell = new NodeShell(dir);
+			const killed = await shell.exec("echo before; kill -9 $$");
+			assert.equal(killed.exitCode, 128 + 9);
+			assert.match(killed.stderr, /Terminated by signal SIGKILL/);
+			assert.match(killed.stdout, /before/);
+		});
+	},
+);

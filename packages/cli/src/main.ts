@@ -54,6 +54,7 @@ import {
 	toolResultText,
 	type UiCapability,
 	type UserContent,
+	userContentText,
 } from "@yophon/tau-kernel";
 import { conversationLength, createStartupTuiUi, runTui } from "./tui.ts";
 
@@ -100,6 +101,9 @@ Options:
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
   -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
+  -t,  --tools <list>    Active tools, comma-separated: names pick built-ins ("*" = all),
+                         +name adds, -name removes; extension tools stay unless removed
+      --no-tools         Start with no active tools
   -h, --help             Show this help
 
 REPL commands: /name <name>, /sessions, /compact [instructions], /tree [<id>],
@@ -118,6 +122,8 @@ Without -p, tau starts an interactive REPL. During a running turn, typed lines
 are queued as steering messages. Ctrl+C aborts the current turn.`;
 
 interface CliOptions {
+	tools?: string[];
+	noTools?: boolean;
 	baseUrl?: string;
 	apiKey?: string;
 	model?: string;
@@ -145,7 +151,9 @@ function parseArgs(argv: string[]): CliOptions {
 		const arg = argv[i];
 		const next = (): string => {
 			const value = argv[++i];
-			if (value === undefined) {
+			// A following flag is not a value (`--model --tui`); prompts and system text may start with "--".
+			const freeText = arg === "-p" || arg === "--print" || arg === "-s" || arg === "--system";
+			if (value === undefined || (!freeText && value.startsWith("--"))) {
 				console.error(`Missing value for ${arg}`);
 				process.exit(1);
 			}
@@ -190,14 +198,22 @@ function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "-w":
 			case "--context-window": {
-				const parsed = Number.parseInt(next(), 10);
-				if (!Number.isFinite(parsed) || parsed <= 0) {
+				// Strict: "128k" used to parse as 128 and compact before every turn (pi #9045).
+				const parsed = parseNonNegativeInt(next());
+				if (parsed === undefined || parsed === 0) {
 					console.error("--context-window must be a positive integer");
 					process.exit(1);
 				}
 				options.contextWindow = parsed;
 				break;
 			}
+			case "-t":
+			case "--tools":
+				options.tools = splitList(next());
+				break;
+			case "--no-tools":
+				options.noTools = true;
+				break;
 			case "--pricing": {
 				const parsed = parsePricing(next());
 				if (parsed instanceof Error) {
@@ -257,6 +273,53 @@ const PRICING_KEYS: Record<string, keyof ModelPricing> = {
 };
 
 /** Parse "in=0.5,out=2,cacheRead=0.05,cacheWrite=0.625" (cache keys optional). */
+/** A whole number written as digits only ("128k", "1e5", "12.5" are rejected), or undefined. */
+function parseNonNegativeInt(text: string): number | undefined {
+	if (!/^\d+$/.test(text.trim())) return undefined;
+	const value = Number(text.trim());
+	return Number.isSafeInteger(value) ? value : undefined;
+}
+
+/** An integer env knob: unset → undefined; malformed or below `min` → warning and undefined (P14–P16 env convention). */
+function envInt(name: string, min: number): number | undefined {
+	const raw = process.env[name];
+	if (raw === undefined || raw.trim() === "") return undefined;
+	const value = parseNonNegativeInt(raw);
+	if (value === undefined || value < min) {
+		console.error(`Ignoring ${name}="${raw}" (expected a whole number >= ${min})`);
+		return undefined;
+	}
+	return value;
+}
+
+/**
+ * The active tool names for --tools/--no-tools (pi 0.84.2 semantics): plain names
+ * (or "*") pick the built-in tools; "+name" adds and "-name" removes a tool.
+ * Choosing built-ins never drops extension tools implicitly — only "-name" or
+ * --no-tools does.
+ */
+function selectActiveTools(
+	all: readonly { name: string; source: "builtin" | "extension" }[],
+	spec: readonly string[] | undefined,
+	noTools: boolean,
+): string[] | undefined {
+	if (noTools) return [];
+	if (!spec || spec.length === 0) return undefined;
+	const plain = spec.filter((entry) => !entry.startsWith("+") && !entry.startsWith("-"));
+	const builtinsKept =
+		plain.length === 0 || plain.includes("*")
+			? new Set(all.filter((tool) => tool.source === "builtin").map((tool) => tool.name))
+			: new Set(plain);
+	const active = new Set(
+		all.filter((tool) => tool.source === "extension" || builtinsKept.has(tool.name)).map((tool) => tool.name),
+	);
+	for (const entry of spec) {
+		if (entry.startsWith("+")) active.add(entry.slice(1));
+		else if (entry.startsWith("-")) active.delete(entry.slice(1));
+	}
+	return [...active];
+}
+
 function parsePricing(spec: string): ModelPricing | Error {
 	const values: Partial<Record<keyof ModelPricing, number>> = {};
 	for (const part of spec.split(",")) {
@@ -326,7 +389,9 @@ function approvalFingerprint(request: ApprovalRequest): string {
 
 function readPermissionRules(): PermissionRule[] {
 	try {
-		const parsed = JSON.parse(readFileSync(permissionsStorePath(), "utf8")) as { rules?: PermissionRule[] };
+		const parsed = JSON.parse(readFileSync(permissionsStorePath(), "utf8").replace(/^\uFEFF/, "")) as {
+			rules?: PermissionRule[];
+		};
 		return Array.isArray(parsed.rules) ? parsed.rules : [];
 	} catch {
 		return [];
@@ -441,7 +506,8 @@ function trustStorePath(): string {
 
 function readTrustStore(): TrustStore {
 	try {
-		const parsed = JSON.parse(readFileSync(trustStorePath(), "utf8")) as TrustStore;
+		// Strip a BOM: an unreadable store reads as empty, and the next write would erase every other record.
+		const parsed = JSON.parse(readFileSync(trustStorePath(), "utf8").replace(/^\uFEFF/, "")) as TrustStore;
 		return { trusted: parsed.trusted ?? {} };
 	} catch {
 		return { trusted: {} };
@@ -608,6 +674,9 @@ function firstLine(text: string, max = 120): string {
 
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
+/** A REPL command holding the agent outside a turn (P23e): extension prompts are refused meanwhile. */
+let hostTask: "compact" | "tree" | undefined;
+let hostTaskController: AbortController | undefined;
 /** Resolver for the single readline line currently awaited by an approval gate. */
 let pendingApproval: { resolve: (choice: ApprovalChoice) => void } | undefined;
 /** Marks the current readline event when an approval answer was consumed. */
@@ -637,7 +706,12 @@ function cancelPendingApproval(): void {
 	pending.resolve("deny");
 }
 
-async function runTurn(agent: Agent, input: UserContent | null, readline: Readline): Promise<void> {
+/**
+ * Run one prompt in the REPL or -p. Returns false when it failed: the last reply
+ * errored, was aborted or was cut off by the output limit, or the run threw —
+ * -p turns that into exit code 1 (pi print mode). Failures go to stderr.
+ */
+async function runTurn(agent: Agent, input: UserContent | null, readline: Readline): Promise<boolean> {
 	const controller = new AbortController();
 	turnState.controller = controller;
 	const onSigint = (): void => {
@@ -650,10 +724,12 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 		// An approval question uses the same readline stream.  Do not turn its
 		// answer into a steering message for the agent that is waiting on it.
 		if (approvalLineConsumed || consumeApprovalLine(text) || pendingApproval) return;
-		if (text !== "") agent.steer(text);
+		if (text !== "") void agent.steer(text);
 	};
 	readline.on("line", onLine);
 	let sawReasoning = false;
+	let lastStop: string | undefined;
+	let threw = false;
 	try {
 		// input null = continuation without new user input (extension triggerTurn).
 		const stream = input === null ? agent.resume(controller.signal) : agent.prompt(input, controller.signal);
@@ -671,15 +747,20 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 					process.stdout.write(event.delta);
 					break;
 				case "assistant_message":
+					lastStop = event.message.stopReason;
 					if (event.message.stopReason === "aborted") {
-						process.stdout.write(`\n${dim("Turn aborted.")}\n`);
+						process.stderr.write(`\n${dim("Turn aborted.")}\n`);
 						break;
 					}
 					if (event.message.stopReason === "error") {
-						process.stdout.write(`\n${red(`Error: ${event.message.errorMessage ?? "unknown provider error"}`)}\n`);
+						process.stderr.write(`\n${red(`Error: ${event.message.errorMessage ?? "unknown provider error"}`)}\n`);
 						break;
 					}
 					if (messageText(event.message) !== "" || thinkingText(event.message) !== "") process.stdout.write("\n");
+					if (event.message.stopReason === "length") {
+						// The partial text is already printed (pi 1.2.0 #10799).
+						process.stderr.write(`${dim("[warning: the reply hit the output token limit and is incomplete]")}\n`);
+					}
 					break;
 				case "user_message":
 					process.stdout.write(dim(`↳ steered: ${firstLine(messageText(event.message))}\n`));
@@ -723,21 +804,32 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 				case "agent_end": {
 					const last = agent.messages.at(-1);
 					if (last?.role === "assistant" && last.usage.totalTokens > 0) {
-						process.stdout.write(dim(`[tokens: ${last.usage.input} in, ${last.usage.output} out]\n`));
+						// Cache hits are no longer part of `input` (P23d, pi usage).
+						const cached = last.usage.cacheRead > 0 ? ` (+${last.usage.cacheRead} cached)` : "";
+						process.stdout.write(dim(`[tokens: ${last.usage.input} in${cached}, ${last.usage.output} out]\n`));
 					}
 					break;
 				}
 			}
 		}
 	} catch (error) {
+		threw = true;
 		const message = error instanceof Error ? error.message : String(error);
-		process.stdout.write(`\n${red(`Error: ${message}`)}\n`);
+		process.stderr.write(`\n${red(`Error: ${message}`)}\n`);
 	} finally {
 		cancelPendingApproval();
 		turnState.controller = null;
 		readline.removeListener("line", onLine);
 		process.removeListener("SIGINT", onSigint);
+		// Queues survive an abort (kernel contract): drop what the run left instead of
+		// replaying it into the next prompt, and say so — a REPL has no editor to refill.
+		const { steering, followUp } = agent.clearQueue();
+		for (const message of [...steering, ...followUp]) {
+			const text = message.role === "user" ? userContentText(message.content) : `[${message.customType}]`;
+			process.stdout.write(dim(`[dropped queued message: ${firstLine(text)}]\n`));
+		}
 	}
+	return !threw && lastStop !== "error" && lastStop !== "aborted" && lastStop !== "length";
 }
 
 async function runCommand(
@@ -815,16 +907,15 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	const envWindow = Number.parseInt(process.env.TAU_CONTEXT_WINDOW ?? "", 10);
-	const contextWindow = options.contextWindow ?? (Number.isFinite(envWindow) && envWindow > 0 ? envWindow : undefined);
+	const contextWindow = options.contextWindow ?? envInt("TAU_CONTEXT_WINDOW", 1);
 	const modelChoices = uniqueStrings([model, ...(options.models ?? []), ...splitList(process.env.TAU_MODELS)]);
-	const envStall = Number.parseInt(process.env.TAU_STALL_TIMEOUT_MS ?? "", 10);
-	const stallTimeout = Number.isFinite(envStall) && envStall >= 0 ? { stallTimeoutMs: envStall } : {};
+	// "120s" used to become a 120 ms watchdog; now it is rejected with a warning.
+	const envStall = envInt("TAU_STALL_TIMEOUT_MS", 0);
+	const stallTimeout = envStall !== undefined ? { stallTimeoutMs: envStall } : {};
 	const effectiveBaseUrl = baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL;
 	// Output cap for the Anthropic transport (it must send max_tokens; default 8192 is
 	// tight once adaptive thinking runs at high/xhigh effort).
-	const parsedMaxTokens = Number.parseInt(process.env.TAU_MAX_TOKENS ?? "", 10);
-	const envMaxTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined;
+	const envMaxTokens = envInt("TAU_MAX_TOKENS", 1);
 	// With an injected transport the config's protocol fields are inert; it still
 	// carries the message labels (provider/api/model) and contextWindow.
 	// Chat Completions dialect knobs (P23d), env only: the output-cap field for summary
@@ -901,8 +992,8 @@ async function main(): Promise<void> {
 		if (isToolExecutionMode(value)) toolExecution = value;
 		else console.error(`Ignoring TAU_TOOL_EXECUTION="${value}" (expected one of: ${TOOL_EXECUTION_MODES.join(", ")})`);
 	}
-	const envMaxRetries = Number.parseInt(process.env.TAU_MAX_RETRIES ?? "", 10);
-	const envRetryDelay = Number.parseInt(process.env.TAU_RETRY_BASE_DELAY_MS ?? "", 10);
+	const envMaxRetries = envInt("TAU_MAX_RETRIES", 0) ?? Number.NaN;
+	const envRetryDelay = envInt("TAU_RETRY_BASE_DELAY_MS", 1) ?? Number.NaN;
 	const retry = {
 		...(Number.isFinite(envMaxRetries) && envMaxRetries >= 0
 			? { maxRetries: envMaxRetries, enabled: envMaxRetries > 0 }
@@ -1027,7 +1118,7 @@ async function main(): Promise<void> {
 		agentExtensions = extensions,
 	): Agent => {
 		const codingTools = createCodingTools({ fs, shell }, { mode: permissionMode });
-		return new Agent({
+		const built = new Agent({
 			config,
 			transport,
 			platform,
@@ -1064,15 +1155,22 @@ async function main(): Promise<void> {
 			toolExecution,
 			onApproval,
 		});
+		// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
+		const active = selectActiveTools(built.getAllTools(), options.tools, options.noTools === true);
+		if (active) built.setActiveTools(active);
+		return built;
 	};
 	let agent = buildAgent(initialMessages, recorder);
-	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
 
 	if (options.print !== undefined) {
 		if (!readline) throw new Error("print mode requires readline");
-		await runTurn(agent, options.print, readline);
+		// -p is one shot: no submitPrompt/resumeTurn, so an extension cannot start a second run.
+		await extensions.notifySessionStart(sessionReason, agent.extensionContext());
+		const ok = await runTurn(agent, options.print, readline);
 		await extensions.notifySessionShutdown("quit", agent.extensionContext());
 		readline.close();
+		// Scripts read the exit code: an error, abort or truncated reply is a failure (pi print mode).
+		if (!ok) process.exitCode = 1;
 		return;
 	}
 
@@ -1104,6 +1202,7 @@ async function main(): Promise<void> {
 			},
 			buildAgent,
 			reloadExtensions,
+			sessionReason,
 		});
 		return;
 	}
@@ -1115,18 +1214,36 @@ async function main(): Promise<void> {
 	// Host actions for extension-triggered runs (sendUserMessage / sendMessage
 	// triggerTurn while idle). Closures read the live `agent` binding, so they
 	// stay correct across /fork agent swaps.
+	// Runs requested while a turn was finishing (agent_settled handlers) start after it.
+	const pendingStarts: (UserContent | null)[] = [];
+	const startPending = (): void => {
+		if (turnState.controller || hostTask) return;
+		const next = pendingStarts.shift();
+		if (next !== undefined) void runTurn(agent, next, readline).finally(startPending);
+	};
 	extensions.attachHostActions({
 		submitPrompt: (content) => {
-			// Already running: refuse loudly so the caller can queue or retry (HF-11);
-			// a silent return lost the message.
-			if (turnState.controller) throw new TauError("busy", "a turn is already running");
-			void runTurn(agent, content, readline);
+			if (turnState.controller) {
+				pendingStarts.push(content);
+				return;
+			}
+			// A compaction or navigation holds the REPL: refuse loudly so the caller can retry (HF-11).
+			if (hostTask) throw new TauError("busy", `/${hostTask} is running`);
+			void runTurn(agent, content, readline).finally(startPending);
 		},
 		resumeTurn: () => {
-			if (turnState.controller) return;
-			void runTurn(agent, null, readline);
+			if (turnState.controller || hostTask) {
+				if (!pendingStarts.includes(null)) pendingStarts.push(null);
+				return;
+			}
+			void runTurn(agent, null, readline).finally(startPending);
+		},
+		shutdown: () => {
+			readline.close();
 		},
 	});
+	// session_start after the host actions are in place (P23e, pi bindExtensions order).
+	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
 	const extensionNote = extensions.tools.size + extensions.commands.size > 0 ? " · extensions loaded" : "";
 	const providerNote = provider === "anthropic" ? " · anthropic" : "";
 	console.log(
@@ -1139,6 +1256,8 @@ async function main(): Promise<void> {
 	readline.on("SIGINT", () => {
 		if (turnState.controller) {
 			turnState.controller.abort();
+		} else if (hostTaskController) {
+			hostTaskController.abort();
 		} else {
 			readline.close();
 		}
@@ -1173,14 +1292,25 @@ async function main(): Promise<void> {
 			}
 			if (input === "/compact" || input.startsWith("/compact ")) {
 				const instructions = input.slice("/compact".length).trim();
+				hostTask = "compact";
+				hostTaskController = new AbortController();
 				try {
-					const result = await agent.compact(instructions === "" ? undefined : instructions);
+					const result = await agent.compact(
+						instructions === "" ? undefined : instructions,
+						"manual",
+						hostTaskController.signal,
+					);
 					console.log(
 						result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."),
 					);
 				} catch (error) {
 					if (error instanceof TauError && error.code === "cancelled") console.log(dim("Compaction cancelled."));
+					else if (error instanceof TauError && error.code === "aborted") console.log(dim("Compaction aborted."));
 					else console.log(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
+				} finally {
+					hostTask = undefined;
+					hostTaskController = undefined;
+					startPending();
 				}
 				continue;
 			}
@@ -1218,15 +1348,30 @@ async function main(): Promise<void> {
 					);
 					continue;
 				}
+				// "/tree <id> --no-summary" navigates without summarizing the abandoned branch.
+				const noSummary = arg.endsWith(" --no-summary");
+				const target = noSummary ? arg.slice(0, -" --no-summary".length).trim() : arg;
+				hostTask = "tree";
+				hostTaskController = new AbortController();
 				try {
-					const result = await agent.navigateTo(arg);
+					const result = await agent.navigateTo(target, {
+						signal: hostTaskController.signal,
+						...(noSummary ? { summarize: false } : {}),
+					});
 					console.log(
 						result.cancelled
 							? dim("Navigation cancelled.")
-							: dim(`Moved to ${arg} (${conversationLength(agent.messages)} messages in context).`),
+							: dim(`Moved to ${target} (${conversationLength(agent.messages)} messages in context).`),
 					);
 				} catch (error) {
 					console.log(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
+					if (error instanceof TauError && error.code === "compaction_failed") {
+						console.log(dim(`Navigate without a summary: /tree ${target} --no-summary`));
+					}
+				} finally {
+					hostTask = undefined;
+					hostTaskController = undefined;
+					startPending();
 				}
 				continue;
 			}

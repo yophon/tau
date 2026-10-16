@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCodingTools as createCodingToolsForEdit, mutationQueueKey } from "../src/coding-tools.ts";
-import { toolResultText, validateToolArgs } from "../src/tools.ts";
+import { limitToolText, toolResultText, truncateMiddle, validateToolArgs } from "../src/tools.ts";
 
 const bashSchema = {
 	type: "object",
@@ -100,4 +100,26 @@ test("mutation queue key folds Windows spellings of one file (HF-14)", () => {
 	assert.equal(mutationQueueKey("src\\a.ts"), mutationQueueKey("src/a.ts"));
 	assert.notEqual(mutationQueueKey("C:/a.ts"), mutationQueueKey("D:/a.ts"));
 	assert.equal(mutationQueueKey("/usr/./lib/x"), "/usr/lib/x");
+});
+
+test("truncateMiddle keeps head and tail within the byte budget, at character boundaries (pi)", () => {
+	assert.deepEqual(truncateMiddle("short", 100).truncated, false);
+	const text = `${"a".repeat(30)}${"中".repeat(30)}${"z".repeat(30)}`;
+	const result = truncateMiddle(text, 40);
+	assert.equal(result.truncated, true);
+	assert.match(result.content, /^a{20}…\d+ chars truncated…z{20}$/);
+	assert.equal(result.removedChars, 90 - 40);
+	const limited = limitToolText("x".repeat(30_000), 20 * 1024, () => "[where]");
+	assert.match(limited, /^Warning: truncated output \(original token count: 7500\)\nTotal output lines: 1\n\n/);
+	assert.ok(limited.endsWith("\n\n[where]"));
+	assert.equal(
+		limitToolText("small", 20 * 1024, () => "never"),
+		"small",
+	);
+});
+
+test("mutationQueueKey resolves relative paths against the filesystem cwd (P23e)", () => {
+	assert.equal(mutationQueueKey("src/a.ts", "D:\\repo"), mutationQueueKey("D:/repo/src/a.ts"));
+	assert.equal(mutationQueueKey("./src/../src/a.ts", "/repo"), mutationQueueKey("/repo/src/a.ts"));
+	assert.equal(mutationQueueKey("/abs/a.ts", "/repo"), "/abs/a.ts");
 });

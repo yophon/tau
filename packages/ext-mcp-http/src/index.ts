@@ -14,6 +14,7 @@ import {
 	type Extension,
 	type ExtensionAPI,
 	type JsonSchema,
+	limitToolText,
 	type Platform,
 	type PlatformResponse,
 	SseParser,
@@ -21,6 +22,9 @@ import {
 	type Tool,
 	type ToolResult,
 } from "@yophon/tau-kernel";
+
+/** Model-facing text of an MCP result beyond this is cut in the middle (pi MCP_OUTPUT_MAX_BYTES). */
+export const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
 
 export const MCP_PROTOCOL_VERSION = "2025-06-18";
 const CLIENT_INFO = { name: "tau-ext-mcp-http", version: "0.1.0" };
@@ -39,6 +43,8 @@ export interface HttpMcpServerConfig {
 	 * timeout — long-running commands are legitimate; abort is the backstop.
 	 */
 	timeoutMs?: number;
+	/** As in ext-mcp: `destructiveHint: true` raises a tool to high risk; hints never lower risk (D20). */
+	riskFromAnnotations?: boolean;
 }
 
 export interface HttpMcpStatus {
@@ -99,6 +105,7 @@ interface McpToolInfo {
 	name: string;
 	description?: string;
 	inputSchema?: JsonSchema;
+	annotations?: { destructiveHint?: boolean };
 }
 
 interface ServerState {
@@ -144,7 +151,8 @@ function toolOutput(result: McpCallResult): string {
 			parts.push(JSON.stringify(block));
 		}
 	}
-	if (result.structuredContent) parts.push(JSON.stringify(result.structuredContent));
+	// Only when nothing else came back: servers send a text rendering alongside it (MCP spec).
+	if (result.structuredContent && parts.length === 0) parts.push(JSON.stringify(result.structuredContent));
 	return parts.join("\n").trim() || "(empty MCP tool result)";
 }
 
@@ -374,7 +382,14 @@ function createTauTool(platform: Platform, state: ServerState, info: McpToolInfo
 			if (signal?.aborted) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
 			try {
 				const result = await callTool(platform, state, info.name, args, signal);
-				return { content: [{ type: "text", text: toolOutput(result) }], isError: result.isError === true };
+				// Deviation from pi: this pure-Platform client has no file access, so the full
+				// text of a truncated result is not saved.
+				const text = limitToolText(
+					toolOutput(result),
+					MCP_OUTPUT_MAX_BYTES,
+					() => "[Full output not saved: this MCP client has no file access]",
+				);
+				return { content: [{ type: "text", text }], isError: result.isError === true };
 			} catch (cause) {
 				return { content: [{ type: "text", text: messageOf(cause) }], isError: true };
 			}
@@ -405,8 +420,12 @@ export function createHttpMcpExtension(options: HttpMcpOptions): HttpMcpHandle {
 			try {
 				await initializeServer(platform, state);
 				const tools = await listAllTools(platform, state);
-				// Same-name registrations override (later wins), so reconnects are idempotent.
-				for (const info of tools) target.registerTool(createTauTool(platform, state, info));
+				// A reconnect registers the same names again; the first registration is kept
+				// (P23c), and it already points at this server's state, so this is idempotent.
+				for (const info of tools) {
+					const destructive = state.config.riskFromAnnotations === true && info.annotations?.destructiveHint === true;
+					target.registerTool(createTauTool(platform, state, info), destructive ? { risk: "high" } : undefined);
+				}
 				state.connected = true;
 				options.onStatus?.({ server: state.config.name, state: "connected", toolCount: tools.length });
 			} catch (cause) {

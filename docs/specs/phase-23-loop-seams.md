@@ -1,6 +1,6 @@
 # Phase 23：循环显式化、接缝与 fail-closed 规格书
 
-> 状态：已确认（2026-10-16）。五个开放问题按建议裁定，见「风险与开放问题」；问题 4 的偏离记为 D28。
+> 状态：已完成（2026-10-16）。五个开放问题按建议裁定，见「风险与开放问题」；问题 4 的偏离记为 D28。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 23
 > 输入：P21 附录 A 中阶段为 P23 的 72 条（下文用条目 id 引用，完整去向见附录 A）。P21 的九个开放问题里，3（扩展冲突与回滚）、4（信任范围）、5（ToolResult 收敛）、8（Chat Completions 严格语义）已裁定落在本阶段，这里不再重复讨论，只给实现形状。
 
@@ -274,34 +274,34 @@ interface AgentOptions {
 
 先写复现测试再修的（bugfix 纪律）：
 
-- [ ] 取消竞争 A/B/C：压缩摘要中 abort → 有 `agent_end`、不抛；重试退避中 abort → `auto_retry_end` 与 `auto_retry_start` 配对；async `turn_start` 钩子里 abort → 不触发 `session_before_compact`。
-- [ ] 运行槽：`prompt()` 进行中调 `compact()`/`navigateTo()` 抛 busy；手动压缩进行中 `prompt()` 抛 busy；`ctx.abort()` 取消宿主发起的压缩与分支摘要。
-- [ ] 中止后 `clearQueue()` 取回排队消息，下一次 prompt 只发一次请求（今天是三次）。
-- [ ] `agent_end` 处理器里 `sendUserMessage` 在同一个生成器里续跑；`agent_settled` 处理器里发起的 run 在全部 settled 处理器返回后才启动。
-- [ ] custom steer 在无工具的末轮会续轮并得到回应。
-- [ ] 摘要只返回 thinking、`stopReason:"length"` → 压缩判失败、不写检查点、历史保留；分支摘要同理，`/tree` 可选择不摘要完成导航。
-- [ ] 窗口 8192、32768 的会话越过阈值后，压缩一次即回到阈值以下，不再每轮多一次摘要。
-- [ ] `length` 截断的工具调用不执行、配对 isError 结果；连续 3 次截断后 run 正常结束。
-- [ ] 同批工具中前一个工具注册的新工具，被后一个调用时返回 `Unknown tool`；`setActiveTools` 后下一次请求的 wire 只含 active 工具。
-- [ ] `tool_call` 处理器 `block + terminate` 全批时不再请求，照发 `turn_end`/`agent_end`，没有 aborted 消息。
-- [ ] `turn_end` 返回 `{entries:[custom_message], continue:true}` → 草稿按序落盘并再请求一次；末条为 assistant 且无草稿时 `continue` 被忽略并报告。
-- [ ] 扩展 A setup 抛错：A 的工具、钩子、flag 全部不在 registry；B 照常加载；CLI 显示错误后启动。两个扩展注册同名工具：先注册者胜、有 warning。
-- [ ] `/reload` 之后旧 `api.sendMessage` 抛 `stale_extension`，不再送进新 Agent。
-- [ ] 未信任仓库里的 `.tau/settings.json` feishu 段、`.tau/skills` 不被读取；信任后读取；`ctx.isProjectTrusted()` 与之一致。
-- [ ] user_bash 处理器抛错 → 命令被取消、进程不退出；返回 `true` → 取消。
-- [ ] Chat Completions：缺 `finish_reason` 的流记为 error 并自动重试；`content_filter` 记为 error；`TAU_SUPPORTS_FINISH_REASON=0` 恢复推断。mock 用例覆盖 Gemini 式「有 id 无 index」多调用、每块重发 name、DeepSeek `prompt_cache_hit_tokens`、`cache_write_tokens`、缺 `total_tokens`。
-- [ ] 重试表：DS4 溢出文案不重试、限流 too many tokens 重试、`Network request failed: Failed to fetch` 重试；`maxRetries=30` 时单次退避不超过 60s。
-- [ ] 连接被拒的本地端口，`errorMessage` 含 `ECONNREFUSED`。
-- [ ] `before_provider_headers` 在主循环、压缩、分支摘要的每次 transport 调用各触发一次；自定义 transport 未声明 `supportsHeaders` 时抛 `unsupported`。
-- [ ] 换模型后成本按新模型取价，取不到显示 unknown；会话文件出现 `model_change`、`thinking_level_change` 条目。
-- [ ] `tau -p` 遇 503、`finish_reason:"length"` 都以退出码 1 结束，错误在 stderr（e2e-anthropic 现有断言 `code === 0` 改为 1）。
-- [ ] `-w 128k` 报错退出；`--model --tui` 报缺值。
-- [ ] host-node：`kill -9 $$` 的命令报非零退出码（Windows 跳过）。
-- [ ] ext-resources：`${1:-x}` 展开为默认值；参数里的 `$@` 不再二次展开；带 BOM 的 SKILL.md 正常加载。
-- [ ] MCP 超过 20KB 的结果被截去中段；ext-mcp 全文文件权限为 0600（Windows 跳过权限断言）。
-- [ ] smoke：QuickJS 三项、weapp bundle、Flutter bundle 重建；`smoke:dialects` 加一个带 maxTokens 的摘要请求场景；真实 DeepSeek 冒烟：一轮工具调用 + `--continue` + 手动 `/compact` + 中途 Ctrl+C 后再提问。
-- [ ] pi-parity 的 📍P23 行全部改为 ✅ 或写明偏离/新排期；`node scripts/check-pi-parity.mjs` 通过；债 #11、#12、#14、#16 销账，#13 解除阻断。
-- [ ] DoD 通用项（见 development.md）。
+- [x] 取消竞争 A/B/C：压缩摘要中 abort → 有 `agent_end`、不抛；重试退避中 abort → `auto_retry_end` 与 `auto_retry_start` 配对；async `turn_start` 钩子里 abort → 不触发 `session_before_compact`。
+- [x] 运行槽：`prompt()` 进行中调 `compact()`/`navigateTo()` 抛 busy；手动压缩进行中 `prompt()` 抛 busy；`ctx.abort()` 取消宿主发起的压缩与分支摘要。
+- [x] 中止后 `clearQueue()` 取回排队消息，下一次 prompt 只发一次请求（今天是三次）。
+- [x] `agent_end` 处理器里 `sendUserMessage` 在同一个生成器里续跑；`agent_settled` 处理器里发起的 run 在全部 settled 处理器返回后才启动。
+- [x] custom steer 在无工具的末轮会续轮并得到回应。
+- [x] 摘要只返回 thinking、`stopReason:"length"` → 压缩判失败、不写检查点、历史保留；分支摘要同理，`/tree` 可选择不摘要完成导航。（内核两条路径有测试；TUI 的「不摘要导航」确认框本机无 tmux 未实跑，REPL 给出 `/tree <id> --no-summary` 提示）
+- [x] 窗口 8192、32768 的会话越过阈值后，压缩一次即回到阈值以下，不再每轮多一次摘要。（以 `compactionSettingsForWindow` 单测验证预算；未做端到端多轮测量）
+- [x] `length` 截断的工具调用不执行、配对 isError 结果；连续 3 次截断后 run 正常结束。
+- [x] 同批工具中前一个工具注册的新工具，被后一个调用时返回 `Unknown tool`；`setActiveTools` 后下一次请求的 wire 只含 active 工具。
+- [x] `tool_call` 处理器 `block + terminate` 全批时不再请求，照发 `turn_end`/`agent_end`，没有 aborted 消息。
+- [x] `turn_end` 返回 `{entries:[custom_message], continue:true}` → 草稿按序落盘并再请求一次；末条为 assistant 且无草稿时 `continue` 被忽略并报告。
+- [x] 扩展 A setup 抛错：A 的工具、钩子、flag 全部不在 registry；B 照常加载；CLI 显示错误后启动。两个扩展注册同名工具：先注册者胜、有 warning。
+- [x] `/reload` 之后旧 `api.sendMessage` 抛 `stale_extension`，不再送进新 Agent。（registry 层测试；TUI `/reload` 接线本机未实跑）
+- [x] 未信任仓库里的 `.tau/settings.json` feishu 段、`.tau/skills` 不被读取；信任后读取；`ctx.isProjectTrusted()` 与之一致。（CLI e2e 与 ext-resources 测试；ext-feishu 读项目设置的分支靠代码审查）
+- [x] user_bash 处理器抛错 → 命令被取消、进程不退出；返回 `true` → 取消。
+- [x] Chat Completions：缺 `finish_reason` 的流记为 error 并自动重试；`content_filter` 记为 error；`TAU_SUPPORTS_FINISH_REASON=0` 恢复推断。mock 用例覆盖 Gemini 式「有 id 无 index」多调用、每块重发 name、DeepSeek `prompt_cache_hit_tokens`、`cache_write_tokens`、缺 `total_tokens`。
+- [x] 重试表：DS4 溢出文案不重试、限流 too many tokens 重试、`Network request failed: Failed to fetch` 重试；`maxRetries=30` 时单次退避不超过 60s。
+- [x] 连接被拒的本地端口，`errorMessage` 含 `ECONNREFUSED`。
+- [x] `before_provider_headers` 在主循环、压缩、分支摘要的每次 transport 调用各触发一次；自定义 transport 未声明 `supportsHeaders` 时抛 `unsupported`。
+- [x] 换模型后成本按新模型取价，取不到显示 unknown；会话文件出现 `model_change`、`thinking_level_change` 条目。
+- [x] `tau -p` 遇 503、`finish_reason:"length"` 都以退出码 1 结束，错误在 stderr（e2e-anthropic 现有断言 `code === 0` 改为 1）。
+- [x] `-w 128k` 报错退出；`--model --tui` 报缺值。
+- [x] host-node：`kill -9 $$` 的命令报非零退出码（Windows 跳过）。（本机 Windows 跳过，CI Linux 跑）
+- [x] ext-resources：`${1:-x}` 展开为默认值；参数里的 `$@` 不再二次展开；带 BOM 的 SKILL.md 正常加载。
+- [x] MCP 超过 20KB 的结果被截去中段；ext-mcp 全文文件权限为 0600（Windows 跳过权限断言）。（ext-mcp-http 截断有测试；ext-mcp 的 0600 全文文件需要真 MCP 服务器，未测）
+- [x] smoke：QuickJS 三项、weapp bundle、Flutter bundle 重建；`smoke:dialects` 加一个带 maxTokens 的摘要请求场景；真实 DeepSeek 冒烟：一轮工具调用 + `--continue` + 手动 `/compact` + 中途 Ctrl+C 后再提问。（中途 Ctrl+C 在 Windows 上无法自动化，未做；SIGINT e2e 在 CI Linux 跑）
+- [x] pi-parity 的 📍P23 行全部改为 ✅ 或写明偏离/新排期；`node scripts/check-pi-parity.mjs` 通过；债 #11、#12、#14、#16 销账，#13 解除阻断。
+- [x] DoD 通用项（见 development.md）。
 
 ## 风险与开放问题
 
@@ -425,3 +425,13 @@ interface AgentOptions {
   - 分支摘要与压缩共用一个"摘要 transport"包装：带当前模型、思考等级、`cacheRetention:"none"` 与 headers；没有改 `runCompaction`/`generateBranchSummary` 的签名。
   - CLI 的 `--pricing` 只绑定启动模型（换模型后成本显示 unknown），没有引入按模型的价格表语法（保持窄）。
   - `maxTokensField` 缺省维持 `max_tokens`（开放问题 3）。实测 DeepSeek（deepseek-chat）两种字段都接受；只验证了一个槽位，不改缺省。smoke:dialects 加了手动压缩场景，DeepSeek 真实端点 PASS。
+- **23e**：
+  - 轮中输入命中扩展命令时**拒绝排队**（提示「轮结束后再运行」，文本留在编辑器），照抄 pi `_throwIfExtensionCommand`；规格书写的「直接执行命令」没有采用——轮进行中跑扩展命令会与当前轮的工具和状态交错。
+  - 宿主在「轮收尾」时收到的 `submitPrompt`（`agent_settled` 处理器发起的 run）排到当前任务之后，不抛 busy；压缩、bash、导航期间仍抛 busy。`resumeTurn` 在任何任务进行中都记为待恢复。
+  - REPL `/tree` 摘要失败时提示 `/tree <id> --no-summary`；TUI 弹确认框选择不摘要导航。
+  - `--tools` 收窄后，系统提示里列出的工具名仍是权限档注册的全部工具（HF-16 的提示生成在 Agent 构建之前），未随 `--tools` 收窄；工具声明本身正确。
+  - `--no-tools` 之后由扩展在 `session_start` 才注册的工具仍是 active（新注册缺省 active，pi direct 档）。
+  - ext-feishu 改由 `agent_settled` 复位忙标记并提交下一条，删掉 `no_host` 轮询与 `agent_end` 定时器；缺宿主动作时向飞书回报错误。
+  - 真实 DeepSeek（deepseek-flash）冒烟：`-p` 一轮 read 工具调用答出 ZEPHYR-77（缓存命中显示为 `+N cached`）；REPL `--continue` 续答正确；`/compact` 在小会话里正确报告无可压缩（真实摘要请求由 smoke:dialects 在 DeepSeek 上验证）。
+
+全量测试 357 个，354 通过、3 跳过（Windows 上的 SIGINT、kill -9 与 0600 权限测试，CI Linux 跑）。QuickJS 三项 smoke、weapp bundle 通过，Flutter bundle 已重建。

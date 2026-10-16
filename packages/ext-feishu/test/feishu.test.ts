@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { type ExtensionContext, ExtensionRegistry } from "@yophon/tau-kernel";
+import { type ExtensionContext, ExtensionRegistry, TauError } from "@yophon/tau-kernel";
 import { FeishuClient } from "../src/feishu-client.ts";
 import { chunkText, loadFeishuConfig, parseContentWithResources } from "../src/helpers.ts";
 import defaultFeishuExtension, { createFeishuExtension, loadImageContent, sniffImageMimeType } from "../src/index.ts";
@@ -509,7 +509,7 @@ test("Feishu extension connects, queues messages, and handles Feishu slash comma
 	assert.equal(client.getStatus(), "disconnected");
 });
 
-test("agent_end defers the next queued message until the host is idle", async () => {
+test("agent_settled submits the next queued message; agent_end alone does not (P23e)", async () => {
 	const client = new FakeFeishuClient();
 	const prompts: string[] = [];
 	const ctx = makeContext();
@@ -526,31 +526,40 @@ test("agent_end defers the next queued message until the host is idle", async ()
 	assert.deepEqual(prompts, ["first"]);
 
 	await registry.notifyAgentEnd([], ctx);
-	assert.deepEqual(prompts, ["first"], "flush is scheduled after agent_end returns");
-	await waitFor(() => prompts.length === 2);
+	await tick(20);
+	assert.deepEqual(prompts, ["first"], "a run ending is not the prompt settling");
+	await registry.notifyAgentSettled(false, ctx);
 	assert.deepEqual(prompts, ["first", "second"]);
 	await registry.notifyAgentEnd([], ctx);
+	await registry.notifyAgentSettled(false, ctx);
 	await registry.notifySessionShutdown("quit", ctx);
 });
 
-test("a no_host submission is requeued and retried after host actions attach", async () => {
+test("a busy host is retried; a missing host action is reported, not polled (P23e)", async () => {
 	const client = new FakeFeishuClient();
 	const promptLog = { values: [] as string[] };
 	const ctx = makeContext();
 	const registry = await loadBridge(client, ctx);
-	client.emit("chat-1", "m1", "retry me");
-	await tick(10);
-	assert.deepEqual(promptLog.values, []);
+	let refusals = 1;
 	registry.attachHostActions({
 		sendUserMessage: (content: string) => {
+			if (refusals > 0) {
+				refusals--;
+				throw new TauError("busy", "/compact is running");
+			}
 			promptLog.values.push(content);
 		},
 	});
+	client.emit("chat-1", "m1", "retry me");
 	await waitFor(() => promptLog.values.length === 1);
 	assert.deepEqual(promptLog.values, ["retry me"]);
-	await waitFor(() => client.stoppedTyping.length === 1);
-	assert.deepEqual(client.stoppedTyping[0], { chatId: "chat-1", success: true });
 	await registry.notifySessionShutdown("quit", ctx);
+
+	const lonely = new FakeFeishuClient();
+	const bare = await loadBridge(lonely, ctx);
+	lonely.emit("chat-1", "m1", "nobody home");
+	await waitFor(() => lonely.sent.some((message) => message.text.includes("无法提交给 tau")));
+	await bare.notifySessionShutdown("quit", ctx);
 });
 
 async function assertPreSubmitCancellation(command: "/stop" | "/new", expected: RegExp): Promise<void> {
@@ -608,3 +617,23 @@ test("inline images: signature-only MIME, no BMP or fallback, 5 MiB base64 cap (
 		await rm(dir, { recursive: true, force: true });
 	}
 });
+
+test(
+	"downloaded media is owner-only: a private 0700 directory and 0600 files (P23e)",
+	{ skip: process.platform === "win32" },
+	async () => {
+		const { ensurePrivateDir, writePrivateFile } = await import("../src/feishu-client.ts");
+		const { statSync } = await import("node:fs");
+		const root = await mkdtemp(join(tmpdir(), "tau-feishu-media-"));
+		try {
+			const dir = ensurePrivateDir(join(root, "media"), false);
+			assert.equal(statSync(dir).mode & 0o777, 0o700);
+			const file = join(dir, "a.png");
+			writePrivateFile(file, Buffer.from("x"));
+			assert.equal(statSync(file).mode & 0o777, 0o600);
+			assert.throws(() => writePrivateFile(file, Buffer.from("again")), "never overwrites an existing path");
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
+	},
+);

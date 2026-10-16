@@ -139,6 +139,8 @@ export interface RunTuiOptions {
 		extensions: ExtensionRegistry,
 	): Agent;
 	reloadExtensions(ui: UiCapability | undefined): Promise<ExtensionRegistry>;
+	/** session_start reason; the TUI fires it once its host actions are attached (P23e). */
+	sessionReason: "startup" | "resume";
 }
 
 /** Conversation messages in a projection, for user-facing counts (system messages are prompt state, P22). */
@@ -215,7 +217,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	tui.addChild(footer);
 	tui.setFocus(editor);
 
-	let runningTask: "turn" | "compaction" | "bash" | undefined;
+	let runningTask: "turn" | "compaction" | "bash" | "navigate" | undefined;
+	/** Runs requested while a turn was finishing (agent_settled handlers, races): started after it (P23e). */
+	const pendingStarts: (UserContent | null)[] = [];
 	let controller: AbortController | undefined;
 	let agent = options.agent;
 	let store = options.store;
@@ -615,13 +619,34 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		});
 		registry.attachHostActions({
 			submitPrompt: (content) => {
+				// A finishing turn: run next. Compaction, bash or navigation: refuse loudly so the
+				// caller can retry (ext-feishu re-queues on busy) — never drop it silently.
+				if (runningTask === "turn") {
+					pendingStarts.push(content);
+					return;
+				}
 				if (runningTask !== undefined) throw new TauError("busy", `a ${runningTask} task is running`);
 				void runPrompt(content);
 			},
 			resumeTurn: () => {
-				if (runningTask === undefined) void runPrompt(null);
+				// The message is already logged: remember to continue once the current task ends.
+				if (runningTask !== undefined) {
+					if (!pendingStarts.includes(null)) pendingStarts.push(null);
+					return;
+				}
+				void runPrompt(null);
+			},
+			shutdown: () => {
+				void stop();
 			},
 		});
+	}
+
+	/** Start what was requested while a task ran, one at a time. */
+	function startPending(): void {
+		if (runningTask !== undefined) return;
+		const next = pendingStarts.shift();
+		if (next !== undefined) void runPrompt(next);
 	}
 
 	async function reloadExtensions(): Promise<void> {
@@ -645,10 +670,12 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			const nextExtensions = await options.reloadExtensions(uiCapability);
 			const nextAgent = options.buildAgent([...previousAgent.messages], recorder, nextExtensions);
 			nextAgent.setUi(uiCapability);
-			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
+			// Host actions first, then session_start: a handler that submits a prompt there must
+			// find the new agent (P23e, pi bindExtensions order).
 			extensions = nextExtensions;
-			attachTuiHostActions(nextExtensions);
 			agent = nextAgent;
+			attachTuiHostActions(nextExtensions);
+			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
 			// Only now that the new registry took over: a captured api/ctx of the old one throws
 			// instead of reaching the new agent (pi runtime invalidate). A failed reload keeps it.
 			previousExtensions.invalidate();
@@ -718,7 +745,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 							? "Aborting compaction..."
 							: runningTask === "bash"
 								? "Aborting bash..."
-								: "Aborting current turn...",
+								: runningTask === "navigate"
+									? "Cancelling navigation..."
+									: "Aborting current turn...",
 					),
 				);
 			} else {
@@ -740,39 +769,97 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	editor.onSubmit = (text) => {
 		const input = text.trim();
 		if (input === "") return;
-		editor.setText("");
 		if (pendingUiPrompt) {
+			editor.setText("");
 			pendingUiPrompt(input);
+			return;
+		}
+		// Refusals keep the text in the editor, so nothing typed is lost (P23e).
+		if (runningTask === "compaction" || runningTask === "bash" || runningTask === "navigate") {
+			const what = runningTask === "compaction" ? "Compaction" : runningTask === "bash" ? "Bash" : "Navigation";
+			appendText(dim(`${what} is running. Press Ctrl+C to abort it; your input stays in the editor.`));
 			return;
 		}
 		if (runningTask === "turn") {
 			const followUp = parseFollowUpCommand(input);
-			if (followUp !== undefined) {
-				if (followUp === "") appendText(red("Usage: /follow <text>"));
-				else {
-					agent.followUp(followUp);
-					followUpCount += 1;
-					setFooter();
-					appendText(dim(`↳ follow-up queued: ${followUp}`));
-				}
+			const queuedText = followUp ?? input;
+			// Extension commands cannot be queued as model input (pi _throwIfExtensionCommand).
+			const commandName = queuedText.startsWith("/") ? queuedText.slice(1).split(/\s/, 1)[0] : undefined;
+			if (commandName !== undefined && extensions.commands.has(commandName)) {
+				appendText(dim(`/${commandName} is an extension command; run it when the turn ends.`));
 				return;
 			}
-			agent.steer(input);
-			steeringCount += 1;
-			setFooter();
-			appendText(dim(`↳ steered: ${input}`));
+			editor.setText("");
+			if (followUp === "") {
+				appendText(red("Usage: /follow <text>"));
+				return;
+			}
+			const kind = followUp !== undefined ? "followUp" : "steer";
+			// Input handlers see queued input first and may consume it (pi 0.86.0).
+			void (kind === "followUp" ? agent.followUp(queuedText) : agent.steer(queuedText)).then(
+				(disposition) => {
+					if (disposition === "handled") {
+						appendText(dim(`↳ handled by an extension: ${queuedText}`));
+					} else if (kind === "followUp") {
+						followUpCount += 1;
+						appendText(dim(`↳ follow-up queued: ${queuedText}`));
+					} else {
+						steeringCount += 1;
+						appendText(dim(`↳ steered: ${queuedText}`));
+					}
+					setFooter();
+				},
+				(error: unknown) => appendText(red(`Input failed: ${error instanceof Error ? error.message : String(error)}`)),
+			);
 			return;
 		}
-		if (runningTask === "compaction") {
-			appendText(dim("Compaction is running. Press Ctrl+C to abort it."));
-			return;
-		}
-		if (runningTask === "bash") {
-			appendText(dim("Bash is running. Press Ctrl+C to abort it."));
-			return;
-		}
+		editor.setText("");
 		void handleInput(input);
 	};
+
+	/**
+	 * Navigate the session tree with the task slot held (Ctrl+C cancels the branch
+	 * summary). A failed summary — a truncated one no longer becomes a checkpoint —
+	 * offers navigating without one (P23e).
+	 */
+	async function navigate(entryId: string): Promise<void> {
+		runningTask = "navigate";
+		activeStatus = "navigating";
+		controller = new AbortController();
+		setFooter();
+		setStatus(cyan("Summarizing the branch..."));
+		try {
+			let result: { cancelled: boolean };
+			try {
+				result = await agent.navigateTo(entryId, { signal: controller.signal });
+			} catch (error) {
+				if (!(error instanceof TauError && error.code === "compaction_failed")) throw error;
+				const withoutSummary = await uiCapability.confirm(
+					"Branch summary failed. Navigate without a summary?",
+					error.message,
+				);
+				if (!withoutSummary) {
+					appendText(dim("Navigation cancelled."));
+					return;
+				}
+				result = await agent.navigateTo(entryId, { summarize: false, signal: controller.signal });
+			}
+			appendText(
+				result.cancelled
+					? dim("Navigation cancelled.")
+					: dim(`Moved to ${entryId} (${conversationLength(agent.messages)} messages in context).`),
+			);
+		} catch (error) {
+			appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
+		} finally {
+			runningTask = undefined;
+			activeStatus = undefined;
+			controller = undefined;
+			setStatus(dim("Ready"));
+			setFooter();
+			startPending();
+		}
+	}
 
 	async function handleInput(input: string): Promise<void> {
 		if (input === "exit" || input === "quit" || input === "/quit") {
@@ -992,28 +1079,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					appendText(dim("Rendered entry is not a jump target."));
 					return true;
 				}
-				try {
-					const result = await agent.navigateTo(selected.value);
-					appendText(
-						result.cancelled
-							? dim("Navigation cancelled.")
-							: dim(`Moved to ${selected.value} (${conversationLength(agent.messages)} messages in context).`),
-					);
-				} catch (error) {
-					appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
-				}
+				await navigate(selected.value);
 				return true;
 			}
-			try {
-				const result = await agent.navigateTo(args);
-				appendText(
-					result.cancelled
-						? dim("Navigation cancelled.")
-						: dim(`Moved to ${args} (${conversationLength(agent.messages)} messages in context).`),
-				);
-			} catch (error) {
-				appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
-			}
+			await navigate(args);
 			return true;
 		}
 		if (name === "fork") {
@@ -1284,6 +1353,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			setStatus(dim("Ready"));
 			setFooter();
 			void refreshExtensionSurfaces();
+			startPending();
 		}
 	}
 
@@ -1338,6 +1408,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				appendText(red(`Error: ${message}`));
 			}
 		} finally {
+			// Queues survive an abort (kernel contract): put the user's queued text back in the
+			// editor instead of replaying it into the next prompt (pi restoreQueuedMessagesToEditor).
+			restoreQueuedInput();
 			runningTask = undefined;
 			activeStatus = undefined;
 			steeringCount = 0;
@@ -1346,10 +1419,25 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			setStatus(dim("Ready"));
 			setFooter();
 			void refreshExtensionSurfaces();
+			startPending();
 		}
 	}
 
+	function restoreQueuedInput(): void {
+		const { steering, followUp } = agent.clearQueue();
+		const texts = [...steering, ...followUp]
+			.filter((message) => message.role === "user")
+			.map((message) => userContentText(message.content))
+			.filter((text) => text !== "");
+		if (texts.length === 0) return;
+		const current = editor.getText();
+		editor.setText([...texts, ...(current.trim() === "" ? [] : [current])].join("\n"));
+		appendText(dim(`Restored ${texts.length} queued message(s) to the editor.`));
+	}
+
 	attachTuiHostActions(extensions);
+	// session_start after the host actions are in place (P23e, pi bindExtensions order).
+	await extensions.notifySessionStart(options.sessionReason, agent.extensionContext());
 	await refreshExtensionSurfaces();
 	appendText(await formatDiagnostics());
 	tui.start();

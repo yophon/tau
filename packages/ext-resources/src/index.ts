@@ -18,7 +18,7 @@ export interface PromptTemplate {
 
 export interface ResourceDiagnostic {
 	type: "warning";
-	code: "list_failed" | "read_failed" | "invalid_metadata" | "collision";
+	code: "list_failed" | "read_failed" | "invalid_metadata" | "invalid_frontmatter" | "collision";
 	message: string;
 	path: string;
 }
@@ -43,13 +43,22 @@ type ResourceDiscoverReason = "startup" | "reload";
 interface FrontmatterResult {
 	metadata: Record<string, string | boolean>;
 	body: string;
+	/** The text opened a frontmatter block that never closed (pi 0.84.3 warns instead of treating it as body silently). */
+	unclosed?: boolean;
 }
 
+/** Remove a leading UTF-8 byte order mark (pi stripBom): Windows editors write one, and it hid the frontmatter. */
+function stripBom(text: string): string {
+	return text.startsWith("\uFEFF") ? text.slice(1) : text;
+}
+
+/** Join path parts with the base's own separator, so a Windows base stays one spelling (dedup, diagnostics). */
 function joinPath(base: string, ...parts: string[]): string {
+	const separator = base.includes("\\") && !base.includes("/") ? "\\" : "/";
 	let current = base.replace(/[\\/]+$/g, "");
 	for (const part of parts) {
 		const clean = part.replace(/^[\\/]+|[\\/]+$/g, "");
-		if (clean !== "") current = `${current}/${clean}`;
+		if (clean !== "") current = `${current}${separator}${clean}`;
 	}
 	return current;
 }
@@ -62,11 +71,12 @@ function withoutMd(name: string): string {
 	return name.replace(/\.md$/i, "");
 }
 
-function parseFrontmatter(text: string): FrontmatterResult {
+function parseFrontmatter(input: string): FrontmatterResult {
+	const text = stripBom(input);
 	if (!text.startsWith("---\n") && !text.startsWith("---\r\n")) return { metadata: {}, body: text };
 	const newline = text.startsWith("---\r\n") ? "\r\n" : "\n";
 	const end = text.indexOf(`${newline}---${newline}`, 4);
-	if (end === -1) return { metadata: {}, body: text };
+	if (end === -1) return { metadata: {}, body: text, unclosed: true };
 	const raw = text.slice(4, end).trim();
 	const metadata: Record<string, string | boolean> = {};
 	for (const line of raw.split(/\r?\n/)) {
@@ -128,6 +138,14 @@ async function loadSkillFromFile(
 		return undefined;
 	}
 	const parsed = parseFrontmatter(text);
+	if (parsed.unclosed) {
+		diagnostics.push({
+			type: "warning",
+			code: "invalid_frontmatter",
+			message: "Frontmatter opened with --- is never closed",
+			path: filePath,
+		});
+	}
 	const name = metadataString(parsed.metadata, "name") ?? defaultName;
 	const description = metadataString(parsed.metadata, "description");
 	if (!validName(name) || !description || description.length > 1024) {
@@ -208,6 +226,14 @@ async function loadPromptTemplateFromFile(
 		return undefined;
 	}
 	const parsed = parseFrontmatter(text);
+	if (parsed.unclosed) {
+		diagnostics.push({
+			type: "warning",
+			code: "invalid_frontmatter",
+			message: "Frontmatter opened with --- is never closed; the whole file is the template body",
+			path: filePath,
+		});
+	}
 	const name = withoutMd(basename(filePath));
 	if (!validName(name)) {
 		diagnostics.push({
@@ -218,10 +244,12 @@ async function loadPromptTemplateFromFile(
 		});
 		return undefined;
 	}
+	// pi: frontmatter description, else the first non-empty line held to 60 characters with "...".
 	const firstLine = parsed.body.trim().split(/\r?\n/, 1)[0] ?? "";
+	const fallback = firstLine.length > 60 ? `${firstLine.slice(0, 60)}...` : firstLine;
 	return {
 		name,
-		description: metadataString(parsed.metadata, "description") ?? firstLine.slice(0, 60),
+		description: metadataString(parsed.metadata, "description") || fallback,
 		argumentHint: metadataString(parsed.metadata, "argument-hint"),
 		content: parsed.body,
 		filePath,
@@ -310,19 +338,41 @@ export function parseCommandArgs(argsString: string): string[] {
 	return args;
 }
 
+/**
+ * Substitute template arguments, verbatim from pi 1.2.0 (coding-agent
+ * prompt-templates.ts): one pass, so an argument containing "$@" is not expanded
+ * again; `${N:-default}` / `${@:-default}` / `${ARGUMENTS:-default}` fall back
+ * when the argument is missing or empty; `${@:N[:L]}` slices.
+ */
 export function substituteArgs(content: string, args: string[]): string {
-	let result = content;
-	result = result.replace(/\$(\d+)/g, (_, num: string) => args[Number.parseInt(num, 10) - 1] ?? "");
-	result = result.replace(/\$\{@:(\d+)(?::(\d+))?\}/g, (_, startStr: string, lengthStr?: string) => {
-		let start = Number.parseInt(startStr, 10) - 1;
-		if (start < 0) start = 0;
-		if (lengthStr) return args.slice(start, start + Number.parseInt(lengthStr, 10)).join(" ");
-		return args.slice(start).join(" ");
-	});
 	const allArgs = args.join(" ");
-	result = result.replace(/\$ARGUMENTS/g, allArgs);
-	result = result.replace(/\$@/g, allArgs);
-	return result;
+	return content.replace(
+		/\$\{(\d+|ARGUMENTS|@):-([^}]*)\}|\$\{@:(\d+)(?::(\d+))?\}|\$(ARGUMENTS|@|\d+)/g,
+		(
+			_match: string,
+			defaultTarget: string | undefined,
+			defaultValue: string | undefined,
+			sliceStart: string | undefined,
+			sliceLength: string | undefined,
+			simple: string | undefined,
+		) => {
+			if (defaultTarget) {
+				const value =
+					defaultTarget === "@" || defaultTarget === "ARGUMENTS"
+						? allArgs
+						: args[Number.parseInt(defaultTarget, 10) - 1];
+				return value ? value : (defaultValue ?? "");
+			}
+			if (sliceStart) {
+				let start = Number.parseInt(sliceStart, 10) - 1;
+				if (start < 0) start = 0;
+				if (sliceLength) return args.slice(start, start + Number.parseInt(sliceLength, 10)).join(" ");
+				return args.slice(start).join(" ");
+			}
+			if (simple === "ARGUMENTS" || simple === "@") return allArgs;
+			return args[Number.parseInt(simple ?? "0", 10) - 1] ?? "";
+		},
+	);
 }
 
 export function formatPromptTemplateInvocation(template: PromptTemplate, args: string[] = []): string {

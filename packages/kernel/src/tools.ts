@@ -53,6 +53,54 @@ export interface Tool extends ToolDefinition {
 	): Promise<ToolResult>;
 }
 
+/** UTF-8 byte length of a code point (pure ES: no TextEncoder on bare engines). */
+function utf8Length(codePoint: number): number {
+	return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+}
+
+/**
+ * Keep the start and the end of `content`, about half of `maxBytes` (UTF-8) each,
+ * and replace the middle with a `…N chars truncated…` marker — pi's
+ * truncateMiddle (Codex's format). Cuts only at character boundaries.
+ */
+export function truncateMiddle(
+	content: string,
+	maxBytes: number,
+): { content: string; truncated: boolean; removedChars: number; totalBytes: number; totalLines: number } {
+	const chars = Array.from(content);
+	const sizes = chars.map((char) => utf8Length(char.codePointAt(0) ?? 0));
+	const totalBytes = sizes.reduce((sum, size) => sum + size, 0);
+	const totalLines = content.split("\n").length;
+	if (totalBytes <= maxBytes) return { content, truncated: false, removedChars: 0, totalBytes, totalLines };
+	const headBudget = Math.floor(maxBytes / 2);
+	let headEnd = 0;
+	for (let used = 0; headEnd < chars.length && used + sizes[headEnd] <= headBudget; headEnd++) used += sizes[headEnd];
+	const tailBudget = maxBytes - headBudget;
+	let tailStart = chars.length;
+	for (let used = 0; tailStart > headEnd && used + sizes[tailStart - 1] <= tailBudget; tailStart--)
+		used += sizes[tailStart - 1];
+	const removedChars = tailStart - headEnd;
+	return {
+		content: `${chars.slice(0, headEnd).join("")}…${removedChars} chars truncated…${chars.slice(tailStart).join("")}`,
+		truncated: true,
+		removedChars,
+		totalBytes,
+		totalLines,
+	};
+}
+
+/**
+ * Model-facing text held to `maxBytes`, in pi's limitMcpContent format: a
+ * warning header, the middle-truncated text, then `where` (the full output's
+ * location, or why there is none). Untruncated text comes back as is.
+ */
+export function limitToolText(text: string, maxBytes: number, where: (full: string) => string): string {
+	const truncation = truncateMiddle(text, maxBytes);
+	if (!truncation.truncated) return text;
+	const tokens = Math.ceil(truncation.totalBytes / 4);
+	return `Warning: truncated output (original token count: ${tokens})\nTotal output lines: ${truncation.totalLines}\n\n${truncation.content}\n\n${where(text)}`;
+}
+
 /** A plain text result. */
 export function textResult(text: string, details?: JsonValue): ToolResult {
 	return details === undefined ? { content: [{ type: "text", text }] } : { content: [{ type: "text", text }], details };

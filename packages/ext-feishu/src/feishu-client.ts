@@ -9,7 +9,7 @@
  * in deterministic host tests without opening a network connection.
  */
 
-import { createReadStream, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, createReadStream, lstatSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as Lark from "@larksuiteoapi/node-sdk";
@@ -30,6 +30,44 @@ export type { FeishuMention, InboundResource } from "./types.ts";
 
 /** Default location used by the upstream pi-feishu bridge. */
 export const DEFAULT_FEISHU_MEDIA_DIR = join(tmpdir(), "feishu-media");
+
+/**
+ * Downloaded chat media is private (P23e, the pi 1.0.3 owner-only rule; a
+ * hardening beyond pi-feishu): the directory is 0700 and must be ours — on a
+ * shared /tmp another user could have created it or planted a symlink. When the
+ * default location fails that check, a fresh private directory is used instead.
+ */
+export function ensurePrivateDir(dir: string, isDefault: boolean): string {
+	let stats: ReturnType<typeof lstatSync> | undefined;
+	try {
+		stats = lstatSync(dir);
+	} catch {
+		mkdirSync(dir, { recursive: true, mode: 0o700 });
+		restrictToOwner(dir);
+		return dir;
+	}
+	const ownerOk = typeof process.getuid !== "function" || stats.uid === process.getuid();
+	if (stats.isDirectory() && !stats.isSymbolicLink() && ownerOk) {
+		restrictToOwner(dir);
+		return dir;
+	}
+	if (!isDefault) throw new Error(`Media directory ${dir} is not a private directory owned by this user`);
+	return mkdtempSync(join(tmpdir(), "feishu-media-"));
+}
+
+/** chmod is a no-op worth trying: Windows ignores modes, and its temp dir is per-user already. */
+function restrictToOwner(path: string): void {
+	try {
+		chmodSync(path, lstatSync(path).isDirectory() ? 0o700 : 0o600);
+	} catch {
+		// Best effort.
+	}
+}
+
+/** Write a new file readable only by its owner; never follows or overwrites an existing path. */
+export function writePrivateFile(path: string, data: Buffer): void {
+	writeFileSync(path, data, { mode: 0o600, flag: "wx" });
+}
 
 const DEFAULT_DEDUP_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_DEDUP_MAX_ENTRIES = 5000;
@@ -334,7 +372,7 @@ export class FeishuClient {
 
 		if (options.ensureMediaDir !== false) {
 			try {
-				if (!existsSync(this.mediaDir)) mkdirSync(this.mediaDir, { recursive: true });
+				this.mediaDir = ensurePrivateDir(this.mediaDir, this.mediaDir === DEFAULT_FEISHU_MEDIA_DIR);
 			} catch (error) {
 				warn("Unable to create media directory:", errorMessage(error));
 			}
@@ -537,12 +575,15 @@ export class FeishuClient {
 			const localPath = join(this.mediaDir, `${this.now()}-${safeFileName(fileName, fileKey, resourceType)}`);
 			const directBuffer = toBuffer(response);
 			if (directBuffer) {
-				writeFileSync(localPath, directBuffer);
+				writePrivateFile(localPath, directBuffer);
 				return localPath;
 			}
 			const resource = asRecord(response) as ResourceResponse | undefined;
 			if (typeof resource?.writeFile === "function") {
+				// Create the file owner-only first; the SDK then writes into it.
+				writePrivateFile(localPath, Buffer.alloc(0));
 				await resource.writeFile(localPath);
+				restrictToOwner(localPath);
 				return localPath;
 			}
 
@@ -560,7 +601,7 @@ export class FeishuClient {
 						const chunkBuffer = toBuffer(chunk);
 						if (chunkBuffer) chunks.push(chunkBuffer);
 					}
-					writeFileSync(localPath, Buffer.concat(chunks));
+					writePrivateFile(localPath, Buffer.concat(chunks));
 					return localPath;
 				}
 				if (isIterable(stream)) {
@@ -569,19 +610,19 @@ export class FeishuClient {
 						const chunkBuffer = toBuffer(chunk);
 						if (chunkBuffer) chunks.push(chunkBuffer);
 					}
-					writeFileSync(localPath, Buffer.concat(chunks));
+					writePrivateFile(localPath, Buffer.concat(chunks));
 					return localPath;
 				}
 				const streamBuffer = toBuffer(stream);
 				if (streamBuffer) {
-					writeFileSync(localPath, streamBuffer);
+					writePrivateFile(localPath, streamBuffer);
 					return localPath;
 				}
 			}
 			const data = asRecord(response)?.data;
 			const dataBuffer = toBuffer(data);
 			if (dataBuffer) {
-				writeFileSync(localPath, dataBuffer);
+				writePrivateFile(localPath, dataBuffer);
 				return localPath;
 			}
 			warn("No writeFile or getReadableStream on response");
