@@ -17,6 +17,7 @@ import type {
 	ExtensionCapabilities,
 	ExtensionContext,
 	ExtensionRegistry,
+	ReadonlySessionManager,
 	ToolCallEvent,
 	TreePreparation,
 	UiCapability,
@@ -48,9 +49,11 @@ import {
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
 import {
+	buildContextEntries,
 	buildSessionProjection,
 	diffSystemPromptSections,
 	getCurrentSystemMessage,
+	getCurrentSystemPrompt,
 	getCurrentTools,
 	getToolStateChanges,
 	normalizeMessageContent,
@@ -59,7 +62,7 @@ import {
 	toToolDeclaration,
 } from "./projection.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
-import { InMemorySessionStore, type SessionEntry, SessionRecorder } from "./session.ts";
+import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
 import {
 	assertToolSchema,
 	hasToolSchema,
@@ -245,6 +248,11 @@ export class Agent {
 	private activeProjection: SessionProjection = { entries: [], messages: [] };
 	/** Session-wide billed usage as of the last refresh (sumSessionUsage). */
 	private sessionUsage: Usage = emptyUsage();
+	/** Every entry and the store metadata as of the last refresh (backs ctx.sessionManager). */
+	private allEntries: readonly SessionEntry[] = [];
+	private entriesById = new Map<string, SessionEntry>();
+	private sessionMetadata: SessionMetadata | undefined;
+	private readonlySessionManager: ReadonlySessionManager | undefined;
 	private readonly platform: Platform;
 	private readonly config: OpenAICompatConfig;
 	private readonly transport: ChatTransport;
@@ -374,11 +382,25 @@ export class Agent {
 				submit(content);
 			},
 			appendEntry: (customType, data) => {
-				this.enqueueBackground(() => this.session.appendCustom(customType, data));
+				this.enqueueBackground(async () => {
+					await this.session.appendCustom(customType, data);
+					await this.refresh();
+				});
 			},
 			setSessionName: (name) => {
-				this.enqueueBackground(() => this.session.setName(name));
+				this.enqueueBackground(async () => {
+					await this.session.setName(name);
+					await this.refresh();
+				});
 				void this.extensions?.notifySessionInfoChanged(name, this.extensionContext());
+			},
+			setLabel: (entryId, label) => {
+				// pi throws for an unknown target; the check runs on the last refreshed log.
+				if (!this.entriesById.has(entryId)) throw new SessionError("not_found", `Entry ${entryId} not found`);
+				this.enqueueBackground(async () => {
+					await this.session.appendLabel(entryId, label);
+					await this.refresh();
+				});
 			},
 			abort: () => {
 				this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
@@ -436,7 +458,11 @@ export class Agent {
 		this.activePath = path;
 		this.activeProjection = projection;
 		this.projection = Object.freeze(projection.messages);
-		this.sessionUsage = sumSessionUsage(await this.session.store.getEntries());
+		const entries = await this.session.store.getEntries();
+		this.allEntries = entries;
+		this.entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+		this.sessionUsage = sumSessionUsage(entries);
+		this.sessionMetadata = await this.session.store.getMetadata();
 	}
 
 	/** Append a message to the log and refresh the projection; returns its entry id. Call inside the writer. */
@@ -504,6 +530,44 @@ export class Agent {
 		}
 	}
 
+	/** The read-only session view handed to extensions as ctx.sessionManager (pi ReadonlySessionManager). */
+	sessionManager(): ReadonlySessionManager {
+		if (this.readonlySessionManager) return this.readonlySessionManager;
+		const branch = (fromId: string | null): SessionEntry[] => {
+			const path: SessionEntry[] = [];
+			let id = fromId;
+			while (id !== null) {
+				const entry = this.entriesById.get(id);
+				if (!entry) break;
+				path.push(entry);
+				id = entry.parentId;
+			}
+			return path.reverse();
+		};
+		this.readonlySessionManager = {
+			getCwd: () => this.sessionMetadata?.cwd ?? "",
+			getSessionId: () => this.sessionMetadata?.id ?? "",
+			getSessionFile: () => this.sessionMetadata?.filePath,
+			getSessionName: () => this.sessionMetadata?.name,
+			getLeafId: () => this.session.currentLeafId,
+			getLeafEntry: () => {
+				const leafId = this.session.currentLeafId;
+				return leafId === null ? undefined : this.entriesById.get(leafId);
+			},
+			getEntry: (id) => this.entriesById.get(id),
+			getLabel: (id) => {
+				let label: string | undefined;
+				for (const entry of this.allEntries) if (entry.type === "label" && entry.targetId === id) label = entry.label;
+				return label;
+			},
+			getBranch: (fromId) => branch(fromId ?? this.session.currentLeafId),
+			getEntries: () => [...this.allEntries],
+			buildContextEntries: () => buildContextEntries(this.activePath),
+			buildSessionProjection: () => this.activeProjection,
+		};
+		return this.readonlySessionManager;
+	}
+
 	/** Session entry id a projected message came from (undefined for messages not in `messages`). */
 	entryIdOf(message: AgentMessage): string | undefined {
 		return this.entryIds.get(message);
@@ -539,6 +603,8 @@ export class Agent {
 				if (hostAbort) hostAbort();
 				else this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
 			},
+			sessionManager: this.sessionManager(),
+			getSystemPrompt: () => getCurrentSystemPrompt(this.messages),
 			discoverResources: (reason) => {
 				const cwd = this.capabilities.paths?.cwd ?? this.capabilities.fs?.cwd ?? "";
 				return (

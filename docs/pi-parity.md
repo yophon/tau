@@ -1,6 +1,6 @@
 # pi 扩展面对照清单
 
-> 最后更新：2026-10-15（P21：参照重锚到 pi v1.2.0，按成员重写）。
+> 最后更新：2026-10-16（P22：会话日志为上下文唯一来源；context_with_system、setLabel、sessionManager、getSystemPrompt 落地）。
 > 行集合：pi tag v1.2.0 `packages/coding-agent/src/core/extensions/types.ts` 的 `on(event: "…")` 重载（41）、`ExtensionAPI` 成员（32）、`ExtensionContext` 成员（18），共 91 行（D23）。`node scripts/check-pi-parity.mjs` 从 `../pi` 抽取成员并与下面三张表比对，二者必须完全相等。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期 · ❌Dn 决策排除 · ⚠Dn 有意偏离（写明形状与理由）。
 > 「快照」列：0.80 表示 v0.80.3 就有的成员，1.2 表示之后新增的成员。
@@ -23,8 +23,8 @@
 | `mcp_servers_change` | 1.2 | ❌D21 | 属于 pi 核心 MCP 管理器。tau 的 MCP 在扩展包里，内核没有 MCP 概念（D3/D21 的分层；依赖 pi 内置管理器的扩展不在兼容目标内，D9） |
 | `session_before_tree` | 0.80 | ✅ P5 | 可取消、可接管摘要；label/userWantsSummary 📍Backlog |
 | `session_tree` | 0.80 | ✅ P5 | 携带 summaryEntry |
-| `context` | 0.80 | ✅ P2 | 每次 LLM 调用前改写 messages |
-| `context_with_system` | 1.2 | 📍P22 | 依赖 system 消息进入转录（D13 P21 补记 ①） |
+| `context` | 0.80 | ✅ P2/P22 | 每次 LLM 调用前改写对话。P22 起照抄 pi 两阶段语义：处理器看不到 system 消息，原位修改与返回值都生效，之后恢复 prompt/工具状态；作用于 JSON 副本，改不到日志 |
+| `context_with_system` | 1.2 | ✅ P22 | 在全部 `context` 处理器之后、看到含 system 消息的完整转录，结果原样发出；删掉首条 system 时经 error sink 报告（pi 报错但照用） |
 | `cache_warming_decision` | 1.2 | ❌D19 | 成本感知的缓存预热需要模型库与定价（D19-3 不伪造成本），且是后台计时器（D15） |
 | `before_provider_request` | 0.80 | 📍Backlog | 快照内漏登（P21 补行）。线层事件，无消费者 |
 | `before_provider_headers` | 1.2 | 📍P23 | 每次 transport 调用触发，不缓存 |
@@ -70,7 +70,7 @@
 | `appendEntry` | 0.80 | ✅ P3 | |
 | `setSessionName` | 0.80 | ✅ P3 | |
 | `getSessionName` | 0.80 | 📍P23 | 快照内漏登（P21 补行），按 D7 直接补 |
-| `setLabel` | 0.80 | 📍P22 | 快照内漏登。会话条目标签，随条目模型改写 |
+| `setLabel` | 0.80 | ✅ P22 | 写 `label` 条目，undefined 清除；目标不存在时同步抛 `not_found`（pi 同样拒绝）。标签不进上下文 |
 | `exec` | 0.80 | ⚠D4 | 经 `ctx.capabilities.shell` 能力门面执行（裸引擎可能没有 shell，能力缺失即不可用，D10/D15） |
 | `getActiveTools` | 0.80 | 📍P23 | 快照内漏登。内核 active 工具集 |
 | `getAllTools` | 0.80 | 📍P23 | 同上 |
@@ -97,7 +97,7 @@
 | `mode` | 0.80 | ❌D10 | 宿主模式不进内核；扩展按 `ui` 能力是否存在降级 |
 | `hasUI` | 0.80 | ⚠D10 | 即 `ctx.ui !== undefined` |
 | `cwd` | 0.80 | ⚠D4 | `ctx.capabilities.paths.cwd`，路径随能力门面提供 |
-| `sessionManager` | 0.80 | 📍P22 | 快照内漏登。会话日志成为唯一来源后镜像 |
+| `sessionManager` | 0.80 | ⚠D7 P22 | 只读同步门面，反映 Agent 最近一次写入后的日志：getCwd/getSessionId/getSessionFile/getSessionName/getLeafId/getLeafEntry/getEntry/getLabel/getBranch/getEntries/buildContextEntries/buildSessionProjection。未镜像 getSessionDir/getHeader/getTree（宿主关注点，条目本身带树结构）；tau 的 store 是异步接口，门面读 Agent 的缓存 |
 | `modelRegistry` | 0.80 | ❌D21 | 没有模型库与凭据解析（D2/D3/D21）；同等需求用 `ctx.runSubagent(prompt, { tools: [], maxTurnsPerPrompt: 1 })` |
 | `model` | 0.80 | 📍P23 | 随 setModel |
 | `scopedModels` | 1.2 | ❌D21 | 对模型目录的解析结果，tau 没有模型目录 |
@@ -110,7 +110,7 @@
 | `shutdown` | 0.80 | 📍P23 | 机制已有（session_shutdown），补 ctx 入口与文档 |
 | `getContextUsage` | 0.80 | ✅ P4 | |
 | `compact` | 0.80 | ✅ P4 | 在下一个轮次边界执行，失败只报告（P21-HF-9） |
-| `getSystemPrompt` | 0.80 | 📍P22 | 快照内漏登。随 system 消息进转录 |
+| `getSystemPrompt` | 0.80 | ✅ P22 | 转录里 system 消息回放出的当前提示，即模型实际看到的那份（含 before_agent_start 改写，D27） |
 
 ## tau 独有的扩展面
 
@@ -135,8 +135,8 @@
 | 失败语义：错误变消息 | ✅ P11 | D14 |
 | 自动重试 | ✅ P11 | 分类正则照抄 pi |
 | 压缩 | ✅ P4/P14 | 循环内失败不抛（P21-HF-9） |
-| 会话 JSONL v3 | ✅ P3/P5 | 新会话在第一条消息时落盘，`--continue` 按最近活跃（P21-HF-16）；兼容收窄为单向读 📍P22（D13 补记 ②） |
-| 会话日志为上下文唯一来源、system 消息进转录 | 📍P22 | D13 补记 ① |
+| 会话 JSONL v3 | ✅ P3/P5/P22 | 新会话在第一条消息时落盘，`--continue` 按最近活跃（P21-HF-16）。条目照抄 pi 1.2.0；兼容收窄为单向读（D13 补记 ②）：tau 能读 pi ≥0.86 的会话（system 消息、context_edit、usage、label、model_change，未知类型保留为链节点），pi 不保证能恢复 tau 写的会话（leaf 条目） |
+| 会话日志为上下文唯一来源、system 消息进转录 | ✅ P22 | D13 补记 ①。偏离两处：before_agent_start 改写的提示落盘（D27）；内核只有一个 section `prompt`（宿主把项目上下文拼进 systemPrompt） |
 | 工具参数 JSON 修复（`repairJson`） | ✅ P21-HF-7 | |
 | 跨模型回放（`transformMessages`） | ✅ P21-HF-6 | 内核共享，Anthropic 扩展同用 |
 | 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | ✅ P21a | 内核 `loadProjectContextFiles(fs, …)` + `renderProjectContext`，CLI `-nc` 关闭、`/reload` 重读。偏离：不识别链接 worktree 的重复文件（内核无 realpath） |

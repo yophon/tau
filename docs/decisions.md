@@ -59,6 +59,8 @@ pi 是 0.x 移动靶（minor 即 breaking）。tau 所有"照抄 pi"以 `../pi` 
 Phase 0 曾把消息模型设计成 OpenAI wire 格式的直接镜像（string content + reasoning/toolCalls 平行字段）。P3 规格评审时用户质询，重新用 D7 检验后推翻：**消息形状是纯数据建模，不是运行时耦合，不属于允许偏离的范畴**。现对齐 pi：内容块数组（Text/Thinking/ToolCall/Image，保留交错顺序）、pi 的 Usage 形状（cacheRead/cacheWrite/cost，cost 先填零——无定价库）、StopReason 枚举、消息级 timestamp、api/provider/model 字段。收益：会话文件真正 pi v3 兼容（消除了 P3 规格原有的"永久格式分歧"风险）、P4/P5 的 compaction/分支算法可照搬、多模态不需要 breaking change。教训：对"偏离仅限运行时耦合"要逐字段检验，wire 格式的实现便利不构成偏离理由。
 
 > **P21 补记（2026-10-15，用户裁定，不推翻）**：①P22 照抄 pi 1.2.0 的会话模型——会话日志是 provider 上下文的唯一来源，请求前从日志重建，system prompt 与工具声明以 system 消息进入转录，线格式按协议折叠。②会话兼容收窄为**单向**：tau 能读 pi 会话、条目形状照抄；不保证 pi 能恢复 tau 写出的会话（例如 tau 的 leaf 条目）。格式改动在 P22 做。
+>
+> **P22 落地（2026-10-16）**：按上两条实施，同时推翻 P4 重审的结论（「会话是记录、内存是事实源」）：Agent 总持有日志，`messages` 是投影，每次请求前核对日志重放（`verifyTranscript`）。偏离 pi 两处：D27；内核只有一个 prompt section。
 
 ## D14：失败语义照抄 pi——错误变消息，`prompt()` 不抛 provider 错误（2026-07-15，P11）
 
@@ -111,6 +113,8 @@ D3 预留的"扩展层协议适配"口子兑现为内核 `ChatTransport` 注入�
 3. **压缩/分支摘要随 transport 走**（`runCompaction`/`generateBranchSummary`/`completeText` 签名从 `(platform, config)` 改为收 transport，输出上限经 `TransportRequest.maxTokens` 协议中立传递）——"摘要用同一模型"的 D3 约定自然保持，无需第二套协议配置。
 
 配套形状决策：`TransportRequest = { systemPrompt?, messages, tools?, signal?, maxTokens? }`（pi 形状消息进，transport 负责转 wire；失败语义仍 D14——transport 内规范化为 TauError，Agent 转 stopReason error/aborted 消息）；`OpenAICompatConfig` 增可选 `api` 字段供流中 partial 消息带正确 lineage；`ThinkingContent` 补 pi 的 `thinkingSignature`/`redacted` 可选位（D13 方向的收尾——Anthropic thinking 回放需要）。首个适配包 `@yophon/tau-ext-provider-anthropic` 走 ext-mcp-http 的"抄协议不抄 SDK"路线（协议锁 `anthropic-version: 2023-06-01`），纯度门禁随之扩面覆盖纯 Platform 扩展包。
+
+> **P22 补记（2026-10-16，用户确认，改形状不推翻）**：`TransportRequest` 改为 pi TranscriptContext 的形状 `{ messages, signal?, maxTokens? }`。prompt 与工具声明是 `messages` 里的 system 消息，transport 用 `resolveTranscript()` 折叠成自家线格式（两个内置 transport 缺省都折叠，wire 与改形前逐字节相同）。理由：transport 看到的就是转录，P22 的不变式检查只有一个比较对象。注入方式、不热换、摘要随 transport 走三条不变。
 
 ## D22：并行工具执行照抄 pi 到默认值与分派语义，写冲突走内核版 mutation queue（2026-07-20，P18）
 

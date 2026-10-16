@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-10-15（P21：pi 参照重锚到 v1.2.0；P21-HF 修复批）
+> 最后更新：2026-10-16（P22：会话日志成为上下文唯一来源；system 消息进转录；压缩照抄 pi 1.2.0）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -47,10 +47,10 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `platform.ts` | **注入缝隙**。`Platform = { fetch, createUtf8Decoder, randomBytes, sleep? }`，全部是结构化最小子集类型（`PlatformResponse`、`TauAbortSignal` 等，不依赖 DOM lib）。`PlatformResponse.headers?` 可选（`PlatformResponseHeaders.get`，供 ext-mcp-http 读 MCP-Session-Id/content-type；`defaultPlatform` 直通原生 headers，适配器缺省时消费者降级）。`sleep` 可选：缺失时重试与停滞超时静默禁用（裸引擎零负担）。`defaultPlatform()` 从 globalThis 取 WinterTC 全局，缺失时抛带指导的错误；并将内核造的结构化 signal **桥接为真 AbortSignal**（原生 fetch 拒收结构子集——自定义适配器需对自家传输做同等桥接，见技术债 #7）。**整个内核只有这个文件允许引用 WinterTC 全局。** |
 | `abort.ts` | `AbortHandle`：纯 ES 的 abort 手柄（内核不能假设 AbortController 存在）。`signal` 满足 TauAbortSignal，`follow()` 单向桥接宿主信号；prompt/resume 每次运行持有一个，`ctx.abort()` 触发它 |
 | `retry.ts` | 重试分类（正则逐字照抄 pi `ai/utils/retry.ts`：先排除额度/账单与上下文溢出文本，再匹配瞬态失败）与 `RetrySettings`（默认开、3 次、2s 指数退避）。策略执行在 agent 循环内 |
-| `openai.ts` | OpenAI 兼容 chat/completions 流式客户端 + **ChatTransport 注入缝（P16，D21）**。`streamChatCompletion()` 产出 `text_delta` / `reasoning_delta`（兼容 DeepSeek 的 reasoning_content）/ `tool_call` / `response_end`。失败一律规范化为 TauError（`network_error`/`http_error`/`stream_error`/`invalid_response`/`timeout`/`aborted`）；`withStallTimeout`（公开导出）用 `Platform.sleep` 给"等响应头/等下一个 chunk"上 120s（可调）看门狗，防服务器干挂。`OpenAICompatConfig = { baseUrl, apiKey?, model, provider?, api?, headers?, extraBody?, includeUsage?, stallTimeoutMs? }`。**transport 缝**：`ChatTransport = (TransportRequest) => AsyncGenerator<ChatStreamEvent>`（`TransportRequest = { systemPrompt?, messages, tools?, signal?, maxTokens? }`，pi 形状消息进、统一事件联合出，失败语义同 D14）；`createOpenAICompatTransport(platform, config)` 是缺省实现（零行为变化）。summary wire framing 常量公开导出供替代 transport 复用 |
+| `openai.ts` | OpenAI 兼容 chat/completions 流式客户端 + **ChatTransport 注入缝（P16，D21）**。`streamChatCompletion(platform, config, messages, { signal, maxTokens })` 产出 `text_delta` / `reasoning_delta`（兼容 DeepSeek 的 reasoning_content）/ `tool_call` / `response_end`。失败一律规范化为 TauError（`network_error`/`http_error`/`stream_error`/`invalid_response`/`timeout`/`aborted`）；`withStallTimeout`（公开导出）用 `Platform.sleep` 给"等响应头/等下一个 chunk"上 120s（可调）看门狗，防服务器干挂。工具调用片段按 pi `ensureToolCallBlock` 归属（index → id → 新建；P22）。**transport 缝**：`ChatTransport = (TransportRequest) => AsyncGenerator<ChatStreamEvent>`，`TransportRequest = { messages, signal?, maxTokens? }`（P22，pi TranscriptContext）：prompt 与工具声明是转录里的 system 消息，transport 用 `resolveTranscript()` 折叠成自家线格式——缺省把回放出的状态折进首条 system，`OpenAICompatConfig.midConversationSystemMessages` 为真时原位发送后续 system 消息；工具恒取回放后的当前集合。`createOpenAICompatTransport(platform, config)` 是缺省实现。summary wire framing 常量公开导出供替代 transport 复用 |
 | `sse.ts` | 增量 SSE 解析器，处理任意分块边界、CRLF、多行 data |
 | `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序）、pi 的 Usage/StopReason、消息级 timestamp。Thinking 块含可选 `thinkingSignature`/`redacted`（pi 形状，P16 补齐——Anthropic thinking 回放需要 signature）。联合 = user/assistant/toolResult/custom（**无 system**——system prompt 是独立参数）。helpers：messageText/toolCallsOf/thinkingText。`ModelPricing`/`computeUsageCost`（D19-3）：宿主注入单价则 `AgentOptions.pricing` 在 response_end 填 `usage.cost`，缺失维持零值，tau 不带定价数据 |
-| `agent.ts` | `Agent` 类：`prompt(input, signal)` 返回 AsyncGenerator<AgentEvent>。循环 = 发请求 → 流式收 → 执行工具 → 消费 steering 队列 → 重复，直到无工具调用且无 followUp。**所有 LLM 请求（对话/压缩/分支摘要）经 `AgentOptions.transport` 注入的 ChatTransport 发出**（缺省 = OpenAI 兼容包装；子 agent 继承；不支持运行中热换——协议中途切换会打断 usage/缓存语义，D21）。`steer()`/`followUp()` 队列照抄 pi 的 PendingMessageQueue（`QueueMode = "one-at-a-time" \| "all"`）。扩展钩子挂在循环各点，**扩展先于宿主 yield 收到事件**（可改写内容）。工具执行前依次过参数校验（validateToolArgs）与权限门（policy.assess → allow/ask/deny，ask 走 `onApproval` ?? `ui.confirm`，都缺则 deny），deny 是普通 isError 工具结果、循环不断；子 agent 继承 permissionMode/policy/onApproval |
+| `agent.ts` | `Agent` 类：`prompt(input, signal)` 返回 AsyncGenerator<AgentEvent>。循环 = 发请求 → 流式收 → 执行工具 → 消费 steering 队列 → 重复，直到无工具调用且无 followUp。**所有 LLM 请求（对话/压缩/分支摘要）经 `AgentOptions.transport` 注入的 ChatTransport 发出**（缺省 = OpenAI 兼容包装；子 agent 继承；不支持运行中热换——协议中途切换会打断 usage/缓存语义，D21）。`steer()`/`followUp()` 队列照抄 pi 的 PendingMessageQueue（`QueueMode = "one-at-a-time" \| "all"`）。扩展钩子挂在循环各点，**扩展先于宿主 yield 收到事件**（可改写内容）。工具执行前依次过参数校验（validateToolArgs）与权限门（policy.assess → allow/ask/deny，ask 走 `onApproval` ?? `ui.confirm`，都缺则 deny），deny 是普通 isError 工具结果、循环不断；子 agent 继承 permissionMode/policy/onApproval。**P22**：会话日志是唯一事实——写入只追加条目，`messages` 为只读投影；每轮请求前按需追加声明 prompt（section `prompt`，含 before_agent_start 改写，D27）与工具差分的 system 消息；重试省略失败尝试用 context_edit；工具执行计 `durationMs`，工具结果可带 `usage` |
 | `policy.ts` | **权限与审批（P15，tau 原创面，D20）**：`PermissionMode`（read-only/supervised/autonomous/bypass）× `RiskLevel`（low/medium/high）→ allow/ask/deny 矩阵（`resolvePolicyAction`）；`createDefaultPolicy({protectedPaths?, dangerousPatterns?})` 静态规则——read 类 low、write/edit 命中保护路径（`.git`/`.ssh`/`.env*`/`~/.tau/{trust,permissions}.json`）high、bash 命中危险模式（rm -rf/sudo/管道下载执行/force push/写裸设备/mkfs/fork 炸弹）high、其余 medium；扩展工具可经 `registerTool(tool, { risk })` 自声明（内置名不可被降级）。内核默认 autonomous（库消费者行为不破坏），CLI/TUI 默认 supervised |
 | `transform.ts` | `transformMessages()`：pi 的跨模型回放规则（P21-HF-6）。同模型的推理按原字段回放，换模型或换协议时 thinking 转成文本、跳过 error/aborted 轮、给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Anthropic 扩展共用 |
 | `context-files.ts` | 项目上下文文件（P21a，照抄 pi `loadProjectContextFiles`/`renderProjectContext`）：只用 FileSystem 能力，先取全局目录，再从根到 cwd 每个目录取 `AGENTS.override.md`/`AGENTS.md`/`AGENTS.MD`/`CLAUDE.md`/`CLAUDE.MD` 中第一个，去 BOM、按路径去重；渲染为 `<project_context>` 段。CLI 追加到任何系统提示末尾，`-nc` 关闭 |
@@ -62,9 +62,10 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `errors.ts` | `TauError`（带 code）/ `HttpError` / `FileError` / `ShellError` / `SessionError` |
 | `uuid.ts` | uuidv7（照抄 pi，随机数经 Platform.randomBytes） |
 | `utf8.ts` | `createIncrementalUtf8Decoder()`：纯 ES 增量 UTF-8 解码器（跨 chunk 多字节、无效序列 U+FFFD、flush 半截字符），供无 TextDecoder 的宿主接 `Platform.createUtf8Decoder`（weapp iOS JSC / Hermes / 裸 QuickJS）。tau 原创（pi 跑在 Node 上用不着）；`defaultPlatform()` 仍优先全局 TextDecoder |
-| `compaction.ts` | **pi 压缩算法整体移植**：token 估算（usage+启发式双层；启发式为 CJK 加权 `estimateStringTokens`——CJK 1 token/字 + 其余 chars/4，偏离 pi 的纯 chars/4，D19-1）、切点选择（split-turn 感知）、摘要 prompt（pi 逐字 + 追加标识符保护条款，D19-2）、迭代更新、runCompaction 编排。摘要请求走 Agent 的同一 ChatTransport（P16——"摘要用同一模型"的 D3 约定由此自然保持），输出上限经 `TransportRequest.maxTokens` 传递 |
+| `compaction.ts` | **压缩照抄 pi 1.2.0 coding-agent**（harness 那份落后，P22 起不再作照抄源）：token 估算（usage+启发式双层；启发式为 CJK 加权 `estimateStringTokens`，D19-1；`estimateProjectedContextTokens` 不信任最近一次压缩或 context_edit 之前记录的 usage）、切点选择在会话投影上进行（custom/branch_summary 计入保留预算，超大工具结果尾部保留其工具调用，无可摘要内容时返回 undefined）、摘要 prompt（pi 逐字 + 标识符保护条款，D19-2；回合前缀用 pi 0.87.1 的 `# Conversation`/`# Instructions` 结构）、迭代更新（split turn 无历史时承接上次摘要）、序列化省略 thinking。摘要请求走 Agent 的同一 ChatTransport（D3），每次调用的 usage 汇入 `CompactionResult.usage` |
 | `branch.ts` | **pi 分支摘要算法移植**：最深公共祖先收集、预算裁剪、文件操作列表继承、branch summary prompt/preamble；供 `/tree` 放弃分支摘要与 `Agent.navigateTo()` 使用。摘要请求同走 transport，token 预算经 `options.contextWindow`（P16 签名改造） |
-| `session.ts` | **pi v3 会话格式**：SessionHeader/树形 SessionEntry（message/custom/custom_message/session_info/leaf）；`SessionStore`/`SessionRepo` 接口镜像 pi；`InMemorySessionRepo` 与 `JsonlSessionRepo`（后者只依赖 FileSystem 能力，纯内核）；`SessionRecorder`（维护 parentId 链）+ `restoreSession`（leaf→root 重建对话）。JSONL 新会话在第一条 message 条目时才写文件，之前的条目暂存在内存；`SessionMetadata.modified` = 最新条目时间，`list()` 按它排序（P21-HF-16） |
+| `projection.ts` | **日志 → 模型上下文的纯函数（P22）**：`buildContextEntries`/`buildSessionProjection`（pi session-manager：最新压缩条目在前、保留段去掉 system 消息、context_edit 按分支取最新一条、每条消息带来源条目）；转录回放 `getCurrentSystemMessage`/`getCurrentTools`/`collapseSystemMessages`/`getToolStateChanges`/`diffSystemPromptSections`（pi transcript.ts）；`sumSessionUsage` 按全部条目汇总账单用量 |
+| `session.ts` | **pi v3 会话格式，条目照抄 pi 1.2.0**：message（含 system 消息）/custom/custom_message/session_info/compaction（`systemMessage` 检查点、`usage`）/branch_summary（`usage`）/context_edit/label/usage/model_change/thinking_level_change，外加 tau 方言 leaf（单向兼容：tau 读 pi，反之不保证）；未知类型作为不透明链节点保留，坏行跳过，缺尾换行在下次追加前补齐，条目入树即深冻结。`SessionStore`/`SessionRepo` 接口镜像 pi；`InMemorySessionRepo` 与 `JsonlSessionRepo`（只依赖 FileSystem 能力）；`SessionRecorder` 维护 parentId 链、追加时 JSON 克隆，返回落盘条目。条目 id 为 8 位随机十六进制（pi generateId）。JSONL 新会话在第一条 message 条目时才写文件；`SessionMetadata.modified` = 最新条目时间，`list()` 按它排序 |
 
 ## 扩展系统（照抄 pi）
 
@@ -169,21 +170,23 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 ## 协议与数据流
 
 ```
-用户输入 → input 钩子 → messages.push(user)
+用户输入 → input 钩子 → before_agent_start → [prompt/工具有变化时追加 system 消息] → 追加 user 条目
   ↓ 循环（≤ maxTurnsPerPrompt，默认 50）
-  turn_start 钩子
-  ChatTransport(request)   ← 缺省 = POST {baseUrl}/chat/completions (stream: true)；
+  turn_start 钩子 → [阈值压缩] → [prompt/工具有变化时追加 system 消息]
+  verifyTranscript：JSON 往返重放日志 ≡ messages，否则 invalid_state
+  context → context_with_system 钩子（作用于副本）
+  ChatTransport({ messages })   ← 缺省 = POST {baseUrl}/chat/completions (stream: true)；
                              --provider anthropic 时 = POST {baseUrl}/v1/messages
   SSE 流 → text/reasoning delta 实时 yield → response_end 组装 AssistantMessage
-  messages.push(assistant)
-  对每个 toolCall：tool_call 钩子(可 block/改参) → validateToolArgs → 策略评估+审批门(P15) → execute → tool_result 钩子 → messages.push(toolResult)
+  追加 assistant 条目（失败的尝试被重试时追加 context_edit(null) 省略）
+  对每个 toolCall：tool_call 钩子(可 block/改参) → validateToolArgs → 策略评估+审批门(P15) → execute → tool_result 钩子 → 追加 toolResult 条目
   turn_end 钩子
   无 toolCalls → agent_end 钩子 → 结束
 ```
 
-**失败语义（P11，照抄 pi）**：流/网络/HTTP 失败不从 `prompt()` 抛出——它们变成 `stopReason: "error"/"aborted"` 的 assistant 消息（携带部分内容与 `errorMessage`）进入对话与会话，`turn_end`/`agent_end` 照常发出，宿主按 stopReason 渲染。可重试的失败（分类见 retry.ts）在轮间做指数退避重试：错误消息移出内存（留在会话史），`auto_retry_start/end` 经扩展事件与 AgentEvent 双通道通知，退避经 `Platform.sleep` 可被 abort 中断；无 `sleep` 缝隙则重试禁用。`Agent.resume()` 不提交新用户输入直接续跑循环（扩展 `sendMessage({triggerTurn})` 的宿主支撑）。
+**失败语义（P11，照抄 pi）**：流/网络/HTTP 失败不从 `prompt()` 抛出——它们变成 `stopReason: "error"/"aborted"` 的 assistant 消息（携带部分内容与 `errorMessage`）进入对话与会话，`turn_end`/`agent_end` 照常发出，宿主按 stopReason 渲染。可重试的失败（分类见 retry.ts）在轮间做指数退避重试：失败的尝试留在日志里，经 context_edit(null) 移出上下文（P22，pi _omitRecoveryAttempt），`auto_retry_start/end` 经扩展事件与 AgentEvent 双通道通知，退避经 `Platform.sleep` 可被 abort 中断；无 `sleep` 缝隙则重试禁用。`Agent.resume()` 不提交新用户输入直接续跑循环（扩展 `sendMessage({triggerTurn})` 的宿主支撑）。
 
-会话状态就是 `Agent.messages` 数组；传入 `session: SessionRecorder` 时每条消息在 push 点持久化为 pi v3 JSONL entry（P4 重审确认：会话是记录、内存是事实源；压缩改写内存并落 compaction entry，`messagesFromPath` 统一实现压缩/分支摘要感知重建，restore 与内存共用）。恢复 = `restoreSession(store)` → `initialMessages`。CLI 布局：`~/.tau/sessions/--<cwd slug>--/<时间戳>_<uuid>.jsonl`，`--continue` 原文件续写。**压缩**：`config.contextWindow` 配置后在 turn 之间自动触发（`tokens > contextWindow - reserveTokens`）；`/compact` 手动。**分支**：`/tree` 在同一 JSONL 树内移动 leaf，必要时生成 `branch_summary` entry；`/fork` 复制出新 session 文件并在 header 记录 `parentSession`。
+**会话日志是唯一事实（P22，推翻 P4 重审的"内存是事实源"）**：Agent 总持有一个 SessionStore（不传 `session` 时用私有 `InMemorySessionStore`，只有一条代码路径）；所有写入经单一串行写入器追加条目，`Agent.messages` 是活动路径的投影（冻结数组，每次写入后重建），每次 LLM 请求都从它构造，`verifyTranscript`（缺省开）在发出前用 JSON 往返重放日志核对。宿主补写消息走 `agent.appendMessage()`；扩展经 `ctx.sessionManager`（只读、同步）读日志、`ctx.getSystemPrompt()` 取回放出的提示。用量按全部条目汇总（`getSessionUsage()`，压缩不会让它变小，D19）。恢复 = `restoreSession(store)` 或直接把 store 交给 Agent。CLI 布局：`~/.tau/sessions/--<cwd slug>--/<时间戳>_<uuid>.jsonl`，`--continue` 原文件续写。**压缩**：`config.contextWindow` 配置后在 turn 之间自动触发（`tokens > contextWindow - reserveTokens`）；`/compact` 手动；压缩条目带 system 检查点。**分支**：`/tree` 在同一 JSONL 树内移动 leaf，必要时生成 `branch_summary` entry；`/fork` 复制出新 session 文件并在 header 记录 `parentSession`。
 
 ## 发布工程（P12）
 

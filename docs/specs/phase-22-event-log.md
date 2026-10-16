@@ -1,6 +1,6 @@
 # Phase 22：事件日志内核（日志即唯一事实）规格书
 
-> 状态：已确认（2026-10-16）。六个开放问题按建议裁定，见「风险与开放问题」；问题 1 的偏离记为 D27。
+> 状态：已完成（2026-10-16）。六个开放问题按建议裁定，见「风险与开放问题」；问题 1 的偏离记为 D27。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 22
 > 输入：P21 附录 A 中阶段为 P22 的条目（下文用条目 id 引用，实施前按 tag v1.2.0 源码重新核实）
 
@@ -95,7 +95,7 @@ interface TransportRequest {
 
 ### 扩展面（pi-parity 📍P22 行）
 
-- `ctx.sessionManager`：只读门面——`getEntries()`、`getBranch()`、`getLeafId()`、`getEntry(id)`、`buildSessionProjection()`，外加 `appendContextEdit(targetId, replacement)`。
+- `ctx.sessionManager`：只读同步门面，照抄 pi `ReadonlySessionManager` 中内核能提供的子集（见实施记录）。
 - `ctx.getSystemPrompt()`：回放转录得到的当前提示文本。
 - `api.setLabel(entryId, label?)`：写 `label` 条目。
 - `context_with_system` 事件：处理器拿到含 system 消息的完整转录（`context` 事件仍不含 system 消息，pi 语义）。
@@ -136,15 +136,15 @@ interface TransportRequest {
 
 ## 验收清单
 
-- [ ] 读 pi 1.2.0 写的真实会话样本（含 system 消息、context_edit、usage、label、model_change），投影结果与 pi `buildSessionContext` 一致（样本与期望值做成测试夹具）。
-- [ ] 自动重试后恢复会话，被放弃的尝试不再回到上下文（先写复现测试）。
-- [ ] 不变式检查在全部内核与 CLI 测试中开启且通过；人为篡改投影的测试能触发 `invalid_state`。
-- [ ] 同一会话连续两轮、prompt 与工具不变时，不追加新的 system 消息；新增一个扩展工具时只追加 `toolsAdded`。
-- [ ] OpenAI 兼容与 Anthropic 两个 transport 的请求体与 P22 之前逐字节一致（prompt 与工具不变的会话），即折叠对线格式零变化。
-- [ ] 压缩后 footer 用量含摘要调用；压缩后立即再发一轮不会触发第二次压缩。
-- [ ] 无尾随换行、半写末行、`content: null` 的会话文件都能打开。
-- [ ] pi-parity 的 📍P22 行全部改为 ✅ 或写明偏离；`node scripts/check-pi-parity.mjs` 通过。
-- [ ] DoD 通用项（见 development.md）。
+- [x] 读 pi 1.2.0 写的真实会话样本（含 system 消息、context_edit、usage、label、model_change），投影结果与 pi `buildSessionContext` 一致（样本与期望值做成测试夹具）。
+- [x] 自动重试后恢复会话，被放弃的尝试不再回到上下文（先写复现测试）。
+- [x] 不变式检查在全部内核与 CLI 测试中开启且通过；人为篡改投影的测试能触发 `invalid_state`。
+- [x] 同一会话连续两轮、prompt 与工具不变时，不追加新的 system 消息；新增一个扩展工具时只追加 `toolsAdded`。
+- [x] OpenAI 兼容与 Anthropic 两个 transport 的请求体与 P22 之前逐字节一致（prompt 与工具不变的会话），即折叠对线格式零变化。
+- [x] 压缩后 footer 用量含摘要调用；压缩后立即再发一轮不会触发第二次压缩。
+- [x] 无尾随换行、半写末行、`content: null` 的会话文件都能打开。
+- [x] pi-parity 的 📍P22 行全部改为 ✅ 或写明偏离；`node scripts/check-pi-parity.mjs` 通过。
+- [x] DoD 通用项（见 development.md）。
 
 ## 风险与开放问题
 
@@ -168,3 +168,14 @@ interface TransportRequest {
 - 改动面大：`Agent.messages` 从可写数组变成投影，宿主里所有直接 push 或改写它的地方都要改（TUI 用户 bash、/fork 重建、测试夹具）。22b 先跑一遍 grep 清单再动手。
 - pi 的 `_preparePromptAndToolLoadout` 依赖它的 sections 化系统提示；tau 的系统提示是整串文本（宿主把 AGENTS.md 等项目上下文拼进 `systemPrompt` 再交给内核，P21a）。照抄差分算法，但内核只有一个 section `prompt`：首条 system 消息的 `content` 为空、`sections.prompt` 为有效提示，渲染结果与今天的整串提示逐字节相同。更细的 section 需要宿主 API，留给 P25。
 - 预计 Breaking 有五处：消息联合加 system、JsonValue 收窄、`Agent.messages` 只读、SessionEntry 联合扩大、TransportRequest 改形。建议与 P23d（ToolResult 收敛）一起发 0.4.0，不单独发版。
+
+## 实施记录
+
+五步各自一个提交（22a/b 合并），每步 `npm run check` 与全量测试全绿。与本规格的偏差：
+
+- **`ctx.sessionManager` 不带写方法**：pi 的 `ReadonlySessionManager` 没有 `appendContextEdit`，扩展面也不暴露它，按 D7 去掉。门面是同步的（与 pi 一致），读的是 Agent 在每次写入后缓存的条目与元数据；未镜像 `getSessionDir`/`getHeader`/`getTree`。
+- **`JsonObject` 可变**：草案写成 readonly，pi 的定义是可变对象，照抄 pi。
+- **条目深冻结**：草案没有写。不变式检查比对的是日志重放与投影，而投影与日志共用消息对象；扩展原地改 `ctx.messages` 会同时改掉两边、检查发现不了。条目入树即深冻结，原地修改当场抛 TypeError；`context` 处理器拿到的是 JSON 副本，不受影响。
+- **pi 会话样本的期望值是人工推导的**：本机没有安装 pi 的依赖（不擅自安装），不能直接运行 pi 的 `buildSessionContext`。夹具按 pi session-format.md 的条目示例拼成，期望值按 pi 1.2.0 源码推导。
+- **附带修复**：条目 id 原先截取 uuidv7 的前 8 位，那是时钟高位，约 65 秒内除第一条外全部冲突、退回完整 UUID（P22 让首条变成 system 消息后暴露）；改为 8 位随机十六进制（pi generateId）。barrel 完整性测试补出 5 个漏导出的公开类型与函数。
+- **未做（按裁决留给后续阶段）**：摘要响应的 stopReason/空文本检查（P23 fail-closed）；leaf 条目保持 tau 方言（pi 1.2.0 没有 leaf 条目）。

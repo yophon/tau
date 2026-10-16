@@ -12,7 +12,7 @@ export {
 	prepareBranchEntries,
 } from "./branch.ts";
 export type { FileInfo, FileKind, FileSystem, Shell, ShellExecResult } from "./capabilities.ts";
-export { createCodingTools } from "./coding-tools.ts";
+export { createCodingTools, mutationQueueKey } from "./coding-tools.ts";
 export {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -69,11 +69,13 @@ export {
 	type CompactionReason,
 	type ContextEvent,
 	type ContextEventResult,
+	type ContextWithSystemEvent,
 	type CustomMessageInput,
 	type Extension,
 	type ExtensionAPI,
 	type ExtensionCapabilities,
 	type ExtensionContext,
+	type ExtensionErrorSink,
 	type ExtensionHandler,
 	type ExtensionHostActions,
 	type ExtensionPaths,
@@ -89,6 +91,7 @@ export {
 	type ModelSelectEventResult,
 	type ProjectTrustEvent,
 	type ProjectTrustEventResult,
+	type ReadonlySessionManager,
 	type RegisteredCommand,
 	type RegisteredCommandResult,
 	type RegisteredDiagnostic,
@@ -118,6 +121,7 @@ export {
 	type SessionBeforeTreeEvent,
 	type SessionBeforeTreeResult,
 	type SessionCompactEvent,
+	type SessionCompactFailedEvent,
 	type SessionInfoChangedEvent,
 	type SessionShutdownEvent,
 	type SessionStartEvent,
@@ -267,6 +271,7 @@ export {
 	type Tool,
 	type ToolExecutionMode,
 	type ToolResult,
+	type ToolUpdateStream,
 	validateToolArgs,
 } from "./tools.ts";
 export { type TransformTarget, transformMessages } from "./transform.ts";

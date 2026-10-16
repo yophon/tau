@@ -277,3 +277,45 @@ test("compaction checkpoints the prompt and tools; the next request needs no new
 	assert.deepEqual(last.messages[0], { role: "system", content: "BASE" });
 	assert.equal(last.tools?.length, 1);
 });
+
+test("extension surface: ctx.sessionManager reads the log, getSystemPrompt replays it, setLabel bookmarks (P22e)", async () => {
+	let ctxSeen: import("../src/extensions.ts").ExtensionContext | undefined;
+	let setLabel: ((entryId: string, label: string | undefined) => void) | undefined;
+	const registry = await ExtensionRegistry.load([
+		(api) => {
+			setLabel = api.setLabel;
+			api.on("before_agent_start", (event) => ({ systemPrompt: `${event.systemPrompt} +ext` }));
+			api.on("agent_end", (_event, ctx) => {
+				ctxSeen = ctx;
+			});
+		},
+	]);
+	const agent = new Agent({
+		config,
+		systemPrompt: "BASE",
+		extensions: registry,
+		platform: fakePlatform([makeSseResponse(textTurn("one")), makeSseResponse(textTurn("two"))]),
+	});
+	await drain(agent.prompt("first"));
+	assert.ok(ctxSeen?.sessionManager && ctxSeen.getSystemPrompt);
+	const sessionManager = ctxSeen.sessionManager;
+	assert.equal(ctxSeen.getSystemPrompt(), "BASE +ext", "the rewritten prompt is what the transcript replays (D27)");
+	const branch = sessionManager.getBranch();
+	assert.deepEqual(
+		branch.map((entry) => (entry.type === "message" ? entry.message.role : entry.type)),
+		["system", "user", "assistant"],
+	);
+	assert.equal(sessionManager.getLeafId(), branch.at(-1)?.id);
+	assert.equal(sessionManager.getLeafEntry()?.id, branch.at(-1)?.id);
+	assert.deepEqual(
+		sessionManager.buildSessionProjection().messages.map((message) => message.role),
+		agent.messages.map((message) => message.role),
+	);
+	const userEntry = branch[1];
+	setLabel?.(userEntry.id, "start");
+	assert.throws(() => setLabel?.("missing", "x"), /not found/);
+	await drain(agent.prompt("second"));
+	assert.equal(sessionManager.getLabel(userEntry.id), "start");
+	assert.ok(sessionManager.getEntries().some((entry) => entry.type === "label"));
+	assert.equal(agent.messages.filter((message) => message.role === "user").length, 2, "labels never enter context");
+});

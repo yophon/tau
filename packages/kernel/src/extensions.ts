@@ -5,7 +5,7 @@ import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, Usage
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
-import { getCurrentSystemMessage } from "./projection.ts";
+import { getCurrentSystemMessage, type SessionProjection } from "./projection.ts";
 import type { SessionEntry } from "./session.ts";
 import { assertToolSchema, type Tool, type ToolResult } from "./tools.ts";
 
@@ -77,6 +77,37 @@ export interface ExtensionContext {
 	 * backoff), as in pi. No-op when the agent is idle.
 	 */
 	abort?: () => void;
+	/** Read-only view of the session log the agent's context is built from (pi ReadonlySessionManager, P22). */
+	sessionManager?: ReadonlySessionManager;
+	/** The system prompt the model currently has: the transcript's system messages replayed (P22). */
+	getSystemPrompt?: () => string;
+}
+
+/**
+ * Synchronous, read-only view of the agent's session log — the subset of pi's
+ * ReadonlySessionManager the kernel can serve from its own state (P22). It
+ * reflects the log as of the agent's last write. pi members not mirrored:
+ * getSessionDir, getHeader, getTree (host concerns; the entries carry the tree).
+ */
+export interface ReadonlySessionManager {
+	getCwd(): string;
+	getSessionId(): string;
+	/** JSONL path; undefined for in-memory sessions. */
+	getSessionFile(): string | undefined;
+	getSessionName(): string | undefined;
+	getLeafId(): string | null;
+	getLeafEntry(): SessionEntry | undefined;
+	getEntry(id: string): SessionEntry | undefined;
+	/** Latest label set on an entry (label entries; undefined clears). */
+	getLabel(id: string): string | undefined;
+	/** Path from the root to `fromId` (default: the leaf). */
+	getBranch(fromId?: string): SessionEntry[];
+	/** Every entry of every branch, in append order. */
+	getEntries(): SessionEntry[];
+	/** Compaction-aware entries of the active path (pi buildContextEntries). */
+	buildContextEntries(): SessionEntry[];
+	/** Model context of the active path with source entries (pi buildSessionProjection). */
+	buildSessionProjection(): SessionProjection;
 }
 
 /** Handler signature, as in pi: returning undefined/void means "no opinion". */
@@ -628,6 +659,9 @@ export interface ExtensionAPI {
 	/** Set the session's display name. */
 	setSessionName(name: string): void;
 
+	/** Set or clear (undefined) a label on an entry: a bookmark that never enters context (pi). */
+	setLabel(entryId: string, label: string | undefined): void;
+
 	/**
 	 * Register a tool the model can call. Same-name registrations override
 	 * (later wins). `risk` self-declares the tool's risk for the permission
@@ -729,6 +763,7 @@ export interface ExtensionHostActions {
 	sendUserMessage?(content: UserContent, options?: { deliverAs?: "steer" | "followUp" }): void;
 	appendEntry?(customType: string, data: unknown): void;
 	setSessionName?(name: string): void;
+	setLabel?(entryId: string, label: string | undefined): void;
 	/** Abort the current agent operation (ctx.abort backing). */
 	abort?(): void;
 	/** Host-run submission of a fresh prompt (backs sendUserMessage while idle). */
@@ -845,6 +880,7 @@ export class ExtensionRegistry {
 			sendUserMessage: (content, options) => this.requireHostActions("sendUserMessage")(content, options),
 			appendEntry: (customType, data) => this.requireHostActions("appendEntry")(customType, data),
 			setSessionName: (name) => this.requireHostActions("setSessionName")(name),
+			setLabel: (entryId, label) => this.requireHostActions("setLabel")(entryId, label),
 		};
 		for (const extension of extensions) {
 			await extension(api);

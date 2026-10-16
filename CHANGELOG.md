@@ -79,6 +79,13 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P22, pi extension surface): `ctx.sessionManager` — a synchronous,
+  read-only view of the session log (pi ReadonlySessionManager subset:
+  getEntries/getBranch/getLeafId/getLeafEntry/getEntry/getLabel/
+  buildContextEntries/buildSessionProjection/session id, file, cwd, name);
+  `ctx.getSystemPrompt()` returns the prompt the transcript replays to;
+  `api.setLabel(entryId, label)` writes `label` entries (host action
+  `setLabel`).
 - Kernel (P22, D19): usage accounting from the log. `CompactionResult.usage`
   and the compaction / branch_summary entries record the summarization calls
   (priced with the host pricing); `ToolResult.usage` flows into
@@ -157,6 +164,10 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
 
 ### Fixed
+- Kernel (P22): the barrel now exports `ToolUpdateStream`,
+  `ExtensionErrorSink`, `SessionCompactFailedEvent`, `ContextWithSystemEvent`
+  and `mutationQueueKey`, which public signatures already referenced; a
+  barrel-completeness test keeps it that way (pi 0.86.0 #9642).
 - Kernel (P22, pi 0.86.0 #9740): a tool-result tail larger than the keep budget
   made the cut fall back to the first message, so compaction sent an empty
   summary request and wrote an entry that kept everything — every turn. The cut

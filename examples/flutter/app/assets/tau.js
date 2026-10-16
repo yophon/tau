@@ -4,7 +4,7 @@
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-  // ../../../test-fixtures/quickjs/polyfills.ts
+  // test-fixtures/quickjs/polyfills.ts
   function define(target, name, value) {
     if (!(name in target)) {
       Object.defineProperty(target, name, { value, writable: true, configurable: true });
@@ -42,7 +42,7 @@
     return this.split(search).join(replacement);
   });
 
-  // ../../../packages/kernel/src/abort.ts
+  // packages/kernel/src/abort.ts
   var AbortHandle = class {
     constructor() {
       __publicField(this, "signal");
@@ -87,7 +87,7 @@
     }
   };
 
-  // ../../../packages/kernel/src/errors.ts
+  // packages/kernel/src/errors.ts
   var TauError = class extends Error {
     constructor(code, message, cause) {
       super(message, cause === void 0 ? void 0 : { cause });
@@ -118,13 +118,17 @@
     return value instanceof Error ? value : new Error(String(value));
   }
 
-  // ../../../packages/kernel/src/messages.ts
+  // packages/kernel/src/messages.ts
   function computeUsageCost(usage, pricing) {
     const input = usage.input / 1e6 * pricing.inputPerMTok;
     const output = usage.output / 1e6 * pricing.outputPerMTok;
     const cacheRead = pricing.cacheReadPerMTok === void 0 ? 0 : usage.cacheRead / 1e6 * pricing.cacheReadPerMTok;
     const cacheWrite = pricing.cacheWritePerMTok === void 0 ? 0 : usage.cacheWrite / 1e6 * pricing.cacheWritePerMTok;
     return { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite };
+  }
+  function userContentText(content) {
+    if (typeof content === "string") return content;
+    return content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
   }
   function emptyUsage() {
     return {
@@ -136,19 +140,244 @@
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
     };
   }
+  function contentText(content, separator = "") {
+    if (typeof content === "string") return content;
+    const parts = [];
+    for (const block of content) if (block.type === "text" && block.text !== void 0) parts.push(block.text);
+    return parts.join(separator);
+  }
+  function combineUsage(first, second) {
+    return {
+      input: first.input + second.input,
+      output: first.output + second.output,
+      cacheRead: first.cacheRead + second.cacheRead,
+      cacheWrite: first.cacheWrite + second.cacheWrite,
+      totalTokens: first.totalTokens + second.totalTokens,
+      cost: {
+        input: first.cost.input + second.cost.input,
+        output: first.cost.output + second.cost.output,
+        cacheRead: first.cost.cacheRead + second.cost.cacheRead,
+        cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
+        total: first.cost.total + second.cost.total
+      }
+    };
+  }
   function messageText(message) {
     if (message.role === "compactionSummary" || message.role === "branchSummary") return message.summary;
-    if (message.role === "user" || message.role === "custom") {
-      if (typeof message.content === "string") return message.content;
-      return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
-    }
-    return message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
+    return contentText(message.content);
   }
   function toolCallsOf(message) {
     return message.content.filter((block) => block.type === "toolCall");
   }
 
-  // ../../../packages/kernel/src/compaction.ts
+  // packages/kernel/src/projection.ts
+  function isSystemMessage(message) {
+    return message.role === "system";
+  }
+  function getSystemMessageText(message) {
+    const parts = [contentText(message.content, "\n")];
+    for (const text of Object.values(message.sections ?? {})) {
+      if (text !== null) parts.push(text);
+    }
+    return parts.filter((part) => part.length > 0).join("\n\n");
+  }
+  function renderSystemMessageUpdate(message) {
+    const parts = [];
+    const text = contentText(message.content, "\n");
+    if (text.length > 0) parts.push(text);
+    for (const [name, value] of Object.entries(message.sections ?? {})) {
+      parts.push(
+        value === null ? `Removed system prompt section "${name}".` : `Updated system prompt section "${name}":
+
+${value}`
+      );
+    }
+    return parts.join("\n\n");
+  }
+  function getCurrentTools(messages) {
+    const tools = /* @__PURE__ */ new Map();
+    for (const message of messages) {
+      if (!isSystemMessage(message)) continue;
+      for (const tool of message.toolsRemoved ?? []) tools.delete(tool.name);
+      for (const tool of message.toolsAdded ?? []) tools.set(tool.name, tool);
+    }
+    return [...tools.values()];
+  }
+  function getCurrentSystemMessage(messages) {
+    const content = [];
+    const sections = /* @__PURE__ */ new Map();
+    let timestamp;
+    for (const message of messages) {
+      if (!isSystemMessage(message)) continue;
+      timestamp ?? (timestamp = message.timestamp);
+      const text = contentText(message.content, "\n");
+      if (text.length > 0) content.push(text);
+      for (const [name, value] of Object.entries(message.sections ?? {})) {
+        if (value === null) sections.delete(name);
+        else sections.set(name, value);
+      }
+    }
+    const tools = getCurrentTools(messages);
+    if (timestamp === void 0 && tools.length === 0) return void 0;
+    return {
+      role: "system",
+      content: content.join("\n\n"),
+      ...sections.size > 0 ? { sections: Object.fromEntries(sections) } : {},
+      ...tools.length > 0 ? { toolsAdded: tools } : {},
+      timestamp: timestamp ?? 0
+    };
+  }
+  function getCurrentSystemPrompt(messages) {
+    const message = getCurrentSystemMessage(messages);
+    return message ? getSystemMessageText(message) : "";
+  }
+  function collapseSystemMessages(messages) {
+    const head = getCurrentSystemMessage(messages);
+    const rest = messages.filter((message) => message.role !== "system");
+    return head ? [head, ...rest] : rest;
+  }
+  function toToolDeclaration(tool) {
+    return {
+      name: tool.name,
+      description: tool.description,
+      parameters: JSON.parse(JSON.stringify(tool.parameters))
+    };
+  }
+  function declarationsEqual(left, right) {
+    return JSON.stringify(toToolDeclaration(left)) === JSON.stringify(toToolDeclaration(right));
+  }
+  function getToolStateChanges(previous, current) {
+    const previousTools = new Map(previous.map((tool) => [tool.name, tool]));
+    const currentTools = new Map(current.map((tool) => [tool.name, tool]));
+    return {
+      toolsAdded: current.filter((tool) => {
+        const previousTool = previousTools.get(tool.name);
+        return previousTool === void 0 || !declarationsEqual(previousTool, tool);
+      }).map(toToolDeclaration),
+      toolsRemoved: previous.filter((tool) => {
+        const currentTool = currentTools.get(tool.name);
+        return currentTool === void 0 || !declarationsEqual(tool, currentTool);
+      }).map((tool) => ({ name: tool.name }))
+    };
+  }
+  function diffSystemPromptSections(previous, current) {
+    const patch = {};
+    for (const [name, text] of Object.entries(current)) {
+      if (previous[name] !== text) patch[name] = text;
+    }
+    for (const name of Object.keys(previous)) {
+      if (current[name] === void 0) patch[name] = null;
+    }
+    return Object.keys(patch).length > 0 ? patch : void 0;
+  }
+  function normalizeMessageContent(message) {
+    return sessionEntryToContextMessages({ type: "message", id: "", parentId: null, timestamp: "", message })[0];
+  }
+  function entryTime(entry) {
+    return Date.parse(entry.timestamp) || 0;
+  }
+  function sessionEntryToContextMessages(entry) {
+    switch (entry.type) {
+      case "message": {
+        const message = entry.message;
+        if (message.role === "system" && message.content == null) return [{ ...message, content: "" }];
+        if ((message.role === "user" || message.role === "assistant" || message.role === "toolResult") && message.content == null) {
+          return [{ ...message, content: [] }];
+        }
+        return [message];
+      }
+      case "custom_message":
+        return [
+          {
+            role: "custom",
+            customType: entry.customType,
+            content: entry.content ?? [],
+            display: entry.display,
+            details: entry.details,
+            timestamp: entryTime(entry)
+          }
+        ];
+      case "branch_summary":
+        return entry.summary ? [{ role: "branchSummary", summary: entry.summary, fromId: entry.fromId, timestamp: entryTime(entry) }] : [];
+      case "compaction": {
+        const summary = {
+          role: "compactionSummary",
+          summary: entry.summary,
+          tokensBefore: entry.tokensBefore,
+          timestamp: entryTime(entry)
+        };
+        return entry.systemMessage ? [entry.systemMessage, summary] : [summary];
+      }
+      default:
+        return [];
+    }
+  }
+  function buildContextEntries(path) {
+    let compactionIndex = -1;
+    for (let i = path.length - 1; i >= 0; i--) {
+      if (path[i].type === "compaction") {
+        compactionIndex = i;
+        break;
+      }
+    }
+    if (compactionIndex < 0) return [...path];
+    const compaction = path[compactionIndex];
+    if (compaction.type !== "compaction") return [...path];
+    const entries = [compaction];
+    let foundFirstKept = false;
+    for (let i = 0; i < compactionIndex; i++) {
+      const entry = path[i];
+      if (entry.id === compaction.firstKeptEntryId) foundFirstKept = true;
+      if (foundFirstKept && !(entry.type === "message" && entry.message.role === "system")) entries.push(entry);
+    }
+    entries.push(...path.slice(compactionIndex + 1));
+    return entries;
+  }
+  function applyContextEdit(messages, edit) {
+    if (!edit) return messages;
+    const replacement = edit.replacement;
+    if (replacement === null) return [];
+    return messages.map((message) => {
+      if (message.role !== "user" && message.role !== "assistant" && message.role !== "toolResult" && message.role !== "custom") {
+        return message;
+      }
+      const content = (message.role === "assistant" || message.role === "toolResult") && typeof replacement.content === "string" ? [{ type: "text", text: replacement.content }] : replacement.content;
+      return { ...message, content };
+    });
+  }
+  function buildSessionProjection(path) {
+    const contextEntries = buildContextEntries(path);
+    const edits = /* @__PURE__ */ new Map();
+    for (const entry of contextEntries) {
+      if (entry.type === "context_edit") edits.set(entry.targetId, entry);
+    }
+    const entries = contextEntries.map(
+      (sourceEntry, index) => ({
+        sourceEntry,
+        // An older compaction can be retained when its id lies inside the newest kept
+        // range; only the newest one (index 0) contributes a checkpoint and summary.
+        messages: sourceEntry.type === "compaction" && index > 0 ? [] : applyContextEdit(sessionEntryToContextMessages(sourceEntry), edits.get(sourceEntry.id))
+      })
+    );
+    return { entries, messages: entries.flatMap((entry) => entry.messages) };
+  }
+  function sumSessionUsage(entries) {
+    let total = emptyUsage();
+    for (const entry of entries) {
+      let usage;
+      if (entry.type === "usage") usage = entry.usage;
+      else if (entry.type === "compaction" || entry.type === "branch_summary") usage = entry.usage;
+      else if (entry.type === "message") {
+        const message = entry.message;
+        if (message.role === "assistant") usage = message.usage;
+        else if (message.role === "toolResult") usage = message.usage;
+      }
+      if (usage) total = combineUsage(total, usage);
+    }
+    return total;
+  }
+
+  // packages/kernel/src/compaction.ts
   var DEFAULT_COMPACTION_SETTINGS = {
     enabled: true,
     reserveTokens: 16384,
@@ -159,7 +388,9 @@
   }
   function getAssistantUsage(message) {
     if (message.role !== "assistant") return void 0;
-    if (message.stopReason === "aborted" || message.stopReason === "error") return void 0;
+    if (message.stopReason === "aborted" || message.stopReason === "error" || message.stopReason === "pending") {
+      return void 0;
+    }
     return calculateContextTokens(message.usage) > 0 ? message.usage : void 0;
   }
   var ESTIMATED_IMAGE_CHARS = 4800;
@@ -217,6 +448,14 @@
       case "compactionSummary":
       case "branchSummary":
         return estimateStringTokens(message.summary);
+      case "system": {
+        let tokens = contentTokens(message.content);
+        for (const section of Object.values(message.sections ?? {})) {
+          if (section) tokens += estimateStringTokens(section);
+        }
+        if (message.toolsAdded) tokens += estimateStringTokens(safeJsonStringify(message.toolsAdded));
+        return tokens;
+      }
     }
   }
   function estimateContextTokens(messages) {
@@ -238,82 +477,120 @@
     for (let i = usageInfo.index + 1; i < messages.length; i++) trailingTokens += estimateTokens(messages[i]);
     return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageInfo.index };
   }
+  function estimateProjectedContextTokens(projection, branchEntries) {
+    const estimate = estimateContextTokens(projection.messages);
+    if (estimate.lastUsageIndex !== null) {
+      let projectedMessageIndex = 0;
+      let usageEntryId;
+      for (const entry of projection.entries) {
+        const nextMessageIndex = projectedMessageIndex + entry.messages.length;
+        if (estimate.lastUsageIndex < nextMessageIndex) {
+          usageEntryId = entry.sourceEntry.id;
+          break;
+        }
+        projectedMessageIndex = nextMessageIndex;
+      }
+      const usageEntryIndex = usageEntryId ? branchEntries.findIndex((entry) => entry.id === usageEntryId) : -1;
+      let latestInvalidatingEntryIndex = -1;
+      for (let i = branchEntries.length - 1; i >= 0; i--) {
+        const entry = branchEntries[i];
+        if (entry.type === "context_edit" || entry.type === "compaction") {
+          latestInvalidatingEntryIndex = i;
+          break;
+        }
+      }
+      if (usageEntryIndex > latestInvalidatingEntryIndex) return estimate;
+    }
+    const currentSystem = getCurrentSystemMessage(projection.messages);
+    let tokens = currentSystem ? estimateTokens(currentSystem) : 0;
+    for (const message of projection.messages) {
+      if (message.role !== "system") tokens += estimateTokens(message);
+    }
+    return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
+  }
   function shouldCompact(contextTokens, contextWindow, settings) {
     if (!settings.enabled) return false;
     return contextTokens > contextWindow - settings.reserveTokens;
   }
-  function entryMessage(entry) {
-    if (entry.type === "message") return entry.message;
-    if (entry.type === "branch_summary") {
-      return {
-        role: "branchSummary",
-        summary: entry.summary,
-        fromId: entry.fromId,
-        timestamp: Date.parse(entry.timestamp) || 0
-      };
+  function isCutPointMessage(message) {
+    switch (message.role) {
+      case "user":
+      case "assistant":
+      case "custom":
+      case "branchSummary":
+      case "compactionSummary":
+        return true;
+      default:
+        return false;
     }
-    if (entry.type === "custom_message") {
-      return {
-        role: "custom",
-        customType: entry.customType,
-        content: entry.content,
-        display: entry.display,
-        details: entry.details,
-        timestamp: Date.parse(entry.timestamp) || 0
-      };
-    }
-    return void 0;
   }
-  function findValidCutPoints(entries, startIndex, endIndex) {
-    const cutPoints = [];
-    for (let i = startIndex; i < endIndex; i++) {
-      const entry = entries[i];
-      if (entry.type === "message" && entry.message.role !== "toolResult") cutPoints.push(i);
-      else if (entry.type === "custom_message" || entry.type === "branch_summary") cutPoints.push(i);
+  function isTurnStartMessage(message) {
+    switch (message.role) {
+      case "user":
+      case "custom":
+      case "branchSummary":
+      case "compactionSummary":
+        return true;
+      default:
+        return false;
     }
-    return cutPoints;
   }
-  function findTurnStartIndex(entries, entryIndex, startIndex) {
+  function isProjectedTurnStart(entry) {
+    if (entry.sourceEntry.type === "compaction") return false;
+    return entry.messages.some(isTurnStartMessage);
+  }
+  function findProjectedTurnStartIndex(entries, entryIndex, startIndex) {
     for (let i = entryIndex; i >= startIndex; i--) {
-      const entry = entries[i];
-      if (entry.type === "custom_message" || entry.type === "branch_summary") return i;
-      if (entry.type === "message" && entry.message.role === "user") return i;
+      if (isProjectedTurnStart(entries[i])) return i;
     }
     return -1;
   }
-  function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
-    const cutPoints = findValidCutPoints(entries, startIndex, endIndex);
+  function findProjectedCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
+    const cutPoints = [];
+    for (let i = startIndex; i < endIndex; i++) {
+      const entry = entries[i];
+      if (entry.sourceEntry.type !== "compaction" && entry.messages.some(isCutPointMessage)) cutPoints.push(i);
+    }
     if (cutPoints.length === 0) {
       return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
     }
     let accumulatedTokens = 0;
+    let exceededBudget = false;
     let cutIndex = cutPoints[0];
     for (let i = endIndex - 1; i >= startIndex; i--) {
-      const entry = entries[i];
-      if (entry.type !== "message") continue;
-      accumulatedTokens += estimateTokens(entry.message);
+      const messageTokens = entries[i].messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+      if (messageTokens === 0) continue;
+      accumulatedTokens += messageTokens;
       if (accumulatedTokens >= keepRecentTokens) {
-        for (const candidate of cutPoints) {
-          if (candidate >= i) {
-            cutIndex = candidate;
-            break;
-          }
-        }
+        exceededBudget = true;
+        cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
         break;
       }
     }
+    const suffix = entries.slice(cutIndex + 1, endIndex);
+    const isIntrinsicallyVisible = (entry) => entry.sourceEntry.type !== "context_edit" && sessionEntryToContextMessages(entry.sourceEntry).length > 0;
+    const isOmitted = (entry) => isIntrinsicallyVisible(entry) && entry.messages.length === 0;
+    const omittedSuffixIds = new Set(suffix.filter(isOmitted).map((entry) => entry.sourceEntry.id));
+    const hasExternalReplacement = suffix.some(
+      (entry) => entry.sourceEntry.type === "context_edit" && entry.sourceEntry.replacement !== null && !omittedSuffixIds.has(entry.sourceEntry.targetId)
+    );
+    const isRecoveryOmissionSuffix = exceededBudget && !hasExternalReplacement && suffix.some(
+      (entry) => entry.sourceEntry.type === "message" && entry.sourceEntry.message.role === "assistant" && isOmitted(entry)
+    ) && suffix.every(
+      (entry) => entry.sourceEntry.type !== "compaction" && (!isIntrinsicallyVisible(entry) || isOmitted(entry))
+    );
+    if (isRecoveryOmissionSuffix) cutIndex++;
     while (cutIndex > startIndex) {
-      const prevEntry = entries[cutIndex - 1];
-      if (prevEntry.type === "compaction" || prevEntry.type === "message") break;
+      const previous = entries[cutIndex - 1];
+      if (previous.sourceEntry.type === "compaction" || previous.messages.length > 0) break;
       cutIndex--;
     }
-    const cutEntry = entries[cutIndex];
-    const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
-    const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+    const startsTurn = isProjectedTurnStart(entries[cutIndex]);
+    const turnStartIndex = startsTurn ? -1 : findProjectedTurnStartIndex(entries, cutIndex, startIndex);
     return {
       firstKeptEntryIndex: cutIndex,
       turnStartIndex,
-      isSplitTurn: !isUserMessage && turnStartIndex !== -1
+      isSplitTurn: !startsTurn && turnStartIndex !== -1
     };
   }
   var SUMMARIZATION_SYSTEM_PROMPT = `You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.
@@ -391,20 +668,20 @@ Use this EXACT format:
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.
 Preserve all opaque identifiers exactly as written (UUIDs, commit hashes, file paths, URLs, session ids, tokens). Never shorten, reconstruct, or paraphrase them.`;
-  var TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+  var TURN_PREFIX_SUMMARIZATION_PROMPT = `The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
 
-Summarize the prefix to provide context for the retained suffix:
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
 ## Original Request
-[What did the user ask for in this turn?]
+[What did the user ask for?]
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+## Progress So Far
+- [Key decisions and work completed in these messages]
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
 
-Be concise. Focus on what's needed to understand the kept suffix.`;
+Only summarize information explicitly present above. Do not infer or recreate later messages.`;
   var TOOL_RESULT_MAX_CHARS = 2e3;
   function truncateForSummary(text, maxChars) {
     if (text.length <= maxChars) return text;
@@ -428,17 +705,14 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
           break;
         case "assistant": {
           const textParts = [];
-          const thinkingParts = [];
           const toolCalls = [];
           for (const block of message.content) {
             if (block.type === "text") textParts.push(block.text);
-            else if (block.type === "thinking") thinkingParts.push(block.thinking);
             else if (block.type === "toolCall") {
               const argsStr = Object.entries(block.arguments).map(([k, v]) => `${k}=${safeJsonStringify(v)}`).join(", ");
               toolCalls.push(`${block.name}(${argsStr})`);
             }
           }
-          if (thinkingParts.length > 0) parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
           if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
           if (toolCalls.length > 0) parts.push(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
           break;
@@ -448,6 +722,8 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
           if (content) parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_MAX_CHARS)}`);
           break;
         }
+        case "system":
+          break;
       }
     }
     return parts.join("\n\n");
@@ -480,47 +756,52 @@ ${modifiedFiles.join("\n")}
 
 ${sections.join("\n\n")}`;
   }
-  function prepareCompaction(pathEntries, settings, currentMessages) {
-    if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
-      return void 0;
-    }
-    let prevCompactionIndex = -1;
-    for (let i = pathEntries.length - 1; i >= 0; i--) {
-      if (pathEntries[i].type === "compaction") {
-        prevCompactionIndex = i;
-        break;
+  function extractFileOperations(messages, previousCompaction) {
+    const fileOps = { read: /* @__PURE__ */ new Set(), written: /* @__PURE__ */ new Set(), edited: /* @__PURE__ */ new Set() };
+    if (previousCompaction?.type === "compaction" && !previousCompaction.fromHook && previousCompaction.details) {
+      const details = previousCompaction.details;
+      if (Array.isArray(details.readFiles)) {
+        for (const file of details.readFiles) if (typeof file === "string") fileOps.read.add(file);
+      }
+      if (Array.isArray(details.modifiedFiles)) {
+        for (const file of details.modifiedFiles) if (typeof file === "string") fileOps.edited.add(file);
       }
     }
+    for (const message of messages) extractFileOpsFromMessage(message, fileOps);
+    return fileOps;
+  }
+  function messagesForCompaction(entry) {
+    if (entry.sourceEntry.type === "compaction") return [];
+    return entry.messages.filter((message) => message.role !== "system");
+  }
+  function prepareCompaction(pathEntries, settings) {
+    if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") return void 0;
+    const projection = buildSessionProjection(pathEntries);
+    const projectedEntries = projection.entries;
+    const prevCompactionIndex = projectedEntries.findIndex(
+      (entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0
+    );
     let previousSummary;
     let boundaryStart = 0;
-    if (prevCompactionIndex >= 0) {
-      const prevCompaction = pathEntries[prevCompactionIndex];
-      if (prevCompaction.type === "compaction") {
-        previousSummary = prevCompaction.summary;
-        const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
-        boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
-      }
+    const previousCompaction = prevCompactionIndex >= 0 ? projectedEntries[prevCompactionIndex].sourceEntry : void 0;
+    if (previousCompaction?.type === "compaction") {
+      previousSummary = previousCompaction.summary;
+      boundaryStart = prevCompactionIndex + 1;
     }
-    const boundaryEnd = pathEntries.length;
-    const tokensBefore = estimateContextTokens(currentMessages).tokens;
-    const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
-    const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
+    const tokensBefore = estimateProjectedContextTokens(projection, pathEntries).tokens;
+    const cutPoint = findProjectedCutPoint(
+      projectedEntries,
+      boundaryStart,
+      projectedEntries.length,
+      settings.keepRecentTokens
+    );
+    const firstKeptEntry = projectedEntries[cutPoint.firstKeptEntryIndex]?.sourceEntry;
     if (!firstKeptEntry?.id) return void 0;
     const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
-    const messagesToSummarize = [];
-    for (let i = boundaryStart; i < historyEnd; i++) {
-      const message = entryMessage(pathEntries[i]);
-      if (message) messagesToSummarize.push(message);
-    }
-    const turnPrefixMessages = [];
-    if (cutPoint.isSplitTurn) {
-      for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-        const message = entryMessage(pathEntries[i]);
-        if (message) turnPrefixMessages.push(message);
-      }
-    }
-    const fileOps = { read: /* @__PURE__ */ new Set(), written: /* @__PURE__ */ new Set(), edited: /* @__PURE__ */ new Set() };
-    for (const message of messagesToSummarize) extractFileOpsFromMessage(message, fileOps);
+    const messagesToSummarize = projectedEntries.slice(boundaryStart, historyEnd).flatMap(messagesForCompaction);
+    const turnPrefixMessages = cutPoint.isSplitTurn ? projectedEntries.slice(cutPoint.turnStartIndex, cutPoint.firstKeptEntryIndex).flatMap(messagesForCompaction) : [];
+    if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return void 0;
+    const fileOps = extractFileOperations(messagesToSummarize, previousCompaction);
     for (const message of turnPrefixMessages) extractFileOpsFromMessage(message, fileOps);
     return {
       firstKeptEntryId: firstKeptEntry.id,
@@ -534,9 +815,12 @@ ${sections.join("\n\n")}`;
     };
   }
   async function completeText(transport, systemPrompt, promptText, maxTokens, signal) {
+    const now = Date.now();
     const stream = transport({
-      systemPrompt,
-      messages: [{ role: "user", content: promptText, timestamp: Date.now() }],
+      messages: [
+        { role: "system", content: systemPrompt, timestamp: now },
+        { role: "user", content: promptText, timestamp: now }
+      ],
       maxTokens,
       signal
     });
@@ -545,9 +829,9 @@ ${sections.join("\n\n")}`;
       if (event.type === "response_end") final = event.message;
     }
     if (!final) throw new TauError("compaction_failed", "Summarization returned no message");
-    return messageText(final);
+    return { text: messageText(final), usage: final.usage };
   }
-  async function generateSummary(transport, messages, options) {
+  async function generateSummaryWithUsage(transport, messages, options) {
     const maxTokens = Math.floor(0.8 * options.reserveTokens);
     let basePrompt = options.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
     if (options.customInstructions) {
@@ -573,39 +857,49 @@ ${options.previousSummary}
   async function runCompaction(transport, preparation, customInstructions, signal) {
     const { settings, previousSummary } = preparation;
     let summary;
+    let usage;
     if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
-      const historySummary = preparation.messagesToSummarize.length > 0 ? await generateSummary(transport, preparation.messagesToSummarize, {
-        reserveTokens: settings.reserveTokens,
-        customInstructions,
-        previousSummary,
-        signal
-      }) : "No prior history.";
-      const prefixPrompt = `<conversation>
+      let historyText = previousSummary ?? "No prior history.";
+      let historyUsage;
+      if (preparation.messagesToSummarize.length > 0) {
+        const history = await generateSummaryWithUsage(transport, preparation.messagesToSummarize, {
+          reserveTokens: settings.reserveTokens,
+          customInstructions,
+          previousSummary,
+          signal
+        });
+        historyText = history.text;
+        historyUsage = history.usage;
+      }
+      const prefixPrompt = `# Conversation
 ${serializeConversation(preparation.turnPrefixMessages)}
-</conversation>
 
+# Instructions
 ${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-      const turnPrefixSummary = await completeText(
+      const turnPrefix = await completeText(
         transport,
         SUMMARIZATION_SYSTEM_PROMPT,
         prefixPrompt,
         Math.floor(0.5 * settings.reserveTokens),
         signal
       );
-      summary = `${historySummary}
+      summary = `${historyText}
 
 ---
 
 **Turn Context (split turn):**
 
-${turnPrefixSummary}`;
+${turnPrefix.text}`;
+      usage = historyUsage ? combineUsage(historyUsage, turnPrefix.usage) : turnPrefix.usage;
     } else {
-      summary = await generateSummary(transport, preparation.messagesToSummarize, {
+      const result = await generateSummaryWithUsage(transport, preparation.messagesToSummarize, {
         reserveTokens: settings.reserveTokens,
         customInstructions,
         previousSummary,
         signal
       });
+      summary = result.text;
+      usage = result.usage;
     }
     const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
     summary += formatFileOperations(readFiles, modifiedFiles);
@@ -613,11 +907,12 @@ ${turnPrefixSummary}`;
       summary,
       firstKeptEntryId: preparation.firstKeptEntryId,
       tokensBefore: preparation.tokensBefore,
+      usage,
       details: { readFiles, modifiedFiles }
     };
   }
 
-  // ../../../packages/kernel/src/branch.ts
+  // packages/kernel/src/branch.ts
   async function collectEntriesForBranchSummary(store, oldLeafId, targetId) {
     if (!oldLeafId) {
       return { entries: [], commonAncestorId: null };
@@ -767,14 +1062,87 @@ ${conversationText}
 </conversation>
 
 ${instructions}`;
-    let summary = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
-    summary = BRANCH_SUMMARY_PREAMBLE + summary;
+    const generated = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
+    let summary = BRANCH_SUMMARY_PREAMBLE + generated.text;
     const { readFiles, modifiedFiles } = computeFileLists(fileOps);
     summary += formatFileOperations(readFiles, modifiedFiles);
-    return { summary: summary || "No summary generated", readFiles, modifiedFiles };
+    return { summary: summary || "No summary generated", readFiles, modifiedFiles, usage: generated.usage };
   }
 
-  // ../../../packages/kernel/src/sse.ts
+  // packages/kernel/src/json.ts
+  var VALID_JSON_ESCAPES = /* @__PURE__ */ new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+  function isControlCharacter(char) {
+    const codePoint = char.codePointAt(0);
+    return codePoint !== void 0 && codePoint >= 0 && codePoint <= 31;
+  }
+  function escapeControlCharacter(char) {
+    switch (char) {
+      case "\b":
+        return "\\b";
+      case "\f":
+        return "\\f";
+      case "\n":
+        return "\\n";
+      case "\r":
+        return "\\r";
+      case "	":
+        return "\\t";
+      default:
+        return `\\u${char.codePointAt(0)?.toString(16).padStart(4, "0") ?? "0000"}`;
+    }
+  }
+  function repairJson(json) {
+    let repaired = "";
+    let inString = false;
+    for (let index = 0; index < json.length; index++) {
+      const char = json[index];
+      if (!inString) {
+        repaired += char;
+        if (char === '"') inString = true;
+        continue;
+      }
+      if (char === '"') {
+        repaired += char;
+        inString = false;
+        continue;
+      }
+      if (char === "\\") {
+        const nextChar = json[index + 1];
+        if (nextChar === void 0) {
+          repaired += "\\\\";
+          continue;
+        }
+        if (nextChar === "u") {
+          const unicodeDigits = json.slice(index + 2, index + 6);
+          if (/^[0-9a-fA-F]{4}$/.test(unicodeDigits)) {
+            repaired += `\\u${unicodeDigits}`;
+            index += 5;
+            continue;
+          }
+        }
+        if (VALID_JSON_ESCAPES.has(nextChar)) {
+          repaired += `\\${nextChar}`;
+          index += 1;
+          continue;
+        }
+        repaired += "\\\\";
+        continue;
+      }
+      repaired += isControlCharacter(char) ? escapeControlCharacter(char) : char;
+    }
+    return repaired;
+  }
+  function parseJsonWithRepair(json) {
+    try {
+      return JSON.parse(json);
+    } catch (error) {
+      const repaired = repairJson(json);
+      if (repaired !== json) return JSON.parse(repaired);
+      throw error;
+    }
+  }
+
+  // packages/kernel/src/sse.ts
   var DEFAULT_MAX_BUFFER_LENGTH = 4 * 1024 * 1024;
   var SseParser = class {
     constructor(options) {
@@ -834,7 +1202,60 @@ ${instructions}`;
     }
   };
 
-  // ../../../packages/kernel/src/openai.ts
+  // packages/kernel/src/transform.ts
+  function transformMessages(messages, target) {
+    const transformed = messages.map((msg) => {
+      if (msg.role !== "assistant") return msg;
+      if (isSameLineage(msg, target)) return msg;
+      const content = msg.content.flatMap((block) => {
+        if (block.type !== "thinking") return [block];
+        if (block.redacted || block.thinking.trim() === "") return [];
+        return [{ type: "text", text: block.thinking }];
+      });
+      return { ...msg, content };
+    });
+    const result = [];
+    let pendingToolCalls = [];
+    let seenResultIds = /* @__PURE__ */ new Set();
+    const closePendingToolCalls = () => {
+      for (const toolCall of pendingToolCalls) {
+        if (seenResultIds.has(toolCall.id)) continue;
+        result.push({
+          role: "toolResult",
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          content: [{ type: "text", text: "No result provided" }],
+          isError: true,
+          timestamp: Date.now()
+        });
+      }
+      pendingToolCalls = [];
+      seenResultIds = /* @__PURE__ */ new Set();
+    };
+    for (const msg of transformed) {
+      if (msg.role === "assistant") {
+        closePendingToolCalls();
+        if (msg.stopReason === "error" || msg.stopReason === "aborted") continue;
+        pendingToolCalls = msg.content.filter((block) => block.type === "toolCall");
+        result.push(msg);
+        continue;
+      }
+      if (msg.role === "toolResult") {
+        seenResultIds.add(msg.toolCallId);
+        result.push(msg);
+        continue;
+      }
+      closePendingToolCalls();
+      result.push(msg);
+    }
+    closePendingToolCalls();
+    return result;
+  }
+  function isSameLineage(msg, target) {
+    return msg.api === target.api && msg.provider === target.provider && msg.model === target.model;
+  }
+
+  // packages/kernel/src/openai.ts
   var COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>
@@ -847,6 +1268,10 @@ ${instructions}`;
 `;
   var BRANCH_SUMMARY_SUFFIX = `</summary>`;
   var OPENAI_COMPLETIONS_API = "openai-completions";
+  var REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"];
+  function isReasoningField(value) {
+    return value !== void 0 && REASONING_FIELDS.includes(value);
+  }
   function userContentToWire(content) {
     if (typeof content === "string") return content;
     return content.map(
@@ -856,7 +1281,7 @@ ${instructions}`;
   function toolResultContentToWire(content) {
     return content.map((block) => block.type === "text" ? block.text : "[image omitted]").join("\n");
   }
-  function toWireMessage(message) {
+  function toWireMessage(message, replayEmptyReasoning) {
     switch (message.role) {
       case "user":
         return { role: "user", content: userContentToWire(message.content) };
@@ -870,6 +1295,15 @@ ${instructions}`;
         const text = message.content.filter((block) => block.type === "text").map((block) => block.text).join("");
         const toolCalls = message.content.filter((block) => block.type === "toolCall");
         const wire = { role: "assistant", content: text === "" ? null : text };
+        const thinking = message.content.filter((block) => block.type === "thinking" && !block.redacted);
+        const reasoningText = thinking.map((block) => block.type === "thinking" ? block.thinking : "").join("");
+        if (reasoningText !== "") {
+          const first = thinking[0];
+          const field = first?.type === "thinking" && isReasoningField(first.thinkingSignature) ? first.thinkingSignature : "reasoning_content";
+          wire[field] = reasoningText;
+        } else if (replayEmptyReasoning) {
+          wire.reasoning_content = "";
+        }
         if (toolCalls.length > 0) {
           wire.tool_calls = toolCalls.map((toolCall) => ({
             id: toolCall.id,
@@ -881,25 +1315,36 @@ ${instructions}`;
       }
       case "toolResult":
         return { role: "tool", tool_call_id: message.toolCallId, content: toolResultContentToWire(message.content) };
+      case "system":
+        return { role: "system", content: renderSystemMessageUpdate(message) };
     }
   }
-  function toWireMessages(systemPrompt, messages) {
+  function resolveTranscript(messages, midConversationSystemMessages) {
+    const transcript = midConversationSystemMessages ? [...messages] : collapseSystemMessages(messages);
+    const head = transcript[0]?.role === "system" ? transcript[0] : void 0;
+    return {
+      systemPrompt: head ? getSystemMessageText(head) : "",
+      messages: head ? transcript.slice(1) : transcript,
+      tools: getCurrentTools(messages)
+    };
+  }
+  function toWireMessages(systemPrompt, messages, replayEmptyReasoning = false) {
     const wire = [];
-    if (systemPrompt !== void 0 && systemPrompt !== "") {
-      wire.push({ role: "system", content: systemPrompt });
-    }
-    for (const message of messages) wire.push(toWireMessage(message));
+    if (systemPrompt !== "") wire.push({ role: "system", content: systemPrompt });
+    for (const message of messages) wire.push(toWireMessage(message, replayEmptyReasoning));
     return wire;
   }
   function toUsage(wire) {
-    const input = wire.prompt_tokens ?? 0;
+    const prompt = wire.prompt_tokens ?? 0;
+    const cacheRead = wire.prompt_tokens_details?.cached_tokens ?? 0;
+    const input = Math.max(0, prompt - cacheRead);
     const output = wire.completion_tokens ?? 0;
     return {
       input,
       output,
-      cacheRead: wire.prompt_tokens_details?.cached_tokens ?? 0,
+      cacheRead,
       cacheWrite: 0,
-      totalTokens: wire.total_tokens ?? input + output,
+      totalTokens: wire.total_tokens ?? prompt + output,
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }
     };
   }
@@ -911,6 +1356,10 @@ ${instructions}`;
       default:
         return "stop";
     }
+  }
+  function hostOf(baseUrl) {
+    const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(baseUrl);
+    return match ? match[1] : "";
   }
   function throwIfAborted(signal) {
     if (signal?.aborted) throw new TauError("aborted", "Request aborted");
@@ -942,17 +1391,26 @@ ${instructions}`;
   }
   async function* streamChatCompletion(platform2, config, messages, options) {
     throwIfAborted(options?.signal);
+    const startedAt = Date.now();
     const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+    const api = config.api ?? OPENAI_COMPLETIONS_API;
+    const provider = config.provider ?? "openai-compat";
+    const replayEmptyReasoning = config.replayEmptyReasoning ?? /(^|[./])deepseek\.com(?=[:/]|$)/i.test(hostOf(config.baseUrl));
+    const transcript = resolveTranscript(messages, config.midConversationSystemMessages);
     const body = {
       model: config.model,
-      messages: toWireMessages(options?.systemPrompt, messages),
+      messages: toWireMessages(
+        transcript.systemPrompt,
+        transformMessages(transcript.messages, { api, provider, model: config.model }),
+        replayEmptyReasoning
+      ),
       stream: true,
       ...options?.maxTokens !== void 0 ? { max_tokens: options.maxTokens } : {},
       ...config.extraBody
     };
     if (config.includeUsage !== false) body.stream_options = { include_usage: true };
-    if (options?.tools && options.tools.length > 0) {
-      body.tools = options.tools.map((tool) => ({
+    if (transcript.tools.length > 0) {
+      body.tools = transcript.tools.map((tool) => ({
         type: "function",
         function: { name: tool.name, description: tool.description, parameters: tool.parameters }
       }));
@@ -988,9 +1446,14 @@ ${instructions}`;
     const decoder = platform2.createUtf8Decoder();
     const parser = new SseParser();
     const blocks = [];
-    const rawToolCalls = /* @__PURE__ */ new Map();
+    const rawToolCalls = [];
+    const rawByIndex = /* @__PURE__ */ new Map();
+    const rawById = /* @__PURE__ */ new Map();
     let finishReason;
     let usage;
+    let responseId;
+    let responseModel;
+    let reasoningField;
     const pendingEvents = [];
     let done = false;
     const appendText = (delta) => {
@@ -998,10 +1461,10 @@ ${instructions}`;
       if (last?.type === "text") last.text += delta;
       else blocks.push({ type: "text", text: delta });
     };
-    const appendThinking = (delta) => {
+    const appendThinking = (delta, field) => {
       const last = blocks.at(-1);
       if (last?.type === "thinking") last.thinking += delta;
-      else blocks.push({ type: "thinking", thinking: delta });
+      else blocks.push({ type: "thinking", thinking: delta, thinkingSignature: field });
     };
     const processData = (data) => {
       if (data === "" || data === "[DONE]") {
@@ -1018,6 +1481,8 @@ ${instructions}`;
         throw new TauError("stream_error", chunk.error.message ?? "Provider returned an error in the stream");
       }
       if (chunk.usage) usage = toUsage(chunk.usage);
+      if (typeof chunk.id === "string" && chunk.id !== "") responseId ?? (responseId = chunk.id);
+      if (typeof chunk.model === "string" && chunk.model !== "") responseModel ?? (responseModel = chunk.model);
       const choice = chunk.choices?.[0];
       if (!choice) return;
       if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -1027,20 +1492,30 @@ ${instructions}`;
         appendText(delta.content);
         pendingEvents.push({ type: "text_delta", delta: delta.content });
       }
-      const reasoningDelta = delta.reasoning_content ?? delta.reasoning;
-      if (typeof reasoningDelta === "string" && reasoningDelta !== "") {
-        appendThinking(reasoningDelta);
+      const field = REASONING_FIELDS.find((name) => typeof delta[name] === "string" && delta[name] !== "");
+      if (field) {
+        const reasoningDelta = delta[field];
+        reasoningField ?? (reasoningField = field);
+        appendThinking(reasoningDelta, reasoningField);
         pendingEvents.push({ type: "reasoning_delta", delta: reasoningDelta });
       }
       for (const wireToolCall of delta.tool_calls ?? []) {
-        const index = wireToolCall.index ?? 0;
-        let entry = rawToolCalls.get(index);
+        const index = typeof wireToolCall.index === "number" ? wireToolCall.index : void 0;
+        const id = wireToolCall.id || void 0;
+        const name = wireToolCall.function?.name || void 0;
+        let entry = index !== void 0 ? rawByIndex.get(index) : void 0;
+        if (!entry && id) entry = rawById.get(id);
+        if (!entry && index === void 0 && !id && !name) entry = rawToolCalls.at(-1);
         if (!entry) {
           entry = { id: "", name: "", argumentsText: "" };
-          rawToolCalls.set(index, entry);
+          rawToolCalls.push(entry);
         }
-        if (wireToolCall.id) entry.id = wireToolCall.id;
-        if (wireToolCall.function?.name) entry.name += wireToolCall.function.name;
+        if (index !== void 0 && !rawByIndex.has(index)) rawByIndex.set(index, entry);
+        if (id && !entry.id) {
+          entry.id = id;
+          rawById.set(id, entry);
+        }
+        if (name && !entry.name) entry.name = name;
         if (wireToolCall.function?.arguments) entry.argumentsText += wireToolCall.function.arguments;
       }
     };
@@ -1078,10 +1553,10 @@ ${instructions}`;
       } catch {
       }
     }
-    const toolCalls = [...rawToolCalls.entries()].sort(([a], [b]) => a - b).filter(([, raw]) => raw.name !== "").map(([index, raw]) => {
+    const toolCalls = rawToolCalls.map((raw, index) => [index, raw]).filter(([, raw]) => raw.name !== "").map(([index, raw]) => {
       let parsedArguments = {};
       try {
-        const parsed = raw.argumentsText === "" ? {} : JSON.parse(raw.argumentsText);
+        const parsed = raw.argumentsText === "" ? {} : parseJsonWithRepair(raw.argumentsText);
         if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
           parsedArguments = parsed;
         }
@@ -1101,25 +1576,26 @@ ${instructions}`;
     const message = {
       role: "assistant",
       content: blocks,
-      api: config.api ?? OPENAI_COMPLETIONS_API,
-      provider: config.provider ?? "openai-compat",
+      api,
+      provider,
       model: config.model,
       usage: usage ?? emptyUsage(),
       stopReason: toStopReason(finishReason, toolCalls.length > 0),
-      timestamp: Date.now()
+      ...finishReason !== void 0 ? { rawStopReason: finishReason } : {},
+      ...responseId !== void 0 ? { responseId } : {},
+      ...responseModel !== void 0 ? { responseModel } : {},
+      timestamp: startedAt
     };
     yield { type: "response_end", message };
   }
   function createOpenAICompatTransport(platform2, config) {
     return (request) => streamChatCompletion(platform2, config, request.messages, {
-      systemPrompt: request.systemPrompt,
-      tools: request.tools,
       signal: request.signal,
       maxTokens: request.maxTokens
     });
   }
 
-  // ../../../packages/kernel/src/platform.ts
+  // packages/kernel/src/platform.ts
   function defaultPlatform() {
     const g = globalThis;
     const globalFetch = g.fetch;
@@ -1188,7 +1664,7 @@ ${instructions}`;
     };
   }
 
-  // ../../../packages/kernel/src/policy.ts
+  // packages/kernel/src/policy.ts
   function resolvePolicyAction(mode, risk) {
     switch (mode) {
       case "bypass":
@@ -1231,6 +1707,16 @@ ${instructions}`;
     {
       pattern: /:\(\)\s*\{\s*:\s*\|\s*:|(\w+)\s*\(\)\s*\{[^}]*\b\1\s*\|\s*\1\b/,
       label: "fork bomb"
+    },
+    // Windows: the Node host routes native commands to cmd.exe, so these run for real there.
+    { pattern: /\b(?:rd|rmdir)\b[^|&\r\n]*\s\/s\b/i, label: "recursive directory removal (rd /s)" },
+    { pattern: /\b(?:del|erase)\b[^|&\r\n]*\s\/[sqf]\b/i, label: "recursive/forced delete (del /s, /q, /f)" },
+    { pattern: /\bformat(?:\.com)?\s+[a-z]:/i, label: "format drive" },
+    { pattern: /\bdiskpart\b/i, label: "diskpart" },
+    { pattern: /\breg(?:\.exe)?\s+delete\b/i, label: "registry delete" },
+    {
+      pattern: /\b(?:Remove-Item|ri)\b[^|;\r\n]*\s-(?:Recurse|Force|r|fo)\b/i,
+      label: "PowerShell Remove-Item -Recurse/-Force"
     }
   ];
   var PATH_PROBE_KEYS = ["path", "file_path", "file", "filename", "dest", "target"];
@@ -1303,7 +1789,7 @@ ${instructions}`;
     };
   }
 
-  // ../../../packages/kernel/src/retry.ts
+  // packages/kernel/src/retry.ts
   function buildProviderErrorPattern(patterns) {
     return new RegExp(patterns.join("|"), "i");
   }
@@ -1385,84 +1871,228 @@ ${instructions}`;
     return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
   }
 
-  // ../../../packages/kernel/src/session.ts
-  function messagesFromPath(path) {
-    let compactionIndex = -1;
-    for (let i = path.length - 1; i >= 0; i--) {
-      if (path[i].type === "compaction") {
-        compactionIndex = i;
-        break;
+  // packages/kernel/src/uuid.ts
+  var lastTimestamp = -Infinity;
+  var sequence = 0;
+  function uuidv7(randomBytes) {
+    const random = randomBytes(16);
+    const timestamp = Date.now();
+    if (timestamp > lastTimestamp) {
+      sequence = random[6] * 16777216 + random[7] * 65536 + random[8] * 256 + random[9];
+      lastTimestamp = timestamp;
+    } else {
+      sequence = sequence + 1 >>> 0;
+      if (sequence === 0) {
+        lastTimestamp++;
       }
     }
-    let selected = path;
-    let summaryMessage;
-    if (compactionIndex >= 0) {
-      const compaction = path[compactionIndex];
-      if (compaction.type === "compaction") {
-        summaryMessage = {
-          role: "compactionSummary",
-          summary: compaction.summary,
-          tokensBefore: compaction.tokensBefore,
-          timestamp: Date.parse(compaction.timestamp) || 0
-        };
-        let firstKeptIndex = path.findIndex((entry) => entry.id === compaction.firstKeptEntryId);
-        if (firstKeptIndex < 0) firstKeptIndex = compactionIndex + 1;
-        selected = [...path.slice(firstKeptIndex, compactionIndex), ...path.slice(compactionIndex + 1)];
-      }
-    }
-    const restored = collectMessages(selected);
-    const name = lastSessionNameFromPath(path) ?? restored.name;
-    if (summaryMessage) restored.messages.unshift(summaryMessage);
-    return { messages: restored.messages, name };
+    const bytes = new Uint8Array(16);
+    bytes[0] = lastTimestamp / 1099511627776 & 255;
+    bytes[1] = lastTimestamp / 4294967296 & 255;
+    bytes[2] = lastTimestamp / 16777216 & 255;
+    bytes[3] = lastTimestamp / 65536 & 255;
+    bytes[4] = lastTimestamp / 256 & 255;
+    bytes[5] = lastTimestamp & 255;
+    bytes[6] = 112 | sequence >>> 28 & 15;
+    bytes[7] = sequence >>> 20 & 255;
+    bytes[8] = 128 | sequence >>> 14 & 63;
+    bytes[9] = sequence >>> 6 & 255;
+    bytes[10] = (sequence & 63) << 2 | random[10] & 3;
+    bytes[11] = random[11];
+    bytes[12] = random[12];
+    bytes[13] = random[13];
+    bytes[14] = random[14];
+    bytes[15] = random[15];
+    return formatUuid(bytes);
   }
-  function lastSessionNameFromPath(path) {
-    for (let i = path.length - 1; i >= 0; i--) {
-      const entry = path[i];
+  function formatUuid(bytes) {
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0"));
+    return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
+  }
+
+  // packages/kernel/src/session.ts
+  function generateEntryId(randomBytes, has) {
+    for (let i = 0; i < 100; i++) {
+      const id = [...randomBytes(4)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+      if (!has(id)) return id;
+    }
+    return uuidv7(randomBytes);
+  }
+  function deepFreeze(value) {
+    if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+      Object.freeze(value);
+      for (const child of Object.values(value)) deepFreeze(child);
+    }
+    return value;
+  }
+  var EntryTree = class {
+    constructor() {
+      __publicField(this, "entries", []);
+      __publicField(this, "byId", /* @__PURE__ */ new Map());
+      __publicField(this, "leafId", null);
+    }
+    /**
+     * Entries are append-only and deep-frozen on the way in (P22): the agent's
+     * projection shares their message objects, so an in-place edit of a logged
+     * message throws instead of silently rewriting history.
+     */
+    add(entry) {
+      deepFreeze(entry);
+      this.entries.push(entry);
+      this.byId.set(entry.id, entry);
+      if (entry.type === "leaf") this.leafId = entry.leafId;
+      else this.leafId = entry.id;
+    }
+    pathToRoot(leafId) {
+      const path = [];
+      let currentId = leafId;
+      while (currentId !== null) {
+        const entry = this.byId.get(currentId);
+        if (!entry) throw new SessionError("invalid_entry", `Entry ${currentId} not found while walking to root`);
+        path.push(entry);
+        currentId = entry.parentId;
+      }
+      return path.reverse();
+    }
+  };
+  var InMemorySessionStore = class {
+    constructor(metadata, randomBytes) {
+      __publicField(this, "metadata");
+      __publicField(this, "tree", new EntryTree());
+      __publicField(this, "randomBytes");
+      this.metadata = metadata;
+      this.randomBytes = randomBytes;
+    }
+    async getMetadata() {
+      return { ...this.metadata, name: lastSessionName(this.tree.entries) ?? this.metadata.name };
+    }
+    async getLeafId() {
+      return this.tree.leafId;
+    }
+    async setLeafId(leafId) {
+      this.tree.add({
+        type: "leaf",
+        id: generateEntryId(this.randomBytes, (id) => this.tree.byId.has(id)),
+        parentId: null,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        leafId
+      });
+    }
+    async createEntryId() {
+      return generateEntryId(this.randomBytes, (id) => this.tree.byId.has(id));
+    }
+    async appendEntry(entry) {
+      this.tree.add(entry);
+    }
+    async getEntry(id) {
+      return this.tree.byId.get(id);
+    }
+    async getPathToRoot(leafId) {
+      return this.tree.pathToRoot(leafId);
+    }
+    async getEntries() {
+      return [...this.tree.entries];
+    }
+  };
+  function lastSessionName(entries) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
       if (entry.type === "session_info") return entry.name;
     }
     return void 0;
   }
-  function collectMessages(path) {
-    const messages = [];
-    let name;
-    for (const entry of path) {
-      switch (entry.type) {
-        case "message":
-          messages.push(entry.message);
-          break;
-        case "custom_message": {
-          const message = {
-            role: "custom",
-            customType: entry.customType,
-            content: entry.content,
-            display: entry.display,
-            details: entry.details,
-            timestamp: Date.parse(entry.timestamp) || 0
-          };
-          messages.push(message);
-          break;
-        }
-        case "session_info":
-          name = entry.name;
-          break;
-        case "branch_summary":
-          messages.push({
-            role: "branchSummary",
-            summary: entry.summary,
-            fromId: entry.fromId,
-            timestamp: Date.parse(entry.timestamp) || 0
-          });
-          break;
-        case "custom":
-        case "leaf":
-        case "compaction":
-          break;
-      }
+  var SessionRecorder = class _SessionRecorder {
+    constructor(store, leafId) {
+      __publicField(this, "store");
+      __publicField(this, "leafId");
+      this.store = store;
+      this.leafId = leafId;
     }
-    return { messages, name };
-  }
+    static async open(store) {
+      return new _SessionRecorder(store, await store.getLeafId());
+    }
+    /** Recorder over a store whose leaf is already known (a fresh store: null). */
+    static attach(store, leafId) {
+      return new _SessionRecorder(store, leafId);
+    }
+    get currentLeafId() {
+      return this.leafId;
+    }
+    /** Append an entry at the current leaf and return it as stored. */
+    async append(draft) {
+      const id = await this.store.createEntryId();
+      const entry = JSON.parse(
+        JSON.stringify({ ...draft, id, parentId: this.leafId, timestamp: (/* @__PURE__ */ new Date()).toISOString() })
+      );
+      await this.store.appendEntry(entry);
+      this.leafId = id;
+      return entry;
+    }
+    async recordCompaction(result) {
+      return this.append({ type: "compaction", ...result });
+    }
+    /** Record a message; custom messages become custom_message entries (pi). Returns the entry. */
+    async recordMessage(message) {
+      if (message.role === "custom") {
+        return this.append({
+          type: "custom_message",
+          customType: message.customType,
+          content: message.content,
+          display: message.display,
+          details: message.details
+        });
+      }
+      return this.append({ type: "message", message });
+    }
+    /** Omit (null) or replace the content of an entry in future context; the entry itself stays (pi 0.87.0). */
+    async appendContextEdit(targetId, replacement) {
+      return this.append({ type: "context_edit", targetId, replacement });
+    }
+    /** Bookmark an entry; an undefined label clears it (pi LabelEntry). */
+    async appendLabel(targetId, label) {
+      return this.append({ type: "label", targetId, label });
+    }
+    async appendCustom(customType, data) {
+      return this.append({ type: "custom", customType, data });
+    }
+    async setName(name) {
+      return this.append({ type: "session_info", name });
+    }
+    /**
+     * Move the active leaf to another entry (session-tree navigation),
+     * optionally recording a branch_summary of the abandoned branch at the new
+     * position. Mirrors pi's Session.moveTo. Deviation: pi's implementation
+     * writes fromId = destination id (redundant with parentId); tau records the
+     * abandoned branch's old leaf, matching pi's session-format.md ("Entry we
+     * branched from") whose example has fromId ≠ parentId.
+     */
+    async moveTo(entryId, summary) {
+      if (entryId !== null && !await this.store.getEntry(entryId)) {
+        throw new SessionError("not_found", `Entry ${entryId} not found`);
+      }
+      const fromId = this.leafId ?? "root";
+      await this.store.setLeafId(entryId);
+      this.leafId = entryId;
+      if (!summary) return void 0;
+      const id = await this.store.createEntryId();
+      const entry = {
+        type: "branch_summary",
+        id,
+        parentId: entryId,
+        timestamp: (/* @__PURE__ */ new Date()).toISOString(),
+        fromId,
+        summary: summary.summary,
+        details: summary.details,
+        ...summary.usage ? { usage: summary.usage } : {},
+        fromHook: summary.fromHook
+      };
+      await this.store.appendEntry(entry);
+      this.leafId = id;
+      return entry;
+    }
+  };
 
-  // ../../../packages/kernel/src/tools.ts
+  // packages/kernel/src/tools.ts
   function schemaTypeOf(value) {
     if (value === null) return "null";
     if (Array.isArray(value)) return "array";
@@ -1522,13 +2152,22 @@ ${instructions}`;
       }
     }
   }
+  function hasToolSchema(tool) {
+    const schema = tool.parameters;
+    return typeof schema === "object" && schema !== null && !Array.isArray(schema);
+  }
+  function assertToolSchema(tool) {
+    if (!hasToolSchema(tool)) {
+      throw new TauError("invalid_tool", `Tool "${tool.name}" must declare a JSON Schema object in \`parameters\``);
+    }
+  }
   function validateToolArgs(schema, args) {
     const problems = [];
     validateValue(schema, args, "", problems);
     return problems;
   }
 
-  // ../../../packages/kernel/src/agent.ts
+  // packages/kernel/src/agent.ts
   var PendingMessageQueue = class {
     constructor(mode) {
       __publicField(this, "items", []);
@@ -1551,9 +2190,32 @@ ${instructions}`;
     }
   };
   var DEFAULT_MAX_TURNS = 50;
+  function lastPromptText(messages) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const message = messages[i];
+      if (message.role === "user") return userContentText(message.content);
+      if (message.role === "custom") {
+        return typeof message.content === "string" ? message.content : userContentText(message.content);
+      }
+    }
+    return "";
+  }
   var Agent = class _Agent {
     constructor(options) {
-      __publicField(this, "messages", []);
+      /** Projection of the session log (frozen; replaced after every write). */
+      __publicField(this, "projection", Object.freeze([]));
+      /** Source entry of each projected message (pi _entryIdsByMessage). */
+      __publicField(this, "entryIds", /* @__PURE__ */ new WeakMap());
+      /** The active path and its projection as of the last refresh (for sync estimates). */
+      __publicField(this, "activePath", []);
+      __publicField(this, "activeProjection", { entries: [], messages: [] });
+      /** Session-wide billed usage as of the last refresh (sumSessionUsage). */
+      __publicField(this, "sessionUsage", emptyUsage());
+      /** Every entry and the store metadata as of the last refresh (backs ctx.sessionManager). */
+      __publicField(this, "allEntries", []);
+      __publicField(this, "entriesById", /* @__PURE__ */ new Map());
+      __publicField(this, "sessionMetadata");
+      __publicField(this, "readonlySessionManager");
       __publicField(this, "platform");
       __publicField(this, "config");
       __publicField(this, "transport");
@@ -1572,12 +2234,19 @@ ${instructions}`;
       __publicField(this, "permissionMode");
       __publicField(this, "policy");
       __publicField(this, "onApproval");
+      __publicField(this, "toolExecution");
+      __publicField(this, "verifyTranscript");
       /** Custom instructions of a requested compaction, or null when none is pending. */
       __publicField(this, "pendingCompaction", null);
       /** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
       __publicField(this, "pendingNextTurn", []);
-      /** Serializes session writes triggered by sync extension actions. */
-      __publicField(this, "pendingRecording", Promise.resolve());
+      /**
+       * The single writer: every log append (and the projection refresh after it)
+       * runs here in order. Sync extension actions enqueue without awaiting; their
+       * failure is held in `writeFailure` and rethrown at the next flushWrites().
+       */
+      __publicField(this, "writes", Promise.resolve());
+      __publicField(this, "writeFailure");
       /** True while a prompt() generator is being consumed (guards navigateTo). */
       __publicField(this, "running", false);
       /**
@@ -1593,21 +2262,39 @@ ${instructions}`;
       this.transport = options.transport ?? createOpenAICompatTransport(this.platform, this.config);
       this.systemPrompt = options.systemPrompt;
       this.baseTools = [...options.tools ?? []];
+      for (const tool of this.baseTools) assertToolSchema(tool);
       this.extensions = options.extensions;
       this.ui = options.ui;
       this.capabilities = { ...options.capabilities, platform: this.platform };
-      if (options.initialMessages) this.messages.push(...options.initialMessages);
+      const seed = (options.initialMessages ?? []).map(normalizeMessageContent);
+      this.projection = Object.freeze(seed);
+      if (options.session) {
+        this.session = options.session;
+        this.enqueueBackground(() => this.refresh());
+      } else {
+        const store = new InMemorySessionStore(
+          { id: uuidv7(this.platform.randomBytes), cwd: "/", timestamp: (/* @__PURE__ */ new Date()).toISOString() },
+          this.platform.randomBytes
+        );
+        this.session = SessionRecorder.attach(store, null);
+        if (seed.length > 0) {
+          this.enqueueBackground(async () => {
+            for (const message of seed) await this.session.recordMessage(message);
+            await this.refresh();
+          });
+        }
+      }
       this.maxTurnsPerPrompt = options.maxTurnsPerPrompt ?? DEFAULT_MAX_TURNS;
       this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
       this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
-      this.session = options.session;
       this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
       this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
       this.pricing = options.pricing;
       this.permissionMode = options.permissionMode ?? "autonomous";
       this.policy = options.policy ?? createDefaultPolicy();
       this.onApproval = options.onApproval;
-      const session = options.session;
+      this.toolExecution = options.toolExecution ?? "parallel";
+      this.verifyTranscript = options.verifyTranscript ?? true;
       options.extensions?.attachHostActions({
         sendMessage: (input, sendOptions) => {
           const message = {
@@ -1627,8 +2314,7 @@ ${instructions}`;
             else this.steeringQueue.enqueue(message);
             return;
           }
-          this.messages.push(message);
-          if (session) this.pendingRecording = this.pendingRecording.then(() => session.recordMessage(message));
+          this.enqueueBackground(() => this.appendAndRefresh(message));
           if (sendOptions?.triggerTurn) this.extensions?.hostAction("resumeTurn")?.();
         },
         sendUserMessage: (content, sendOptions) => {
@@ -1638,6 +2324,9 @@ ${instructions}`;
             else this.steeringQueue.enqueue(message);
             return;
           }
+          if (this.running) {
+            throw new TauError("busy", "sendUserMessage() before the agent loop started; use sendMessage({ deliverAs })");
+          }
           const submit = this.extensions?.hostAction("submitPrompt");
           if (!submit) {
             throw new TauError("no_host", "sendUserMessage() while idle requires a host that provides submitPrompt");
@@ -1645,11 +2334,24 @@ ${instructions}`;
           submit(content);
         },
         appendEntry: (customType, data) => {
-          if (session) this.pendingRecording = this.pendingRecording.then(() => session.appendCustom(customType, data));
+          this.enqueueBackground(async () => {
+            await this.session.appendCustom(customType, data);
+            await this.refresh();
+          });
         },
         setSessionName: (name) => {
-          if (session) this.pendingRecording = this.pendingRecording.then(() => session.setName(name));
+          this.enqueueBackground(async () => {
+            await this.session.setName(name);
+            await this.refresh();
+          });
           void this.extensions?.notifySessionInfoChanged(name, this.extensionContext());
+        },
+        setLabel: (entryId, label) => {
+          if (!this.entriesById.has(entryId)) throw new SessionError("not_found", `Entry ${entryId} not found`);
+          this.enqueueBackground(async () => {
+            await this.session.appendLabel(entryId, label);
+            await this.refresh();
+          });
         },
         abort: () => {
           this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
@@ -1661,28 +2363,169 @@ ${instructions}`;
       for (const [name, tool] of this.extensions?.tools ?? []) tools.set(name, tool);
       return tools;
     }
-    /** Persist a message, after any queued extension-triggered writes. */
-    async recordMessage(message) {
-      if (!this.session) return;
-      await this.pendingRecording;
-      await this.session.recordMessage(message);
+    /** The model-visible conversation: the session log's projection (read-only; P22). */
+    get messages() {
+      return this.projection;
     }
-    /** Fire message_start/message_end for a non-streamed message, then store and persist it. */
+    /** Run a log write after every earlier one; its failure goes to the caller. */
+    enqueueWrite(write) {
+      const run = this.writes.then(write);
+      this.writes = run.then(
+        () => void 0,
+        () => void 0
+      );
+      return run;
+    }
+    /** Enqueue a write nobody awaits (sync extension actions); a failure surfaces at the next flushWrites(). */
+    enqueueBackground(write) {
+      this.enqueueWrite(write).catch((error) => {
+        this.writeFailure ?? (this.writeFailure = toError(error));
+      });
+    }
+    /** Wait for every queued write; rethrow a background write's failure. */
+    async flushWrites() {
+      await this.writes;
+      const failure = this.writeFailure;
+      if (failure) {
+        this.writeFailure = void 0;
+        throw failure;
+      }
+    }
+    /** Rebuild `messages` from the log's active path (pi _refreshFinalizedContext). */
+    async refresh() {
+      const path = await this.session.store.getPathToRoot(this.session.currentLeafId);
+      const projection = buildSessionProjection(path);
+      const entryIds = /* @__PURE__ */ new WeakMap();
+      for (const entry of projection.entries) {
+        for (const message of entry.messages) entryIds.set(message, entry.sourceEntry.id);
+      }
+      this.entryIds = entryIds;
+      this.activePath = path;
+      this.activeProjection = projection;
+      this.projection = Object.freeze(projection.messages);
+      const entries = await this.session.store.getEntries();
+      this.allEntries = entries;
+      this.entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+      this.sessionUsage = sumSessionUsage(entries);
+      this.sessionMetadata = await this.session.store.getMetadata();
+    }
+    /** Append a message to the log and refresh the projection; returns its entry id. Call inside the writer. */
+    async appendAndRefresh(message) {
+      const entry = await this.session.recordMessage(message);
+      await this.refresh();
+      return entry.id;
+    }
+    /** Log a message after every queued write; returns its entry id. */
+    record(message) {
+      return this.enqueueWrite(() => this.appendAndRefresh(message));
+    }
+    /**
+     * Append a message the host produced outside the loop (e.g. the TUI's `!`
+     * user bash) to the log. Replaces pushing onto `messages`, which is now a
+     * read-only projection.
+     */
+    async appendMessage(message) {
+      if (this.looping) throw new TauError("busy", "appendMessage() while the agent loop is running");
+      await this.flushWrites();
+      await this.record(normalizeMessageContent(message));
+    }
+    /**
+     * Log a system message when the prompt or the tool set differs from what the
+     * transcript replays to (pi _preparePromptAndToolLoadout + declareToolChanges).
+     * The kernel has one section, `prompt`, holding the effective prompt text, so
+     * the folded wire prompt equals the plain prompt byte for byte.
+     */
+    async declareLoadout(promptText) {
+      await this.flushWrites();
+      const current = getCurrentSystemMessage(this.messages);
+      const sections = diffSystemPromptSections(current?.sections ?? {}, promptText === "" ? {} : { prompt: promptText });
+      const tools = getToolStateChanges(
+        getCurrentTools(this.messages),
+        // A schemaless tool that slipped past registration cannot be declared; the
+        // preflight guard still answers a call to it with a paired error result (HF-8).
+        [...this.currentTools().values()].filter(hasToolSchema).map(toToolDeclaration)
+      );
+      if (!sections && tools.toolsAdded.length === 0 && tools.toolsRemoved.length === 0) return;
+      const update = {
+        role: "system",
+        content: "",
+        ...sections ? { sections } : {},
+        ...tools.toolsAdded.length > 0 ? { toolsAdded: tools.toolsAdded } : {},
+        ...tools.toolsRemoved.length > 0 ? { toolsRemoved: tools.toolsRemoved } : {},
+        timestamp: Date.now()
+      };
+      await this.record(update);
+    }
+    /** The verifyTranscript check: projection of a JSON replay of the log === `messages`. */
+    async assertTranscriptMatchesLog() {
+      const path = await this.session.store.getPathToRoot(this.session.currentLeafId);
+      const replayed = buildSessionProjection(JSON.parse(JSON.stringify(path))).messages;
+      if (JSON.stringify(replayed) !== JSON.stringify(this.messages)) {
+        throw new TauError(
+          "invalid_state",
+          "Model context diverged from the session log: the request would contain something the log does not (kernel bug)"
+        );
+      }
+    }
+    /** The read-only session view handed to extensions as ctx.sessionManager (pi ReadonlySessionManager). */
+    sessionManager() {
+      if (this.readonlySessionManager) return this.readonlySessionManager;
+      const branch = (fromId) => {
+        const path = [];
+        let id = fromId;
+        while (id !== null) {
+          const entry = this.entriesById.get(id);
+          if (!entry) break;
+          path.push(entry);
+          id = entry.parentId;
+        }
+        return path.reverse();
+      };
+      this.readonlySessionManager = {
+        getCwd: () => this.sessionMetadata?.cwd ?? "",
+        getSessionId: () => this.sessionMetadata?.id ?? "",
+        getSessionFile: () => this.sessionMetadata?.filePath,
+        getSessionName: () => this.sessionMetadata?.name,
+        getLeafId: () => this.session.currentLeafId,
+        getLeafEntry: () => {
+          const leafId = this.session.currentLeafId;
+          return leafId === null ? void 0 : this.entriesById.get(leafId);
+        },
+        getEntry: (id) => this.entriesById.get(id),
+        getLabel: (id) => {
+          let label;
+          for (const entry of this.allEntries) if (entry.type === "label" && entry.targetId === id) label = entry.label;
+          return label;
+        },
+        getBranch: (fromId) => branch(fromId ?? this.session.currentLeafId),
+        getEntries: () => [...this.allEntries],
+        buildContextEntries: () => buildContextEntries(this.activePath),
+        buildSessionProjection: () => this.activeProjection
+      };
+      return this.readonlySessionManager;
+    }
+    /** Session entry id a projected message came from (undefined for messages not in `messages`). */
+    entryIdOf(message) {
+      return this.entryIds.get(message);
+    }
+    /** Fire message_start/message_end for a non-streamed message, then log it. */
     async commitMessage(message, ctx) {
       let final = message;
       if (this.extensions) {
         await this.extensions.notifyMessageStart(final, ctx);
         final = await this.extensions.runMessageEnd(final, ctx);
       }
-      this.messages.push(final);
-      await this.recordMessage(final);
+      await this.record(final);
       return final;
     }
     /** Context handed to extension handlers; also usable by hosts to dispatch extension commands. */
     extensionContext() {
+      const agent2 = this;
       return {
         ui: this.ui,
-        messages: this.messages,
+        get messages() {
+          return agent2.messages;
+        },
         capabilities: this.capabilities,
         getContextUsage: () => this.getContextUsage(),
         compact: (customInstructions) => {
@@ -1694,6 +2537,8 @@ ${instructions}`;
           if (hostAbort) hostAbort();
           else this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
         },
+        sessionManager: this.sessionManager(),
+        getSystemPrompt: () => getCurrentSystemPrompt(this.messages),
         discoverResources: (reason) => {
           const cwd = this.capabilities.paths?.cwd ?? this.capabilities.fs?.cwd ?? "";
           return this.extensions?.runResourcesDiscover(cwd, reason, this.extensionContext()) ?? Promise.resolve({ skillPaths: [], promptPaths: [], themePaths: [] });
@@ -1721,7 +2566,10 @@ ${instructions}`;
         // be a policy escape hatch.
         permissionMode: this.permissionMode,
         policy: this.policy,
-        onApproval: this.onApproval
+        onApproval: this.onApproval,
+        // The child's calls are billed like the parent's (D19).
+        pricing: this.pricing,
+        toolExecution: this.toolExecution
       });
       let text = "";
       let lastAssistantText = "";
@@ -1729,57 +2577,56 @@ ${instructions}`;
         if (event.type === "text_delta") text += event.delta;
         if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
       }
-      return { text: text === "" ? lastAssistantText : text, messages: [...child.messages] };
+      return {
+        text: text === "" ? lastAssistantText : text,
+        messages: [...child.messages],
+        usage: child.getSessionUsage()
+      };
+    }
+    /** A usage with its cost filled from the host pricing, when there is one (D19-3). */
+    priced(usage) {
+      return this.pricing ? { ...usage, cost: computeUsageCost(usage, this.pricing) } : usage;
     }
     /** Current context-token estimate (pi semantics: last assistant usage + trailing heuristic). */
     getContextUsage() {
-      return { ...estimateContextTokens(this.messages), contextWindow: this.config.contextWindow };
+      return {
+        ...estimateProjectedContextTokens(this.activeProjection, this.activePath),
+        contextWindow: this.config.contextWindow
+      };
+    }
+    /**
+     * Everything this session was billed for, all branches, compaction-proof
+     * (D19): assistant turns, summaries and tool-reported usage. Hosts show it as
+     * the session cost; the context estimate is getContextUsage().
+     */
+    getSessionUsage() {
+      return this.sessionUsage;
     }
     /**
      * Compact the conversation now: summarize old history (session_before_compact
-     * may cancel or take over), record a compaction entry when a session is
-     * attached, and rewrite messages to [summary, ...kept].
+     * may cancel or take over) and append a compaction entry; the projection
+     * becomes [summary, ...kept].
      */
     async compact(customInstructions, reason = "manual", signal) {
       const ctx = this.extensionContext();
-      let pathEntries;
-      if (this.session) {
-        await this.pendingRecording;
-        pathEntries = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
-      } else {
-        pathEntries = this.messages.map((message, i) => ({
-          type: "message",
-          id: String(i + 1),
-          parentId: i === 0 ? null : String(i),
-          timestamp: "",
-          message
-        }));
-      }
-      const preparation = prepareCompaction(pathEntries, this.compactionSettings, this.messages);
+      await this.flushWrites();
+      const pathEntries = await this.session.store.getPathToRoot(this.session.currentLeafId);
+      const preparation = prepareCompaction(pathEntries, this.compactionSettings);
       if (!preparation) return void 0;
       const decision = this.extensions ? await this.extensions.runSessionBeforeCompact({ preparation, customInstructions, reason }, ctx) : {};
       if (decision.cancel) return void 0;
       const fromExtension = decision.result !== void 0;
       const result = decision.result ?? await runCompaction(this.transport, preparation, customInstructions, signal);
-      if (this.session) {
-        await this.session.recordCompaction({ ...result, fromHook: fromExtension || void 0 });
-        const path = await this.session.store.getPathToRoot(await this.session.store.getLeafId());
-        this.messages.length = 0;
-        this.messages.push(...messagesFromPath(path).messages);
-      } else {
-        const keptStart = Number(result.firstKeptEntryId) - 1;
-        const kept = Number.isInteger(keptStart) && keptStart >= 0 ? this.messages.slice(keptStart) : [];
-        this.messages.length = 0;
-        this.messages.push(
-          {
-            role: "compactionSummary",
-            summary: result.summary,
-            tokensBefore: result.tokensBefore,
-            timestamp: Date.now()
-          },
-          ...kept
-        );
-      }
+      if (result.usage) result.usage = this.priced(result.usage);
+      await this.enqueueWrite(async () => {
+        const systemMessage = getCurrentSystemMessage(this.messages);
+        await this.session.recordCompaction({
+          ...result,
+          fromHook: fromExtension || void 0,
+          ...systemMessage ? { systemMessage } : {}
+        });
+        await this.refresh();
+      });
       await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
       return result;
     }
@@ -1807,6 +2654,7 @@ ${instructions}`;
       handle.follow(signal);
       this.activeAbort = handle;
       try {
+        await this.flushWrites();
         yield* this.runPrompt(input, handle.signal);
       } finally {
         this.running = false;
@@ -1826,9 +2674,11 @@ ${instructions}`;
       handle.follow(signal);
       this.activeAbort = handle;
       try {
+        await this.flushWrites();
         const ctx = this.extensionContext();
+        const systemPrompt = await this.applyBeforeAgentStart(lastPromptText(this.messages), ctx);
         await this.extensions?.notifyAgentStart(ctx);
-        yield* this.runLoop(ctx, this.systemPrompt ?? "", handle.signal);
+        yield* this.runLoop(ctx, systemPrompt, handle.signal);
       } finally {
         this.running = false;
         this.activeAbort = void 0;
@@ -1844,9 +2694,8 @@ ${instructions}`;
      * editor with its text, an interaction that needs a TUI (P8).
      */
     async navigateTo(entryId, options) {
-      if (!this.session) throw new TauError("no_session", "navigateTo() requires a session");
       if (this.running) throw new TauError("busy", "navigateTo() requires an idle agent");
-      await this.pendingRecording;
+      await this.flushWrites();
       const store = this.session.store;
       const oldLeafId = await store.getLeafId();
       if (oldLeafId === entryId) return { cancelled: false };
@@ -1865,6 +2714,7 @@ ${instructions}`;
       if (hook.cancel) return { cancelled: true };
       let summaryText = hook.summary?.summary;
       let summaryDetails = hook.summary?.details;
+      let summaryUsage = hook.summary?.usage;
       if (!summaryText && options?.summarize !== false && entries.length > 0) {
         try {
           const generated = await generateBranchSummary(this.transport, entries, {
@@ -1874,20 +2724,27 @@ ${instructions}`;
           });
           summaryText = generated.summary;
           summaryDetails = { readFiles: generated.readFiles, modifiedFiles: generated.modifiedFiles };
+          summaryUsage = generated.usage;
         } catch (error) {
           if (error instanceof TauError && error.code === "aborted") return { cancelled: true };
           throw error;
         }
       }
       const fromExtension = hook.summary !== void 0;
-      const summaryEntry = await this.session.moveTo(
-        entryId,
-        summaryText ? { summary: summaryText, details: summaryDetails, fromHook: fromExtension || void 0 } : void 0
-      );
+      const summaryEntry = await this.enqueueWrite(async () => {
+        const entry = await this.session.moveTo(
+          entryId,
+          summaryText ? {
+            summary: summaryText,
+            details: summaryDetails,
+            usage: summaryUsage && this.priced(summaryUsage),
+            fromHook: fromExtension || void 0
+          } : void 0
+        );
+        await this.refresh();
+        return entry;
+      });
       const newLeafId = await store.getLeafId();
-      const path = await store.getPathToRoot(newLeafId);
-      this.messages.length = 0;
-      this.messages.push(...messagesFromPath(path).messages);
       await this.extensions?.notifySessionTree({ newLeafId, oldLeafId, summaryEntry, fromExtension }, ctx);
       return { cancelled: false };
     }
@@ -1895,34 +2752,49 @@ ${instructions}`;
       const ctx = this.extensionContext();
       let finalInput = input;
       if (this.extensions) {
-        const inputResult = await this.extensions.runInput(input, ctx);
+        const inputText = userContentText(input);
+        const inputResult = await this.extensions.runInput(inputText, ctx);
         if (inputResult.handled) {
           yield { type: "agent_end", messages: this.messages };
           return;
         }
-        finalInput = inputResult.text;
-      }
-      let systemPrompt = this.systemPrompt ?? "";
-      if (this.extensions) {
-        const beforeStart = await this.extensions.runBeforeAgentStart(finalInput, systemPrompt, ctx);
-        systemPrompt = beforeStart.systemPrompt;
-        for (const injected of beforeStart.messages) {
-          await this.commitMessage(
-            {
-              role: "custom",
-              customType: injected.customType,
-              content: injected.content,
-              display: injected.display ?? true,
-              details: injected.details,
-              timestamp: Date.now()
-            },
-            ctx
-          );
+        if (typeof input === "string") finalInput = inputResult.text;
+        else if (inputResult.text !== inputText) {
+          finalInput = [{ type: "text", text: inputResult.text }, ...input.filter((block) => block.type === "image")];
         }
       }
+      const systemPrompt = await this.applyBeforeAgentStart(userContentText(finalInput), ctx);
       await this.commitMessage({ role: "user", content: finalInput, timestamp: Date.now() }, ctx);
       await this.extensions?.notifyAgentStart(ctx);
       yield* this.runLoop(ctx, systemPrompt, signal);
+    }
+    /**
+     * before_agent_start for a run: extensions rewrite the system prompt and may
+     * inject custom messages. Shared by prompt() and resume() — resume() used the
+     * base prompt, dropping e.g. injected skills and the provider's prompt cache (HF-10).
+     */
+    async applyBeforeAgentStart(promptText, ctx) {
+      const base = this.systemPrompt ?? "";
+      if (!this.extensions) {
+        await this.declareLoadout(base);
+        return base;
+      }
+      const beforeStart = await this.extensions.runBeforeAgentStart(promptText, base, ctx);
+      await this.declareLoadout(beforeStart.systemPrompt);
+      for (const injected of beforeStart.messages) {
+        await this.commitMessage(
+          {
+            role: "custom",
+            customType: injected.customType,
+            content: injected.content,
+            display: injected.display ?? true,
+            details: injected.details,
+            timestamp: Date.now()
+          },
+          ctx
+        );
+      }
+      return beforeStart.systemPrompt;
     }
     /** The turn loop shared by prompt() and resume(). */
     async *runLoop(ctx, systemPrompt, signal) {
@@ -1940,21 +2812,41 @@ ${instructions}`;
       let retryAttempt = 0;
       for (let turnIndex = 0; turnIndex < this.maxTurnsPerPrompt; turnIndex++) {
         if (signal?.aborted) {
-          await this.pendingRecording;
+          await this.flushWrites();
           await this.extensions?.notifyAgentEnd(this.messages, ctx);
           yield { type: "agent_end", messages: this.messages };
           return;
         }
         await this.extensions?.notifyTurnStart(turnIndex, ctx);
+        let compactionReason;
+        let customInstructions;
         if (this.pendingCompaction !== null) {
-          const customInstructions = this.pendingCompaction;
+          compactionReason = "manual";
+          customInstructions = this.pendingCompaction === "" ? void 0 : this.pendingCompaction;
           this.pendingCompaction = null;
-          const result = await this.compact(customInstructions === "" ? void 0 : customInstructions, "manual", signal);
-          if (result) yield { type: "compaction", result };
-        } else if (this.config.contextWindow !== void 0 && shouldCompact(estimateContextTokens(this.messages).tokens, this.config.contextWindow, this.compactionSettings)) {
-          const result = await this.compact(void 0, "threshold", signal);
-          if (result) yield { type: "compaction", result };
+        } else if (this.config.contextWindow !== void 0 && shouldCompact(this.getContextUsage().tokens, this.config.contextWindow, this.compactionSettings)) {
+          compactionReason = "threshold";
         }
+        if (compactionReason !== void 0) {
+          let result;
+          let failure;
+          try {
+            result = await this.compact(customInstructions, compactionReason, signal);
+          } catch (error) {
+            failure = toError(error);
+          }
+          if (result) yield { type: "compaction", result };
+          if (failure) {
+            await this.extensions?.notifySessionCompactFailed(
+              { reason: compactionReason, errorMessage: failure.message },
+              ctx
+            );
+            yield { type: "compaction_failed", reason: compactionReason, errorMessage: failure.message };
+          }
+        }
+        await this.declareLoadout(systemPrompt);
+        await this.flushWrites();
+        if (this.verifyTranscript) await this.assertTranscriptMatchesLog();
         let request = [...this.messages];
         if (this.extensions) {
           request = await this.extensions.runContext(request, ctx);
@@ -1966,19 +2858,15 @@ ${instructions}`;
           provider: this.config.provider ?? "openai-compat",
           model: this.config.model,
           usage: emptyUsage(),
-          stopReason: "stop",
+          // A streaming partial is unfinished (pi 0.83.0); the final message lands a concrete reason.
+          stopReason: "pending",
           timestamp: Date.now()
         };
+        const requestStart = partial.timestamp;
         await this.extensions?.notifyMessageStart(partial, ctx);
         let assistantMessage;
         let streamFailure;
-        const tools = this.currentTools();
-        const stream = this.transport({
-          systemPrompt: systemPrompt === "" ? void 0 : systemPrompt,
-          messages: request,
-          tools: tools.size > 0 ? [...tools.values()] : void 0,
-          signal
-        });
+        const stream = this.transport({ messages: request, signal });
         const iterator = stream[Symbol.asyncIterator]();
         while (true) {
           let iteration;
@@ -2013,6 +2901,7 @@ ${instructions}`;
               break;
             case "response_end":
               assistantMessage = event.message;
+              assistantMessage.durationMs = Math.max(0, Date.now() - requestStart);
               if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
               break;
           }
@@ -2020,13 +2909,12 @@ ${instructions}`;
         if (streamFailure) {
           partial.stopReason = streamFailure.code === "aborted" ? "aborted" : "error";
           partial.errorMessage = streamFailure.message;
-          partial.timestamp = Date.now();
+          partial.durationMs = Math.max(0, Date.now() - requestStart);
           let finalMessage = partial;
           if (this.extensions) {
             finalMessage = await this.extensions.runMessageEnd(finalMessage, ctx);
           }
-          this.messages.push(finalMessage);
-          await this.recordMessage(finalMessage);
+          const failedEntryId = await this.record(finalMessage);
           yield { type: "assistant_message", message: finalMessage };
           await this.extensions?.notifyTurnEnd(turnIndex, finalMessage, [], ctx);
           const retryEligible = finalMessage.stopReason === "error" && this.retrySettings.enabled && this.platform.sleep !== void 0 && isRetryableAssistantError(finalMessage);
@@ -2041,14 +2929,17 @@ ${instructions}`;
             };
             await this.extensions?.notifyAutoRetryStart(startEvent, ctx);
             yield { type: "auto_retry_start", ...startEvent };
-            if (this.messages.at(-1) === finalMessage) this.messages.pop();
+            await this.enqueueWrite(async () => {
+              await this.session.appendContextEdit(failedEntryId, null);
+              await this.refresh();
+            });
             try {
               await this.platform.sleep?.(delayMs, signal);
             } catch {
               const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
               await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
               yield { type: "auto_retry_end", ...endEvent };
-              await this.pendingRecording;
+              await this.flushWrites();
               await this.extensions?.notifyAgentEnd(this.messages, ctx);
               yield { type: "agent_end", messages: this.messages };
               return;
@@ -2061,7 +2952,7 @@ ${instructions}`;
             await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
             yield { type: "auto_retry_end", ...endEvent };
           }
-          await this.pendingRecording;
+          await this.flushWrites();
           await this.extensions?.notifyAgentEnd(this.messages, ctx);
           yield { type: "agent_end", messages: this.messages };
           return;
@@ -2072,8 +2963,7 @@ ${instructions}`;
         if (this.extensions) {
           assistantMessage = await this.extensions.runMessageEnd(assistantMessage, ctx);
         }
-        this.messages.push(assistantMessage);
-        await this.recordMessage(assistantMessage);
+        await this.record(assistantMessage);
         yield { type: "assistant_message", message: assistantMessage };
         if (retryAttempt > 0) {
           const endEvent = { success: true, attempt: retryAttempt };
@@ -2083,50 +2973,11 @@ ${instructions}`;
         }
         const toolCalls = toolCallsOf(assistantMessage);
         const toolResults = [];
-        for (const toolCall of toolCalls) {
-          yield { type: "tool_start", toolCall };
-          const updates = [];
-          let wakeUpdate;
-          let executionDone = false;
-          const execution = this.executeToolCall(toolCall, ctx, signal, (update) => {
-            updates.push(update);
-            wakeUpdate?.();
-            wakeUpdate = void 0;
-          });
-          execution.then(
-            () => {
-              executionDone = true;
-              wakeUpdate?.();
-              wakeUpdate = void 0;
-            },
-            () => {
-              executionDone = true;
-              wakeUpdate?.();
-              wakeUpdate = void 0;
-            }
-          );
-          while (!executionDone || updates.length > 0) {
-            const update = updates.shift();
-            if (update) {
-              yield { type: "tool_update", toolCall, partialOutput: update.partialOutput, stream: update.stream };
-              continue;
-            }
-            await new Promise((resolve) => {
-              wakeUpdate = resolve;
-            });
-          }
-          const { result } = await execution;
-          const toolResultMessage = {
-            role: "toolResult",
-            toolCallId: toolCall.id,
-            toolName: toolCall.name,
-            content: [{ type: "text", text: result.output }],
-            isError: result.isError === true,
-            timestamp: Date.now()
-          };
-          const committedToolResult = await this.commitMessage(toolResultMessage, ctx);
-          toolResults.push(committedToolResult);
-          yield { type: "tool_result", toolCall, result };
+        const forceSequential = this.toolExecution === "sequential" || toolCalls.some((tc) => this.currentTools().get(tc.name)?.executionMode === "sequential");
+        if (forceSequential || toolCalls.length <= 1) {
+          yield* this.runToolBatchSequential(toolCalls, ctx, signal, toolResults);
+        } else {
+          yield* this.runToolBatchParallel(toolCalls, ctx, signal, toolResults);
         }
         for (const steered of this.steeringQueue.drain()) {
           const committed = await this.commitMessage(steered, ctx);
@@ -2143,7 +2994,7 @@ ${instructions}`;
             }
             continue;
           }
-          await this.pendingRecording;
+          await this.flushWrites();
           await this.extensions?.notifyAgentEnd(this.messages, ctx);
           yield { type: "agent_end", messages: this.messages };
           return;
@@ -2151,12 +3002,146 @@ ${instructions}`;
       }
       throw new TauError("max_turns", `Prompt exceeded ${this.maxTurnsPerPrompt} turns without completing`);
     }
+    /** Commit one tool result to messages/session and produce the AgentEvent pair tail. */
+    async commitToolResult(toolCall, outcome, ctx, toolResults) {
+      const { durationMs, usage, ...result } = outcome;
+      const toolResultMessage = {
+        role: "toolResult",
+        toolCallId: toolCall.id,
+        toolName: toolCall.name,
+        content: [{ type: "text", text: result.output }],
+        isError: result.isError === true,
+        timestamp: Date.now(),
+        ...durationMs !== void 0 ? { durationMs } : {},
+        ...usage ? { usage } : {}
+      };
+      const committedToolResult = await this.commitMessage(toolResultMessage, ctx);
+      toolResults.push(committedToolResult);
+      return { type: "tool_result", toolCall, result };
+    }
+    /** Sequential batch: the pre-P18 behavior — full hook chain, execute, result, one tool at a time. */
+    async *runToolBatchSequential(toolCalls, ctx, signal, toolResults) {
+      for (const toolCall of toolCalls) {
+        yield { type: "tool_start", toolCall };
+        const updates = [];
+        let wakeUpdate;
+        let executionDone = false;
+        const execution = this.executeToolCall(toolCall, ctx, signal, (update) => {
+          updates.push(update);
+          wakeUpdate?.();
+          wakeUpdate = void 0;
+        });
+        execution.then(
+          () => {
+            executionDone = true;
+            wakeUpdate?.();
+            wakeUpdate = void 0;
+          },
+          () => {
+            executionDone = true;
+            wakeUpdate?.();
+            wakeUpdate = void 0;
+          }
+        );
+        while (!executionDone || updates.length > 0) {
+          const update = updates.shift();
+          if (update) {
+            yield { type: "tool_update", toolCall, partialOutput: update.partialOutput, stream: update.stream };
+            continue;
+          }
+          await new Promise((resolve) => {
+            wakeUpdate = resolve;
+          });
+        }
+        const { result } = await execution;
+        yield await this.commitToolResult(toolCall, result, ctx, toolResults);
+      }
+    }
+    /**
+     * Parallel batch (P18, structure mirrors pi executeToolCallsParallel):
+     * phase 1 — preflight serially in source order (tool_call hook, validation,
+     * policy/approval, tool_execution_start; immediate outcomes settle here);
+     * phase 2 — execute prepared tools concurrently, tool_execution_end and
+     * tool_update stream in completion/arrival order; phase 3 — tool results
+     * commit to messages/session in assistant source order (stable wire order).
+     * Deviation from pi: no break on abort mid-preflight — every tool call gets
+     * a result (existing tau sequential semantics; tools observe the signal and
+     * settle fast), keeping the wire's call/result pairing always complete.
+     */
+    async *runToolBatchParallel(toolCalls, ctx, signal, toolResults) {
+      const preps = [];
+      for (const toolCall of toolCalls) {
+        yield { type: "tool_start", toolCall };
+        preps.push(await this.preflightToolCall(toolCall, ctx, signal));
+      }
+      const pump = [];
+      let wake;
+      const push = (item) => {
+        pump.push(item);
+        wake?.();
+        wake = void 0;
+      };
+      const outcomes = new Array(preps.length);
+      let running = 0;
+      preps.forEach((prep, index) => {
+        if (prep.kind === "immediate") {
+          outcomes[index] = prep.result;
+          return;
+        }
+        running++;
+        this.executePreparedToolCall(prep, ctx, signal, (update) => {
+          push({ kind: "update", toolCall: prep.toolCall, update });
+        }).then(
+          (result) => {
+            outcomes[index] = result;
+            running--;
+            push({ kind: "done" });
+          },
+          (cause) => {
+            outcomes[index] = { output: toError(cause).message, isError: true };
+            running--;
+            push({ kind: "done" });
+          }
+        );
+      });
+      while (running > 0 || pump.length > 0) {
+        const item = pump.shift();
+        if (item) {
+          if (item.kind === "update") {
+            yield {
+              type: "tool_update",
+              toolCall: item.toolCall,
+              partialOutput: item.update.partialOutput,
+              stream: item.update.stream
+            };
+          }
+          continue;
+        }
+        await new Promise((resolve) => {
+          wake = resolve;
+        });
+      }
+      for (let index = 0; index < preps.length; index++) {
+        yield await this.commitToolResult(preps[index].toolCall, outcomes[index], ctx, toolResults);
+      }
+    }
     async executeToolCall(toolCall, ctx, signal, onUpdate) {
+      const prep = await this.preflightToolCall(toolCall, ctx, signal);
+      if (prep.kind === "immediate") return { result: prep.result };
+      return { result: await this.executePreparedToolCall(prep, ctx, signal, onUpdate) };
+    }
+    /**
+     * Serial preflight of one tool call: tool_call hook (block/rewrite),
+     * argument validation, policy gate, approval, and — for calls that will
+     * execute — the tool_execution_start notification. Immediate outcomes
+     * (unknown tool, block, invalid args, deny) never see execution hooks.
+     */
+    async preflightToolCall(toolCall, ctx, signal) {
       const tool = this.currentTools().get(toolCall.name);
       if (!tool) {
-        return { result: { output: `Unknown tool: ${toolCall.name}`, isError: true } };
+        return { kind: "immediate", toolCall, result: { output: `Unknown tool: ${toolCall.name}`, isError: true } };
       }
-      let args = { ...toolCall.arguments };
+      let args = JSON.parse(JSON.stringify(toolCall.arguments));
       if (this.extensions) {
         const event = {
           type: "tool_call",
@@ -2167,14 +3152,26 @@ ${instructions}`;
         const decision = await this.extensions.runToolCall(event, ctx);
         if (decision.blocked) {
           return {
+            kind: "immediate",
+            toolCall,
             result: { output: `Tool call blocked: ${decision.reason ?? "blocked by extension"}`, isError: true }
           };
         }
         args = event.input;
       }
+      if (signal?.aborted) return { kind: "immediate", toolCall, result: abortedResult() };
+      if (!hasToolSchema(tool)) {
+        return {
+          kind: "immediate",
+          toolCall,
+          result: { output: `Tool ${toolCall.name} has no parameters schema and cannot be called`, isError: true }
+        };
+      }
       const problems = validateToolArgs(tool.parameters, args);
       if (problems.length > 0) {
         return {
+          kind: "immediate",
+          toolCall,
           result: { output: `Invalid arguments for ${toolCall.name}: ${problems.join("; ")}`, isError: true }
         };
       }
@@ -2184,12 +3181,14 @@ ${instructions}`;
       );
       const riskText = policyDecision.reason ?? `${policyDecision.risk}-risk tool call in ${this.permissionMode} mode`;
       if (policyDecision.action === "deny") {
-        return { result: { output: `Denied by policy: ${riskText}`, isError: true } };
+        return { kind: "immediate", toolCall, result: { output: `Denied by policy: ${riskText}`, isError: true } };
       }
       if (policyDecision.action === "ask") {
         const handler = this.onApproval ?? this.uiApprovalHandler();
         if (!handler) {
           return {
+            kind: "immediate",
+            toolCall,
             result: {
               output: `Denied by policy: approval required (${riskText}), but no approval handler is available`,
               isError: true
@@ -2207,13 +3206,26 @@ ${instructions}`;
         try {
           approved = await this.awaitApproval(handler, request, signal);
         } catch (cause) {
-          return { result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true } };
+          return {
+            kind: "immediate",
+            toolCall,
+            result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true }
+          };
         }
         if (!approved) {
-          return { result: { output: `Denied by policy: approval declined (${riskText})`, isError: true } };
+          return {
+            kind: "immediate",
+            toolCall,
+            result: { output: `Denied by policy: approval declined (${riskText})`, isError: true }
+          };
         }
       }
       await this.extensions?.notifyToolExecutionStart({ toolCallId: toolCall.id, toolName: toolCall.name, args }, ctx);
+      return { kind: "prepared", toolCall, tool, args };
+    }
+    /** Execute a prepared tool call: updates stream, tool_execution_end, tool_result hook. */
+    async executePreparedToolCall(prep, ctx, signal, onUpdate) {
+      const { toolCall, tool, args } = prep;
       const updateNotifications = [];
       const emitUpdate = (partialOutput, stream) => {
         if (this.extensions) {
@@ -2229,13 +3241,23 @@ ${instructions}`;
         }
       };
       let result;
-      try {
-        result = await tool.execute(args, signal, emitUpdate, ctx);
-      } catch (cause) {
-        result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
+      let durationMs;
+      if (signal?.aborted) {
+        result = abortedResult();
+      } else {
+        const startedAt = Date.now();
+        try {
+          result = await tool.execute(args, signal, emitUpdate, ctx);
+        } catch (cause) {
+          result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
+        }
+        durationMs = Math.max(0, Date.now() - startedAt);
       }
       await Promise.all(updateNotifications);
-      await this.extensions?.notifyToolExecutionEnd({ toolCallId: toolCall.id, toolName: toolCall.name, result }, ctx);
+      await this.extensions?.notifyToolExecutionEnd(
+        { toolCallId: toolCall.id, toolName: toolCall.name, result, ...durationMs !== void 0 ? { durationMs } : {} },
+        ctx
+      );
       if (this.extensions) {
         const finalResult = await this.extensions.runToolResult(
           {
@@ -2250,7 +3272,7 @@ ${instructions}`;
         );
         result = { output: finalResult.output, isError: finalResult.isError };
       }
-      return { result };
+      return durationMs !== void 0 ? { ...result, durationMs } : result;
     }
     /** Default approval handler over the host UI; no UI means no handler (ask degrades to deny). */
     uiApprovalHandler() {
@@ -2268,9 +3290,9 @@ ${detail}` : detail
     }
     /** Wait for an approval decision; an abort while waiting counts as a rejection. */
     awaitApproval(handler, request, signal) {
+      if (signal?.aborted) return Promise.resolve(false);
       const decision = handler(request);
       if (!signal) return decision;
-      if (signal.aborted) return Promise.resolve(false);
       return new Promise((resolve, reject) => {
         let settled = false;
         const onAbort = () => {
@@ -2296,8 +3318,14 @@ ${detail}` : detail
       });
     }
   };
+  function abortedResult() {
+    return { output: "Operation aborted", isError: true };
+  }
 
-  // ../../../packages/kernel/src/extensions.ts
+  // packages/kernel/src/extensions.ts
+  function sameMessages(left, right) {
+    return left.length === right.length && left.every((message, index) => message === right[index]);
+  }
   var ExtensionRegistry = class _ExtensionRegistry {
     constructor() {
       __publicField(this, "tools", /* @__PURE__ */ new Map());
@@ -2313,6 +3341,7 @@ ${detail}` : detail
       __publicField(this, "flags", /* @__PURE__ */ new Map());
       __publicField(this, "flagValues", /* @__PURE__ */ new Map());
       __publicField(this, "hostActions");
+      __publicField(this, "errorSink");
       __publicField(this, "handlers", {
         agent_start: [],
         agent_end: [],
@@ -2320,6 +3349,7 @@ ${detail}` : detail
         turn_end: [],
         input: [],
         context: [],
+        context_with_system: [],
         before_agent_start: [],
         message_start: [],
         message_update: [],
@@ -2339,6 +3369,7 @@ ${detail}` : detail
         session_info_changed: [],
         session_before_compact: [],
         session_compact: [],
+        session_compact_failed: [],
         session_before_fork: [],
         session_before_tree: [],
         session_tree: [],
@@ -2360,6 +3391,7 @@ ${detail}` : detail
       const api = {
         on,
         registerTool: (tool, options) => {
+          assertToolSchema(tool);
           this.tools.set(tool.name, options?.risk !== void 0 ? { ...tool, risk: options.risk } : tool);
         },
         registerCommand: (name, options) => {
@@ -2396,7 +3428,8 @@ ${detail}` : detail
         sendMessage: (message, options) => this.requireHostActions("sendMessage")(message, options),
         sendUserMessage: (content, options) => this.requireHostActions("sendUserMessage")(content, options),
         appendEntry: (customType, data) => this.requireHostActions("appendEntry")(customType, data),
-        setSessionName: (name) => this.requireHostActions("setSessionName")(name)
+        setSessionName: (name) => this.requireHostActions("setSessionName")(name),
+        setLabel: (entryId, label) => this.requireHostActions("setLabel")(entryId, label)
       };
       for (const extension of extensions) {
         await extension(api);
@@ -2421,6 +3454,27 @@ ${detail}` : detail
         throw new TauError("no_host", `${String(action)}() requires a host that provides this action`);
       }
       return found;
+    }
+    /** Host-side: isolate notification handlers — their errors go to `sink` instead of the caller (HF-12). */
+    setErrorSink(sink) {
+      this.errorSink = sink;
+    }
+    /** Run notification handlers in order; with an error sink, one failing handler does not stop the rest. */
+    async dispatch(handlers, event, ctx) {
+      for (const handler of handlers) {
+        if (!this.errorSink) {
+          await handler(event, ctx);
+          continue;
+        }
+        try {
+          await handler(event, ctx);
+        } catch (error) {
+          this.errorSink({ event: event.type, error: toError(error) });
+        }
+      }
+    }
+    async notifySessionCompactFailed(event, ctx) {
+      await this.dispatch(this.handlers.session_compact_failed, { type: "session_compact_failed", ...event }, ctx);
     }
     /** Host-side: supply parsed CLI flag values. Unknown names are ignored (host validates). */
     setFlagValues(values) {
@@ -2538,12 +3592,37 @@ ${detail}` : detail
         );
       }
     }
-    /** Run context handlers. Replacements chain: each handler sees the previous replacement. */
+    /**
+     * Request-time transforms in two phases (pi ExtensionRunner.emitContext).
+     * `context` handlers see the conversation only and the prompt/tool state is
+     * restored after each (a changed list is re-headed with the replayed system
+     * message); `context_with_system` handlers then see the full transcript and
+     * their output is used as returned. Works on a JSON copy, so in-place edits
+     * never reach the session log's projection.
+     */
     async runContext(messages, ctx) {
-      let current = messages;
+      let current = JSON.parse(JSON.stringify(messages));
       for (const handler of this.handlers.context) {
-        const result = await handler({ type: "context", messages: current }, ctx);
-        if (result?.messages) current = result.messages;
+        const visible = current.filter((message) => message.role !== "system");
+        const snapshot = visible.slice();
+        const result = await handler({ type: "context", messages: visible }, ctx);
+        const returned = result?.messages ?? (sameMessages(visible, snapshot) ? void 0 : visible);
+        if (!returned || sameMessages(returned, snapshot)) continue;
+        const head = getCurrentSystemMessage(current);
+        current = head ? [head, ...returned] : returned;
+      }
+      for (const handler of this.handlers.context_with_system) {
+        const hadLeadingSystemMessage = current[0]?.role === "system";
+        const result = await handler({ type: "context_with_system", messages: current }, ctx);
+        current = result?.messages ?? current;
+        if (hadLeadingSystemMessage && current[0]?.role !== "system") {
+          this.errorSink?.({
+            event: "context_with_system",
+            error: new Error(
+              "Handler removed the leading system message; the request has no prompt or initial tool declarations"
+            )
+          });
+        }
       }
       return current;
     }
@@ -2559,12 +3638,10 @@ ${detail}` : detail
       return { systemPrompt: current, messages };
     }
     async notifyMessageStart(message, ctx) {
-      for (const handler of this.handlers.message_start) await handler({ type: "message_start", message }, ctx);
+      await this.dispatch(this.handlers.message_start, { type: "message_start", message }, ctx);
     }
     async notifyMessageUpdate(message, event, ctx) {
-      for (const handler of this.handlers.message_update) {
-        await handler({ type: "message_update", message, event }, ctx);
-      }
+      await this.dispatch(this.handlers.message_update, { type: "message_update", message, event }, ctx);
     }
     /** Run message_end handlers. Replacements chain; a replacement changing the role is ignored. */
     async runMessageEnd(message, ctx) {
@@ -2576,19 +3653,13 @@ ${detail}` : detail
       return current;
     }
     async notifyToolExecutionStart(event, ctx) {
-      for (const handler of this.handlers.tool_execution_start) {
-        await handler({ type: "tool_execution_start", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.tool_execution_start, { type: "tool_execution_start", ...event }, ctx);
     }
     async notifyToolExecutionUpdate(event, ctx) {
-      for (const handler of this.handlers.tool_execution_update) {
-        await handler({ type: "tool_execution_update", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.tool_execution_update, { type: "tool_execution_update", ...event }, ctx);
     }
     async notifyToolExecutionEnd(event, ctx) {
-      for (const handler of this.handlers.tool_execution_end) {
-        await handler({ type: "tool_execution_end", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.tool_execution_end, { type: "tool_execution_end", ...event }, ctx);
     }
     /** Run project_trust handlers. The first decisive answer (yes/no) wins. */
     async runProjectTrust(cwd, ctx) {
@@ -2610,15 +3681,13 @@ ${detail}` : detail
       return discovered;
     }
     async notifySessionStart(reason, ctx) {
-      for (const handler of this.handlers.session_start) await handler({ type: "session_start", reason }, ctx);
+      await this.dispatch(this.handlers.session_start, { type: "session_start", reason }, ctx);
     }
     async notifySessionShutdown(reason, ctx) {
-      for (const handler of this.handlers.session_shutdown) await handler({ type: "session_shutdown", reason }, ctx);
+      await this.dispatch(this.handlers.session_shutdown, { type: "session_shutdown", reason }, ctx);
     }
     async notifySessionInfoChanged(name, ctx) {
-      for (const handler of this.handlers.session_info_changed) {
-        await handler({ type: "session_info_changed", name }, ctx);
-      }
+      await this.dispatch(this.handlers.session_info_changed, { type: "session_info_changed", name }, ctx);
     }
     /** Run session_before_compact handlers: cancel or takeover short-circuits. */
     async runSessionBeforeCompact(event, ctx) {
@@ -2629,9 +3698,7 @@ ${detail}` : detail
       return {};
     }
     async notifySessionCompact(event, ctx) {
-      for (const handler of this.handlers.session_compact) {
-        await handler({ type: "session_compact", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.session_compact, { type: "session_compact", ...event }, ctx);
     }
     /** Run session_before_fork handlers: a cancel short-circuits. */
     async runSessionBeforeFork(event, ctx) {
@@ -2654,9 +3721,7 @@ ${detail}` : detail
       return merged;
     }
     async notifySessionTree(event, ctx) {
-      for (const handler of this.handlers.session_tree) {
-        await handler({ type: "session_tree", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.session_tree, { type: "session_tree", ...event }, ctx);
     }
     /** Run session_before_switch handlers; the first cancel wins (pi semantics). */
     async runSessionBeforeSwitch(event, ctx) {
@@ -2667,32 +3732,28 @@ ${detail}` : detail
       return { cancelled: false };
     }
     async notifyAutoRetryStart(event, ctx) {
-      for (const handler of this.handlers.auto_retry_start) {
-        await handler({ type: "auto_retry_start", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.auto_retry_start, { type: "auto_retry_start", ...event }, ctx);
     }
     async notifyAutoRetryEnd(event, ctx) {
-      for (const handler of this.handlers.auto_retry_end) {
-        await handler({ type: "auto_retry_end", ...event }, ctx);
-      }
+      await this.dispatch(this.handlers.auto_retry_end, { type: "auto_retry_end", ...event }, ctx);
     }
     async notifyAgentStart(ctx) {
-      for (const handler of this.handlers.agent_start) await handler({ type: "agent_start" }, ctx);
+      await this.dispatch(this.handlers.agent_start, { type: "agent_start" }, ctx);
     }
     async notifyAgentEnd(messages, ctx) {
-      for (const handler of this.handlers.agent_end) await handler({ type: "agent_end", messages }, ctx);
+      await this.dispatch(this.handlers.agent_end, { type: "agent_end", messages }, ctx);
     }
     async notifyTurnStart(turnIndex, ctx) {
       const event = { type: "turn_start", turnIndex, timestamp: Date.now() };
-      for (const handler of this.handlers.turn_start) await handler(event, ctx);
+      await this.dispatch(this.handlers.turn_start, event, ctx);
     }
     async notifyTurnEnd(turnIndex, message, toolResults, ctx) {
       const event = { type: "turn_end", turnIndex, message, toolResults };
-      for (const handler of this.handlers.turn_end) await handler(event, ctx);
+      await this.dispatch(this.handlers.turn_end, event, ctx);
     }
   };
 
-  // ../../../packages/kernel/src/utf8.ts
+  // packages/kernel/src/utf8.ts
   var REPLACEMENT = "\uFFFD";
   var MIN_CODE_POINT = [0, 0, 128, 2048, 65536];
   function createIncrementalUtf8Decoder() {
@@ -2770,7 +3831,7 @@ ${detail}` : detail
     };
   }
 
-  // ../../../packages/ext-mcp-http/src/index.ts
+  // packages/ext-mcp-http/src/index.ts
   var MCP_PROTOCOL_VERSION = "2025-06-18";
   var CLIENT_INFO = { name: "tau-ext-mcp-http", version: "0.1.0" };
   var DEFAULT_HANDSHAKE_TIMEOUT_MS = 1e4;
@@ -3035,7 +4096,7 @@ ${block.resource.text}`);
     return { extension, connect: connect2 };
   }
 
-  // js/tau-entry.ts
+  // examples/flutter/app/js/tau-entry.ts
   var host = globalThis.sendMessage;
   function emit(channel, payload) {
     if (host) host(channel, JSON.stringify(payload));

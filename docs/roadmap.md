@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-16（P22 规格书确认，**当前工作 = P22 实施**）
+> 最后更新：2026-10-16（P22 完成；**当前工作 = P23**，先写规格书）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -217,11 +217,13 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 规格书：[specs/phase-21a-context-files.md](specs/phase-21a-context-files.md)。P21 审计登记的缺口（pi v0.80.3 就有），照抄 pi v1.2.0：内核 `context-files.ts` 纯 ES 发现 + 渲染，CLI/TUI 启动加载，`-nc` 关闭，`/reload` 重读。
 
-## Phase 22 🚧 事件日志内核：日志即唯一事实
+## Phase 22 ✅ 事件日志内核：日志即唯一事实（2026-10-16）
 
-规格书：[specs/phase-22-event-log.md](specs/phase-22-event-log.md)（2026-10-16 确认，五步 22a–22e）。
+规格书：[specs/phase-22-event-log.md](specs/phase-22-event-log.md)（2026-10-16 确认并完成，五步 22a–22e）。
 
 输入：P21 附录 A 中阶段为 P22 的 27 条。照抄 pi 1.2.0 会话模型：会话日志是 provider 上下文的唯一来源，请求前从日志重建；system prompt 与工具声明以 system 消息进入转录，线格式按协议折叠；SessionEntry 增 `usage`、`context_edit`；`ToolCall.arguments`/`details` 限定为 JSON 值；会话兼容收窄为单向读（D13 补记）。镜像 `ctx.sessionManager`、`ctx.getSystemPrompt()`、`setLabel`、`context_with_system`。
+
+**完成记录**：全量 287 个测试，286 通过、1 跳过（Windows 上本来就跳过的 SIGINT 测试）；新增 projection、transcript、compaction-log、session-pi、barrel 五个测试文件。e2e：mock 服务器 + 真 CLI 的 `/tree`、自动压缩 + `--continue` 两条路径随新语义更新后通过；真实 DeepSeek（deepseek-flash）冒烟：带 read 工具调用的一轮 + `--continue` 续答，会话文件只有一条 system 消息（`prompt` + 4 个工具），第二轮 prompt 与工具未变、没有追加。QuickJS 三项 smoke 与 weapp bundle 检查通过，Flutter bundle 已重建。提交：6c3eae5（22a/b）、4539d13 + 18428bc（22c）、ebb62e1（22d）、22e 归档提交。与规格的偏差（详见规格书「实施记录」）：`ctx.sessionManager` 按 pi 只读、不带 `appendContextEdit`；`JsonObject` 照抄 pi 为可变；新增条目深冻结；pi 会话样本的期望值按 pi 源码人工推导（本机未装 pi 依赖）。附带修复：条目 id 原先截取 uuidv7 的时钟位，65 秒内除首条外全部退回完整 UUID；barrel 漏导出 5 个公开名字。
 
 ## Phase 23 ⬜ 循环显式化、接缝与 fail-closed
 
@@ -269,5 +271,8 @@ P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
 | 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 首发以 P23 信任修复为前提（发布阻断） |
 | 14 | extensions.ts 的 entry/tool renderer 与 pi 1.2 形状不一致，偏离未注释 | 照抄核对困难 | 绑定 P23 |
 | 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | 绑定 pi-tui 升级（P24 之后） |
+| 16 | 摘要调用不检查 stopReason，也不拒收空文本或工具调用（P22 审计） | length 截断或出错的摘要会写成压缩检查点 | 绑定 P23 fail-closed（照抄 pi getSummarizationFailure） |
+| 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
+| 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 
 （#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
