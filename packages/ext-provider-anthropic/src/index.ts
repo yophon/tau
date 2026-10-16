@@ -51,6 +51,45 @@ const DEFAULT_MAX_TOKENS = 8192;
 /** pi's floor for output tokens when clamping a thinking budget into max_tokens. */
 const MIN_OUTPUT_TOKENS = 1024;
 
+/** Anthropic `output_config.effort` levels. */
+export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** How a host maps its thinking level onto the wire: adaptive + effort (current models) or budget tokens (pre-4.6). */
+export type AnthropicThinkingMode = "adaptive" | "budget";
+
+/** pi's default thinking budgets (simple-options.ts) for budget-mode models; xhigh clamps to high. */
+const THINKING_BUDGETS = { minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 } as const;
+
+/**
+ * Map a shared thinking level (tau ThinkingLevel strings) onto transport config,
+ * mirroring pi v0.80.3 anthropic-messages (forceAdaptiveThinking +
+ * mapThinkingLevelToEffort). `undefined` clears the override. In adaptive mode
+ * "none" requests no thinking and the lowest effort instead of
+ * `{type: "disabled"}`, which current models (Opus 5.5, Sonnet 5.5, Fable) reject.
+ */
+export function anthropicThinkingForLevel(
+	level: string | undefined,
+	mode: AnthropicThinkingMode = "adaptive",
+): Pick<AnthropicTransportConfig, "thinking" | "effort"> {
+	if (level === undefined) return { thinking: undefined, effort: undefined };
+	if (mode === "budget") {
+		const budget = THINKING_BUDGETS[level as keyof typeof THINKING_BUDGETS];
+		return { thinking: budget === undefined ? undefined : { budgetTokens: budget }, effort: undefined };
+	}
+	if (level === "none") return { thinking: undefined, effort: "low" };
+	const effort: AnthropicEffort =
+		level === "minimal" || level === "low"
+			? "low"
+			: level === "medium"
+				? "medium"
+				: level === "xhigh"
+					? "xhigh"
+					: level === "max"
+						? "max"
+						: "high";
+	return { thinking: "adaptive", effort };
+}
+
 export interface AnthropicTransportConfig {
 	apiKey: string;
 	/** Read per request, so hosts may reassign it between turns (CLI /model). */
@@ -60,10 +99,22 @@ export interface AnthropicTransportConfig {
 	/** Output cap sent as max_tokens (an Anthropic-required field). Defaults to 8192. */
 	maxTokens?: number;
 	/**
-	 * Extended thinking: a token budget for budget-based models, or "adaptive"
-	 * for models that decide themselves. Omitted = thinking not requested.
+	 * Extended thinking: a token budget for budget-based models (pre-4.6), or
+	 * "adaptive" for current models (Claude 4.6+; 4.7+/5.x reject budget_tokens
+	 * with a 400). Omitted = thinking not requested (5.x still think adaptively).
 	 */
 	thinking?: { budgetTokens: number } | "adaptive";
+	/**
+	 * Reasoning effort, sent as `output_config.effort` (GA, no beta). The depth
+	 * control for adaptive thinking and for models whose thinking is always on.
+	 */
+	effort?: AnthropicEffort;
+	/**
+	 * `thinking.display` for adaptive thinking. "summarized" (default, pi's
+	 * forceAdaptiveThinking) streams readable summaries; "omitted" returns empty
+	 * thinking text (the API default on 4.7+/5.x — a long silent pause).
+	 */
+	thinkingDisplay?: "summarized" | "omitted";
 	/**
 	 * "auto" (default) marks system, the last tool, and the last user message
 	 * with ephemeral cache_control — pi's placement. "off" sends no markers.
@@ -260,18 +311,22 @@ function assistantContentToWire(content: AssistantMessage["content"]): WireBlock
 				blocks.push({ type: "redacted_thinking", data: block.thinkingSignature ?? "" });
 				continue;
 			}
-			if (block.thinking.trim().length === 0) continue;
-			if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
-				// Unsigned thinking (aborted stream, foreign transport) degrades to
-				// text — Anthropic rejects thinking blocks without a signature.
-				blocks.push(textBlock(block.thinking));
-			} else {
+			const signed = block.thinkingSignature !== undefined && block.thinkingSignature.trim().length > 0;
+			// A signed block must be replayed even when its text is empty: 4.7+/5.x default
+			// to display "omitted", so every block arrives empty-but-signed, and dropping
+			// them threw away all reasoning (and breaks thinking + tool_use turns).
+			if (signed) {
 				blocks.push({
 					type: "thinking",
 					thinking: sanitizeSurrogates(block.thinking),
-					signature: block.thinkingSignature,
+					signature: block.thinkingSignature as string,
 				});
+				continue;
 			}
+			if (block.thinking.trim().length === 0) continue;
+			// Unsigned thinking (aborted stream, foreign transport) degrades to
+			// text — Anthropic rejects thinking blocks without a signature.
+			blocks.push(textBlock(block.thinking));
 		} else {
 			blocks.push({ type: "tool_use", id: block.id, name: block.name, input: block.arguments ?? {} });
 		}
@@ -384,13 +439,14 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 		body.tools = toolsToWire(request.tools, cacheControl);
 	}
 	if (config.thinking === "adaptive") {
-		body.thinking = { type: "adaptive" };
+		body.thinking = { type: "adaptive", display: config.thinkingDisplay ?? "summarized" };
 	} else if (config.thinking) {
 		// pi's clamp: the budget must leave room for output inside max_tokens;
 		// when it cannot (tiny summarization caps), thinking is dropped entirely.
 		const budget = Math.min(config.thinking.budgetTokens, Math.max(0, maxTokens - MIN_OUTPUT_TOKENS));
 		if (budget > 0) body.thinking = { type: "enabled", budget_tokens: budget };
 	}
+	if (config.effort) body.output_config = { effort: config.effort };
 	return body;
 }
 

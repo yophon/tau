@@ -12,6 +12,7 @@ import {
 } from "./messages.ts";
 import type { Platform, PlatformResponse, TauAbortSignal } from "./platform.ts";
 import { SseParser } from "./sse.ts";
+import { transformMessages } from "./transform.ts";
 
 // Wire framing for summary messages, verbatim from pi's convertToLlm
 // (packages/agent/src/harness/messages.ts). Both summaries enter context as
@@ -52,6 +53,13 @@ export interface OpenAICompatConfig {
 	/** Set false for providers that reject stream_options. Defaults to true. */
 	includeUsage?: boolean;
 	/**
+	 * Send `reasoning_content: ""` on replayed assistant turns that carry no
+	 * reasoning. DeepSeek thinking models reject a multi-turn tool conversation
+	 * whose assistant messages lack the field (HTTP 400). Default: on when
+	 * `baseUrl` points at deepseek.com (pi v0.80.3 behavior), off elsewhere.
+	 */
+	replayEmptyReasoning?: boolean;
+	/**
 	 * Max silence (ms) tolerated waiting for response headers or the next stream
 	 * chunk before failing with a timeout — the defense against servers that hang
 	 * without erroring. Default 120000; 0 disables. Requires Platform.sleep
@@ -78,10 +86,19 @@ export type ChatStreamEvent =
 	| { type: "tool_call"; toolCall: ToolCall }
 	| { type: "response_end"; message: AssistantMessage };
 
+/** Reasoning fields OpenAI-compatible endpoints stream, in pi's precedence order. */
+const REASONING_FIELDS = ["reasoning_content", "reasoning", "reasoning_text"] as const;
+type ReasoningField = (typeof REASONING_FIELDS)[number];
+
+function isReasoningField(value: string | undefined): value is ReasoningField {
+	return value !== undefined && (REASONING_FIELDS as readonly string[]).includes(value);
+}
+
 interface WireDelta {
 	content?: string | null;
 	reasoning_content?: string | null;
 	reasoning?: string | null;
+	reasoning_text?: string | null;
 	tool_calls?: {
 		index?: number;
 		id?: string;
@@ -90,6 +107,8 @@ interface WireDelta {
 }
 
 interface WireChunk {
+	id?: string;
+	model?: string;
 	error?: { message?: string };
 	choices?: { delta?: WireDelta; finish_reason?: string | null }[];
 	usage?: {
@@ -114,7 +133,7 @@ function toolResultContentToWire(content: (TextContent | ImageContent)[]): strin
 	return content.map((block) => (block.type === "text" ? block.text : "[image omitted]")).join("\n");
 }
 
-function toWireMessage(message: AgentMessage): Record<string, unknown> {
+function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Record<string, unknown> {
 	switch (message.role) {
 		case "user":
 			return { role: "user", content: userContentToWire(message.content) };
@@ -133,6 +152,21 @@ function toWireMessage(message: AgentMessage): Record<string, unknown> {
 				.join("");
 			const toolCalls = message.content.filter((block): block is ToolCall => block.type === "toolCall");
 			const wire: Record<string, unknown> = { role: "assistant", content: text === "" ? null : text };
+			// Same-model reasoning is replayed under the field it arrived in (pi records the
+			// field name in thinkingSignature); transformMessages already turned foreign
+			// thinking into text, so any thinking block left here is ours.
+			const thinking = message.content.filter((block) => block.type === "thinking" && !block.redacted);
+			const reasoningText = thinking.map((block) => (block.type === "thinking" ? block.thinking : "")).join("");
+			if (reasoningText !== "") {
+				const first = thinking[0];
+				const field =
+					first?.type === "thinking" && isReasoningField(first.thinkingSignature)
+						? first.thinkingSignature
+						: "reasoning_content";
+				wire[field] = reasoningText;
+			} else if (replayEmptyReasoning) {
+				wire.reasoning_content = "";
+			}
 			if (toolCalls.length > 0) {
 				wire.tool_calls = toolCalls.map((toolCall) => ({
 					id: toolCall.id,
@@ -147,24 +181,33 @@ function toWireMessage(message: AgentMessage): Record<string, unknown> {
 	}
 }
 
-function toWireMessages(systemPrompt: string | undefined, messages: AgentMessage[]): Record<string, unknown>[] {
+function toWireMessages(
+	systemPrompt: string | undefined,
+	messages: AgentMessage[],
+	replayEmptyReasoning = false,
+): Record<string, unknown>[] {
 	const wire: Record<string, unknown>[] = [];
 	if (systemPrompt !== undefined && systemPrompt !== "") {
 		wire.push({ role: "system", content: systemPrompt });
 	}
-	for (const message of messages) wire.push(toWireMessage(message));
+	for (const message of messages) wire.push(toWireMessage(message, replayEmptyReasoning));
 	return wire;
 }
 
 function toUsage(wire: NonNullable<WireChunk["usage"]>): Usage {
-	const input = wire.prompt_tokens ?? 0;
+	const prompt = wire.prompt_tokens ?? 0;
+	const cacheRead = wire.prompt_tokens_details?.cached_tokens ?? 0;
+	// pi v0.80.3: prompt_tokens includes the cached part; Usage.input is the uncached
+	// remainder, so input + cacheRead is billed once (P14 pricing would otherwise
+	// charge cached tokens at the full input price on top of the cache price).
+	const input = Math.max(0, prompt - cacheRead);
 	const output = wire.completion_tokens ?? 0;
 	return {
 		input,
 		output,
-		cacheRead: wire.prompt_tokens_details?.cached_tokens ?? 0,
+		cacheRead,
 		cacheWrite: 0,
-		totalTokens: wire.total_tokens ?? input + output,
+		totalTokens: wire.total_tokens ?? prompt + output,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 }
@@ -177,6 +220,11 @@ function toStopReason(finishReason: string | undefined, hasToolCalls: boolean): 
 		default:
 			return "stop";
 	}
+}
+
+function hostOf(baseUrl: string): string {
+	const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(baseUrl);
+	return match ? match[1] : "";
 }
 
 function throwIfAborted(signal: TauAbortSignal | undefined): void {
@@ -237,11 +285,21 @@ export async function* streamChatCompletion(
 	options?: { systemPrompt?: string; tools?: ToolDefinition[]; signal?: TauAbortSignal; maxTokens?: number },
 ): AsyncGenerator<ChatStreamEvent> {
 	throwIfAborted(options?.signal);
+	// pi v0.80.3 stamps the message at request start, on success and failure alike.
+	const startedAt = Date.now();
 
 	const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
+	const api = config.api ?? OPENAI_COMPLETIONS_API;
+	const provider = config.provider ?? "openai-compat";
+	const replayEmptyReasoning =
+		config.replayEmptyReasoning ?? /(^|[./])deepseek\.com(?=[:/]|$)/i.test(hostOf(config.baseUrl));
 	const body: Record<string, unknown> = {
 		model: config.model,
-		messages: toWireMessages(options?.systemPrompt, messages),
+		messages: toWireMessages(
+			options?.systemPrompt,
+			transformMessages(messages, { api, provider, model: config.model }),
+			replayEmptyReasoning,
+		),
 		stream: true,
 		...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
 		...config.extraBody,
@@ -294,6 +352,9 @@ export async function* streamChatCompletion(
 	const rawToolCalls = new Map<number, { id: string; name: string; argumentsText: string }>();
 	let finishReason: string | undefined;
 	let usage: Usage | undefined;
+	let responseId: string | undefined;
+	let responseModel: string | undefined;
+	let reasoningField: ReasoningField | undefined;
 	const pendingEvents: ChatStreamEvent[] = [];
 	let done = false;
 
@@ -302,10 +363,10 @@ export async function* streamChatCompletion(
 		if (last?.type === "text") last.text += delta;
 		else blocks.push({ type: "text", text: delta });
 	};
-	const appendThinking = (delta: string): void => {
+	const appendThinking = (delta: string, field: ReasoningField): void => {
 		const last = blocks.at(-1);
 		if (last?.type === "thinking") last.thinking += delta;
-		else blocks.push({ type: "thinking", thinking: delta });
+		else blocks.push({ type: "thinking", thinking: delta, thinkingSignature: field });
 	};
 
 	const processData = (data: string): void => {
@@ -323,6 +384,8 @@ export async function* streamChatCompletion(
 			throw new TauError("stream_error", chunk.error.message ?? "Provider returned an error in the stream");
 		}
 		if (chunk.usage) usage = toUsage(chunk.usage);
+		if (typeof chunk.id === "string" && chunk.id !== "") responseId ??= chunk.id;
+		if (typeof chunk.model === "string" && chunk.model !== "") responseModel ??= chunk.model;
 		const choice = chunk.choices?.[0];
 		if (!choice) return;
 		if (choice.finish_reason) finishReason = choice.finish_reason;
@@ -332,9 +395,13 @@ export async function* streamChatCompletion(
 			appendText(delta.content);
 			pendingEvents.push({ type: "text_delta", delta: delta.content });
 		}
-		const reasoningDelta = delta.reasoning_content ?? delta.reasoning;
-		if (typeof reasoningDelta === "string" && reasoningDelta !== "") {
-			appendThinking(reasoningDelta);
+		// First non-empty reasoning field wins (`??` used to pick an empty
+		// reasoning_content over a populated reasoning field).
+		const field = REASONING_FIELDS.find((name) => typeof delta[name] === "string" && delta[name] !== "");
+		if (field) {
+			const reasoningDelta = delta[field] as string;
+			reasoningField ??= field;
+			appendThinking(reasoningDelta, reasoningField);
 			pendingEvents.push({ type: "reasoning_delta", delta: reasoningDelta });
 		}
 		for (const wireToolCall of delta.tool_calls ?? []) {
@@ -416,12 +483,14 @@ export async function* streamChatCompletion(
 	const message: AssistantMessage = {
 		role: "assistant",
 		content: blocks,
-		api: config.api ?? OPENAI_COMPLETIONS_API,
-		provider: config.provider ?? "openai-compat",
+		api,
+		provider,
 		model: config.model,
 		usage: usage ?? emptyUsage(),
 		stopReason: toStopReason(finishReason, toolCalls.length > 0),
-		timestamp: Date.now(),
+		...(responseId !== undefined ? { responseId } : {}),
+		...(responseModel !== undefined ? { responseModel } : {}),
+		timestamp: startedAt,
 	};
 	yield { type: "response_end", message };
 }

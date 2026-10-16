@@ -18,6 +18,7 @@ import {
 	ANTHROPIC_DEFAULT_BASE_URL,
 	ANTHROPIC_MESSAGES_API,
 	type AnthropicTransportConfig,
+	anthropicThinkingForLevel,
 	createAnthropicTransport,
 } from "@yophon/tau-ext-provider-anthropic";
 import {
@@ -66,6 +67,9 @@ Options:
                          names (openai when unset).
   -m, --model <model>    Model id (env: TAU_MODEL)
       --provider <name>  Wire protocol: openai (default) | anthropic
+                         (anthropic: /thinking sends adaptive thinking + effort;
+                         TAU_ANTHROPIC_THINKING=budget for pre-4.6 models;
+                         TAU_MAX_TOKENS sets the output cap, default 8192)
                          (env: TAU_PROVIDER). anthropic speaks the Anthropic
                          Messages API: native thinking, prompt caching, images
                          in tool results.
@@ -286,20 +290,16 @@ function isProvider(value: string): value is ProviderKind {
 }
 
 /**
- * pi's default thinking budgets (simple-options.ts), mapping the shared
- * /thinking levels onto Anthropic budget tokens; xhigh clamps to high.
+ * /thinking for --provider anthropic. Default: adaptive thinking + output_config.effort,
+ * the only form current Claude models accept (4.7+/5.x answer budget_tokens and
+ * {type:"disabled"} with a 400). TAU_ANTHROPIC_THINKING=budget restores pi's budget
+ * table for pre-4.6 models; tau has no model registry to pick this per model.
  */
-const ANTHROPIC_THINKING_BUDGETS: Partial<Record<ThinkingLevel, number>> = {
-	minimal: 1024,
-	low: 2048,
-	medium: 8192,
-	high: 16384,
-	xhigh: 16384,
-};
-
 function setAnthropicThinking(config: AnthropicTransportConfig, level: ThinkingLevel | undefined): void {
-	const budget = level === undefined || level === "none" ? undefined : ANTHROPIC_THINKING_BUDGETS[level];
-	config.thinking = budget === undefined ? undefined : { budgetTokens: budget };
+	const mode = process.env.TAU_ANTHROPIC_THINKING === "budget" ? "budget" : "adaptive";
+	const next = anthropicThinkingForLevel(level, mode);
+	config.thinking = next.thinking;
+	config.effort = next.effort;
 }
 
 // ---------------------------------------------------------------------------
@@ -746,6 +746,10 @@ async function main(): Promise<void> {
 	const envStall = Number.parseInt(process.env.TAU_STALL_TIMEOUT_MS ?? "", 10);
 	const stallTimeout = Number.isFinite(envStall) && envStall >= 0 ? { stallTimeoutMs: envStall } : {};
 	const effectiveBaseUrl = baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL;
+	// Output cap for the Anthropic transport (it must send max_tokens; default 8192 is
+	// tight once adaptive thinking runs at high/xhigh effort).
+	const parsedMaxTokens = Number.parseInt(process.env.TAU_MAX_TOKENS ?? "", 10);
+	const envMaxTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined;
 	// With an injected transport the config's protocol fields are inert; it still
 	// carries the message labels (provider/api/model) and contextWindow.
 	const config: OpenAICompatConfig = {
@@ -763,6 +767,7 @@ async function main(): Promise<void> {
 					apiKey: apiKey as string,
 					model,
 					...(baseUrl !== undefined ? { baseUrl } : {}),
+					...(envMaxTokens !== undefined ? { maxTokens: envMaxTokens } : {}),
 					...stallTimeout,
 				}
 			: undefined;

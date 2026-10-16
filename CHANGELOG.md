@@ -18,6 +18,10 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   Anthropic `-k` key to the OpenAI relay in `TAU_BASE_URL`. If you ran
   `--provider anthropic` with only `TAU_*` set, add `TAU_PROVIDER=anthropic` or
   use the `ANTHROPIC_*` names. Explicit `-b`/`-k` flags are unchanged.
+- Kernel (P21-HF-6): `Usage.input` from the OpenAI-compatible client no longer
+  includes cached prompt tokens (`input = prompt_tokens - cached_tokens`, pi
+  v0.80.3). With `--pricing` the cached part was billed twice; consumers that
+  read `usage.input` as "whole prompt" should add `cacheRead`.
 - ext-feishu (security, P21-HF-1): project-level settings files
   (`.tau/settings.json`, `.pi/settings.json`) can no longer supply credentials
   (`appId`, `appSecret`, `encryptKey`, `verificationToken`) — only `domain` and
@@ -28,6 +32,13 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- ext-provider-anthropic (P21-HF-5): `effort` (sent as `output_config.effort`),
+  `thinkingDisplay` ("summarized" default, "omitted"), and
+  `anthropicThinkingForLevel(level, mode)` mapping the shared thinking levels
+  onto the wire. CLI: `TAU_ANTHROPIC_THINKING=budget` keeps budget tokens for
+  pre-4.6 models; `TAU_MAX_TOKENS` sets the Anthropic output cap.
+- Kernel (P21-HF-6): `transformMessages()` (pi's cross-model replay rules) and
+  `AssistantMessage.responseId` / `responseModel`; `OpenAICompatConfig.replayEmptyReasoning`.
 - `@yophon/tau-ext-feishu` (P20): Feishu/Lark WebSocket + REST channel extension
   ported from pi-feishu — inbound text/post/media/card parsing, media download,
   dedupe/expiry, Typing + CrossMark reactions, editable tool-progress card,
@@ -57,6 +68,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
 
 ### Fixed
+- CLI/ext-provider-anthropic (P21-HF-5): `/thinking` on `--provider anthropic`
+  sent `budget_tokens` for every level, which current Claude models (Opus 4.7+,
+  Sonnet 5.x, Haiku 5.5, Fable) reject with HTTP 400. Levels now map to adaptive
+  thinking + `output_config.effort` (pi v0.80.3 forceAdaptiveThinking); "none"
+  requests the lowest effort instead of `{type:"disabled"}`. Signed thinking
+  blocks with empty text are replayed instead of dropped — with the API default
+  `display: "omitted"` that used to discard all reasoning between tool turns.
+- Kernel (P21-HF-6): the OpenAI-compatible client reads the first non-empty of
+  `reasoning_content` / `reasoning` / `reasoning_text` (an empty
+  `reasoning_content` used to mask a populated `reasoning`), records the field
+  and replays same-model reasoning under it. Assistant turns from another model
+  or protocol go through `transformMessages`: their thinking becomes text, so an
+  Anthropic signature can no longer leak onto the wire as a field name; errored
+  or aborted turns are not replayed and orphaned tool calls get a synthetic
+  result. DeepSeek endpoints (host deepseek.com) get `reasoning_content: ""` on
+  replayed assistant turns without reasoning, as pi does. Messages are stamped
+  with the request start time.
 - host-node: the Windows cmd.exe routing heuristic only matches unambiguous
   cmd syntax. `set -e`, `type`, `tree`, `whoami`, `ps aux` (the word `aux`),
   `date +%Y-%m` and printf format strings used to be sent to cmd.exe instead of

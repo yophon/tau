@@ -230,5 +230,6 @@ export {
 	type ToolResult,
 	validateToolArgs,
 } from "./tools.ts";
+export { type TransformTarget, transformMessages } from "./transform.ts";
 export { createIncrementalUtf8Decoder } from "./utf8.ts";
 export { uuidv7 } from "./uuid.ts";

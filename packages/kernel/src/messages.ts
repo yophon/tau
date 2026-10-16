@@ -106,6 +106,10 @@ export interface AssistantMessage {
 	usage: Usage;
 	stopReason: StopReason;
 	errorMessage?: string;
+	/** Provider response id (pi v0.80.3 field), when the wire reports one. */
+	responseId?: string;
+	/** Model the provider says answered (may differ from the requested `model`), when reported. */
+	responseModel?: string;
 	timestamp: number;
 }
 

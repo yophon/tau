@@ -18,6 +18,7 @@ import {
 import {
 	ANTHROPIC_MESSAGES_API,
 	type AnthropicTransportConfig,
+	anthropicThinkingForLevel,
 	buildRequestBody,
 	createAnthropicTransport,
 	messagesToWire,
@@ -474,7 +475,20 @@ test("thinking config maps to the wire and clamps into small output caps", () =>
 	assert.deepEqual(budget.thinking, { type: "enabled", budget_tokens: 2048 });
 
 	const adaptive = buildRequestBody({ ...CONFIG, thinking: "adaptive" }, { messages: [user("hi")] });
-	assert.deepEqual(adaptive.thinking, { type: "adaptive" });
+	assert.deepEqual(adaptive.thinking, { type: "adaptive", display: "summarized" });
+	assert.equal(adaptive.output_config, undefined);
+
+	const omitted = buildRequestBody(
+		{ ...CONFIG, thinking: "adaptive", thinkingDisplay: "omitted", effort: "xhigh" },
+		{ messages: [user("hi")] },
+	);
+	assert.deepEqual(omitted.thinking, { type: "adaptive", display: "omitted" });
+	assert.deepEqual(omitted.output_config, { effort: "xhigh" });
+
+	// effort alone (thinking always on for 5.x; lowest depth for "none")
+	const effortOnly = buildRequestBody({ ...CONFIG, effort: "low" }, { messages: [user("hi")] });
+	assert.equal(effortOnly.thinking, undefined);
+	assert.deepEqual(effortOnly.output_config, { effort: "low" });
 
 	// pi's clamp: budget must fit under max_tokens with room for output…
 	const clamped = buildRequestBody(
@@ -715,4 +729,58 @@ test("Agent completes a two-turn tool loop over the Anthropic transport", async 
 	assert.equal(replayedAssistant[0].type, "tool_use");
 	const foldedResult = secondBody.messages[2].content as { type: string }[];
 	assert.equal(foldedResult[0].type, "tool_result");
+});
+
+test("thinking levels map to adaptive + effort by default and to budgets in budget mode (HF-5)", () => {
+	// Current models (Opus 4.7+, Sonnet 5.x, Haiku 5.5, Fable) reject budget_tokens and
+	// {type:"disabled"}; the default mapping must never produce either.
+	assert.deepEqual(anthropicThinkingForLevel("minimal"), { thinking: "adaptive", effort: "low" });
+	assert.deepEqual(anthropicThinkingForLevel("low"), { thinking: "adaptive", effort: "low" });
+	assert.deepEqual(anthropicThinkingForLevel("medium"), { thinking: "adaptive", effort: "medium" });
+	assert.deepEqual(anthropicThinkingForLevel("high"), { thinking: "adaptive", effort: "high" });
+	assert.deepEqual(anthropicThinkingForLevel("xhigh"), { thinking: "adaptive", effort: "xhigh" });
+	assert.deepEqual(anthropicThinkingForLevel("none"), { thinking: undefined, effort: "low" });
+	assert.deepEqual(anthropicThinkingForLevel(undefined), { thinking: undefined, effort: undefined });
+	for (const level of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
+		const body = buildRequestBody({ ...CONFIG, ...anthropicThinkingForLevel(level) }, { messages: [user("hi")] });
+		const wire = JSON.stringify(body);
+		assert.ok(!wire.includes("budget_tokens"), `${level}: ${wire}`);
+		assert.ok(!wire.includes('"disabled"'), `${level}: ${wire}`);
+	}
+	// Pre-4.6 models keep the budget table behind an explicit mode.
+	assert.deepEqual(anthropicThinkingForLevel("medium", "budget"), {
+		thinking: { budgetTokens: 8192 },
+		effort: undefined,
+	});
+	assert.deepEqual(anthropicThinkingForLevel("none", "budget"), { thinking: undefined, effort: undefined });
+});
+
+test("signed thinking with empty text is replayed, not dropped (display omitted on 4.7+/5.x)", () => {
+	const wire = messagesToWire([
+		user("hi"),
+		assistantOf([
+			{ type: "thinking", thinking: "", thinkingSignature: "sig-empty" },
+			{ type: "toolCall", id: "toolu_1", name: "read", arguments: { path: "a" } },
+		]),
+	]);
+	const assistant = wire.find((m) => m.role === "assistant") as { content: { type: string; signature?: string }[] };
+	assert.deepEqual(
+		assistant.content.map((b) => b.type),
+		["thinking", "tool_use"],
+	);
+	assert.equal(assistant.content[0].signature, "sig-empty");
+	// Unsigned empty thinking still disappears; unsigned non-empty degrades to text.
+	const unsigned = messagesToWire([
+		user("hi"),
+		assistantOf([
+			{ type: "thinking", thinking: "" },
+			{ type: "thinking", thinking: "loose" },
+			{ type: "text", text: "answer" },
+		]),
+	]);
+	const content = (unsigned.find((m) => m.role === "assistant") as { content: { type: string }[] }).content;
+	assert.deepEqual(
+		content.map((b) => b.type),
+		["text", "text"],
+	);
 });
