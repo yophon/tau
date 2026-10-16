@@ -1,6 +1,7 @@
 export { AbortHandle } from "./abort.ts";
-export { Agent, type AgentEvent, type AgentOptions, type QueueMode } from "./agent.ts";
+export { Agent, type AgentEvent, type AgentOperation, type AgentOptions, type QueueMode } from "./agent.ts";
 export {
+	BRANCH_SUMMARY_MAX_TOKENS,
 	BRANCH_SUMMARY_PREAMBLE,
 	type BranchPreparation,
 	type BranchSummaryDetails,
@@ -20,6 +21,7 @@ export {
 	type ContextUsageEstimate,
 	type CutPointResult,
 	calculateContextTokens,
+	compactionSettingsForWindow,
 	computeFileLists,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateContextTokens,
@@ -33,9 +35,11 @@ export {
 	formatFileOperations,
 	generateSummary,
 	generateSummaryWithUsage,
+	getSummarizationFailure,
 	prepareCompaction,
 	runCompaction,
 	SUMMARIZATION_SYSTEM_PROMPT,
+	type SummarizationRetry,
 	serializeConversation,
 	shouldCompact,
 } from "./compaction.ts";
@@ -236,10 +240,14 @@ export {
 	toToolDeclaration,
 } from "./projection.ts";
 export {
+	DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
 	DEFAULT_RETRY_SETTINGS,
 	isContextOverflowError,
 	isRetryableAssistantError,
+	type RetryCallbacks,
 	type RetrySettings,
+	retryAssistantCall,
+	retryDelayMs,
 } from "./retry.ts";
 export {
 	type ContextEditableContent,

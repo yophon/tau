@@ -6,6 +6,7 @@ import {
 	type FileOperations,
 	formatFileOperations,
 	SUMMARIZATION_SYSTEM_PROMPT,
+	type SummarizationRetry,
 	serializeConversation,
 } from "./compaction.ts";
 import { SessionError } from "./errors.ts";
@@ -57,8 +58,13 @@ export interface BranchSummaryResult {
 	usage?: Usage;
 }
 
+/** Output cap of a branch summary request (pi 0.85.0). */
+export const BRANCH_SUMMARY_MAX_TOKENS = 4096;
+
 export interface GenerateBranchSummaryOptions {
 	signal?: TauAbortSignal;
+	/** Retry policy for the summary call (pi completeSummarization). */
+	retry?: SummarizationRetry;
 	/** Optional instructions appended to or replacing the default prompt. */
 	customInstructions?: string;
 	/** Replace the default prompt with custom instructions instead of appending them. */
@@ -241,7 +247,16 @@ export async function generateBranchSummary(
 	}
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
 
-	const generated = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
+	// 4096 as in pi 0.85.0 (#8845: reasoning used up 2048 and left an empty summary);
+	// pi also clamps to model.maxTokens, which tau has no registry for (D21).
+	const generated = await completeText(
+		transport,
+		SUMMARIZATION_SYSTEM_PROMPT,
+		promptText,
+		BRANCH_SUMMARY_MAX_TOKENS,
+		options?.signal,
+		{ label: "Branch summarization", retry: options?.retry },
+	);
 	let summary = BRANCH_SUMMARY_PREAMBLE + generated.text;
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);

@@ -273,7 +273,6 @@ P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
 | 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 首发以 P23 信任修复为前提（发布阻断） |
 | 14 | extensions.ts 的 entry/tool renderer 与 pi 1.2 形状不一致，偏离未注释 | 照抄核对困难 | 绑定 P23 |
 | 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | 绑定 pi-tui 升级（P24 之后） |
-| 16 | 摘要调用不检查 stopReason，也不拒收空文本或工具调用（P22 审计） | length 截断或出错的摘要会写成压缩检查点 | 绑定 P23 fail-closed（照抄 pi getSummarizationFailure） |
 | 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 

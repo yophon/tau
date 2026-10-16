@@ -4,10 +4,12 @@ import {
 	type CompactionResult,
 	type CompactionSettings,
 	type ContextUsageEstimate,
+	compactionSettingsForWindow,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateProjectedContextTokens,
 	prepareCompaction,
 	runCompaction,
+	type SummarizationRetry,
 	shouldCompact,
 } from "./compaction.ts";
 import { SessionError, TauError, toError } from "./errors.ts";
@@ -61,7 +63,7 @@ import {
 	sumSessionUsage,
 	toToolDeclaration,
 } from "./projection.ts";
-import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
+import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings, retryDelayMs } from "./retry.ts";
 import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
 import {
 	assertToolSchema,
@@ -100,10 +102,22 @@ class PendingMessageQueue {
 		return this.items.splice(0, 1);
 	}
 
-	clear(): void {
-		this.items.length = 0;
+	/** Empty the queue and return what was in it (pi clearQueue: hosts restore it to the editor). */
+	clear(): (UserMessage | CustomMessage)[] {
+		return this.items.splice(0);
 	}
 }
+
+/**
+ * What holds the agent. One at a time (pi: a run, a manual compaction and a
+ * branch summary never overlap); a second entry throws TauError("busy").
+ */
+export type AgentOperation = "prompt" | "resume" | "compact" | "navigate";
+
+type CompactionOutcome =
+	| { kind: "none" }
+	| { kind: "done"; result: CompactionResult }
+	| { kind: "failed"; errorMessage?: string; aborted: boolean; cancelledByExtension: boolean; error: Error };
 
 export interface AgentOptions {
 	config: OpenAICompatConfig;
@@ -188,7 +202,17 @@ export type AgentEvent =
 	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string; stream?: ToolUpdateStream }
 	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
 	| { type: "compaction"; result: CompactionResult }
-	| { type: "compaction_failed"; reason: "manual" | "threshold"; errorMessage: string }
+	| { type: "compaction_failed"; reason: "manual" | "threshold"; errorMessage?: string; aborted: boolean }
+	| {
+			type: "summarization_retry_scheduled";
+			attempt: number;
+			maxAttempts: number;
+			delayMs: number;
+			errorMessage: string;
+	  }
+	| { type: "summarization_retry_attempt_start"; source: "compaction"; reason: "manual" | "threshold" }
+	| { type: "summarization_retry_attempt_start"; source: "branchSummary" }
+	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "agent_end"; messages: readonly AgentMessage[] };
@@ -284,15 +308,17 @@ export class Agent {
 	 */
 	private writes: Promise<unknown> = Promise.resolve();
 	private writeFailure: Error | undefined;
-	/** True while a prompt() generator is being consumed (guards navigateTo). */
-	private running = false;
+	/** The operation holding the agent, if any (prompt/resume/compact/navigateTo). */
+	private operation: AgentOperation | undefined;
+	/** Extension sendMessage calls made while a compaction or navigation holds the agent; appended when it ends. */
+	private readonly heldMessages: { message: CustomMessage; triggerTurn: boolean }[] = [];
 	/**
 	 * True only while the LLM turn loop is in flight — pi's isStreaming. Hooks
 	 * that fire before the loop (input, before_agent_start) see false, so their
 	 * sendMessage lands immediately instead of being queued as steering.
 	 */
 	private looping = false;
-	/** Abort handle of the run in flight; ctx.abort() fires it. */
+	/** Abort handle of the operation in flight; abort() and ctx.abort() fire it. */
 	private activeAbort: AbortHandle | undefined;
 
 	constructor(options: AgentOptions) {
@@ -356,6 +382,12 @@ export class Agent {
 					else this.steeringQueue.enqueue(message);
 					return;
 				}
+				// A compaction or navigation is rewriting the log: append once it ends, so the
+				// message lands on the resulting path instead of an abandoned one.
+				if (this.operation === "compact" || this.operation === "navigate") {
+					this.heldMessages.push({ message, triggerTurn: sendOptions?.triggerTurn === true });
+					return;
+				}
 				this.enqueueBackground(() => this.appendAndRefresh(message));
 				if (sendOptions?.triggerTurn) this.extensions?.hostAction("resumeTurn")?.();
 			},
@@ -372,8 +404,14 @@ export class Agent {
 				// Between prompt() starting and the loop running (input, before_agent_start)
 				// the agent is neither idle nor streaming: a host submitPrompt would be
 				// refused and the message silently lost, so say so (HF-11).
-				if (this.running) {
+				if (this.operation === "prompt" || this.operation === "resume") {
 					throw new TauError("busy", "sendUserMessage() before the agent loop started; use sendMessage({ deliverAs })");
+				}
+				if (this.operation !== undefined) {
+					throw new TauError(
+						"busy",
+						`sendUserMessage() while ${this.operation === "compact" ? "compacting" : "navigating"}; use sendMessage({ deliverAs })`,
+					);
 				}
 				const submit = this.extensions?.hostAction("submitPrompt");
 				if (!submit) {
@@ -403,7 +441,7 @@ export class Agent {
 				});
 			},
 			abort: () => {
-				this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
+				this.abort("Aborted by extension");
 			},
 		});
 	}
@@ -611,7 +649,15 @@ export class Agent {
 			abort: () => {
 				const hostAbort = this.extensions?.hostAction("abort");
 				if (hostAbort) hostAbort();
-				else this.activeAbort?.abort(new TauError("aborted", "Aborted by extension"));
+				else this.abort("Aborted by extension");
+			},
+			isIdle: () => this.isIdle,
+			get signal() {
+				return agent.signal;
+			},
+			hasPendingMessages: () => this.hasQueuedMessages(),
+			shutdown: () => {
+				this.extensions?.hostAction("shutdown")?.();
 			},
 			sessionManager: this.sessionManager(),
 			getSystemPrompt: () => getCurrentSystemPrompt(this.messages),
@@ -691,43 +737,152 @@ export class Agent {
 		return this.sessionUsage;
 	}
 
+	/** Compaction settings for the configured window (small windows scale the budgets down). */
+	private effectiveCompactionSettings(): CompactionSettings {
+		return compactionSettingsForWindow(this.compactionSettings, this.config.contextWindow);
+	}
+
+	/** Claim the agent for one operation; a second one throws busy (D14: a programming error). */
+	private beginOperation(operation: AgentOperation, signal: TauAbortSignal | undefined): AbortHandle {
+		if (this.operation !== undefined) {
+			throw new TauError("busy", `${operation}() while ${this.operation} holds the agent`);
+		}
+		this.operation = operation;
+		const handle = new AbortHandle();
+		handle.follow(signal);
+		this.activeAbort = handle;
+		return handle;
+	}
+
+	/** Release the agent; extension messages held during a compaction or navigation land now. */
+	private endOperation(): void {
+		this.operation = undefined;
+		this.activeAbort = undefined;
+		const held = this.heldMessages.splice(0);
+		for (const { message } of held) this.enqueueBackground(() => this.appendAndRefresh(message));
+		if (held.some((entry) => entry.triggerTurn)) this.extensions?.hostAction("resumeTurn")?.();
+	}
+
+	/** Summarization retry for this agent: its RetrySettings, the host sleep, events through emit. */
+	private summarizationRetry(
+		source: { source: "compaction"; reason: "manual" | "threshold" } | { source: "branchSummary" },
+		emit?: (event: AgentEvent) => void,
+	): SummarizationRetry {
+		return {
+			settings: this.retrySettings,
+			sleep: this.platform.sleep,
+			callbacks: emit && {
+				onRetryScheduled: (attempt, maxAttempts, delayMs, errorMessage) =>
+					emit({ type: "summarization_retry_scheduled", attempt, maxAttempts, delayMs, errorMessage }),
+				onRetryAttemptStart: () => emit({ type: "summarization_retry_attempt_start", ...source }),
+				onRetryFinished: () => emit({ type: "summarization_retry_finished" }),
+			},
+		};
+	}
+
 	/**
 	 * Compact the conversation now: summarize old history (session_before_compact
 	 * may cancel or take over) and append a compaction entry; the projection
-	 * becomes [summary, ...kept].
+	 * becomes [summary, ...kept]. Holds the agent: throws busy while a run,
+	 * compaction or navigation is in flight, and abort() cancels it.
+	 *
+	 * Resolves undefined when there is nothing to compact. A failure reports
+	 * session_compact_failed first, then rejects (pi manual semantics):
+	 * TauError("cancelled") when a session_before_compact handler cancelled,
+	 * TauError("aborted") on abort, TauError("compaction_failed") otherwise.
 	 */
 	async compact(
 		customInstructions?: string,
 		reason: "manual" | "threshold" = "manual",
 		signal?: TauAbortSignal,
+		onEvent?: (event: AgentEvent) => void,
 	): Promise<CompactionResult | undefined> {
+		const handle = this.beginOperation("compact", signal);
+		try {
+			const outcome = await this.runCompactionOperation(customInstructions, reason, handle.signal, onEvent);
+			if (outcome.kind === "none") return undefined;
+			if (outcome.kind === "done") return outcome.result;
+			if (outcome.cancelledByExtension) throw new TauError("cancelled", "Compaction cancelled");
+			if (outcome.aborted) throw new TauError("aborted", "Compaction aborted");
+			throw new TauError("compaction_failed", outcome.error.message, outcome.error);
+		} finally {
+			this.endOperation();
+		}
+	}
+
+	/**
+	 * The compaction itself, shared by compact() and the loop (pi
+	 * _runAutoCompaction / compact): never throws. Aborts are checked around every
+	 * asynchronous step, and a failure — abort, extension cancel, summary error —
+	 * is reported as session_compact_failed and leaves the log untouched.
+	 */
+	private async runCompactionOperation(
+		customInstructions: string | undefined,
+		reason: "manual" | "threshold",
+		signal: TauAbortSignal | undefined,
+		onEvent?: (event: AgentEvent) => void,
+	): Promise<CompactionOutcome> {
 		const ctx = this.extensionContext();
-		await this.flushWrites();
-		const pathEntries = await this.session.store.getPathToRoot(this.session.currentLeafId);
-		const preparation = prepareCompaction(pathEntries, this.compactionSettings);
-		if (!preparation) return undefined;
+		// session_before_compact always gets a signal (pi: required); without a caller's, one that never fires.
+		const hookSignal = signal ?? new AbortHandle().signal;
+		let fromExtension = false;
+		let cancelledByExtension = false;
+		try {
+			await this.flushWrites();
+			const pathEntries = await this.session.store.getPathToRoot(this.session.currentLeafId);
+			const preparation = prepareCompaction(pathEntries, this.effectiveCompactionSettings());
+			if (!preparation) return { kind: "none" };
+			throwIfAborted(signal);
 
-		const decision = this.extensions
-			? await this.extensions.runSessionBeforeCompact({ preparation, customInstructions, reason }, ctx)
-			: {};
-		if (decision.cancel) return undefined;
-		const fromExtension = decision.result !== undefined;
-		const result = decision.result ?? (await runCompaction(this.transport, preparation, customInstructions, signal));
-		if (result.usage) result.usage = this.priced(result.usage);
+			const decision = this.extensions
+				? await this.extensions.runSessionBeforeCompact(
+						{ preparation, customInstructions, reason, signal: hookSignal },
+						ctx,
+					)
+				: {};
+			if (decision.cancel) {
+				cancelledByExtension = true;
+				throw new TauError("cancelled", "Compaction cancelled");
+			}
+			throwIfAborted(signal);
+			fromExtension = decision.result !== undefined;
+			const result =
+				decision.result ??
+				(await runCompaction(
+					this.transport,
+					preparation,
+					customInstructions,
+					signal,
+					this.summarizationRetry({ source: "compaction", reason }, onEvent),
+				));
+			throwIfAborted(signal);
+			if (result.usage) result.usage = this.priced(result.usage);
 
-		await this.enqueueWrite(async () => {
-			// The boundary checkpoints the full prompt/tool state: the system messages it
-			// summarizes leave the context with it (pi CompactionEntry.systemMessage).
-			const systemMessage = getCurrentSystemMessage(this.messages);
-			await this.session.recordCompaction({
-				...result,
-				fromHook: fromExtension || undefined,
-				...(systemMessage ? { systemMessage } : {}),
+			await this.enqueueWrite(async () => {
+				// The boundary checkpoints the full prompt/tool state: the system messages it
+				// summarizes leave the context with it (pi CompactionEntry.systemMessage).
+				const systemMessage = getCurrentSystemMessage(this.messages);
+				await this.session.recordCompaction({
+					...result,
+					fromHook: fromExtension || undefined,
+					...(systemMessage ? { systemMessage } : {}),
+				});
+				await this.refresh();
 			});
-			await this.refresh();
-		});
-		await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
-		return result;
+			await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
+			return { kind: "done", result };
+		} catch (cause) {
+			const error = toError(cause);
+			const aborted = signal?.aborted === true || cancelledByExtension;
+			const errorMessage = aborted
+				? undefined
+				: `${reason === "manual" ? "Compaction" : "Auto-compaction"} failed: ${error.message}`;
+			await this.extensions?.notifySessionCompactFailed(
+				{ reason, errorMessage, aborted, willRetry: false, fromExtension },
+				ctx,
+			);
+			return { kind: "failed", errorMessage, aborted, cancelledByExtension, error };
+		}
 	}
 
 	/** Queue a message consumed after the current turn's tools, before the next LLM call. */
@@ -744,6 +899,33 @@ export class Agent {
 		return this.steeringQueue.hasItems() || this.followUpQueue.hasItems();
 	}
 
+	/**
+	 * Empty both queues and return what they held (pi AgentSession.clearQueue).
+	 * Queues survive an abort by design; hosts call this when a run ends to restore
+	 * the user's queued text to the editor instead of replaying it later.
+	 */
+	clearQueue(): { steering: (UserMessage | CustomMessage)[]; followUp: (UserMessage | CustomMessage)[] } {
+		return { steering: this.steeringQueue.clear(), followUp: this.followUpQueue.clear() };
+	}
+
+	/** True when no operation holds the agent (pi isIdle). */
+	get isIdle(): boolean {
+		return this.operation === undefined;
+	}
+
+	/** Abort signal of the operation in flight; undefined when idle (pi ctx.signal). */
+	get signal(): TauAbortSignal | undefined {
+		return this.activeAbort?.signal;
+	}
+
+	/**
+	 * Abort whatever holds the agent — a run with its retry backoff, a compaction,
+	 * a branch summary (pi AgentSession.abort). No-op when idle.
+	 */
+	abort(reason = "Aborted"): void {
+		this.activeAbort?.abort(new TauError("aborted", reason));
+	}
+
 	clearSteeringQueue(): void {
 		this.steeringQueue.clear();
 	}
@@ -753,17 +935,12 @@ export class Agent {
 	}
 
 	async *prompt(input: UserContent, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
-		if (this.running) throw new TauError("busy", "prompt() is already running");
-		this.running = true;
-		const handle = new AbortHandle();
-		handle.follow(signal);
-		this.activeAbort = handle;
+		const handle = this.beginOperation("prompt", signal);
 		try {
 			await this.flushWrites();
 			yield* this.runPrompt(input, handle.signal);
 		} finally {
-			this.running = false;
-			this.activeAbort = undefined;
+			this.endOperation();
 		}
 	}
 
@@ -774,11 +951,7 @@ export class Agent {
 	 * model should answer (a user/custom message).
 	 */
 	async *resume(signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
-		if (this.running) throw new TauError("busy", "resume() requires an idle agent");
-		this.running = true;
-		const handle = new AbortHandle();
-		handle.follow(signal);
-		this.activeAbort = handle;
+		const handle = this.beginOperation("resume", signal);
 		try {
 			await this.flushWrites();
 			const ctx = this.extensionContext();
@@ -786,8 +959,7 @@ export class Agent {
 			await this.extensions?.notifyAgentStart(ctx);
 			yield* this.runLoop(ctx, systemPrompt, handle.signal);
 		} finally {
-			this.running = false;
-			this.activeAbort = undefined;
+			this.endOperation();
 		}
 	}
 
@@ -802,9 +974,26 @@ export class Agent {
 	 */
 	async navigateTo(
 		entryId: string,
-		options?: { summarize?: boolean; customInstructions?: string; signal?: TauAbortSignal },
+		options?: {
+			summarize?: boolean;
+			customInstructions?: string;
+			signal?: TauAbortSignal;
+			onEvent?: (event: AgentEvent) => void;
+		},
 	): Promise<{ cancelled: boolean }> {
-		if (this.running) throw new TauError("busy", "navigateTo() requires an idle agent");
+		const handle = this.beginOperation("navigate", options?.signal);
+		try {
+			return await this.runNavigation(entryId, handle.signal, options);
+		} finally {
+			this.endOperation();
+		}
+	}
+
+	private async runNavigation(
+		entryId: string,
+		signal: TauAbortSignal,
+		options: { summarize?: boolean; customInstructions?: string; onEvent?: (event: AgentEvent) => void } | undefined,
+	): Promise<{ cancelled: boolean }> {
 		await this.flushWrites();
 		const store = this.session.store;
 		const oldLeafId = await store.getLeafId();
@@ -821,10 +1010,8 @@ export class Agent {
 			entriesToSummarize: entries,
 			customInstructions: options?.customInstructions,
 		};
-		const hook = this.extensions
-			? await this.extensions.runSessionBeforeTree({ preparation, signal: options?.signal }, ctx)
-			: {};
-		if (hook.cancel) return { cancelled: true };
+		const hook = this.extensions ? await this.extensions.runSessionBeforeTree({ preparation, signal }, ctx) : {};
+		if (hook.cancel || signal.aborted) return { cancelled: true };
 
 		let summaryText = hook.summary?.summary;
 		let summaryDetails = hook.summary?.details;
@@ -834,7 +1021,9 @@ export class Agent {
 				const generated = await generateBranchSummary(this.transport, entries, {
 					customInstructions: hook.customInstructions ?? options?.customInstructions,
 					contextWindow: this.config.contextWindow,
-					signal: options?.signal,
+					reserveTokens: this.effectiveCompactionSettings().reserveTokens,
+					signal,
+					retry: this.summarizationRetry({ source: "branchSummary" }, options?.onEvent),
 				});
 				summaryText = generated.summary;
 				summaryDetails = { readFiles: generated.readFiles, modifiedFiles: generated.modifiedFiles };
@@ -845,6 +1034,7 @@ export class Agent {
 				throw error;
 			}
 		}
+		if (signal.aborted) return { cancelled: true };
 
 		const fromExtension = hook.summary !== undefined;
 		const summaryEntry = await this.enqueueWrite(async () => {
@@ -954,9 +1144,7 @@ export class Agent {
 			// Abort observed between turns (e.g. signalled during tool execution) ends
 			// the prompt before the next LLM call instead of waiting to fail inside it.
 			if (signal?.aborted) {
-				await this.flushWrites();
-				await this.extensions?.notifyAgentEnd(this.messages, ctx);
-				yield { type: "agent_end", messages: this.messages };
+				yield* this.endRun(ctx, retryAttempt);
 				return;
 			}
 			await this.extensions?.notifyTurnStart(turnIndex, ctx);
@@ -972,25 +1160,33 @@ export class Agent {
 				this.pendingCompaction = null;
 			} else if (
 				this.config.contextWindow !== undefined &&
-				shouldCompact(this.getContextUsage().tokens, this.config.contextWindow, this.compactionSettings)
+				shouldCompact(this.getContextUsage().tokens, this.config.contextWindow, this.effectiveCompactionSettings())
 			) {
 				compactionReason = "threshold";
 			}
+			// An abort that landed in turn_start handlers must not start a compaction (pi #9340).
+			if (compactionReason !== undefined && signal?.aborted) {
+				yield* this.endRun(ctx, retryAttempt);
+				return;
+			}
 			if (compactionReason !== undefined) {
-				let result: CompactionResult | undefined;
-				let failure: Error | undefined;
-				try {
-					result = await this.compact(customInstructions, compactionReason, signal);
-				} catch (error) {
-					failure = toError(error);
-				}
-				if (result) yield { type: "compaction", result };
-				if (failure) {
-					await this.extensions?.notifySessionCompactFailed(
-						{ reason: compactionReason, errorMessage: failure.message },
-						ctx,
-					);
-					yield { type: "compaction_failed", reason: compactionReason, errorMessage: failure.message };
+				const reason = compactionReason;
+				const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
+					this.runCompactionOperation(customInstructions, reason, signal, emit),
+				);
+				if (outcome.kind === "done") yield { type: "compaction", result: outcome.result };
+				if (outcome.kind === "failed") {
+					yield {
+						type: "compaction_failed",
+						reason,
+						...(outcome.errorMessage !== undefined ? { errorMessage: outcome.errorMessage } : {}),
+						aborted: outcome.aborted,
+					};
+					// Aborted: the run ends here (D14: agent_end, no throw). Failed: go on uncompacted.
+					if (signal?.aborted) {
+						yield* this.endRun(ctx, retryAttempt);
+						return;
+					}
 				}
 			}
 
@@ -1092,7 +1288,7 @@ export class Agent {
 					isRetryableAssistantError(finalMessage);
 				if (retryEligible && retryAttempt < this.retrySettings.maxRetries) {
 					retryAttempt++;
-					const delayMs = this.retrySettings.baseDelayMs * 2 ** (retryAttempt - 1);
+					const delayMs = retryDelayMs(this.retrySettings, retryAttempt);
 					const startEvent = {
 						attempt: retryAttempt,
 						maxAttempts: this.retrySettings.maxRetries,
@@ -1108,16 +1304,16 @@ export class Agent {
 					try {
 						await this.platform.sleep?.(delayMs, signal);
 					} catch {
-						const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
-						await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
-						yield { type: "auto_retry_end", ...endEvent };
-						await this.flushWrites();
-						await this.extensions?.notifyAgentEnd(this.messages, ctx);
-						yield { type: "agent_end", messages: this.messages };
+						yield* this.endRun(ctx, retryAttempt);
 						return;
 					}
 					turnIndex--; // A retried request does not consume the turn budget.
 					continue;
+				}
+				if (finalMessage.stopReason === "aborted") {
+					// An aborted retry closes its cycle as cancelled (pi _finishCancelledRetry).
+					yield* this.endRun(ctx, retryAttempt);
+					return;
 				}
 				if (finalMessage.stopReason === "error" && retryAttempt > 0) {
 					const endEvent = { success: false, attempt: retryAttempt, finalError: finalMessage.errorMessage };
@@ -1183,6 +1379,21 @@ export class Agent {
 		}
 
 		throw new TauError("max_turns", `Prompt exceeded ${this.maxTurnsPerPrompt} turns without completing`);
+	}
+
+	/**
+	 * End a run early (abort): a retry cycle in progress closes as cancelled (pi
+	 * _finishCancelledRetry), then agent_end — never a throw (D14).
+	 */
+	private async *endRun(ctx: ExtensionContext, retryAttempt: number): AsyncGenerator<AgentEvent> {
+		if (retryAttempt > 0) {
+			const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
+			await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
+			yield { type: "auto_retry_end", ...endEvent };
+		}
+		await this.flushWrites();
+		await this.extensions?.notifyAgentEnd(this.messages, ctx);
+		yield { type: "agent_end", messages: this.messages };
 	}
 
 	/** Commit one tool result to messages/session and produce the AgentEvent pair tail. */
@@ -1567,6 +1778,53 @@ export class Agent {
 			);
 		});
 	}
+}
+
+function throwIfAborted(signal: TauAbortSignal | undefined): void {
+	if (signal?.aborted) throw new TauError("aborted", "Aborted");
+}
+
+/**
+ * Run work that reports progress through emit, yielding those events live while
+ * it runs (the generator cannot yield from inside a callback); returns its value.
+ */
+async function* pumpEvents<T>(work: (emit: (event: AgentEvent) => void) => Promise<T>): AsyncGenerator<AgentEvent, T> {
+	const queue: AgentEvent[] = [];
+	let wake: (() => void) | undefined;
+	let done = false;
+	let value: T | undefined;
+	let failure: { error: unknown } | undefined;
+	const notify = (): void => {
+		wake?.();
+		wake = undefined;
+	};
+	work((event) => {
+		queue.push(event);
+		notify();
+	}).then(
+		(result) => {
+			value = result;
+			done = true;
+			notify();
+		},
+		(error: unknown) => {
+			failure = { error };
+			done = true;
+			notify();
+		},
+	);
+	while (!done || queue.length > 0) {
+		const event = queue.shift();
+		if (event) {
+			yield event;
+			continue;
+		}
+		await new Promise<void>((resolve) => {
+			wake = resolve;
+		});
+	}
+	if (failure) throw failure.error;
+	return value as T;
 }
 
 /** Result for a tool call that was never started because its run was aborted. */

@@ -1,5 +1,12 @@
 import { TauError } from "./errors.ts";
-import { type AgentMessage, type AssistantMessage, combineUsage, messageText, type Usage } from "./messages.ts";
+import {
+	type AgentMessage,
+	type AssistantMessage,
+	combineUsage,
+	emptyUsage,
+	messageText,
+	type Usage,
+} from "./messages.ts";
 import type { ChatTransport } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import {
@@ -9,6 +16,7 @@ import {
 	type SessionProjection,
 	sessionEntryToContextMessages,
 } from "./projection.ts";
+import { type RetryCallbacks, type RetrySettings, retryAssistantCall } from "./retry.ts";
 import type { SessionEntry } from "./session.ts";
 
 /**
@@ -213,6 +221,26 @@ export function estimateProjectedContextTokens(
 		if (message.role !== "system") tokens += estimateTokens(message);
 	}
 	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
+}
+
+/**
+ * The settings in effect for a context window. tau deviation: pi applies the
+ * configured reserve/keep budgets as they are, which on a small window (local
+ * 8K–32K endpoints, which tau recommends) means a summary request before every
+ * turn that cannot free enough room. Both budgets are capped at a quarter of the
+ * window; from 80K tokens up nothing changes.
+ */
+export function compactionSettingsForWindow(
+	settings: CompactionSettings,
+	contextWindow: number | undefined,
+): CompactionSettings {
+	if (contextWindow === undefined || contextWindow <= 0) return settings;
+	const cap = Math.floor(contextWindow / 4);
+	return {
+		...settings,
+		reserveTokens: Math.min(settings.reserveTokens, cap),
+		keepRecentTokens: Math.min(settings.keepRecentTokens, cap),
+	};
 }
 
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
@@ -698,29 +726,94 @@ export function prepareCompaction(
 	};
 }
 
-/** One summarization call; returns its text and usage (pi generateSummaryWithUsage's transport step). */
+/**
+ * Retry policy for summarization calls (pi completeSummarization): the agent's
+ * RetrySettings, the host sleep (absent = no retry, D15) and progress callbacks.
+ */
+export interface SummarizationRetry {
+	settings: RetrySettings;
+	sleep?: (ms: number, signal?: TauAbortSignal) => Promise<void>;
+	callbacks?: RetryCallbacks;
+}
+
+/**
+ * Error text when a summarization response must not be persisted, verbatim from
+ * pi 1.2.0: a length stop holds partial text and must not become a session
+ * checkpoint — with a reasoning model it may hold no text at all.
+ */
+export function getSummarizationFailure(response: AssistantMessage, label: string): string | undefined {
+	if (response.stopReason === "error") {
+		return `${label} failed: ${response.errorMessage || "Unknown error"}`;
+	}
+	if (response.stopReason === "length") {
+		return `${label} failed: generation hit the token cap and the summary is incomplete`;
+	}
+	return undefined;
+}
+
+/** One summarization request as an assistant message: a transport failure becomes stopReason error/aborted. */
+async function requestSummary(
+	transport: ChatTransport,
+	systemPrompt: string,
+	promptText: string,
+	maxTokens: number,
+	signal: TauAbortSignal | undefined,
+): Promise<AssistantMessage> {
+	const now = Date.now();
+	try {
+		const stream = transport({
+			messages: [
+				{ role: "system", content: systemPrompt, timestamp: now },
+				{ role: "user", content: promptText, timestamp: now },
+			],
+			maxTokens,
+			signal,
+		});
+		for await (const event of stream) {
+			if (event.type === "response_end") return event.message;
+		}
+		throw new TauError("stream_error", "Summarization returned no message");
+	} catch (error) {
+		const failure = error instanceof TauError ? error : new TauError("stream_error", String(error), error);
+		return {
+			role: "assistant",
+			content: [],
+			api: "unknown",
+			provider: "unknown",
+			model: "unknown",
+			usage: emptyUsage(),
+			stopReason: failure.code === "aborted" || signal?.aborted ? "aborted" : "error",
+			errorMessage: error instanceof Error ? error.message : String(error),
+			timestamp: now,
+		};
+	}
+}
+
+/**
+ * One summarization call (pi completeSummarization + getSummarizationFailure):
+ * retried on transient errors, then judged. A truncated or failed summary throws
+ * TauError("compaction_failed"); an abort throws TauError("aborted").
+ */
 export async function completeText(
 	transport: ChatTransport,
 	systemPrompt: string,
 	promptText: string,
 	maxTokens: number,
 	signal?: TauAbortSignal,
+	options?: { label?: string; retry?: SummarizationRetry },
 ): Promise<{ text: string; usage: Usage }> {
-	const now = Date.now();
-	const stream = transport({
-		messages: [
-			{ role: "system", content: systemPrompt, timestamp: now },
-			{ role: "user", content: promptText, timestamp: now },
-		],
-		maxTokens,
+	const retry = options?.retry;
+	const response = await retryAssistantCall(
+		() => requestSummary(transport, systemPrompt, promptText, maxTokens, signal),
+		retry?.settings,
+		retry?.sleep,
 		signal,
-	});
-	let final: AssistantMessage | undefined;
-	for await (const event of stream) {
-		if (event.type === "response_end") final = event.message;
-	}
-	if (!final) throw new TauError("compaction_failed", "Summarization returned no message");
-	return { text: messageText(final), usage: final.usage };
+		retry?.callbacks,
+	);
+	if (response.stopReason === "aborted") throw new TauError("aborted", "Summarization aborted");
+	const failure = getSummarizationFailure(response, options?.label ?? "Summarization");
+	if (failure) throw new TauError("compaction_failed", failure);
+	return { text: messageText(response), usage: response.usage };
 }
 
 /** Generate or update a conversation summary and return its usage (pi generateSummaryWithUsage). */
@@ -732,6 +825,7 @@ export async function generateSummaryWithUsage(
 		customInstructions?: string;
 		previousSummary?: string;
 		signal?: TauAbortSignal;
+		retry?: SummarizationRetry;
 	},
 ): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.floor(0.8 * options.reserveTokens);
@@ -744,7 +838,10 @@ export async function generateSummaryWithUsage(
 		promptText += `<previous-summary>\n${options.previousSummary}\n</previous-summary>\n\n`;
 	}
 	promptText += basePrompt;
-	return completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal);
+	return completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal, {
+		label: "Summarization",
+		retry: options.retry,
+	});
 }
 
 /** Generate or update a conversation summary (pi's generateSummary). */
@@ -772,6 +869,7 @@ export async function runCompaction(
 	preparation: CompactionPreparation,
 	customInstructions?: string,
 	signal?: TauAbortSignal,
+	retry?: SummarizationRetry,
 ): Promise<CompactionResult> {
 	const { settings, previousSummary } = preparation;
 	let summary: string;
@@ -785,6 +883,7 @@ export async function runCompaction(
 				customInstructions,
 				previousSummary,
 				signal,
+				retry,
 			});
 			historyText = history.text;
 			historyUsage = history.usage;
@@ -796,6 +895,7 @@ export async function runCompaction(
 			prefixPrompt,
 			Math.floor(0.5 * settings.reserveTokens),
 			signal,
+			{ label: "Turn prefix summarization", retry },
 		);
 		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefix.text}`;
 		usage = historyUsage ? combineUsage(historyUsage, turnPrefix.usage) : turnPrefix.usage;
@@ -805,6 +905,7 @@ export async function runCompaction(
 			customInstructions,
 			previousSummary,
 			signal,
+			retry,
 		});
 		summary = result.text;
 		usage = result.usage;

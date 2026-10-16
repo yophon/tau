@@ -16,12 +16,12 @@
 | `session_info_changed` | 0.80 | ✅ P3 | |
 | `session_before_switch` | 0.80 | ✅ P11 | TUI /resume、/sessions、双宿主 /fork 切换前；CLI 无 new-session 动作，"new" 暂无触发点 |
 | `session_before_fork` | 0.80 | ✅ P5 | 按 entry 的 /fork 触发；全量复制没有分叉点，不触发 |
-| `session_before_compact` | 0.80 | ✅ P4 | 可取消、可接管；reason 取 manual/threshold，overflow 📍Backlog |
+| `session_before_compact` | 0.80 | ✅ P4 | 可取消、可接管；`signal` 必填（P23a，未传时内核给一个永不中止的）；reason 取 manual/threshold，overflow 📍Backlog |
 | `session_compact` | 0.80 | ✅ P4 | |
-| `session_compact_failed` | 1.2 | ✅ P21-HF-9 | 循环自发的压缩失败只报告不抛出（D14），同时发 `compaction_failed` AgentEvent |
+| `session_compact_failed` | 1.2 | ✅ P23a | pi 全形状 `{reason, errorMessage?, aborted, willRetry, fromExtension}`；扩展取消记 aborted；`willRetry` 恒 false（无 overflow 恢复）。循环内失败只报告不抛（D14），中止则以 agent_end 收尾；宿主直接调 `compact()` 先发事件再 reject |
 | `session_shutdown` | 0.80 | ✅ P3/P8 | reason：quit |
 | `mcp_servers_change` | 1.2 | ❌D21 | 属于 pi 核心 MCP 管理器。tau 的 MCP 在扩展包里，内核没有 MCP 概念（D3/D21 的分层；依赖 pi 内置管理器的扩展不在兼容目标内，D9） |
-| `session_before_tree` | 0.80 | ✅ P5 | 可取消、可接管摘要；label/userWantsSummary 📍Backlog |
+| `session_before_tree` | 0.80 | ✅ P5 | 可取消、可接管摘要；`signal` 必填（P23a）；label/userWantsSummary 📍Backlog |
 | `session_tree` | 0.80 | ✅ P5 | 携带 summaryEntry |
 | `context` | 0.80 | ✅ P2/P22 | 每次 LLM 调用前改写对话。P22 起照抄 pi 两阶段语义：处理器看不到 system 消息，原位修改与返回值都生效，之后恢复 prompt/工具状态；作用于 JSON 副本，改不到日志 |
 | `context_with_system` | 1.2 | ✅ P22 | 在全部 `context` 处理器之后、看到含 system 消息的完整转录，结果原样发出；删掉首条 system 时经 error sink 报告（pi 报错但照用） |
@@ -102,12 +102,12 @@
 | `model` | 0.80 | 📍P23 | 随 setModel |
 | `scopedModels` | 1.2 | ❌D21 | 对模型目录的解析结果，tau 没有模型目录 |
 | `thinkingLevel` | 1.2 | 📍P23 | 随 getThinkingLevel |
-| `isIdle` | 0.80 | 📍P23 | 快照内漏登。随 busy 互斥统一 |
+| `isIdle` | 0.80 | ✅ P23a | 运行槽为空（无 run、压缩、导航） |
 | `isProjectTrusted` | 0.80 | 📍P23 | 快照内漏登。随信任门扩展 |
-| `signal` | 0.80 | 📍P23 | 当前 run 的中止信号 |
-| `abort` | 0.80 | ✅ P11 | 中止当前 prompt 与重试退避 |
-| `hasPendingMessages` | 0.80 | 📍P23 | 快照内漏登。内核已有 `Agent.hasQueuedMessages()` |
-| `shutdown` | 0.80 | 📍P23 | 机制已有（session_shutdown），补 ctx 入口与文档 |
+| `signal` | 0.80 | ✅ P23a | 槽内操作的中止信号，空闲为 undefined |
+| `abort` | 0.80 | ✅ P11 | 中止槽内任何操作：run 与重试退避、宿主发起的压缩、分支摘要（P23a，pi AgentSession.abort） |
+| `hasPendingMessages` | 0.80 | ✅ P23a | steering 或 follow-up 队列非空 |
+| `shutdown` | 0.80 | ✅ P23a | 宿主动作 `shutdown`；无宿主时静默（D10）。CLI 接线见 P23e |
 | `getContextUsage` | 0.80 | ✅ P4 | |
 | `compact` | 0.80 | ✅ P4 | 在下一个轮次边界执行，失败只报告（P21-HF-9） |
 | `getSystemPrompt` | 0.80 | ✅ P22 | 转录里 system 消息回放出的当前提示，即模型实际看到的那份（含 before_agent_start 改写，D27） |

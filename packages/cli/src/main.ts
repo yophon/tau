@@ -649,7 +649,11 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 					break;
 				case "compaction_failed":
 					process.stdout.write(
-						dim(`[${event.reason} compaction failed, continuing: ${firstLine(event.errorMessage)}]\n`),
+						dim(
+							event.aborted
+								? `[${event.reason} compaction aborted]\n`
+								: `[${event.reason} compaction failed, continuing: ${firstLine(event.errorMessage ?? "")}]\n`,
+						),
 					);
 					break;
 				case "auto_retry_start":
@@ -1091,7 +1095,8 @@ async function main(): Promise<void> {
 						result ? dim(`Compacted: ~${result.tokensBefore} tokens summarized.`) : dim("Nothing to compact."),
 					);
 				} catch (error) {
-					console.log(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
+					if (error instanceof TauError && error.code === "cancelled") console.log(dim("Compaction cancelled."));
+					else console.log(red(`Compaction failed: ${error instanceof Error ? error.message : String(error)}`));
 				}
 				continue;
 			}

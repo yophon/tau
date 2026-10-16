@@ -73,10 +73,18 @@ export interface ExtensionContext {
 	/** Collect resource paths contributed by extensions. */
 	discoverResources?: (reason: ResourcesDiscoverEvent["reason"]) => Promise<Required<ResourcesDiscoverResult>>;
 	/**
-	 * Abort the current agent operation (the running prompt and any retry
-	 * backoff), as in pi. No-op when the agent is idle.
+	 * Abort the current agent operation — a run with its retry backoff, a
+	 * compaction or a branch summary (pi AgentSession.abort). No-op when idle.
 	 */
 	abort?: () => void;
+	/** True when no operation holds the agent (no run, compaction or navigation; pi isIdle). */
+	isIdle?: () => boolean;
+	/** Abort signal of the operation in flight; undefined when idle (pi ctx.signal). */
+	readonly signal?: TauAbortSignal;
+	/** True when steering or follow-up messages are queued (pi hasPendingMessages). */
+	hasPendingMessages?: () => boolean;
+	/** Ask the host to shut down gracefully (pi ctx.shutdown); no-op without a host that supports it (D10). */
+	shutdown?: () => void;
 	/** Read-only view of the session log the agent's context is built from (pi ReadonlySessionManager, P22). */
 	sessionManager?: ReadonlySessionManager;
 	/** The system prompt the model currently has: the transcript's system messages replayed (P22). */
@@ -282,6 +290,8 @@ export interface SessionBeforeCompactEvent {
 	preparation: CompactionPreparation;
 	customInstructions?: string;
 	reason: CompactionReason;
+	/** Aborts with the compaction (pi: required). Long-running handlers should observe it. */
+	signal: TauAbortSignal;
 }
 
 export type SessionBeforeCompactResult = { cancel?: boolean; result?: CompactionResult } | undefined;
@@ -299,10 +309,17 @@ export interface SessionCompactEvent {
  * queued ctx.compact()) fails. The turn continues uncompacted (pi 0.84.3
  * session_compact_failed; D14: provider failures never escape the loop).
  */
+/** Fired after a compaction failed or was aborted (pi 0.84.3 shape; tau has no overflow reason, so willRetry is false). */
 export interface SessionCompactFailedEvent {
 	type: "session_compact_failed";
 	reason: CompactionReason;
-	errorMessage: string;
+	/** Error text when it failed for a non-abort reason. */
+	errorMessage?: string;
+	/** True when the compaction was aborted or cancelled by a session_before_compact handler. */
+	aborted: boolean;
+	willRetry: boolean;
+	/** True when the failing compaction content came from a session_before_compact handler. */
+	fromExtension: boolean;
 }
 
 /**
@@ -338,7 +355,8 @@ export interface TreePreparation {
 export interface SessionBeforeTreeEvent {
 	type: "session_before_tree";
 	preparation: TreePreparation;
-	signal?: TauAbortSignal;
+	/** Aborts with the navigation (pi: required). */
+	signal: TauAbortSignal;
 }
 
 export type SessionBeforeTreeResult =
@@ -766,6 +784,8 @@ export interface ExtensionHostActions {
 	setLabel?(entryId: string, label: string | undefined): void;
 	/** Abort the current agent operation (ctx.abort backing). */
 	abort?(): void;
+	/** Shut the host down gracefully (ctx.shutdown backing). */
+	shutdown?(): void;
 	/** Host-run submission of a fresh prompt (backs sendUserMessage while idle). */
 	submitPrompt?(content: UserContent): void;
 	/** Host-run continuation without new user input (backs sendMessage triggerTurn while idle). */

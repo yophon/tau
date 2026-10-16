@@ -5,6 +5,19 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P23a, run slot): `prompt`, `resume`, `compact` and `navigateTo`
+  share one slot; entering while another holds the agent throws
+  `TauError("busy")` (`compact()` used to run unguarded next to a prompt).
+  `compact()` rejects `TauError("cancelled")` when `session_before_compact`
+  cancels (it used to resolve `undefined`, like "nothing to compact"), and
+  `TauError("aborted")` on abort; failures report `session_compact_failed`
+  first. `SessionCompactFailedEvent` takes pi's shape
+  `{ reason, errorMessage?, aborted, willRetry, fromExtension }`; the
+  `compaction_failed` AgentEvent gains `aborted` and its `errorMessage` is
+  optional (`Auto-compaction failed: …` / `Compaction failed: …`, as in pi).
+  `SessionBeforeCompactEvent.signal` and `SessionBeforeTreeEvent.signal` are
+  required. `completeText()` throws when the summary stops on `length` or
+  `error` (pi getSummarizationFailure).
 - Kernel (P22, pi 1.2.0 compaction): `prepareCompaction(pathEntries, settings)`
   works on the session projection and lost its third `currentMessages`
   argument; it returns `undefined` when nothing is left to summarize.
@@ -79,6 +92,16 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P23a): `Agent.abort()` stops whatever holds the agent — a run with
+  its retry backoff, a host compaction, a branch summary — and `ctx.abort()`
+  reaches all of them. `Agent.isIdle`, `Agent.signal`, `Agent.clearQueue()`
+  (returns the cleared steering/follow-up messages, pi clearQueue);
+  `ctx.isIdle()`, `ctx.signal`, `ctx.hasPendingMessages()`, `ctx.shutdown()`
+  (host action `shutdown`). Summaries are retried on transient errors under
+  the agent's retry settings (`summarization_retry_*` AgentEvents; `compact()`
+  and `navigateTo()` take an `onEvent` callback). `RetrySettings.maxAgentDelayMs`
+  caps each backoff (default 60s, pi); `retryDelayMs`, `retryAssistantCall`,
+  `getSummarizationFailure`, `compactionSettingsForWindow` exported.
 - Kernel (P22): `Agent.flush()` waits until queued log writes (an idle
   extension `sendMessage`, `appendEntry`, `setLabel`) have landed in `messages`;
   the CLI and TUI await it before rendering what an extension command added.

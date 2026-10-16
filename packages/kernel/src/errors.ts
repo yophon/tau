@@ -9,6 +9,8 @@ export type TauErrorCode =
 	| "no_host"
 	| "no_session"
 	| "busy"
+	/** An extension handler cancelled the operation (e.g. session_before_compact). */
+	| "cancelled"
 	| "compaction_failed"
 	| "invalid_response"
 	| "invalid_tool"
