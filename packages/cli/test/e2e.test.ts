@@ -466,9 +466,12 @@ test("sessions persist across runs and --continue restores full context", async 
 
 test("auto-compaction triggers via --context-window and --continue restores the summary", async () => {
 	await withSandbox(async ({ cwd, home }) => {
+		// The answer really exceeds the default 20000-token keep budget (CJK counts one
+		// token per character, P14): with everything inside the budget there is nothing
+		// to summarize and compaction is a no-op (pi 0.86.0 guard, P22).
 		const bigUsageTurn = {
 			payloads: [
-				{ choices: [{ delta: { content: "long history answer" }, finish_reason: "stop" }] },
+				{ choices: [{ delta: { content: `long history answer ${"长".repeat(21000)}` }, finish_reason: "stop" }] },
 				{ choices: [], usage: { prompt_tokens: 60000, completion_tokens: 10, total_tokens: 60010 } },
 			],
 		};
@@ -489,9 +492,8 @@ test("auto-compaction triggers via --context-window and --continue restores the 
 			});
 			await cli.waitForExit();
 			assert.ok(cli.output().includes("[compacted:"), cli.output());
-			// The post-compaction request starts with the summary. (With default
-			// keepRecentTokens the tiny real messages are all retained after it —
-			// the mock only faked a huge usage number.)
+			// The post-compaction request starts with the summary (the long answer splits
+			// its turn: the turn prefix is summarized, the answer itself is kept).
 			const finalRequest = mock1.requests.at(-1) as { messages: { role: string; content: string | null }[] };
 			const firstUserMessage = finalRequest.messages.find((m) => m.role === "user");
 			assert.ok(firstUserMessage?.content?.includes("E2E-COMPACT-SUMMARY"), JSON.stringify(finalRequest.messages));

@@ -126,6 +126,9 @@ test("manual compaction issues its summarization request through the same transp
 		config: { baseUrl: "https://unused.test/v1", model: "fake-model" },
 		transport: scriptedTransport([chatTurn, summaryTurn], requests),
 		platform: fakePlatform([]),
+		// Keep almost nothing, so the single exchange has something to summarize: with
+		// everything inside the keep budget, compaction is a no-op (pi 0.86.0 guard).
+		compaction: { keepRecentTokens: 1 },
 	});
 	for await (const _event of agent.prompt("hello")) {
 		// drain

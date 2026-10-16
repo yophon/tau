@@ -49,7 +49,8 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 					signal,
 				);
 				const output = result.text.trim() === "" ? "(subagent returned no text)" : result.text;
-				return { output };
+				// The child's LLM calls are billed to the session through the tool result (pi 0.81.0).
+				return { output, usage: result.usage };
 			},
 		});
 	};

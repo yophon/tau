@@ -5,6 +5,11 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P22, pi 1.2.0 compaction): `prepareCompaction(pathEntries, settings)`
+  works on the session projection and lost its third `currentMessages`
+  argument; it returns `undefined` when nothing is left to summarize.
+  `completeText()` returns `{ text, usage }`. `AgentRunResult` gains a required
+  `usage`. The TUI footer cost now sums the whole session log.
 - Kernel (P22, D21 seam reshape, pi TranscriptContext): `TransportRequest` is
   `{ messages, signal?, maxTokens? }`. The prompt and tool declarations travel
   as system messages inside `messages`; a transport folds them with
@@ -74,6 +79,14 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P22, D19): usage accounting from the log. `CompactionResult.usage`
+  and the compaction / branch_summary entries record the summarization calls
+  (priced with the host pricing); `ToolResult.usage` flows into
+  `ToolResultMessage.usage`, and ext-subagents reports the child run's usage
+  there; `runSubagent` children inherit `pricing`. `Agent.getSessionUsage()` /
+  `sumSessionUsage(entries)` fold every branch (pi getSessionStats).
+  `estimateProjectedContextTokens()`, `generateSummaryWithUsage()`,
+  `combineUsage()`.
 - Kernel (P22): system prompt and tools enter the transcript (pi 0.86.0). The
   agent appends a system message only when the effective prompt — including a
   `before_agent_start` rewrite (D27) — or the tool set changes; compaction
@@ -144,6 +157,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
 
 ### Fixed
+- Kernel (P22, pi 0.86.0 #9740): a tool-result tail larger than the keep budget
+  made the cut fall back to the first message, so compaction sent an empty
+  summary request and wrote an entry that kept everything — every turn. The cut
+  now keeps the tail's tool call (split turn) and nothing-to-summarize skips.
+- Kernel (P22, pi estimateProjectedContextTokens): after a compaction the kept
+  tail's assistant usage still described the pre-compaction context, so
+  `getContextUsage()` and the next turn's threshold check could compact again
+  right away. Usage recorded before the latest compaction or context edit is
+  no longer trusted.
+- Kernel (P22, pi 0.80.4): custom messages and branch summaries count toward
+  the keep budget and turn detection (cut points follow the projection).
+- Kernel (P22, pi 0.86.0): a split turn with no earlier history kept "No prior
+  history." and lost the previous compaction's summary; it now carries over.
+  The previous kernel compaction's file lists carry over too.
+- Kernel (P22, pi 1.2.0 / 0.87.1): summary serialization omits thinking (a
+  summary request could exceed the context it summarized); the turn-prefix
+  prompt uses pi's `# Conversation` / `# Instructions` structure.
 - Kernel (P22): session entry ids were sliced from a uuidv7, whose leading
   digits are the clock: every entry after the first within ~65 s fell back to a
   full UUID. Ids are now 8 random hex digits, as in pi.

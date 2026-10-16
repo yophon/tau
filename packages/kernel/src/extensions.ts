@@ -1,7 +1,7 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError, toError } from "./errors.ts";
-import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserContent } from "./messages.ts";
+import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, Usage, UserContent } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
@@ -55,6 +55,8 @@ export interface AgentSpawnOptions {
 export interface AgentRunResult {
 	text: string;
 	messages: AgentMessage[];
+	/** Summed usage of the child's LLM calls; a tool can return it as its result's usage (pi 0.81.0). */
+	usage: Usage;
 }
 
 /** Context passed to every extension handler. */
@@ -312,7 +314,7 @@ export type SessionBeforeTreeResult =
 	| {
 			cancel?: boolean;
 			/** Extension-provided summary; skips generation. */
-			summary?: { summary: string; details?: unknown };
+			summary?: { summary: string; details?: unknown; usage?: Usage };
 			/** Override custom instructions for summarization. */
 			customInstructions?: string;
 	  }

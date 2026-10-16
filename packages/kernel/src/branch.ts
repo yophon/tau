@@ -9,7 +9,7 @@ import {
 	serializeConversation,
 } from "./compaction.ts";
 import { SessionError } from "./errors.ts";
-import type { AgentMessage } from "./messages.ts";
+import type { AgentMessage, Usage } from "./messages.ts";
 import type { ChatTransport } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import type { SessionEntry, SessionStore } from "./session.ts";
@@ -53,6 +53,8 @@ export interface BranchSummaryResult {
 	summary: string;
 	readFiles: string[];
 	modifiedFiles: string[];
+	/** Usage of the summarization call (pi 0.81.0); absent when no call was made. */
+	usage?: Usage;
 }
 
 export interface GenerateBranchSummaryOptions {
@@ -239,10 +241,10 @@ export async function generateBranchSummary(
 	}
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
 
-	let summary = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
-	summary = BRANCH_SUMMARY_PREAMBLE + summary;
+	const generated = await completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, 2048, options?.signal);
+	let summary = BRANCH_SUMMARY_PREAMBLE + generated.text;
 	const { readFiles, modifiedFiles } = computeFileLists(fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);
 
-	return { summary: summary || "No summary generated", readFiles, modifiedFiles };
+	return { summary: summary || "No summary generated", readFiles, modifiedFiles, usage: generated.usage };
 }

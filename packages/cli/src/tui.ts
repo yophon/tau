@@ -49,6 +49,7 @@ import {
 	TauError,
 	type ThinkingLevel,
 	type UiCapability,
+	type Usage,
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
@@ -1625,7 +1626,7 @@ function formatFooter(state: FooterState): string {
 	const usage = state.agent.getContextUsage();
 	const context = formatFooterContext(usage.tokens, usage.contextWindow);
 	const usageSource = formatFooterUsageSource(usage.usageTokens, usage.trailingTokens);
-	const cost = formatFooterCost(state.agent.messages);
+	const cost = formatFooterCost(state.agent.getSessionUsage());
 	const activity = [
 		state.activeStatus ? `status ${state.activeStatus}` : "status idle",
 		state.steeringCount > 0 ? `steering ${state.steeringCount}` : undefined,
@@ -1666,11 +1667,9 @@ function formatFooterUsageSource(usageTokens: number, trailingTokens: number): s
 	return `usage observed ${formatNumber(usageTokens)} + trailing ~${formatNumber(trailingTokens)}`;
 }
 
-function formatFooterCost(messages: readonly AgentMessage[]): string {
-	const total = messages.reduce((sum, message) => {
-		if (message.role !== "assistant") return sum;
-		return sum + (message.usage.cost?.total ?? 0);
-	}, 0);
+/** Session cost from the log (D19): compacted turns, summaries and subagent runs stay counted. */
+function formatFooterCost(usage: Usage): string {
+	const total = usage.cost.total;
 	return total > 0 ? `cost $${total.toFixed(4)}` : "cost unknown";
 }
 

@@ -1,5 +1,6 @@
 import { TauError } from "./errors.ts";
 import type { ExtensionContext } from "./extensions.ts";
+import type { Usage } from "./messages.ts";
 import type { JsonSchema, ToolDefinition } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
@@ -7,6 +8,8 @@ import type { RiskLevel } from "./policy.ts";
 export interface ToolResult {
 	output: string;
 	isError?: boolean;
+	/** Usage of model calls the tool made itself (e.g. a subagent run); counted in session totals, not context (pi 0.81.0). */
+	usage?: Usage;
 }
 
 export type ToolUpdateStream = "stdout" | "stderr";

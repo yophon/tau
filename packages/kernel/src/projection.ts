@@ -1,4 +1,12 @@
-import { type AgentMessage, contentText, type SystemMessage, type ToolDefinition } from "./messages.ts";
+import {
+	type AgentMessage,
+	combineUsage,
+	contentText,
+	emptyUsage,
+	type SystemMessage,
+	type ToolDefinition,
+	type Usage,
+} from "./messages.ts";
 import type { SessionEntry } from "./session.ts";
 
 /**
@@ -311,4 +319,26 @@ export function buildSessionProjection(path: readonly SessionEntry[]): SessionPr
 		}),
 	);
 	return { entries, messages: entries.flatMap((entry) => entry.messages) };
+}
+
+/**
+ * Everything the session was billed for, folded over all entries of every
+ * branch (pi getSessionStats / footer): assistant messages, tool results that
+ * report usage (e.g. a subagent run), compaction and branch summaries, and
+ * `usage` entries. Unlike the context, compaction never makes it smaller (D19).
+ */
+export function sumSessionUsage(entries: readonly SessionEntry[]): Usage {
+	let total = emptyUsage();
+	for (const entry of entries) {
+		let usage: Usage | undefined;
+		if (entry.type === "usage") usage = entry.usage;
+		else if (entry.type === "compaction" || entry.type === "branch_summary") usage = entry.usage;
+		else if (entry.type === "message") {
+			const message = entry.message;
+			if (message.role === "assistant") usage = message.usage;
+			else if (message.role === "toolResult") usage = message.usage;
+		}
+		if (usage) total = combineUsage(total, usage);
+	}
+	return total;
 }

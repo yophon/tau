@@ -220,6 +220,24 @@ export function contentText(content: string | readonly { type: string; text?: st
 	return parts.join(separator);
 }
 
+/** Sum of two usages (pi combineUsage). */
+export function combineUsage(first: Usage, second: Usage): Usage {
+	return {
+		input: first.input + second.input,
+		output: first.output + second.output,
+		cacheRead: first.cacheRead + second.cacheRead,
+		cacheWrite: first.cacheWrite + second.cacheWrite,
+		totalTokens: first.totalTokens + second.totalTokens,
+		cost: {
+			input: first.cost.input + second.cost.input,
+			output: first.cost.output + second.cost.output,
+			cacheRead: first.cost.cacheRead + second.cost.cacheRead,
+			cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
+			total: first.cost.total + second.cost.total,
+		},
+	};
+}
+
 /** Concatenated text of a message's text blocks (string content returned as-is). */
 export function messageText(message: AgentMessage): string {
 	if (message.role === "compactionSummary" || message.role === "branchSummary") return message.summary;

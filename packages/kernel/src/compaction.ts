@@ -1,17 +1,27 @@
 import { TauError } from "./errors.ts";
-import { type AgentMessage, type AssistantMessage, messageText, type Usage } from "./messages.ts";
+import { type AgentMessage, type AssistantMessage, combineUsage, messageText, type Usage } from "./messages.ts";
 import type { ChatTransport } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
+import {
+	buildSessionProjection,
+	getCurrentSystemMessage,
+	type ProjectedEntry,
+	type SessionProjection,
+	sessionEntryToContextMessages,
+} from "./projection.ts";
 import type { SessionEntry } from "./session.ts";
 
 /**
- * Context compaction, ported from pi
- * (packages/agent/src/harness/compaction/compaction.ts + utils.ts): token
- * estimation, cut-point selection, structured summarization prompts (verbatim),
- * iterative summary updates, split-turn handling, file-operation extraction.
- * Deviations: results throw TauError instead of pi's Result type; summarization
- * runs over the agent's ChatTransport (P16) instead of pi's model registry (D3),
- * so summaries use the same model/protocol as the conversation.
+ * Context compaction, ported from pi 1.2.0
+ * (packages/coding-agent/src/core/compaction/compaction.ts + utils.ts; the
+ * harness copy lags behind it, P22): token estimation, cut-point selection over
+ * the session projection, structured summarization prompts (verbatim),
+ * iterative summary updates, split-turn handling, file-operation extraction,
+ * summary usage. Deviations: results throw TauError instead of pi's Result
+ * type; summarization runs over the agent's ChatTransport (P16) instead of pi's
+ * model registry (D3), so summaries use the same model/protocol as the
+ * conversation; the two split-turn calls run sequentially (pi used Promise.all
+ * until 0.80.4).
  */
 
 export interface CompactionSettings {
@@ -32,10 +42,12 @@ export const DEFAULT_COMPACTION_SETTINGS: CompactionSettings = {
 export interface CompactionResult {
 	/** Summary text that replaces compacted history in future context. */
 	summary: string;
-	/** Entry id where retained history starts ("" for in-memory compaction without a session). */
+	/** Entry id where retained history starts. */
 	firstKeptEntryId: string;
 	/** Estimated context tokens before compaction. */
 	tokensBefore: number;
+	/** Usage of the summarization call(s) (pi 0.81.0). */
+	usage?: Usage;
 	details?: unknown;
 }
 
@@ -161,54 +173,108 @@ export function estimateContextTokens(messages: readonly AgentMessage[]): Contex
 	return { tokens: usageTokens + trailingTokens, usageTokens, trailingTokens, lastUsageIndex: usageInfo.index };
 }
 
+/**
+ * Estimate the projected context without trusting usage captured before a
+ * later context edit or compaction on the branch (pi 1.2.0
+ * estimateProjectedContextTokens): the kept tail of a compaction still carries
+ * assistant usage from the pre-compaction context, and a /compact right below
+ * the threshold would otherwise compact again on the next turn.
+ */
+export function estimateProjectedContextTokens(
+	projection: SessionProjection,
+	branchEntries: readonly SessionEntry[],
+): ContextUsageEstimate {
+	const estimate = estimateContextTokens(projection.messages);
+	if (estimate.lastUsageIndex !== null) {
+		let projectedMessageIndex = 0;
+		let usageEntryId: string | undefined;
+		for (const entry of projection.entries) {
+			const nextMessageIndex = projectedMessageIndex + entry.messages.length;
+			if (estimate.lastUsageIndex < nextMessageIndex) {
+				usageEntryId = entry.sourceEntry.id;
+				break;
+			}
+			projectedMessageIndex = nextMessageIndex;
+		}
+		const usageEntryIndex = usageEntryId ? branchEntries.findIndex((entry) => entry.id === usageEntryId) : -1;
+		let latestInvalidatingEntryIndex = -1;
+		for (let i = branchEntries.length - 1; i >= 0; i--) {
+			const entry = branchEntries[i];
+			if (entry.type === "context_edit" || entry.type === "compaction") {
+				latestInvalidatingEntryIndex = i;
+				break;
+			}
+		}
+		if (usageEntryIndex > latestInvalidatingEntryIndex) return estimate;
+	}
+	const currentSystem = getCurrentSystemMessage(projection.messages);
+	let tokens = currentSystem ? estimateTokens(currentSystem) : 0;
+	for (const message of projection.messages) {
+		if (message.role !== "system") tokens += estimateTokens(message);
+	}
+	return { tokens, usageTokens: 0, trailingTokens: tokens, lastUsageIndex: null };
+}
+
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
 	return contextTokens > contextWindow - settings.reserveTokens;
 }
 
 // ---------------------------------------------------------------------------
-// Cut-point selection over session entries (tau's entry subset of pi v3).
+// Cut-point selection (pi 1.2.0 coding-agent compaction.ts). Entries count by
+// what they contribute to context, so custom messages and branch summaries
+// take part in the keep budget and in turn detection.
 // ---------------------------------------------------------------------------
 
-function entryMessage(entry: SessionEntry): AgentMessage | undefined {
-	if (entry.type === "message") return entry.message;
-	if (entry.type === "branch_summary") {
-		return {
-			role: "branchSummary",
-			summary: entry.summary,
-			fromId: entry.fromId,
-			timestamp: Date.parse(entry.timestamp) || 0,
-		};
+function isCutPointMessage(message: AgentMessage): boolean {
+	switch (message.role) {
+		case "user":
+		case "assistant":
+		case "custom":
+		case "branchSummary":
+		case "compactionSummary":
+			return true;
+		default:
+			return false;
 	}
-	if (entry.type === "custom_message") {
-		return {
-			role: "custom",
-			customType: entry.customType,
-			content: entry.content,
-			display: entry.display,
-			details: entry.details,
-			timestamp: Date.parse(entry.timestamp) || 0,
-		};
-	}
-	return undefined;
 }
 
-function findValidCutPoints(entries: SessionEntry[], startIndex: number, endIndex: number): number[] {
+function isTurnStartMessage(message: AgentMessage): boolean {
+	switch (message.role) {
+		case "user":
+		case "custom":
+		case "branchSummary":
+		case "compactionSummary":
+			return true;
+		default:
+			return false;
+	}
+}
+
+function isTurnStartEntry(entry: SessionEntry): boolean {
+	if (entry.type === "compaction") return false;
+	return sessionEntryToContextMessages(entry).some(isTurnStartMessage);
+}
+
+function entryTokens(entry: SessionEntry): number {
+	return sessionEntryToContextMessages(entry).reduce((sum, message) => sum + estimateTokens(message), 0);
+}
+
+/** Never cut at tool results: they must follow their tool call. */
+function findValidCutPoints(entries: readonly SessionEntry[], startIndex: number, endIndex: number): number[] {
 	const cutPoints: number[] = [];
 	for (let i = startIndex; i < endIndex; i++) {
 		const entry = entries[i];
-		if (entry.type === "message" && entry.message.role !== "toolResult") cutPoints.push(i);
-		else if (entry.type === "custom_message" || entry.type === "branch_summary") cutPoints.push(i);
+		if (entry.type === "compaction") continue;
+		if (sessionEntryToContextMessages(entry).some(isCutPointMessage)) cutPoints.push(i);
 	}
 	return cutPoints;
 }
 
-/** Find the user-visible message that starts the turn containing an entry. */
-export function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, startIndex: number): number {
+/** Find the context-visible user-role message that starts the turn containing an entry. */
+export function findTurnStartIndex(entries: readonly SessionEntry[], entryIndex: number, startIndex: number): number {
 	for (let i = entryIndex; i >= startIndex; i--) {
-		const entry = entries[i];
-		if (entry.type === "custom_message" || entry.type === "branch_summary") return i;
-		if (entry.type === "message" && entry.message.role === "user") return i;
+		if (isTurnStartEntry(entries[i])) return i;
 	}
 	return -1;
 }
@@ -221,7 +287,7 @@ export interface CutPointResult {
 
 /** Find the compaction cut point that keeps approximately the requested recent-token budget. */
 export function findCutPoint(
-	entries: SessionEntry[],
+	entries: readonly SessionEntry[],
 	startIndex: number,
 	endIndex: number,
 	keepRecentTokens: number,
@@ -233,31 +299,114 @@ export function findCutPoint(
 	let accumulatedTokens = 0;
 	let cutIndex = cutPoints[0];
 	for (let i = endIndex - 1; i >= startIndex; i--) {
-		const entry = entries[i];
-		if (entry.type !== "message") continue;
-		accumulatedTokens += estimateTokens(entry.message);
+		const messageTokens = entryTokens(entries[i]);
+		if (messageTokens === 0) continue;
+		accumulatedTokens += messageTokens;
 		if (accumulatedTokens >= keepRecentTokens) {
-			for (const candidate of cutPoints) {
-				if (candidate >= i) {
-					cutIndex = candidate;
-					break;
-				}
-			}
+			// Prefer the closest valid cut point at or after this entry. If trailing tool
+			// results exceed the budget by themselves, keep their preceding assistant tool
+			// call instead of falling back to the first message (pi 0.86.0, #9740).
+			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
 			break;
 		}
 	}
 	while (cutIndex > startIndex) {
 		const prevEntry = entries[cutIndex - 1];
-		if (prevEntry.type === "compaction" || prevEntry.type === "message") break;
+		if (prevEntry.type === "compaction" || sessionEntryToContextMessages(prevEntry).length > 0) break;
 		cutIndex--;
 	}
-	const cutEntry = entries[cutIndex];
-	const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
-	const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+	const startsTurn = isTurnStartEntry(entries[cutIndex]);
+	const turnStartIndex = startsTurn ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
 	return {
 		firstKeptEntryIndex: cutIndex,
 		turnStartIndex,
-		isSplitTurn: !isUserMessage && turnStartIndex !== -1,
+		isSplitTurn: !startsTurn && turnStartIndex !== -1,
+	};
+}
+
+function isProjectedTurnStart(entry: ProjectedEntry): boolean {
+	if (entry.sourceEntry.type === "compaction") return false;
+	return entry.messages.some(isTurnStartMessage);
+}
+
+function findProjectedTurnStartIndex(
+	entries: readonly ProjectedEntry[],
+	entryIndex: number,
+	startIndex: number,
+): number {
+	for (let i = entryIndex; i >= startIndex; i--) {
+		if (isProjectedTurnStart(entries[i])) return i;
+	}
+	return -1;
+}
+
+/**
+ * findCutPoint over the session projection (pi findProjectedCutPoint): context
+ * edits count, so omitted entries are invisible to the budget.
+ */
+function findProjectedCutPoint(
+	entries: readonly ProjectedEntry[],
+	startIndex: number,
+	endIndex: number,
+	keepRecentTokens: number,
+): CutPointResult {
+	const cutPoints: number[] = [];
+	for (let i = startIndex; i < endIndex; i++) {
+		const entry = entries[i];
+		if (entry.sourceEntry.type !== "compaction" && entry.messages.some(isCutPointMessage)) cutPoints.push(i);
+	}
+	if (cutPoints.length === 0) {
+		return { firstKeptEntryIndex: startIndex, turnStartIndex: -1, isSplitTurn: false };
+	}
+	let accumulatedTokens = 0;
+	let exceededBudget = false;
+	let cutIndex = cutPoints[0];
+	for (let i = endIndex - 1; i >= startIndex; i--) {
+		const messageTokens = entries[i].messages.reduce((sum, message) => sum + estimateTokens(message), 0);
+		if (messageTokens === 0) continue;
+		accumulatedTokens += messageTokens;
+		if (accumulatedTokens >= keepRecentTokens) {
+			exceededBudget = true;
+			cutIndex = cutPoints.find((candidate) => candidate >= i) ?? cutPoints[cutPoints.length - 1];
+			break;
+		}
+	}
+	// A recovery attempt and its omission edits are context-invisible after the last
+	// visible input. Advance only for a closed suffix containing an omitted assistant
+	// attempt; arbitrary metadata must not move the cut past unsent input.
+	const suffix = entries.slice(cutIndex + 1, endIndex);
+	const isIntrinsicallyVisible = (entry: ProjectedEntry): boolean =>
+		entry.sourceEntry.type !== "context_edit" && sessionEntryToContextMessages(entry.sourceEntry).length > 0;
+	const isOmitted = (entry: ProjectedEntry): boolean => isIntrinsicallyVisible(entry) && entry.messages.length === 0;
+	const omittedSuffixIds = new Set(suffix.filter(isOmitted).map((entry) => entry.sourceEntry.id));
+	const hasExternalReplacement = suffix.some(
+		(entry) =>
+			entry.sourceEntry.type === "context_edit" &&
+			entry.sourceEntry.replacement !== null &&
+			!omittedSuffixIds.has(entry.sourceEntry.targetId),
+	);
+	const isRecoveryOmissionSuffix =
+		exceededBudget &&
+		!hasExternalReplacement &&
+		suffix.some(
+			(entry) =>
+				entry.sourceEntry.type === "message" && entry.sourceEntry.message.role === "assistant" && isOmitted(entry),
+		) &&
+		suffix.every(
+			(entry) => entry.sourceEntry.type !== "compaction" && (!isIntrinsicallyVisible(entry) || isOmitted(entry)),
+		);
+	if (isRecoveryOmissionSuffix) cutIndex++;
+	while (cutIndex > startIndex) {
+		const previous = entries[cutIndex - 1];
+		if (previous.sourceEntry.type === "compaction" || previous.messages.length > 0) break;
+		cutIndex--;
+	}
+	const startsTurn = isProjectedTurnStart(entries[cutIndex]);
+	const turnStartIndex = startsTurn ? -1 : findProjectedTurnStartIndex(entries, cutIndex, startIndex);
+	return {
+		firstKeptEntryIndex: cutIndex,
+		turnStartIndex,
+		isSplitTurn: !startsTurn && turnStartIndex !== -1,
 	};
 }
 
@@ -347,20 +496,22 @@ Use this EXACT format:
 Keep each section concise. Preserve exact file paths, function names, and error messages.
 Preserve all opaque identifiers exactly as written (UUIDs, commit hashes, file paths, URLs, session ids, tokens). Never shorten, reconstruct, or paraphrase them.`;
 
-const TURN_PREFIX_SUMMARIZATION_PROMPT = `This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+// pi 0.87.1 (#9908): the turn prefix is framed as "earlier context to continue
+// from", in # Conversation / # Instructions sections, so models do not refuse it.
+const TURN_PREFIX_SUMMARIZATION_PROMPT = `The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.
 
-Summarize the prefix to provide context for the retained suffix:
+Create a concise checkpoint of the user's request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.
 
 ## Original Request
-[What did the user ask for in this turn?]
+[What did the user ask for?]
 
-## Early Progress
-- [Key decisions and work done in the prefix]
+## Progress So Far
+- [Key decisions and work completed in these messages]
 
-## Context for Suffix
-- [Information needed to understand the retained recent work]
+## Context Needed to Continue
+- [Information from these messages needed to understand the later work]
 
-Be concise. Focus on what's needed to understand the kept suffix.`;
+Only summarize information explicitly present above. Do not infer or recreate later messages.`;
 
 // ---------------------------------------------------------------------------
 // Conversation serialization and file-operation extraction (pi's utils.ts).
@@ -373,8 +524,14 @@ function truncateForSummary(text: string, maxChars: number): string {
 	return `${text.slice(0, maxChars)}\n\n[... ${text.length - maxChars} more characters truncated]`;
 }
 
-/** Serialize messages to plain text for summarization prompts. */
-export function serializeConversation(messages: AgentMessage[]): string {
+/**
+ * Serialize messages to plain text for summarization prompts. Thinking is
+ * omitted (pi 1.2.0): providers return summaries of the real reasoning and
+ * replayed thinking is often not part of the live context, so including it can
+ * make the summary request larger than the context it summarizes. System
+ * messages are prompt state, not conversation.
+ */
+export function serializeConversation(messages: readonly AgentMessage[]): string {
 	const parts: string[] = [];
 	for (const message of messages) {
 		switch (message.role) {
@@ -390,11 +547,9 @@ export function serializeConversation(messages: AgentMessage[]): string {
 				break;
 			case "assistant": {
 				const textParts: string[] = [];
-				const thinkingParts: string[] = [];
 				const toolCalls: string[] = [];
 				for (const block of message.content) {
 					if (block.type === "text") textParts.push(block.text);
-					else if (block.type === "thinking") thinkingParts.push(block.thinking);
 					else if (block.type === "toolCall") {
 						const argsStr = Object.entries(block.arguments)
 							.map(([k, v]) => `${k}=${safeJsonStringify(v)}`)
@@ -402,7 +557,6 @@ export function serializeConversation(messages: AgentMessage[]): string {
 						toolCalls.push(`${block.name}(${argsStr})`);
 					}
 				}
-				if (thinkingParts.length > 0) parts.push(`[Assistant thinking]: ${thinkingParts.join("\n")}`);
 				if (textParts.length > 0) parts.push(`[Assistant]: ${textParts.join("\n")}`);
 				if (toolCalls.length > 0) parts.push(`[Assistant tool calls]: ${toolCalls.join("; ")}`);
 				break;
@@ -413,7 +567,6 @@ export function serializeConversation(messages: AgentMessage[]): string {
 				break;
 			}
 			case "system":
-				// Prompt state, not conversation (pi): the compaction entry checkpoints it.
 				break;
 		}
 	}
@@ -451,6 +604,25 @@ export function formatFileOperations(readFiles: string[], modifiedFiles: string[
 	return sections.length === 0 ? "" : `\n\n${sections.join("\n\n")}`;
 }
 
+/** File operations of the messages plus those a previous kernel-made compaction carried forward (pi). */
+function extractFileOperations(
+	messages: readonly AgentMessage[],
+	previousCompaction: SessionEntry | undefined,
+): FileOperations {
+	const fileOps: FileOperations = { read: new Set(), written: new Set(), edited: new Set() };
+	if (previousCompaction?.type === "compaction" && !previousCompaction.fromHook && previousCompaction.details) {
+		const details = previousCompaction.details as { readFiles?: unknown; modifiedFiles?: unknown };
+		if (Array.isArray(details.readFiles)) {
+			for (const file of details.readFiles) if (typeof file === "string") fileOps.read.add(file);
+		}
+		if (Array.isArray(details.modifiedFiles)) {
+			for (const file of details.modifiedFiles) if (typeof file === "string") fileOps.edited.add(file);
+		}
+	}
+	for (const message of messages) extractFileOpsFromMessage(message, fileOps);
+	return fileOps;
+}
+
 // ---------------------------------------------------------------------------
 // Preparation and orchestration.
 // ---------------------------------------------------------------------------
@@ -466,56 +638,54 @@ export interface CompactionPreparation {
 	settings: CompactionSettings;
 }
 
-/** Prepare session-path entries for compaction; undefined when not applicable. */
+/** System messages are prompt state; the compaction entry checkpoints their replay (pi). */
+function messagesForCompaction(entry: ProjectedEntry): AgentMessage[] {
+	if (entry.sourceEntry.type === "compaction") return [];
+	return entry.messages.filter((message) => message.role !== "system");
+}
+
+/**
+ * Prepare a path for compaction over its projection (pi 1.2.0
+ * prepareCompaction); undefined when there is nothing to summarize — including
+ * a tail whose kept budget already covers everything, which used to send an
+ * empty summary request every turn (pi 0.86.0 guard).
+ */
 export function prepareCompaction(
-	pathEntries: SessionEntry[],
+	pathEntries: readonly SessionEntry[],
 	settings: CompactionSettings,
-	currentMessages: readonly AgentMessage[],
 ): CompactionPreparation | undefined {
-	if (pathEntries.length === 0 || pathEntries[pathEntries.length - 1].type === "compaction") {
-		return undefined;
-	}
-	let prevCompactionIndex = -1;
-	for (let i = pathEntries.length - 1; i >= 0; i--) {
-		if (pathEntries[i].type === "compaction") {
-			prevCompactionIndex = i;
-			break;
-		}
-	}
+	if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") return undefined;
+	const projection = buildSessionProjection(pathEntries);
+	const projectedEntries = projection.entries;
+	// The newest compaction is projected first; older ones in its kept range contribute nothing.
+	const prevCompactionIndex = projectedEntries.findIndex(
+		(entry) => entry.sourceEntry.type === "compaction" && entry.messages.length > 0,
+	);
 	let previousSummary: string | undefined;
 	let boundaryStart = 0;
-	if (prevCompactionIndex >= 0) {
-		const prevCompaction = pathEntries[prevCompactionIndex];
-		if (prevCompaction.type === "compaction") {
-			previousSummary = prevCompaction.summary;
-			const firstKeptEntryIndex = pathEntries.findIndex((entry) => entry.id === prevCompaction.firstKeptEntryId);
-			boundaryStart = firstKeptEntryIndex >= 0 ? firstKeptEntryIndex : prevCompactionIndex + 1;
-		}
+	const previousCompaction = prevCompactionIndex >= 0 ? projectedEntries[prevCompactionIndex].sourceEntry : undefined;
+	if (previousCompaction?.type === "compaction") {
+		previousSummary = previousCompaction.summary;
+		// The projection has already selected the previous compaction's kept tail.
+		boundaryStart = prevCompactionIndex + 1;
 	}
-	const boundaryEnd = pathEntries.length;
-	const tokensBefore = estimateContextTokens(currentMessages).tokens;
-
-	const cutPoint = findCutPoint(pathEntries, boundaryStart, boundaryEnd, settings.keepRecentTokens);
-	const firstKeptEntry = pathEntries[cutPoint.firstKeptEntryIndex];
+	const tokensBefore = estimateProjectedContextTokens(projection, pathEntries).tokens;
+	const cutPoint = findProjectedCutPoint(
+		projectedEntries,
+		boundaryStart,
+		projectedEntries.length,
+		settings.keepRecentTokens,
+	);
+	const firstKeptEntry = projectedEntries[cutPoint.firstKeptEntryIndex]?.sourceEntry;
 	if (!firstKeptEntry?.id) return undefined;
-
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
-	const messagesToSummarize: AgentMessage[] = [];
-	for (let i = boundaryStart; i < historyEnd; i++) {
-		const message = entryMessage(pathEntries[i]);
-		if (message) messagesToSummarize.push(message);
-	}
-	const turnPrefixMessages: AgentMessage[] = [];
-	if (cutPoint.isSplitTurn) {
-		for (let i = cutPoint.turnStartIndex; i < cutPoint.firstKeptEntryIndex; i++) {
-			const message = entryMessage(pathEntries[i]);
-			if (message) turnPrefixMessages.push(message);
-		}
-	}
-	const fileOps: FileOperations = { read: new Set(), written: new Set(), edited: new Set() };
-	for (const message of messagesToSummarize) extractFileOpsFromMessage(message, fileOps);
+	const messagesToSummarize = projectedEntries.slice(boundaryStart, historyEnd).flatMap(messagesForCompaction);
+	const turnPrefixMessages = cutPoint.isSplitTurn
+		? projectedEntries.slice(cutPoint.turnStartIndex, cutPoint.firstKeptEntryIndex).flatMap(messagesForCompaction)
+		: [];
+	if (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return undefined;
+	const fileOps = extractFileOperations(messagesToSummarize, previousCompaction);
 	for (const message of turnPrefixMessages) extractFileOpsFromMessage(message, fileOps);
-
 	return {
 		firstKeptEntryId: firstKeptEntry.id,
 		messagesToSummarize,
@@ -528,13 +698,14 @@ export function prepareCompaction(
 	};
 }
 
+/** One summarization call; returns its text and usage (pi generateSummaryWithUsage's transport step). */
 export async function completeText(
 	transport: ChatTransport,
 	systemPrompt: string,
 	promptText: string,
 	maxTokens: number,
 	signal?: TauAbortSignal,
-): Promise<string> {
+): Promise<{ text: string; usage: Usage }> {
 	const now = Date.now();
 	const stream = transport({
 		messages: [
@@ -549,20 +720,20 @@ export async function completeText(
 		if (event.type === "response_end") final = event.message;
 	}
 	if (!final) throw new TauError("compaction_failed", "Summarization returned no message");
-	return messageText(final);
+	return { text: messageText(final), usage: final.usage };
 }
 
-/** Generate or update a conversation summary (pi's generateSummary). */
-export async function generateSummary(
+/** Generate or update a conversation summary and return its usage (pi generateSummaryWithUsage). */
+export async function generateSummaryWithUsage(
 	transport: ChatTransport,
-	messages: AgentMessage[],
+	messages: readonly AgentMessage[],
 	options: {
 		reserveTokens: number;
 		customInstructions?: string;
 		previousSummary?: string;
 		signal?: TauAbortSignal;
 	},
-): Promise<string> {
+): Promise<{ text: string; usage: Usage }> {
 	const maxTokens = Math.floor(0.8 * options.reserveTokens);
 	let basePrompt = options.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
 	if (options.customInstructions) {
@@ -576,7 +747,26 @@ export async function generateSummary(
 	return completeText(transport, SUMMARIZATION_SYSTEM_PROMPT, promptText, maxTokens, options.signal);
 }
 
-/** Run a prepared compaction: summarize (split-turn aware) and assemble the result. */
+/** Generate or update a conversation summary (pi's generateSummary). */
+export async function generateSummary(
+	transport: ChatTransport,
+	messages: readonly AgentMessage[],
+	options: {
+		reserveTokens: number;
+		customInstructions?: string;
+		previousSummary?: string;
+		signal?: TauAbortSignal;
+	},
+): Promise<string> {
+	return (await generateSummaryWithUsage(transport, messages, options)).text;
+}
+
+/**
+ * Run a prepared compaction: summarize (split-turn aware, sequential calls) and
+ * assemble the result. The usage of every summarization call is summed into
+ * `usage` (pi 0.81.0, D19). Without history before a split turn, the previous
+ * summary carries over instead of being replaced by "No prior history." (pi 0.86.0).
+ */
 export async function runCompaction(
 	transport: ChatTransport,
 	preparation: CompactionPreparation,
@@ -585,32 +775,39 @@ export async function runCompaction(
 ): Promise<CompactionResult> {
 	const { settings, previousSummary } = preparation;
 	let summary: string;
+	let usage: Usage;
 	if (preparation.isSplitTurn && preparation.turnPrefixMessages.length > 0) {
-		const historySummary =
-			preparation.messagesToSummarize.length > 0
-				? await generateSummary(transport, preparation.messagesToSummarize, {
-						reserveTokens: settings.reserveTokens,
-						customInstructions,
-						previousSummary,
-						signal,
-					})
-				: "No prior history.";
-		const prefixPrompt = `<conversation>\n${serializeConversation(preparation.turnPrefixMessages)}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-		const turnPrefixSummary = await completeText(
+		let historyText = previousSummary ?? "No prior history.";
+		let historyUsage: Usage | undefined;
+		if (preparation.messagesToSummarize.length > 0) {
+			const history = await generateSummaryWithUsage(transport, preparation.messagesToSummarize, {
+				reserveTokens: settings.reserveTokens,
+				customInstructions,
+				previousSummary,
+				signal,
+			});
+			historyText = history.text;
+			historyUsage = history.usage;
+		}
+		const prefixPrompt = `# Conversation\n${serializeConversation(preparation.turnPrefixMessages)}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+		const turnPrefix = await completeText(
 			transport,
 			SUMMARIZATION_SYSTEM_PROMPT,
 			prefixPrompt,
 			Math.floor(0.5 * settings.reserveTokens),
 			signal,
 		);
-		summary = `${historySummary}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixSummary}`;
+		summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefix.text}`;
+		usage = historyUsage ? combineUsage(historyUsage, turnPrefix.usage) : turnPrefix.usage;
 	} else {
-		summary = await generateSummary(transport, preparation.messagesToSummarize, {
+		const result = await generateSummaryWithUsage(transport, preparation.messagesToSummarize, {
 			reserveTokens: settings.reserveTokens,
 			customInstructions,
 			previousSummary,
 			signal,
 		});
+		summary = result.text;
+		usage = result.usage;
 	}
 	const { readFiles, modifiedFiles } = computeFileLists(preparation.fileOps);
 	summary += formatFileOperations(readFiles, modifiedFiles);
@@ -618,6 +815,7 @@ export async function runCompaction(
 		summary,
 		firstKeptEntryId: preparation.firstKeptEntryId,
 		tokensBefore: preparation.tokensBefore,
+		usage,
 		details: { readFiles, modifiedFiles },
 	};
 }

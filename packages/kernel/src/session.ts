@@ -676,7 +676,7 @@ export class SessionRecorder {
 	 */
 	async moveTo(
 		entryId: string | null,
-		summary?: { summary: string; details?: unknown; fromHook?: boolean },
+		summary?: { summary: string; details?: unknown; usage?: Usage; fromHook?: boolean },
 	): Promise<SessionEntry | undefined> {
 		if (entryId !== null && !(await this.store.getEntry(entryId))) {
 			throw new SessionError("not_found", `Entry ${entryId} not found`);
@@ -694,6 +694,7 @@ export class SessionRecorder {
 			fromId,
 			summary: summary.summary,
 			details: summary.details,
+			...(summary.usage ? { usage: summary.usage } : {}),
 			fromHook: summary.fromHook,
 		};
 		await this.store.appendEntry(entry);

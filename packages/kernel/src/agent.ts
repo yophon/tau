@@ -5,7 +5,7 @@ import {
 	type CompactionSettings,
 	type ContextUsageEstimate,
 	DEFAULT_COMPACTION_SETTINGS,
-	estimateContextTokens,
+	estimateProjectedContextTokens,
 	prepareCompaction,
 	runCompaction,
 	shouldCompact,
@@ -33,6 +33,7 @@ import {
 	type ToolCall,
 	type ToolResultMessage,
 	toolCallsOf,
+	type Usage,
 	type UserContent,
 	type UserMessage,
 	userContentText,
@@ -53,10 +54,12 @@ import {
 	getCurrentTools,
 	getToolStateChanges,
 	normalizeMessageContent,
+	type SessionProjection,
+	sumSessionUsage,
 	toToolDeclaration,
 } from "./projection.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
-import { InMemorySessionStore, SessionRecorder } from "./session.ts";
+import { InMemorySessionStore, type SessionEntry, SessionRecorder } from "./session.ts";
 import {
 	assertToolSchema,
 	hasToolSchema,
@@ -237,6 +240,11 @@ export class Agent {
 	private projection: readonly AgentMessage[] = Object.freeze([]);
 	/** Source entry of each projected message (pi _entryIdsByMessage). */
 	private entryIds = new WeakMap<AgentMessage, string>();
+	/** The active path and its projection as of the last refresh (for sync estimates). */
+	private activePath: readonly SessionEntry[] = [];
+	private activeProjection: SessionProjection = { entries: [], messages: [] };
+	/** Session-wide billed usage as of the last refresh (sumSessionUsage). */
+	private sessionUsage: Usage = emptyUsage();
 	private readonly platform: Platform;
 	private readonly config: OpenAICompatConfig;
 	private readonly transport: ChatTransport;
@@ -425,7 +433,10 @@ export class Agent {
 			for (const message of entry.messages) entryIds.set(message, entry.sourceEntry.id);
 		}
 		this.entryIds = entryIds;
+		this.activePath = path;
+		this.activeProjection = projection;
 		this.projection = Object.freeze(projection.messages);
+		this.sessionUsage = sumSessionUsage(await this.session.store.getEntries());
 	}
 
 	/** Append a message to the log and refresh the projection; returns its entry id. Call inside the writer. */
@@ -565,6 +576,8 @@ export class Agent {
 			permissionMode: this.permissionMode,
 			policy: this.policy,
 			onApproval: this.onApproval,
+			// The child's calls are billed like the parent's (D19).
+			pricing: this.pricing,
 			toolExecution: this.toolExecution,
 		});
 		let text = "";
@@ -573,12 +586,33 @@ export class Agent {
 			if (event.type === "text_delta") text += event.delta;
 			if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
 		}
-		return { text: text === "" ? lastAssistantText : text, messages: [...child.messages] };
+		return {
+			text: text === "" ? lastAssistantText : text,
+			messages: [...child.messages],
+			usage: child.getSessionUsage(),
+		};
+	}
+
+	/** A usage with its cost filled from the host pricing, when there is one (D19-3). */
+	private priced(usage: Usage): Usage {
+		return this.pricing ? { ...usage, cost: computeUsageCost(usage, this.pricing) } : usage;
 	}
 
 	/** Current context-token estimate (pi semantics: last assistant usage + trailing heuristic). */
 	getContextUsage(): ContextUsageEstimate & { contextWindow?: number } {
-		return { ...estimateContextTokens(this.messages), contextWindow: this.config.contextWindow };
+		return {
+			...estimateProjectedContextTokens(this.activeProjection, this.activePath),
+			contextWindow: this.config.contextWindow,
+		};
+	}
+
+	/**
+	 * Everything this session was billed for, all branches, compaction-proof
+	 * (D19): assistant turns, summaries and tool-reported usage. Hosts show it as
+	 * the session cost; the context estimate is getContextUsage().
+	 */
+	getSessionUsage(): Usage {
+		return this.sessionUsage;
 	}
 
 	/**
@@ -594,7 +628,7 @@ export class Agent {
 		const ctx = this.extensionContext();
 		await this.flushWrites();
 		const pathEntries = await this.session.store.getPathToRoot(this.session.currentLeafId);
-		const preparation = prepareCompaction(pathEntries, this.compactionSettings, this.messages);
+		const preparation = prepareCompaction(pathEntries, this.compactionSettings);
 		if (!preparation) return undefined;
 
 		const decision = this.extensions
@@ -603,6 +637,7 @@ export class Agent {
 		if (decision.cancel) return undefined;
 		const fromExtension = decision.result !== undefined;
 		const result = decision.result ?? (await runCompaction(this.transport, preparation, customInstructions, signal));
+		if (result.usage) result.usage = this.priced(result.usage);
 
 		await this.enqueueWrite(async () => {
 			// The boundary checkpoints the full prompt/tool state: the system messages it
@@ -717,6 +752,7 @@ export class Agent {
 
 		let summaryText = hook.summary?.summary;
 		let summaryDetails = hook.summary?.details;
+		let summaryUsage = hook.summary?.usage;
 		if (!summaryText && options?.summarize !== false && entries.length > 0) {
 			try {
 				const generated = await generateBranchSummary(this.transport, entries, {
@@ -726,6 +762,7 @@ export class Agent {
 				});
 				summaryText = generated.summary;
 				summaryDetails = { readFiles: generated.readFiles, modifiedFiles: generated.modifiedFiles };
+				summaryUsage = generated.usage;
 			} catch (error) {
 				// As in pi: an aborted summary generation cancels the navigation.
 				if (error instanceof TauError && error.code === "aborted") return { cancelled: true };
@@ -738,7 +775,12 @@ export class Agent {
 			const entry = await this.session.moveTo(
 				entryId,
 				summaryText
-					? { summary: summaryText, details: summaryDetails, fromHook: fromExtension || undefined }
+					? {
+							summary: summaryText,
+							details: summaryDetails,
+							usage: summaryUsage && this.priced(summaryUsage),
+							fromHook: fromExtension || undefined,
+						}
 					: undefined,
 			);
 			await this.refresh();
@@ -854,7 +896,7 @@ export class Agent {
 				this.pendingCompaction = null;
 			} else if (
 				this.config.contextWindow !== undefined &&
-				shouldCompact(estimateContextTokens(this.messages).tokens, this.config.contextWindow, this.compactionSettings)
+				shouldCompact(this.getContextUsage().tokens, this.config.contextWindow, this.compactionSettings)
 			) {
 				compactionReason = "threshold";
 			}
@@ -1074,7 +1116,7 @@ export class Agent {
 		ctx: ExtensionContext,
 		toolResults: ToolResultMessage[],
 	): Promise<AgentEvent> {
-		const { durationMs, ...result } = outcome;
+		const { durationMs, usage, ...result } = outcome;
 		const toolResultMessage: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: toolCall.id,
@@ -1083,6 +1125,7 @@ export class Agent {
 			isError: result.isError === true,
 			timestamp: Date.now(),
 			...(durationMs !== undefined ? { durationMs } : {}),
+			...(usage ? { usage } : {}),
 		};
 		const committedToolResult = (await this.commitMessage(toolResultMessage, ctx)) as ToolResultMessage;
 		toolResults.push(committedToolResult);

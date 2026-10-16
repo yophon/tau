@@ -141,7 +141,7 @@ test("prepareCompaction uses the previous compaction summary for iterative updat
 		parentId: i === 0 ? "comp1" : `n${i}`,
 	}));
 	const path = [...base, compactionEntry, ...later];
-	const preparation = prepareCompaction(path, { enabled: true, reserveTokens: 16384, keepRecentTokens: 1 }, []);
+	const preparation = prepareCompaction(path, { enabled: true, reserveTokens: 16384, keepRecentTokens: 1 });
 	assert.ok(preparation);
 	assert.equal(preparation.previousSummary, "OLD SUMMARY");
 	// Boundary starts at the previous firstKeptEntryId (e2), so old1 is not re-summarized.
@@ -219,8 +219,9 @@ test("auto-compaction triggers on CJK-weighted estimate where chars/4 would not"
 	}
 	assert.ok(compaction, "expected auto-compaction to trigger on CJK-weighted estimate");
 	assert.ok(compaction.tokensBefore >= 400, `tokensBefore ${compaction.tokensBefore} should reflect 1 token/CJK char`);
-	// May run more than once: keepRecentTokens' cut-point protection can keep the
-	// big message, re-tripping the threshold next turn (P4-documented behavior).
+	// The big message can stay in the kept tail and re-trip the threshold next turn;
+	// since P22 a turn with nothing left to summarize skips compaction instead of
+	// sending an empty summary request (pi 0.86.0 guard).
 	const summaryRequests = requests.filter((r) => r.messages?.[0]?.content === SUMMARIZATION_SYSTEM_PROMPT);
 	assert.ok(summaryRequests.length >= 1);
 });
