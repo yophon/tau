@@ -1,5 +1,6 @@
 import { AbortHandle } from "./abort.ts";
 import { HttpError, TauError, toError } from "./errors.ts";
+import { parseJsonWithRepair } from "./json.ts";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -460,7 +461,7 @@ export async function* streamChatCompletion(
 		.map(([index, raw]) => {
 			let parsedArguments: Record<string, unknown> = {};
 			try {
-				const parsed: unknown = raw.argumentsText === "" ? {} : JSON.parse(raw.argumentsText);
+				const parsed: unknown = raw.argumentsText === "" ? {} : parseJsonWithRepair(raw.argumentsText);
 				if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
 					parsedArguments = parsed as Record<string, unknown>;
 				}

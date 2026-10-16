@@ -62,6 +62,8 @@ export interface SessionMetadata {
 	id: string;
 	cwd: string;
 	timestamp: string;
+	/** Last activity: the newest entry's timestamp (the header's when empty). --continue sorts by it. */
+	modified?: string;
 	filePath?: string;
 	name?: string;
 	/** Fork lineage: source file path (JSONL) or source session id (in-memory). */
@@ -333,6 +335,12 @@ class JsonlSessionStore implements SessionStore {
 	private readonly header: SessionHeader;
 	private readonly tree: EntryTree;
 	private readonly randomBytes: Platform["randomBytes"];
+	/**
+	 * False for a fresh session until its first message: the header and any
+	 * earlier entries (leaf moves, a name) are held in memory, so a start-up that
+	 * never prompts leaves no empty file behind for --continue to pick (pi 0.99.0, HF-16).
+	 */
+	private persisted: boolean;
 
 	constructor(
 		fs: FileSystem,
@@ -340,12 +348,14 @@ class JsonlSessionStore implements SessionStore {
 		header: SessionHeader,
 		tree: EntryTree,
 		randomBytes: Platform["randomBytes"],
+		persisted = true,
 	) {
 		this.fs = fs;
 		this.filePath = filePath;
 		this.header = header;
 		this.tree = tree;
 		this.randomBytes = randomBytes;
+		this.persisted = persisted;
 	}
 
 	async getMetadata(): Promise<SessionMetadata> {
@@ -353,6 +363,7 @@ class JsonlSessionStore implements SessionStore {
 			id: this.header.id,
 			cwd: this.header.cwd,
 			timestamp: this.header.timestamp,
+			modified: this.tree.entries.at(-1)?.timestamp ?? this.header.timestamp,
 			filePath: this.filePath,
 			name: lastSessionName(this.tree.entries),
 			parentSession: this.header.parentSession,
@@ -379,7 +390,13 @@ class JsonlSessionStore implements SessionStore {
 	}
 
 	async appendEntry(entry: SessionEntry): Promise<void> {
-		await this.fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`);
+		if (this.persisted) {
+			await this.fs.appendFile(this.filePath, `${JSON.stringify(entry)}\n`);
+		} else if (entry.type === "message") {
+			const lines = [this.header, ...this.tree.entries, entry].map((line) => JSON.stringify(line));
+			await this.fs.writeTextFile(this.filePath, `${lines.join("\n")}\n`);
+			this.persisted = true;
+		}
 		this.tree.add(entry);
 	}
 
@@ -437,8 +454,7 @@ export class JsonlSessionRepo implements SessionRepo {
 		const header: SessionHeader = { type: "session", version: 3, id, timestamp, cwd: this.cwd };
 		const fileName = `${timestamp.replaceAll(":", "-")}_${id}.jsonl`;
 		const filePath = joinSessionPath(this.sessionsDir, fileName);
-		await this.fs.writeTextFile(filePath, `${JSON.stringify(header)}\n`);
-		return new JsonlSessionStore(this.fs, filePath, header, new EntryTree(), this.platform.randomBytes);
+		return new JsonlSessionStore(this.fs, filePath, header, new EntryTree(), this.platform.randomBytes, false);
 	}
 
 	async open(metadata: SessionMetadata): Promise<SessionStore> {
@@ -462,7 +478,8 @@ export class JsonlSessionRepo implements SessionRepo {
 				// Unreadable session files are skipped in listings.
 			}
 		}
-		return sessions.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+		// Most recently active first, as pi lists sessions (not by creation time).
+		return sessions.sort((a, b) => (b.modified ?? b.timestamp).localeCompare(a.modified ?? a.timestamp));
 	}
 
 	async delete(metadata: SessionMetadata): Promise<void> {

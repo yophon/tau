@@ -10,7 +10,8 @@ export type TauErrorCode =
 	| "no_session"
 	| "busy"
 	| "compaction_failed"
-	| "invalid_response";
+	| "invalid_response"
+	| "invalid_tool";
 
 export class TauError extends Error {
 	readonly code: TauErrorCode;

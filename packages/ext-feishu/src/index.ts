@@ -175,42 +175,40 @@ function errorText(value: unknown): string {
 	return value instanceof Error ? value.message : String(value);
 }
 
-const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
+/**
+ * Inline images must be ones every provider accepts: PNG, JPEG, GIF or WebP by
+ * signature, at most 5 MiB of base64 (Anthropic's per-image limit). Anything else
+ * stays a file path the agent can read. A bad image block poisons the session —
+ * every later request carrying it is rejected — so there is no guessing from the
+ * file extension and no fallback MIME type (HF-15).
+ */
+export const MAX_INLINE_IMAGE_BASE64_BYTES = 5 * 1024 * 1024;
 
-function imageMimeType(filePath: string, data: Buffer): string {
-	if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])))
-		return "image/png";
+/** MIME type from the file signature, or undefined when it is not an inlineable image. */
+export function sniffImageMimeType(data: Uint8Array): string | undefined {
+	const ascii = (from: number, to: number): string => String.fromCharCode(...data.subarray(from, to));
+	if (data.length >= 8 && [137, 80, 78, 71, 13, 10, 26, 10].every((byte, i) => data[i] === byte)) return "image/png";
 	if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return "image/jpeg";
-	if (
-		data.length >= 6 &&
-		(data.subarray(0, 6).toString("ascii") === "GIF87a" || data.subarray(0, 6).toString("ascii") === "GIF89a")
-	)
-		return "image/gif";
-	if (
-		data.length >= 12 &&
-		data.subarray(0, 4).toString("ascii") === "RIFF" &&
-		data.subarray(8, 12).toString("ascii") === "WEBP"
-	)
-		return "image/webp";
-	if (data.length >= 2 && data[0] === 0x42 && data[1] === 0x4d) return "image/bmp";
-	const extension = filePath.toLowerCase().split(".").at(-1);
-	return extension === "jpg" || extension === "jpeg"
-		? "image/jpeg"
-		: extension === "gif"
-			? "image/gif"
-			: extension === "webp"
-				? "image/webp"
-				: "image/png";
+	if (data.length >= 6 && (ascii(0, 6) === "GIF87a" || ascii(0, 6) === "GIF89a")) return "image/gif";
+	if (data.length >= 12 && ascii(0, 4) === "RIFF" && ascii(8, 12) === "WEBP") return "image/webp";
+	return undefined;
 }
 
-async function loadImageContent(filePath: string): Promise<ImageContent | undefined> {
+export type ImageLoadResult = { image: ImageContent } | { skipped: string };
+
+export async function loadImageContent(filePath: string): Promise<ImageLoadResult> {
+	let data: Buffer;
 	try {
-		const data = await readFile(filePath);
-		if (data.byteLength === 0 || data.byteLength > MAX_INLINE_IMAGE_BYTES) return undefined;
-		return { type: "image", data: data.toString("base64"), mimeType: imageMimeType(filePath, data) };
-	} catch {
-		return undefined;
+		data = await readFile(filePath);
+	} catch (error) {
+		return { skipped: `读取失败: ${errorText(error)}` };
 	}
+	if (data.byteLength === 0) return { skipped: "空文件" };
+	const mimeType = sniffImageMimeType(data);
+	if (!mimeType) return { skipped: "格式不支持（仅 PNG/JPEG/GIF/WebP）" };
+	const base64 = data.toString("base64");
+	if (base64.length > MAX_INLINE_IMAGE_BASE64_BYTES) return { skipped: "超过 5 MiB" };
+	return { image: { type: "image", data: base64, mimeType } };
 }
 
 /**
@@ -648,8 +646,9 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 										: "文件";
 						resourceDescription += `${resourceDescription ? "\n" : ""}[收到${label}: ${localPath}]`;
 						if (resource.type === "image") {
-							const image = await loadImageContent(localPath);
-							if (image) imageBlocks.push(image);
+							const loaded = await loadImageContent(localPath);
+							if ("image" in loaded) imageBlocks.push(loaded.image);
+							else resourceDescription += ` [未内联: ${loaded.skipped}]`;
 						}
 					}
 				} catch {

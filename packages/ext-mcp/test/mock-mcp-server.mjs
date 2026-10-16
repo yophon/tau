@@ -15,4 +15,15 @@ server.registerTool(
 	}),
 );
 
+server.registerTool(
+	"snapshot",
+	{ description: "Return an image", inputSchema: {} },
+	async () => ({
+		content: [
+			{ type: "text", text: "see image" },
+			{ type: "image", data: "A".repeat(4096), mimeType: "image/png" },
+		],
+	}),
+);
+
 await server.connect(new StdioServerTransport());

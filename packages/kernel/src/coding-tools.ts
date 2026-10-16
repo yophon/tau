@@ -40,15 +40,22 @@ function wrapExecute(execute: Tool["execute"]): Tool["execute"] {
 // not deduplicated (documented in the P18 spec).
 const fileMutationQueues = new Map<string, Promise<void>>();
 
-function mutationQueueKey(path: string): string {
-	const isAbsolute = path.startsWith("/");
+export function mutationQueueKey(path: string): string {
+	// Windows spellings of the same file must share one queue (HF-14): backslashes
+	// fold to "/", and a drive letter's case is irrelevant (C:\a.ts === c:/a.ts).
+	const unified = path
+		.replace(/\\/g, "/")
+		.replace(/^([A-Za-z]):/, (_match, drive: string) => `${drive.toLowerCase()}:`);
+	const drive = /^[a-z]:/.exec(unified)?.[0] ?? "";
+	const rest = unified.slice(drive.length);
+	const isAbsolute = rest.startsWith("/");
 	const segments: string[] = [];
-	for (const segment of path.split("/")) {
+	for (const segment of rest.split("/")) {
 		if (segment === "" || segment === ".") continue;
 		if (segment === ".." && segments.length > 0 && segments[segments.length - 1] !== "..") segments.pop();
 		else segments.push(segment);
 	}
-	return (isAbsolute ? "/" : "") + segments.join("/");
+	return drive + (isAbsolute ? "/" : "") + segments.join("/");
 }
 
 async function withFileMutationQueue<T>(path: string, fn: () => Promise<T>): Promise<T> {
@@ -147,7 +154,12 @@ function createEditTool(fs: FileSystem): Tool {
 				if (occurrences > 1) {
 					return errorResult(`oldText matches ${occurrences} locations in ${path}; add context to make it unique`);
 				}
-				await fs.writeTextFile(path, content.replace(oldText, newText));
+				// Function replacement: a string replacement would interpret $$, $&, $` and $'
+				// in newText as replacement patterns and silently corrupt the file (HF-13).
+				await fs.writeTextFile(
+					path,
+					content.replace(oldText, () => newText),
+				);
 				return { output: `Edited ${path}` };
 			});
 		}),

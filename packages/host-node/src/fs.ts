@@ -41,6 +41,22 @@ function toFileError(error: unknown, path: string): FileError {
 	return new FileError(errnoToCode(errno), cause.message, path, cause);
 }
 
+/**
+ * On Windows, models read paths from Git Bash (`pwd` → `/c/Users/x`), Cygwin
+ * (`/cygdrive/c/...`) or WSL (`/mnt/c/...`). Node treats those as absolute paths
+ * on the *current* drive (`D:\c\Users\x`), so reads failed and writes created a
+ * phantom tree. Map the drive prefix back to `C:\` (after pi 0.84.0
+ * normalizeWindowsShellPath; not part of the pi v0.80.3 snapshot). Paths with
+ * backslashes or a leading `//` are left alone. No-op off Windows.
+ */
+export function normalizeWindowsShellPath(path: string, platform: NodeJS.Platform = process.platform): string {
+	if (platform !== "win32" || path.includes("\\") || path.startsWith("//")) return path;
+	const match = /^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i.exec(path);
+	if (!match) return path;
+	const drive = match[1].toUpperCase();
+	return `${drive}:\\${(match[2] ?? "").replace(/\//g, "\\")}`;
+}
+
 export class NodeFileSystem implements FileSystem {
 	readonly cwd: string;
 
@@ -49,7 +65,8 @@ export class NodeFileSystem implements FileSystem {
 	}
 
 	private resolvePath(path: string): string {
-		return isAbsolute(path) ? path : resolve(this.cwd, path);
+		const native = normalizeWindowsShellPath(path);
+		return isAbsolute(native) ? native : resolve(this.cwd, native);
 	}
 
 	async readTextFile(path: string): Promise<string> {

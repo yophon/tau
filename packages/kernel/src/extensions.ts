@@ -1,12 +1,12 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
-import { TauError } from "./errors.ts";
+import { TauError, toError } from "./errors.ts";
 import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserContent } from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
 import type { SessionEntry } from "./session.ts";
-import type { Tool, ToolResult } from "./tools.ts";
+import { assertToolSchema, type Tool, type ToolResult } from "./tools.ts";
 
 /**
  * The extension API deliberately mirrors pi's extension API
@@ -242,6 +242,24 @@ export interface SessionCompactEvent {
 	fromExtension: boolean;
 	reason: CompactionReason;
 }
+
+/**
+ * Fired when a compaction the agent loop started on its own (threshold, or a
+ * queued ctx.compact()) fails. The turn continues uncompacted (pi 0.84.3
+ * session_compact_failed; D14: provider failures never escape the loop).
+ */
+export interface SessionCompactFailedEvent {
+	type: "session_compact_failed";
+	reason: CompactionReason;
+	errorMessage: string;
+}
+
+/**
+ * Receives errors thrown by notification-style handlers (agent_start, turn_end,
+ * session_start, …) once a host installs it; the remaining handlers still run.
+ * Without a sink the error propagates, as before.
+ */
+export type ExtensionErrorSink = (failure: { event: string; error: Error }) => void;
 
 /** Fired before forking a session; may cancel the fork. */
 export interface SessionBeforeForkEvent {
@@ -550,6 +568,7 @@ export interface ExtensionAPI {
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
 	): void;
 	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
 	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
 	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
 	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
@@ -660,6 +679,7 @@ interface HandlerLists {
 	session_info_changed: ExtensionHandler<SessionInfoChangedEvent>[];
 	session_before_compact: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>[];
 	session_compact: ExtensionHandler<SessionCompactEvent>[];
+	session_compact_failed: ExtensionHandler<SessionCompactFailedEvent>[];
 	session_before_fork: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>[];
 	session_before_tree: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>[];
 	session_tree: ExtensionHandler<SessionTreeEvent>[];
@@ -709,6 +729,7 @@ export class ExtensionRegistry {
 	readonly flags = new Map<string, RegisteredFlag>();
 	private readonly flagValues = new Map<string, boolean | string>();
 	private hostActions: ExtensionHostActions | undefined;
+	private errorSink: ExtensionErrorSink | undefined;
 	private readonly handlers: HandlerLists = {
 		agent_start: [],
 		agent_end: [],
@@ -735,6 +756,7 @@ export class ExtensionRegistry {
 		session_info_changed: [],
 		session_before_compact: [],
 		session_compact: [],
+		session_compact_failed: [],
 		session_before_fork: [],
 		session_before_tree: [],
 		session_tree: [],
@@ -757,6 +779,7 @@ export class ExtensionRegistry {
 		const api: ExtensionAPI = {
 			on: on as ExtensionAPI["on"],
 			registerTool: (tool, options) => {
+				assertToolSchema(tool);
 				this.tools.set(tool.name, options?.risk !== undefined ? { ...tool, risk: options.risk } : tool);
 			},
 			registerCommand: (name, options) => {
@@ -821,6 +844,37 @@ export class ExtensionRegistry {
 			throw new TauError("no_host", `${String(action)}() requires a host that provides this action`);
 		}
 		return found;
+	}
+
+	/** Host-side: isolate notification handlers — their errors go to `sink` instead of the caller (HF-12). */
+	setErrorSink(sink: ExtensionErrorSink | undefined): void {
+		this.errorSink = sink;
+	}
+
+	/** Run notification handlers in order; with an error sink, one failing handler does not stop the rest. */
+	private async dispatch<E extends { type: string }>(
+		handlers: readonly ExtensionHandler<E>[],
+		event: E,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		for (const handler of handlers) {
+			if (!this.errorSink) {
+				await handler(event, ctx);
+				continue;
+			}
+			try {
+				await handler(event, ctx);
+			} catch (error) {
+				this.errorSink({ event: event.type, error: toError(error) });
+			}
+		}
+	}
+
+	async notifySessionCompactFailed(
+		event: Omit<SessionCompactFailedEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		await this.dispatch(this.handlers.session_compact_failed, { type: "session_compact_failed", ...event }, ctx);
 	}
 
 	/** Host-side: supply parsed CLI flag values. Unknown names are ignored (host validates). */
@@ -991,13 +1045,11 @@ export class ExtensionRegistry {
 	}
 
 	async notifyMessageStart(message: AgentMessage, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.message_start) await handler({ type: "message_start", message }, ctx);
+		await this.dispatch(this.handlers.message_start, { type: "message_start", message }, ctx);
 	}
 
 	async notifyMessageUpdate(message: AssistantMessage, event: ChatStreamEvent, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.message_update) {
-			await handler({ type: "message_update", message, event }, ctx);
-		}
+		await this.dispatch(this.handlers.message_update, { type: "message_update", message, event }, ctx);
 	}
 
 	/** Run message_end handlers. Replacements chain; a replacement changing the role is ignored. */
@@ -1011,21 +1063,15 @@ export class ExtensionRegistry {
 	}
 
 	async notifyToolExecutionStart(event: Omit<ToolExecutionStartEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.tool_execution_start) {
-			await handler({ type: "tool_execution_start", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.tool_execution_start, { type: "tool_execution_start", ...event }, ctx);
 	}
 
 	async notifyToolExecutionUpdate(event: Omit<ToolExecutionUpdateEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.tool_execution_update) {
-			await handler({ type: "tool_execution_update", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.tool_execution_update, { type: "tool_execution_update", ...event }, ctx);
 	}
 
 	async notifyToolExecutionEnd(event: Omit<ToolExecutionEndEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.tool_execution_end) {
-			await handler({ type: "tool_execution_end", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.tool_execution_end, { type: "tool_execution_end", ...event }, ctx);
 	}
 
 	/** Run project_trust handlers. The first decisive answer (yes/no) wins. */
@@ -1054,17 +1100,15 @@ export class ExtensionRegistry {
 	}
 
 	async notifySessionStart(reason: SessionStartEvent["reason"], ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.session_start) await handler({ type: "session_start", reason }, ctx);
+		await this.dispatch(this.handlers.session_start, { type: "session_start", reason }, ctx);
 	}
 
 	async notifySessionShutdown(reason: SessionShutdownEvent["reason"], ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.session_shutdown) await handler({ type: "session_shutdown", reason }, ctx);
+		await this.dispatch(this.handlers.session_shutdown, { type: "session_shutdown", reason }, ctx);
 	}
 
 	async notifySessionInfoChanged(name: string | undefined, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.session_info_changed) {
-			await handler({ type: "session_info_changed", name }, ctx);
-		}
+		await this.dispatch(this.handlers.session_info_changed, { type: "session_info_changed", name }, ctx);
 	}
 
 	/** Run session_before_compact handlers: cancel or takeover short-circuits. */
@@ -1080,9 +1124,7 @@ export class ExtensionRegistry {
 	}
 
 	async notifySessionCompact(event: Omit<SessionCompactEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.session_compact) {
-			await handler({ type: "session_compact", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.session_compact, { type: "session_compact", ...event }, ctx);
 	}
 
 	/** Run session_before_fork handlers: a cancel short-circuits. */
@@ -1114,9 +1156,7 @@ export class ExtensionRegistry {
 	}
 
 	async notifySessionTree(event: Omit<SessionTreeEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.session_tree) {
-			await handler({ type: "session_tree", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.session_tree, { type: "session_tree", ...event }, ctx);
 	}
 
 	/** Run session_before_switch handlers; the first cancel wins (pi semantics). */
@@ -1132,28 +1172,24 @@ export class ExtensionRegistry {
 	}
 
 	async notifyAutoRetryStart(event: Omit<AutoRetryStartEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.auto_retry_start) {
-			await handler({ type: "auto_retry_start", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.auto_retry_start, { type: "auto_retry_start", ...event }, ctx);
 	}
 
 	async notifyAutoRetryEnd(event: Omit<AutoRetryEndEvent, "type">, ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.auto_retry_end) {
-			await handler({ type: "auto_retry_end", ...event }, ctx);
-		}
+		await this.dispatch(this.handlers.auto_retry_end, { type: "auto_retry_end", ...event }, ctx);
 	}
 
 	async notifyAgentStart(ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.agent_start) await handler({ type: "agent_start" }, ctx);
+		await this.dispatch(this.handlers.agent_start, { type: "agent_start" }, ctx);
 	}
 
 	async notifyAgentEnd(messages: readonly AgentMessage[], ctx: ExtensionContext): Promise<void> {
-		for (const handler of this.handlers.agent_end) await handler({ type: "agent_end", messages }, ctx);
+		await this.dispatch(this.handlers.agent_end, { type: "agent_end", messages }, ctx);
 	}
 
 	async notifyTurnStart(turnIndex: number, ctx: ExtensionContext): Promise<void> {
 		const event: TurnStartEvent = { type: "turn_start", turnIndex, timestamp: Date.now() };
-		for (const handler of this.handlers.turn_start) await handler(event, ctx);
+		await this.dispatch(this.handlers.turn_start, event, ctx);
 	}
 
 	async notifyTurnEnd(
@@ -1163,6 +1199,6 @@ export class ExtensionRegistry {
 		ctx: ExtensionContext,
 	): Promise<void> {
 		const event: TurnEndEvent = { type: "turn_end", turnIndex, message, toolResults };
-		for (const handler of this.handlers.turn_end) await handler(event, ctx);
+		await this.dispatch(this.handlers.turn_end, event, ctx);
 	}
 }

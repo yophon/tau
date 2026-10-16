@@ -45,6 +45,7 @@ import {
 	SessionRecorder,
 	type SessionStore,
 	sessionDirSlug,
+	TauError,
 	type ThinkingLevel,
 	type ToolExecutionMode,
 	thinkingText,
@@ -498,6 +499,11 @@ async function isProjectTrusted(
 
 async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<ExtensionRegistry> {
 	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")));
+	// A failing notification handler (an unreachable MCP server in session_start, a
+	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
+	registry.setErrorSink(({ event, error }) => {
+		process.stderr.write(`[extension error in ${event}] ${error.message}\n`);
+	});
 	const extensionsDir = join(cwd, ".tau", "extensions");
 	// List first, decide trust, and only then import: importing runs the modules' top-level
 	// code, so an untrusted directory must never get that far (cd into a repo ≠ run its code).
@@ -511,11 +517,14 @@ async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined):
 	return registry;
 }
 
-function defaultSystemPrompt(cwd: string): string {
+function defaultSystemPrompt(cwd: string, toolNames: readonly string[]): string {
+	// Name the tools actually loaded: read-only mode has no write/edit, and a prompt
+	// promising them invites calls that can only fail (HF-16).
+	const tools = toolNames.length > 0 ? ` (${toolNames.join(", ")})` : "";
 	return [
 		"You are tau, a coding agent running in a terminal.",
 		`Working directory: ${cwd}`,
-		"Use the available tools (read, write, edit, bash) to inspect and modify the project.",
+		`Use the available tools${tools} to inspect${toolNames.includes("write") || toolNames.includes("edit") ? " and modify" : ""} the project.`,
 		"Be direct and concise. Answer questions before making changes.",
 	].join("\n");
 }
@@ -629,6 +638,11 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 					break;
 				case "compaction":
 					process.stdout.write(dim(`[compacted: ~${event.result.tokensBefore} tokens summarized]\n`));
+					break;
+				case "compaction_failed":
+					process.stdout.write(
+						dim(`[${event.reason} compaction failed, continuing: ${firstLine(event.errorMessage)}]\n`),
+					);
 					break;
 				case "auto_retry_start":
 					process.stdout.write(
@@ -903,13 +917,19 @@ async function main(): Promise<void> {
 		messages: typeof initialMessages,
 		session: SessionRecorder | undefined,
 		agentExtensions = extensions,
-	): Agent =>
-		new Agent({
+	): Agent => {
+		const codingTools = createCodingTools({ fs, shell }, { mode: permissionMode });
+		return new Agent({
 			config,
 			transport,
 			platform,
-			systemPrompt: options.system ?? defaultSystemPrompt(cwd),
-			tools: createCodingTools({ fs, shell }, { mode: permissionMode }),
+			systemPrompt:
+				options.system ??
+				defaultSystemPrompt(
+					cwd,
+					codingTools.map((tool) => tool.name),
+				),
+			tools: codingTools,
 			extensions: agentExtensions,
 			ui,
 			capabilities: {
@@ -930,6 +950,7 @@ async function main(): Promise<void> {
 			toolExecution,
 			onApproval,
 		});
+	};
 	let agent = buildAgent(initialMessages, recorder);
 	await extensions.notifySessionStart(sessionReason, agent.extensionContext());
 
@@ -983,7 +1004,9 @@ async function main(): Promise<void> {
 	// stay correct across /fork agent swaps.
 	extensions.attachHostActions({
 		submitPrompt: (content) => {
-			if (turnState.controller) return; // already running: extensions steer instead
+			// Already running: refuse loudly so the caller can queue or retry (HF-11);
+			// a silent return lost the message.
+			if (turnState.controller) throw new TauError("busy", "a turn is already running");
 			void runTurn(agent, content, readline);
 		},
 		resumeTurn: () => {

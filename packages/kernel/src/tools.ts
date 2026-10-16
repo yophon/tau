@@ -1,3 +1,4 @@
+import { TauError } from "./errors.ts";
 import type { ExtensionContext } from "./extensions.ts";
 import type { JsonSchema, ToolDefinition } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
@@ -122,6 +123,24 @@ function validateValue(schema: JsonSchema, value: unknown, path: string, problem
 				validateValue(propertySchema as JsonSchema, record[key], path === "" ? key : `${label}.${key}`, problems);
 			}
 		}
+	}
+}
+
+/** True when the tool carries an object JSON Schema the wire and validator can use. */
+export function hasToolSchema(tool: Pick<Tool, "parameters">): boolean {
+	const schema: unknown = tool.parameters;
+	return typeof schema === "object" && schema !== null && !Array.isArray(schema);
+}
+
+/**
+ * Reject a tool without an object `parameters` schema (pi 0.86.0 rejects
+ * schemaless extension tools at registration). Without one, a model call to the
+ * tool threw a TypeError out of prompt() and left an unpaired tool_call in the
+ * session, so every later request was refused by the endpoint (HF-8).
+ */
+export function assertToolSchema(tool: Pick<Tool, "name" | "parameters">): void {
+	if (!hasToolSchema(tool)) {
+		throw new TauError("invalid_tool", `Tool "${tool.name}" must declare a JSON Schema object in \`parameters\``);
 	}
 }
 

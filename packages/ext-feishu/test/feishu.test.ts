@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { type ExtensionContext, ExtensionRegistry } from "@yophon/tau-kernel";
 import { FeishuClient } from "../src/feishu-client.ts";
 import { chunkText, loadFeishuConfig, parseContentWithResources } from "../src/helpers.ts";
-import defaultFeishuExtension, { createFeishuExtension } from "../src/index.ts";
+import defaultFeishuExtension, { createFeishuExtension, loadImageContent, sniffImageMimeType } from "../src/index.ts";
 import type {
 	BridgeStatus,
 	FeishuClientLike,
@@ -582,4 +582,29 @@ test("/stop cancels a message before media download completes", async () => {
 
 test("/new cancels a message before media download completes", async () => {
 	await assertPreSubmitCancellation("/new", /会话已重置/);
+});
+
+test("inline images: signature-only MIME, no BMP or fallback, 5 MiB base64 cap (HF-15)", async () => {
+	const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0]);
+	assert.equal(sniffImageMimeType(png), "image/png");
+	assert.equal(sniffImageMimeType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg");
+	assert.equal(sniffImageMimeType(Buffer.from("GIF89a....")), "image/gif");
+	assert.equal(sniffImageMimeType(Buffer.from("RIFF0000WEBPVP8 ")), "image/webp");
+	assert.equal(sniffImageMimeType(Buffer.from("BM000000")), undefined);
+	assert.equal(sniffImageMimeType(Buffer.from("not an image")), undefined);
+
+	const dir = await mkdtemp(join(tmpdir(), "tau-feishu-img-"));
+	try {
+		await writeFile(join(dir, "ok.png"), png);
+		await writeFile(join(dir, "fake.png"), "plain text named .png");
+		await writeFile(join(dir, "big.png"), Buffer.concat([png, Buffer.alloc(4 * 1024 * 1024)]));
+		const ok = await loadImageContent(join(dir, "ok.png"));
+		assert.ok("image" in ok && ok.image.mimeType === "image/png");
+		const fake = await loadImageContent(join(dir, "fake.png"));
+		assert.ok("skipped" in fake && /格式不支持/.test(fake.skipped));
+		const big = await loadImageContent(join(dir, "big.png"));
+		assert.ok("skipped" in big && /5 MiB/.test(big.skipped));
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });

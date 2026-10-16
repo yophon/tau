@@ -62,6 +62,10 @@ function toolOutput(result: McpCallResult): string {
 			parts.push(`[resource ${block.resource.uri ?? ""}]\n${block.resource.text}`);
 		} else if (block.type === "resource_link") {
 			parts.push(`[resource link ${block.uri ?? ""}${block.name ? ` ${block.name}` : ""}]`);
+		} else if (block.type === "image" || block.type === "audio" || block.resource?.blob !== undefined) {
+			// Tool results are text-only: dumping base64 into the transcript bloats every
+			// later request, so binary content becomes a short placeholder (HF-15).
+			parts.push(binaryPlaceholder(block));
 		} else {
 			parts.push(JSON.stringify(block));
 		}
@@ -70,8 +74,15 @@ function toolOutput(result: McpCallResult): string {
 	return parts.join("\n").trim() || "(empty MCP tool result)";
 }
 
-async function connectServer(config: McpServerConfig): Promise<ConnectedServer> {
-	const client = new Client({ name: "tau-ext-mcp", version: "0.0.1" });
+function binaryPlaceholder(block: McpToolContent): string {
+	const data = block.data ?? block.resource?.blob ?? "";
+	const mimeType = block.mimeType ?? block.resource?.mimeType ?? "application/octet-stream";
+	const kib = Math.max(1, Math.round((data.length * 3) / 4 / 1024));
+	const uri = block.resource?.uri ? ` ${block.resource.uri}` : "";
+	return `[${block.type === "resource" ? "binary resource" : block.type}${uri} ${mimeType}, ~${kib} KiB omitted]`;
+}
+
+async function connectServer(config: McpServerConfig, client: McpClient): Promise<ConnectedServer> {
 	if (config.command) {
 		await client.connect(
 			new StdioClientTransport({
@@ -95,20 +106,42 @@ async function connectServer(config: McpServerConfig): Promise<ConnectedServer> 
 export function createMcpExtension(options: McpExtensionOptions): Extension {
 	return (api) => {
 		const servers = new Map<string, ConnectedServer>();
+		// Every client created this generation, connected or still connecting, so
+		// shutdown can close (and thereby abort) in-flight connections too (HF-12).
+		const clients = new Set<McpClient>();
+		let generation = 0;
 		let initialized: Promise<void> | undefined;
+
+		const connectOne = async (config: McpServerConfig, startedIn: number): Promise<void> => {
+			const client = new Client({ name: "tau-ext-mcp", version: "0.0.1" });
+			clients.add(client);
+			const connected = await connectServer(config, client);
+			const listed = await connected.client.listTools();
+			if (startedIn !== generation) return; // shut down while connecting
+			servers.set(config.name, connected);
+			for (const tool of listed.tools) {
+				const name = tauToolName(config, tool.name);
+				connected.toolsByTauName.set(name, tool.name);
+				api.registerTool(createTauTool(connected, name, tool.name, tool.description, tool.inputSchema));
+			}
+		};
 
 		const initialize = async (): Promise<void> => {
 			if (initialized) return initialized;
+			const startedIn = generation;
 			initialized = (async () => {
-				for (const config of options.servers) {
-					const connected = await connectServer(config);
-					servers.set(config.name, connected);
-					const listed = await connected.client.listTools();
-					for (const tool of listed.tools) {
-						const name = tauToolName(config, tool.name);
-						connected.toolsByTauName.set(name, tool.name);
-						api.registerTool(createTauTool(connected, name, tool.name, tool.description, tool.inputSchema));
-					}
+				// One unreachable server must not cost the others their tools: connect in
+				// parallel, keep the successes, then report the failures together (HF-12).
+				const outcomes = await Promise.allSettled(options.servers.map((config) => connectOne(config, startedIn)));
+				const failures = outcomes.flatMap((outcome, i) =>
+					outcome.status === "rejected"
+						? [
+								`${options.servers[i].name}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
+							]
+						: [],
+				);
+				if (failures.length > 0 && startedIn === generation) {
+					throw new Error(`MCP server(s) unavailable — ${failures.join("; ")}`);
 				}
 			})();
 			return initialized;
@@ -119,11 +152,12 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		});
 
 		api.on("session_shutdown", async () => {
-			for (const server of servers.values()) {
-				await server.client.close();
-			}
+			generation++;
+			const closing = [...clients];
+			clients.clear();
 			servers.clear();
 			initialized = undefined;
+			await Promise.allSettled(closing.map((client) => client.close()));
 		});
 	};
 }

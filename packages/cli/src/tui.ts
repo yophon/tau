@@ -46,6 +46,7 @@ import {
 	type SessionStore,
 	type Shell,
 	type ShellExecResult,
+	TauError,
 	type ThinkingLevel,
 	type UiCapability,
 	type UserContent,
@@ -596,9 +597,14 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	// sendUserMessage / sendMessage({triggerTurn}) while idle route here. Attached
 	// to every active registry (initial and after each /reload).
 	function attachTuiHostActions(registry: ExtensionRegistry): void {
+		// Extension errors would garble the screen on stderr: show them in the transcript.
+		registry.setErrorSink(({ event, error }) => {
+			appendText(dim(`[extension error in ${event}] ${error.message}`));
+		});
 		registry.attachHostActions({
 			submitPrompt: (content) => {
-				if (runningTask === undefined) void runPrompt(content);
+				if (runningTask !== undefined) throw new TauError("busy", `a ${runningTask} task is running`);
+				void runPrompt(content);
 			},
 			resumeTurn: () => {
 				if (runningTask === undefined) void runPrompt(null);
@@ -2250,6 +2256,11 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 		}
 		case "compaction":
 			state.getAssistant().setText(dim(`[${formatCompactionResult(event.result)}]`));
+			break;
+		case "compaction_failed":
+			state.addComponent(
+				new Text(dim(`[${event.reason} compaction failed, continuing: ${event.errorMessage.split("\n")[0]}]`), 1, 0),
+			);
 			break;
 		case "auto_retry_start":
 			state.addComponent(

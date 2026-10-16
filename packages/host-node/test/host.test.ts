@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { createCodingTools, FileError } from "@yophon/tau-kernel";
 import { listExtensionFiles, loadExtensionsFromDir } from "../src/extension-loader.ts";
-import { NodeFileSystem } from "../src/fs.ts";
+import { NodeFileSystem, normalizeWindowsShellPath } from "../src/fs.ts";
 import { isWindowsStyleCommand, NodeShell } from "../src/shell.ts";
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
@@ -138,4 +138,18 @@ test("Windows routing heuristic sends only unambiguous cmd syntax to cmd.exe", (
 	]) {
 		assert.equal(isWindowsStyleCommand(command), false, command);
 	}
+});
+
+test("MSYS / Cygwin / WSL drive paths map to Windows drives on win32 only (HF-14)", () => {
+	assert.equal(normalizeWindowsShellPath("/c/Users/x/a.ts", "win32"), "C:\\Users\\x\\a.ts");
+	assert.equal(normalizeWindowsShellPath("/cygdrive/d/work", "win32"), "D:\\work");
+	assert.equal(normalizeWindowsShellPath("/mnt/c/tmp/f.txt", "win32"), "C:\\tmp\\f.txt");
+	assert.equal(normalizeWindowsShellPath("/c", "win32"), "C:\\");
+	// Not drive prefixes, or already native: unchanged.
+	assert.equal(normalizeWindowsShellPath("/tmp/x", "win32"), "/tmp/x");
+	assert.equal(normalizeWindowsShellPath("C:\\a\\b", "win32"), "C:\\a\\b");
+	assert.equal(normalizeWindowsShellPath("//server/share", "win32"), "//server/share");
+	assert.equal(normalizeWindowsShellPath("src/a.ts", "win32"), "src/a.ts");
+	// POSIX hosts never rewrite.
+	assert.equal(normalizeWindowsShellPath("/c/Users/x", "linux"), "/c/Users/x");
 });

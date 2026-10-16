@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { createCodingTools as createCodingToolsForEdit, mutationQueueKey } from "../src/coding-tools.ts";
 import { validateToolArgs } from "../src/tools.ts";
 
 const bashSchema = {
@@ -67,4 +68,36 @@ test("validateToolArgs: enum, items, nested objects, and type arrays", () => {
 test("validateToolArgs: schemas without recognized keywords accept anything", () => {
 	assert.deepEqual(validateToolArgs({}, { anything: [1, 2, 3] }), []);
 	assert.deepEqual(validateToolArgs({ description: "opaque" }, {}), []);
+});
+
+test("edit writes newText literally: $ replacement patterns are not interpreted (HF-13)", async () => {
+	const files = new Map<string, string>([["a.sh", "echo OLD\n"]]);
+	const fsCap = {
+		cwd: "/w",
+		readTextFile: async (path: string) => {
+			const value = files.get(path);
+			if (value === undefined) throw new Error("missing");
+			return value;
+		},
+		writeTextFile: async (path: string, content: string) => {
+			files.set(path, content);
+		},
+		listDir: async () => [],
+		stat: async () => undefined,
+	};
+	const tools = createCodingToolsForEdit({ fs: fsCap as never });
+	const edit = tools.find((tool) => tool.name === "edit");
+	assert.ok(edit);
+	const newText = "echo $$ && echo $& $` $' $HOME";
+	const result = await edit.execute({ path: "a.sh", oldText: "echo OLD", newText }, undefined, () => {}, {} as never);
+	assert.equal(result.isError, undefined, result.output);
+	assert.equal(files.get("a.sh"), `${newText}\n`);
+});
+
+test("mutation queue key folds Windows spellings of one file (HF-14)", () => {
+	assert.equal(mutationQueueKey("C:\\work\\a.ts"), mutationQueueKey("c:/work/a.ts"));
+	assert.equal(mutationQueueKey("C:/work/./src/../a.ts"), "c:/work/a.ts");
+	assert.equal(mutationQueueKey("src\\a.ts"), mutationQueueKey("src/a.ts"));
+	assert.notEqual(mutationQueueKey("C:/a.ts"), mutationQueueKey("D:/a.ts"));
+	assert.equal(mutationQueueKey("/usr/./lib/x"), "/usr/lib/x");
 });

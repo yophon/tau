@@ -48,6 +48,8 @@ import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type To
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
 import { messagesFromPath, type SessionEntry, type SessionRecorder } from "./session.ts";
 import {
+	assertToolSchema,
+	hasToolSchema,
 	type Tool,
 	type ToolExecutionMode,
 	type ToolResult,
@@ -153,6 +155,7 @@ export type AgentEvent =
 	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string; stream?: ToolUpdateStream }
 	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
 	| { type: "compaction"; result: CompactionResult }
+	| { type: "compaction_failed"; reason: "manual" | "threshold"; errorMessage: string }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
 	| { type: "agent_end"; messages: AgentMessage[] };
@@ -167,6 +170,18 @@ type PreparedToolCall = { kind: "prepared"; toolCall: ToolCall; tool: Tool; args
 type ToolCallPreparation = PreparedToolCall | { kind: "immediate"; toolCall: ToolCall; result: ToolResult };
 
 const DEFAULT_MAX_TURNS = 50;
+
+/** Text of the latest user/custom message — the "prompt" a resumed run answers. */
+function lastPromptText(messages: readonly AgentMessage[]): string {
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const message = messages[i];
+		if (message.role === "user") return userContentText(message.content);
+		if (message.role === "custom") {
+			return typeof message.content === "string" ? message.content : userContentText(message.content);
+		}
+	}
+	return "";
+}
 
 /**
  * Minimal agent loop: send conversation, stream the reply, execute requested
@@ -231,6 +246,7 @@ export class Agent {
 		this.transport = options.transport ?? createOpenAICompatTransport(this.platform, this.config);
 		this.systemPrompt = options.systemPrompt;
 		this.baseTools = [...(options.tools ?? [])];
+		for (const tool of this.baseTools) assertToolSchema(tool);
 		this.extensions = options.extensions;
 		this.ui = options.ui;
 		this.capabilities = { ...options.capabilities, platform: this.platform };
@@ -282,6 +298,12 @@ export class Agent {
 					if (sendOptions?.deliverAs === "followUp") this.followUpQueue.enqueue(message);
 					else this.steeringQueue.enqueue(message);
 					return;
+				}
+				// Between prompt() starting and the loop running (input, before_agent_start)
+				// the agent is neither idle nor streaming: a host submitPrompt would be
+				// refused and the message silently lost, so say so (HF-11).
+				if (this.running) {
+					throw new TauError("busy", "sendUserMessage() before the agent loop started; use sendMessage({ deliverAs })");
 				}
 				const submit = this.extensions?.hostAction("submitPrompt");
 				if (!submit) {
@@ -504,8 +526,9 @@ export class Agent {
 		this.activeAbort = handle;
 		try {
 			const ctx = this.extensionContext();
+			const systemPrompt = await this.applyBeforeAgentStart(lastPromptText(this.messages), ctx);
 			await this.extensions?.notifyAgentStart(ctx);
-			yield* this.runLoop(ctx, this.systemPrompt ?? "", handle.signal);
+			yield* this.runLoop(ctx, systemPrompt, handle.signal);
 		} finally {
 			this.running = false;
 			this.activeAbort = undefined;
@@ -598,28 +621,36 @@ export class Agent {
 			}
 		}
 
-		let systemPrompt = this.systemPrompt ?? "";
-		if (this.extensions) {
-			const beforeStart = await this.extensions.runBeforeAgentStart(userContentText(finalInput), systemPrompt, ctx);
-			systemPrompt = beforeStart.systemPrompt;
-			for (const injected of beforeStart.messages) {
-				await this.commitMessage(
-					{
-						role: "custom",
-						customType: injected.customType,
-						content: injected.content,
-						display: injected.display ?? true,
-						details: injected.details,
-						timestamp: Date.now(),
-					},
-					ctx,
-				);
-			}
-		}
+		const systemPrompt = await this.applyBeforeAgentStart(userContentText(finalInput), ctx);
 
 		await this.commitMessage({ role: "user", content: finalInput, timestamp: Date.now() }, ctx);
 		await this.extensions?.notifyAgentStart(ctx);
 		yield* this.runLoop(ctx, systemPrompt, signal);
+	}
+
+	/**
+	 * before_agent_start for a run: extensions rewrite the system prompt and may
+	 * inject custom messages. Shared by prompt() and resume() — resume() used the
+	 * base prompt, dropping e.g. injected skills and the provider's prompt cache (HF-10).
+	 */
+	private async applyBeforeAgentStart(promptText: string, ctx: ExtensionContext): Promise<string> {
+		const base = this.systemPrompt ?? "";
+		if (!this.extensions) return base;
+		const beforeStart = await this.extensions.runBeforeAgentStart(promptText, base, ctx);
+		for (const injected of beforeStart.messages) {
+			await this.commitMessage(
+				{
+					role: "custom",
+					customType: injected.customType,
+					content: injected.content,
+					display: injected.display ?? true,
+					details: injected.details,
+					timestamp: Date.now(),
+				},
+				ctx,
+			);
+		}
+		return beforeStart.systemPrompt;
 	}
 
 	/** The turn loop shared by prompt() and resume(). */
@@ -660,17 +691,36 @@ export class Agent {
 			await this.extensions?.notifyTurnStart(turnIndex, ctx);
 
 			// Compaction runs between turns (as in pi): requested first, then threshold.
+			// A failure here is reported, not thrown (D14, pi 0.84.3): the turn goes on
+			// uncompacted, so turn_end/agent_end still fire and channels un-busy (HF-9).
+			let compactionReason: "manual" | "threshold" | undefined;
+			let customInstructions: string | undefined;
 			if (this.pendingCompaction !== null) {
-				const customInstructions = this.pendingCompaction;
+				compactionReason = "manual";
+				customInstructions = this.pendingCompaction === "" ? undefined : this.pendingCompaction;
 				this.pendingCompaction = null;
-				const result = await this.compact(customInstructions === "" ? undefined : customInstructions, "manual", signal);
-				if (result) yield { type: "compaction", result };
 			} else if (
 				this.config.contextWindow !== undefined &&
 				shouldCompact(estimateContextTokens(this.messages).tokens, this.config.contextWindow, this.compactionSettings)
 			) {
-				const result = await this.compact(undefined, "threshold", signal);
+				compactionReason = "threshold";
+			}
+			if (compactionReason !== undefined) {
+				let result: CompactionResult | undefined;
+				let failure: Error | undefined;
+				try {
+					result = await this.compact(customInstructions, compactionReason, signal);
+				} catch (error) {
+					failure = toError(error);
+				}
 				if (result) yield { type: "compaction", result };
+				if (failure) {
+					await this.extensions?.notifySessionCompactFailed(
+						{ reason: compactionReason, errorMessage: failure.message },
+						ctx,
+					);
+					yield { type: "compaction_failed", reason: compactionReason, errorMessage: failure.message };
+				}
 			}
 
 			let request: AgentMessage[] = [...this.messages];
@@ -1052,6 +1102,15 @@ export class Agent {
 
 		// Argument validation before the policy (P15): malformed calls fail fast
 		// so the model can self-correct, and policy rules never fire on junk.
+		// Preflight guard for schemaless tools that slipped past registration (a host
+		// mutating extensions.tools directly): an error result keeps call/result paired.
+		if (!hasToolSchema(tool)) {
+			return {
+				kind: "immediate",
+				toolCall,
+				result: { output: `Tool ${toolCall.name} has no parameters schema and cannot be called`, isError: true },
+			};
+		}
 		const problems = validateToolArgs(tool.parameters, args);
 		if (problems.length > 0) {
 			return {

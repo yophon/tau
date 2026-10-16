@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Agent } from "../src/agent.ts";
+import { parseJsonWithRepair, repairJson } from "../src/json.ts";
 import type { AgentMessage, AssistantMessage } from "../src/messages.ts";
 import { streamChatCompletion } from "../src/openai.ts";
 import type { Tool } from "../src/tools.ts";
@@ -190,4 +191,33 @@ test("usage.input excludes cached prompt tokens", async () => {
 	assert.equal(final?.usage.input, 200);
 	assert.equal(final?.usage.cacheRead, 800);
 	assert.equal(final?.usage.totalTokens, 1010);
+});
+
+test("tool arguments with raw control characters or invalid escapes are repaired, not dropped (HF-7)", async () => {
+	// A regex with \d and a literal newline inside a string: invalid JSON as emitted by models.
+	const broken = '{"pattern":"\\d+\\.ts","note":"line1\nline2"}';
+	assert.throws(() => JSON.parse(broken));
+	assert.deepEqual(parseJsonWithRepair(broken), { pattern: "\\d+\\.ts", note: "line1\nline2" });
+	assert.equal(repairJson('{"ok":"\\n"}'), '{"ok":"\\n"}');
+
+	let toolCall: { arguments: Record<string, unknown> } | undefined;
+	for await (const event of streamChatCompletion(
+		fakePlatform([
+			makeSseResponse([
+				{
+					choices: [
+						{
+							delta: { tool_calls: [{ index: 0, id: "call_r", function: { name: "grep", arguments: broken } }] },
+							finish_reason: "tool_calls",
+						},
+					],
+				},
+			]),
+		]),
+		{ baseUrl: "https://fake.test/v1", model: "fake" },
+		[{ role: "user", content: "hi", timestamp: 1 }],
+	)) {
+		if (event.type === "tool_call") toolCall = event.toolCall;
+	}
+	assert.deepEqual(toolCall?.arguments, { pattern: "\\d+\\.ts", note: "line1\nline2" });
 });

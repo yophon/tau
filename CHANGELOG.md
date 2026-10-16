@@ -27,6 +27,17 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   (`appId`, `appSecret`, `encryptKey`, `verificationToken`) — only `domain` and
   `botOpenId`. A cloned repository could otherwise rebind your bot to another
   app. Deviation from pi-feishu.
+- Kernel (P21-HF-8): tools without an object `parameters` JSON Schema are
+  rejected — `registerTool()` and the `Agent` constructor throw
+  `TauError("invalid_tool")` (pi 0.86.0).
+- Kernel (P21-HF-11): extension `sendUserMessage()` during `input` /
+  `before_agent_start` throws `busy`; the CLI and TUI `submitPrompt` host
+  actions throw `busy` while a run is active. Both used to drop the message
+  silently. Use `sendMessage({ deliverAs })` from those hooks.
+- Kernel (P21-HF-16): `JsonlSessionRepo.create()` no longer writes the file;
+  the header and earlier entries are written with the first message entry (pi
+  0.99.0). `list()` sorts by the new `SessionMetadata.modified` (last
+  activity) instead of creation time.
 - examples/flutter/mcp-server (not an npm package): `--host` now defaults to
   `127.0.0.1` (P19). LAN access needs an explicit `--host 0.0.0.0`; the new
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
@@ -37,6 +48,13 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `anthropicThinkingForLevel(level, mode)` mapping the shared thinking levels
   onto the wire. CLI: `TAU_ANTHROPIC_THINKING=budget` keeps budget tokens for
   pre-4.6 models; `TAU_MAX_TOKENS` sets the Anthropic output cap.
+- Kernel (P21-HF-9): `session_compact_failed` extension event and
+  `compaction_failed` agent event.
+- Kernel (P21-HF-12): `ExtensionRegistry.setErrorSink()` — once set,
+  notification handlers (agent/turn/message/tool/session events) that throw are
+  reported to the sink and the remaining handlers still run. The CLI prints them
+  to stderr, the TUI into the transcript.
+- Kernel (P21-HF-7): `repairJson()` / `parseJsonWithRepair()` (pi v0.80.3).
 - Kernel (P21-HF-6): `transformMessages()` (pi's cross-model replay rules) and
   `AssistantMessage.responseId` / `responseModel`; `OpenAICompatConfig.replayEmptyReasoning`.
 - `@yophon/tau-ext-feishu` (P20): Feishu/Lark WebSocket + REST channel extension
@@ -85,6 +103,38 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   result. DeepSeek endpoints (host deepseek.com) get `reasoning_content: ""` on
   replayed assistant turns without reasoning, as pi does. Messages are stamped
   with the request start time.
+- Kernel (P21-HF-7): tool-call arguments with raw control characters or invalid
+  escapes (`d` in a regex) are repaired before parsing instead of failing the
+  call; the Anthropic provider uses the same parser.
+- Kernel (P21-HF-8): a model call to a schemaless tool threw a TypeError out of
+  `prompt()` and left an unpaired tool call that broke every later request; a
+  tool that bypasses registration now gets an error result.
+- Kernel (P21-HF-9): a failing automatic or queued compaction no longer throws
+  out of `prompt()` — `turn_end` and `agent_end` were skipped, which left
+  ext-feishu's channel busy until restart. The turn continues uncompacted.
+  `Agent.compact()` called directly still throws.
+- Kernel (P21-HF-10): `resume()` (the run behind `sendMessage({ triggerTurn })`)
+  applies `before_agent_start`; it used the base system prompt, dropping
+  extension-injected skills and the provider's prompt cache.
+- Kernel (P21-HF-13): `edit` writes `newText` literally — `$$`, `$&`, `` $` `` and
+  `$'` were interpreted as replacement patterns and corrupted the file.
+- Kernel/host-node (P21-HF-14): Windows spellings of one file (`C:a.ts`,
+  `c:/a.ts`) share one mutation queue; on Windows `/c/...`, `/cygdrive/c/...`
+  and `/mnt/c/...` paths map to `C:...` instead of a phantom tree on the
+  current drive.
+- ext-mcp (P21-HF-12/15): servers connect in parallel and one unreachable
+  server no longer blocks startup or the other servers' tools; shutdown closes
+  in-flight connections. Image, audio and binary resource content becomes a
+  short placeholder instead of base64 dumped into the transcript.
+- ext-feishu (P21-HF-15): inbound images are inlined only when their signature
+  is PNG, JPEG, GIF or WebP and the base64 is at most 5 MiB. BMP and unknown
+  files used to be sent as `image/png` (and up to 20 MiB), and one bad image
+  block failed every later request of the session. Skipped images stay a file
+  path with the reason.
+- CLI (P21-HF-16): `--continue` resumes the most recently active session and
+  a start-up without a prompt no longer leaves an empty session behind (the two
+  combined resumed an empty session). The default system prompt names the
+  tools actually loaded (read-only mode: `read` only).
 - host-node: the Windows cmd.exe routing heuristic only matches unambiguous
   cmd syntax. `set -e`, `type`, `tree`, `whoami`, `ps aux` (the word `aux`),
   `date +%Y-%m` and printf format strings used to be sent to cmd.exe instead of

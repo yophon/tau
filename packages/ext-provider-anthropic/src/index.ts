@@ -26,6 +26,7 @@ import {
 	type ImageContent,
 	type Platform,
 	type PlatformResponse,
+	parseJsonWithRepair,
 	SseParser,
 	type StopReason,
 	type TauAbortSignal,
@@ -680,7 +681,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 						// Arguments parse once, when the block completes (accumulate-then-parse).
 						if (block.partialJson && block.partialJson !== "") {
 							try {
-								const parsed: unknown = JSON.parse(block.partialJson);
+								const parsed: unknown = parseJsonWithRepair(block.partialJson);
 								if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
 									block.arguments = parsed as Record<string, unknown>;
 								}

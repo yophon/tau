@@ -133,6 +133,7 @@ export {
 	type UserBashEventResult,
 	type WidgetPlacement,
 } from "./extensions.ts";
+export { parseJsonWithRepair, repairJson } from "./json.ts";
 export type { UserContent } from "./messages.ts";
 export {
 	type AgentMessage,
@@ -222,7 +223,9 @@ export {
 } from "./session.ts";
 export { type SseEvent, SseParser } from "./sse.ts";
 export {
+	assertToolSchema,
 	errorResult,
+	hasToolSchema,
 	optionalNumber,
 	requireString,
 	type Tool,
