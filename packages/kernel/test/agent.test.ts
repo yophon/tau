@@ -10,7 +10,7 @@ const echoTool: Tool = {
 	name: "echo_tool",
 	description: "Echo the input back",
 	parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-	execute: async (args) => ({ output: `echo: ${String(args.text)}` }),
+	execute: async (args) => ({ content: [{ type: "text", text: `echo: ${String(args.text)}` }] }),
 };
 
 test("agent loop executes tool calls and completes with a final message", async () => {
@@ -184,7 +184,7 @@ test("runSubagent facade completes a child run without polluting parent messages
 		parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
 		execute: async (args, signal, _onUpdate, ctx) => {
 			const result = await ctx?.runSubagent?.(String(args.prompt), { maxTurnsPerPrompt: 3 }, signal);
-			return { output: result?.text ?? "missing subagent", isError: result === undefined };
+			return { content: [{ type: "text", text: result?.text ?? "missing subagent" }], isError: result === undefined };
 		},
 	};
 	const requests: unknown[] = [];

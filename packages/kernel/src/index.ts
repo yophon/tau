@@ -93,6 +93,7 @@ export {
 	type ExtensionRenderComponent,
 	type InputEvent,
 	type InputEventResult,
+	type InputSource,
 	type MessageEndEvent,
 	type MessageEndEventResult,
 	type MessageStartEvent,
@@ -101,6 +102,7 @@ export {
 	type ModelSelectEventResult,
 	type ProjectTrustEvent,
 	type ProjectTrustEventResult,
+	type QueuedInputDisposition,
 	type ReadonlySessionManager,
 	type RegisteredCommand,
 	type RegisteredCommandResult,
@@ -144,6 +146,7 @@ export {
 	type ToolExecutionEndEvent,
 	type ToolExecutionStartEvent,
 	type ToolExecutionUpdateEvent,
+	type ToolInfo,
 	type ToolRenderPhase,
 	type ToolResultEvent,
 	type ToolResultEventResult,
@@ -286,6 +289,8 @@ export {
 	type ToolExecutionMode,
 	type ToolResult,
 	type ToolUpdateStream,
+	textResult,
+	toolResultText,
 	validateToolArgs,
 } from "./tools.ts";
 export { type TransformTarget, transformMessages } from "./transform.ts";

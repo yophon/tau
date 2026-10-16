@@ -174,7 +174,7 @@ function createTauTool(
 		description: description ?? `MCP tool ${mcpToolName} from ${server.config.name}`,
 		parameters,
 		execute: async (args, signal): Promise<ToolResult> => {
-			if (isAborted(signal)) return { output: "MCP tool call aborted", isError: true };
+			if (isAborted(signal)) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
 			try {
 				const abortSignal = toAbortSignal(signal);
 				const result = (await server.client.callTool(
@@ -182,9 +182,12 @@ function createTauTool(
 					undefined,
 					abortSignal ? { signal: abortSignal } : undefined,
 				)) as McpCallResult;
-				return { output: toolOutput(result), isError: result.isError === true };
+				return { content: [{ type: "text", text: toolOutput(result) }], isError: result.isError === true };
 			} catch (cause) {
-				return { output: cause instanceof Error ? cause.message : String(cause), isError: true };
+				return {
+					content: [{ type: "text", text: cause instanceof Error ? cause.message : String(cause) }],
+					isError: true,
+				};
 			}
 		},
 	};

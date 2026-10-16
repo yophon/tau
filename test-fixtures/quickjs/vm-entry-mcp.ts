@@ -8,6 +8,7 @@ import {
 	createIncrementalUtf8Decoder,
 	ExtensionRegistry,
 	type Platform,
+	toolResultText,
 } from "../../packages/kernel/src/index.ts";
 import { installBridgedFetch } from "./http-bridge.vm.ts";
 
@@ -57,7 +58,7 @@ injected.__RESULT = "(pending)";
 	const toolResults: string[] = [];
 	for await (const event of agent.prompt("请读取 hello.txt 并告诉我内容")) {
 		if (event.type === "text_delta") text += event.delta;
-		if (event.type === "tool_result") toolResults.push(`${event.toolCall.name}:${event.result.output}`);
+		if (event.type === "tool_result") toolResults.push(`${event.toolCall.name}:${toolResultText(event.result)}`);
 	}
 	injected.__RESULT = JSON.stringify({
 		statuses,

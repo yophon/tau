@@ -157,7 +157,7 @@ test("abort during tool execution ends the prompt before the next LLM call", asy
 		parameters: { type: "object", properties: {} },
 		execute: async () => {
 			controller.abort();
-			return { output: "done anyway" };
+			return { content: [{ type: "text", text: "done anyway" }] };
 		},
 	};
 	const requests: unknown[] = [];
@@ -192,11 +192,11 @@ test("a tool that throws becomes an isError tool result and the loop continues",
 	const { events, text } = await collect(agent, "hi");
 	assert.equal(text, "recovered");
 	const toolResult = events.find((event) => event.type === "tool_result") as
-		| { type: string; result: { output: string; isError?: boolean } }
+		| { type: string; result: { content: { text: string }[]; isError?: boolean } }
 		| undefined;
 	assert.ok(toolResult);
 	assert.equal(toolResult.result.isError, true);
-	assert.ok(toolResult.result.output.includes("tool exploded"));
+	assert.ok(toolResult.result.content[0].text.includes("tool exploded"));
 });
 
 test("exceeding maxTurnsPerPrompt throws max_turns", async () => {
@@ -204,7 +204,7 @@ test("exceeding maxTurnsPerPrompt throws max_turns", async () => {
 		name: "loop_tool",
 		description: "keeps the loop going",
 		parameters: { type: "object", properties: {} },
-		execute: async () => ({ output: "again" }),
+		execute: async () => ({ content: [{ type: "text", text: "again" }] }),
 	};
 	const agent = new Agent({
 		config: CONFIG,
@@ -261,7 +261,7 @@ test("malformed tool-call arguments degrade to an empty object", async () => {
 		parameters: { type: "object", properties: {} },
 		execute: async (args) => {
 			received = args;
-			return { output: "captured" };
+			return { content: [{ type: "text", text: "captured" }] };
 		},
 	};
 	const badArgsTurn = [

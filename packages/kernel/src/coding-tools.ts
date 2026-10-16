@@ -1,6 +1,6 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { PermissionMode } from "./policy.ts";
-import { errorResult, optionalNumber, requireString, type Tool } from "./tools.ts";
+import { errorResult, optionalNumber, requireString, type Tool, textResult } from "./tools.ts";
 
 const MAX_READ_LINES = 2000;
 const MAX_OUTPUT_CHARS = 50_000;
@@ -102,7 +102,7 @@ function createReadTool(fs: FileSystem): Tool {
 			const numbered = slice.map((line, i) => `${String(start + i).padStart(width)}\t${line}`).join("\n");
 			const remaining = lines.length - (start - 1 + slice.length);
 			const note = remaining > 0 ? `\n[${remaining} more lines; continue with offset=${start + slice.length}]` : "";
-			return { output: truncate(numbered) + note };
+			return textResult(truncate(numbered) + note);
 		}),
 	};
 }
@@ -124,7 +124,7 @@ function createWriteTool(fs: FileSystem): Tool {
 			const content = args.content;
 			if (typeof content !== "string") return errorResult('Missing or invalid required string argument "content"');
 			await withFileMutationQueue(path, () => fs.writeTextFile(path, content));
-			return { output: `Wrote ${content.length} characters to ${path}` };
+			return textResult(`Wrote ${content.length} characters to ${path}`);
 		}),
 	};
 }
@@ -160,7 +160,7 @@ function createEditTool(fs: FileSystem): Tool {
 					path,
 					content.replace(oldText, () => newText),
 				);
-				return { output: `Edited ${path}` };
+				return textResult(`Edited ${path}`);
 			});
 		}),
 	};
@@ -196,7 +196,7 @@ function createBashTool(shell: Shell): Tool {
 			if (result.exitCode !== 0) {
 				output = output === "" ? `Exit code ${result.exitCode}` : `${output}\nExit code ${result.exitCode}`;
 			}
-			return { output: output === "" ? "(no output)" : output, isError: result.exitCode !== 0 };
+			return { ...textResult(output === "" ? "(no output)" : output), isError: result.exitCode !== 0 };
 		}),
 	};
 }

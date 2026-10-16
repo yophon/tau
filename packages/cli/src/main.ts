@@ -51,6 +51,7 @@ import {
 	type ThinkingLevel,
 	type ToolExecutionMode,
 	thinkingText,
+	toolResultText,
 	type UiCapability,
 	type UserContent,
 } from "@yophon/tau-kernel";
@@ -670,7 +671,7 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 					break;
 				case "tool_result": {
 					const marker = event.result.isError ? red("✗") : dim("✓");
-					process.stdout.write(`${marker} ${dim(firstLine(event.result.output))}\n`);
+					process.stdout.write(`${marker} ${dim(firstLine(toolResultText(event.result)))}\n`);
 					break;
 				}
 				case "agent_end": {

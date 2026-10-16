@@ -238,7 +238,7 @@ test("a subagent's usage is billed to the parent session through the tool result
 				parameters: { type: "object", properties: {} },
 				execute: async (_args, signal, _onUpdate, ctx) => {
 					const run = await ctx?.runSubagent?.("child work", {}, signal);
-					return { output: run?.text ?? "", usage: run?.usage };
+					return { content: [{ type: "text", text: run?.text ?? "" }], usage: run?.usage };
 				},
 			},
 		],

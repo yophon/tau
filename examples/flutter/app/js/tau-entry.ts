@@ -18,6 +18,7 @@ import {
 	type PlatformBodyReader,
 	type PlatformResponse,
 	type TauAbortSignal,
+	toolResultText,
 	type UiCapability,
 } from "@yophon/tau-kernel";
 
@@ -303,7 +304,7 @@ async function runPrompt(text: string): Promise<void> {
 				emit("tau_event", {
 					type: "tool_result",
 					name: event.toolCall.name,
-					output: event.result.output,
+					output: toolResultText(event.result),
 					isError: event.result.isError === true,
 				});
 			else if (event.type === "assistant_message")

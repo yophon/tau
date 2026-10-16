@@ -8,7 +8,7 @@ import { Agent } from "../src/agent.ts";
 import type { FileSystem } from "../src/capabilities.ts";
 import { createCodingTools } from "../src/coding-tools.ts";
 import { type Extension, ExtensionRegistry } from "../src/extensions.ts";
-import type { Tool } from "../src/tools.ts";
+import { type Tool, toolResultText } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, multiToolCallTurn, textTurn } from "./helpers.ts";
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -28,7 +28,7 @@ function markerTool(name: string, markers: string[], body?: (record: (marker: st
 			markers.push(`${name}:start`);
 			await body?.((marker) => markers.push(marker));
 			markers.push(`${name}:end`);
-			return { output: `${name}-done` };
+			return { content: [{ type: "text", text: `${name}-done` }] };
 		},
 	};
 }
@@ -100,7 +100,7 @@ test("event order: tool_start in source order, execution end in completion order
 		parameters: { type: "object", properties: {} },
 		execute: async () => {
 			await firstMayFinish.promise;
-			return { output: "late-out" };
+			return { content: [{ type: "text", text: "late-out" }] };
 		},
 	};
 	const early: Tool = {
@@ -109,7 +109,7 @@ test("event order: tool_start in source order, execution end in completion order
 		parameters: { type: "object", properties: {} },
 		execute: async () => {
 			firstMayFinish.resolve();
-			return { output: "early-out" };
+			return { content: [{ type: "text", text: "early-out" }] };
 		},
 	};
 	const events: string[] = [];
@@ -151,7 +151,7 @@ test("one tool throwing does not disturb the others' outcomes", async () => {
 		name: "calm",
 		description: "fine",
 		parameters: { type: "object", properties: {} },
-		execute: async () => ({ output: "calm-ok" }),
+		execute: async () => ({ content: [{ type: "text", text: "calm-ok" }] }),
 	};
 	const agent = twoToolAgent([boom, calm]);
 	const results: { name: string; output: string; isError: boolean }[] = [];
@@ -159,7 +159,7 @@ test("one tool throwing does not disturb the others' outcomes", async () => {
 		if (event.type === "tool_result") {
 			results.push({
 				name: event.toolCall.name,
-				output: event.result.output,
+				output: toolResultText(event.result),
 				isError: event.result.isError === true,
 			});
 		}
@@ -216,7 +216,7 @@ test("abort during a parallel batch still yields a result for every tool call", 
 				parameters: { type: "object", properties: {} },
 				execute: async () => {
 					abortHandle.abort();
-					return { output: "t1-done" };
+					return { content: [{ type: "text", text: "t1-done" }] };
 				},
 			},
 			{
@@ -224,8 +224,8 @@ test("abort during a parallel batch still yields a result for every tool call", 
 				description: "observes the signal",
 				parameters: { type: "object", properties: {} },
 				execute: async (_args, signal) => {
-					if (signal?.aborted) return { output: "aborted", isError: true };
-					return { output: "t2-done" };
+					if (signal?.aborted) return { content: [{ type: "text", text: "aborted" }], isError: true };
+					return { content: [{ type: "text", text: "t2-done" }] };
 				},
 			},
 		],

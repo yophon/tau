@@ -721,7 +721,7 @@ test("Agent completes a two-turn tool loop over the Anthropic transport", async 
 				name: "echo_tool",
 				description: "echo",
 				parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-				execute: async (args) => ({ output: `echo: ${String(args.text)}` }),
+				execute: async (args) => ({ content: [{ type: "text", text: `echo: ${String(args.text)}` }] }),
 			},
 		],
 	});

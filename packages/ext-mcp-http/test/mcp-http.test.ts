@@ -9,6 +9,7 @@ import {
 	type PlatformBodyReader,
 	type PlatformRequestInit,
 	type PlatformResponse,
+	toolResultText,
 } from "@yophon/tau-kernel";
 import { createHttpMcpExtension, type HttpMcpStatus, MCP_PROTOCOL_VERSION } from "../src/index.ts";
 
@@ -186,9 +187,9 @@ test("tools/call flattens a JSON response and passes isError through", async () 
 	assert.ok(tool);
 
 	const okResult = await tool.execute({ text: "hi" });
-	assert.deepEqual(okResult, { output: "echo:hi", isError: false });
+	assert.deepEqual(okResult, { content: [{ type: "text", text: "echo:hi" }], isError: false });
 	const errResult = await tool.execute({ text: "boom", fail: true });
-	assert.deepEqual(errResult, { output: "echo:boom", isError: true });
+	assert.deepEqual(errResult, { content: [{ type: "text", text: "echo:boom" }], isError: true });
 });
 
 test("tools/call parses an SSE response split across chunks", async () => {
@@ -212,7 +213,7 @@ test("tools/call parses an SSE response split across chunks", async () => {
 	assert.ok(tool);
 
 	const result = await tool.execute({ text: "x" });
-	assert.deepEqual(result, { output: "streamed 中文", isError: false });
+	assert.deepEqual(result, { content: [{ type: "text", text: "streamed 中文" }], isError: false });
 });
 
 test("a JSON-RPC error becomes an isError tool result", async () => {
@@ -231,7 +232,7 @@ test("a JSON-RPC error becomes an isError tool result", async () => {
 
 	const result = await tool.execute({});
 	assert.equal(result.isError, true);
-	assert.match(result.output, /kaput/);
+	assert.match(toolResultText(result), /kaput/);
 });
 
 test("an unreachable server degrades silently and reconnects on the next connect()", async () => {
@@ -292,7 +293,7 @@ test("a 404 on tools/call re-handshakes once and replays the call", async () => 
 	assert.ok(tool);
 
 	const result = await tool.execute({});
-	assert.deepEqual(result, { output: "replayed", isError: false });
+	assert.deepEqual(result, { content: [{ type: "text", text: "replayed" }], isError: false });
 	assert.deepEqual(
 		requests.map((r) => r.message.method),
 		[
@@ -333,12 +334,12 @@ test("abort settles an in-flight tools/call as an isError result", async () => {
 	abort.abort("user");
 	const result = await resultPromise;
 	assert.equal(result.isError, true);
-	assert.match(result.output, /abort/i);
+	assert.match(toolResultText(result), /abort/i);
 
 	const preAborted = new AbortHandle();
 	preAborted.abort("early");
 	const early = await tool.execute({}, preAborted.signal);
-	assert.deepEqual(early, { output: "MCP tool call aborted", isError: true });
+	assert.deepEqual(early, { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true });
 });
 
 test("handshake timeout via Platform.sleep reports offline with a timeout error", async () => {
@@ -385,5 +386,5 @@ test("degrades without response headers: sniffs JSON and SSE bodies", async () =
 	assert.ok(tool, "JSON handshake still parses without a content-type header");
 
 	const result = await tool.execute({});
-	assert.deepEqual(result, { output: "sniffed", isError: false });
+	assert.deepEqual(result, { content: [{ type: "text", text: "sniffed" }], isError: false });
 });

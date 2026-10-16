@@ -5,6 +5,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P23b, pi AgentToolResult): `ToolResult` is
+  `{ content: (TextContent | ImageContent)[], details?, isError?, terminate?, usage? }`
+  (was `{ output, isError? }`). Migrate `return { output: text }` to
+  `return textResult(text)` (or `{ content: [{ type: "text", text }] }`);
+  read results with `toolResultText(result)`. Tools can now return images, and
+  `details` lands on the `ToolResultMessage`. A tool still returning
+  `{ output }` gets an error result naming the new shape. `ToolResultEvent`
+  carries `content`/`details`/`usage` instead of `output`, and
+  `ToolResultEventResult` overrides those fields.
+- Kernel (P23b, pi 0.86.0/0.99.0): `Agent.steer()` and `Agent.followUp()` take
+  `UserContent`, run `input` handlers first, and return
+  `Promise<"queued" | "handled">`. A `sendUserMessage` during a run passes the
+  handlers with `source: "extension"`. `InputEvent` gains `source`,
+  `streamingBehavior` and `images`.
+- Kernel (P23b): tool calls dispatch against the tools the request declared
+  (a per-request snapshot); a tool registered mid-batch answers
+  `Unknown tool` until the next request.
 - Kernel (P23b, pi runLoop event order): compaction runs before `turn_start`
   (the first turn keeps its slot); steering is polled after `turn_end` and
   committed after the next `turn_start` (it used to land before `turn_end`).
@@ -104,6 +121,11 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P23b): active tool set — `Agent.getActiveTools()`, `getAllTools()`,
+  `setActiveTools()` and the same three on `ExtensionAPI` (pi); `terminate` on
+  `ToolResult` and `ToolCallEventResult` (pi 0.84.1); `textResult()`,
+  `toolResultText()`. Subagents inherit the parent's retry settings and its
+  `tool_call`/`tool_result` guards (no other events replay into the child).
 - Kernel (P23b): actionable `turn_end` (outcome, messageEntryId,
   toolResultEntryIds; handlers return `{ entries, continue }` with custom /
   custom_message drafts), `agent_before_settle`, `agent_settled { aborted }`

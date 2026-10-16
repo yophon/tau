@@ -12,7 +12,7 @@ import type {
 	Usage,
 	UserContent,
 } from "./messages.ts";
-import type { ChatStreamEvent } from "./openai.ts";
+import type { ChatStreamEvent, JsonSchema } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
 import { getCurrentSystemMessage, type SessionProjection } from "./projection.ts";
@@ -473,12 +473,35 @@ export interface AutoRetryEndEvent {
 }
 
 /** Fired for user input before it enters the conversation. */
+/** Where input came from (pi InputSource; tau has no RPC mode). */
+export type InputSource = "interactive" | "extension";
+
+/** Fired when input arrives, before it is committed or queued (pi). */
 export interface InputEvent {
 	type: "input";
 	text: string;
+	/** Image blocks of the input, if any. */
+	images?: ImageContent[];
+	source: InputSource;
+	/** How the input is queued while a run streams; undefined for a new prompt (pi). */
+	streamingBehavior?: "steer" | "followUp";
 }
 
-export type InputEventResult = { action: "continue" } | { action: "transform"; text: string } | { action: "handled" };
+export type InputEventResult =
+	| { action: "continue" }
+	| { action: "transform"; text: string; images?: ImageContent[] }
+	| { action: "handled" };
+
+/** What steer()/followUp() did with the input (pi 0.99.0 QueuedInputDisposition). */
+export type QueuedInputDisposition = "queued" | "handled";
+
+/** A tool as extensions see it through getAllTools() (the pi ToolInfo subset tau has; exposure/namespace come with P24). */
+export interface ToolInfo {
+	name: string;
+	description: string;
+	parameters: JsonSchema;
+	source: "builtin" | "extension";
+}
 
 /** Fired before a tool executes. To modify arguments, mutate `event.input` in place. */
 export interface ToolCallEvent {
@@ -492,6 +515,12 @@ export interface ToolCallEventResult {
 	/** Block tool execution. To modify arguments, mutate `event.input` in place instead. */
 	block?: boolean;
 	reason?: string;
+	/**
+	 * With `block`: hint that the agent should stop after the current tool batch
+	 * (pi 0.84.1). The run ends early only when every finalized result of the
+	 * batch asks for it; policy and approval denials never do (D20).
+	 */
+	terminate?: boolean;
 }
 
 /** Fired after a tool executed, before the result enters the conversation. */
@@ -500,13 +529,19 @@ export interface ToolResultEvent {
 	toolCallId: string;
 	toolName: string;
 	input: Record<string, unknown>;
-	output: string;
+	content: (TextContent | ImageContent)[];
+	details?: JsonValue;
 	isError: boolean;
+	/** Usage from the tool execution itself, if any. */
+	usage?: Usage;
 }
 
+/** Partial overrides of a tool result (pi ToolResultEventResult, minus structuredContent until P24). */
 export interface ToolResultEventResult {
-	output?: string;
+	content?: (TextContent | ImageContent)[];
+	details?: JsonValue;
 	isError?: boolean;
+	usage?: Usage;
 }
 
 /** Fired by interactive hosts before running a user-entered bash command. */
@@ -750,6 +785,13 @@ export interface ExtensionAPI {
 	/** Set or clear (undefined) a label on an entry: a bookmark that never enters context (pi). */
 	setLabel(entryId: string, label: string | undefined): void;
 
+	/** Names of the active tools — the ones declared to the model (pi). */
+	getActiveTools(): string[];
+	/** Every registered tool, active or not (pi; the ToolInfo subset tau has). */
+	getAllTools(): ToolInfo[];
+	/** Set the active tools by name; unknown names are ignored. Takes effect from the next request (pi). */
+	setActiveTools(toolNames: string[]): void;
+
 	/**
 	 * Register a tool the model can call. Same-name registrations override
 	 * (later wins). `risk` self-declares the tool's risk for the permission
@@ -858,6 +900,9 @@ export interface ExtensionHostActions {
 	abort?(): void;
 	/** Shut the host down gracefully (ctx.shutdown backing). */
 	shutdown?(): void;
+	getActiveTools?(): string[];
+	getAllTools?(): ToolInfo[];
+	setActiveTools?(toolNames: string[]): void;
 	/** Host-run submission of a fresh prompt (backs sendUserMessage while idle). */
 	submitPrompt?(content: UserContent): void;
 	/** Host-run continuation without new user input (backs sendMessage triggerTurn while idle). */
@@ -975,6 +1020,9 @@ export class ExtensionRegistry {
 			appendEntry: (customType, data) => this.requireHostActions("appendEntry")(customType, data),
 			setSessionName: (name) => this.requireHostActions("setSessionName")(name),
 			setLabel: (entryId, label) => this.requireHostActions("setLabel")(entryId, label),
+			getActiveTools: () => this.requireHostActions("getActiveTools")(),
+			getAllTools: () => this.requireHostActions("getAllTools")(),
+			setActiveTools: (toolNames) => this.requireHostActions("setActiveTools")(toolNames),
 		};
 		for (const extension of extensions) {
 			await extension(api);
@@ -1045,35 +1093,58 @@ export class ExtensionRegistry {
 	}
 
 	/** Run input handlers. Transforms chain; "handled" short-circuits. */
-	async runInput(text: string, ctx: ExtensionContext): Promise<{ handled: boolean; text: string }> {
+	async runInput(
+		text: string,
+		ctx: ExtensionContext,
+		options: { source?: InputSource; streamingBehavior?: "steer" | "followUp"; images?: ImageContent[] } = {},
+	): Promise<{ handled: boolean; text: string; images?: ImageContent[] }> {
 		let current = text;
+		let images = options.images;
 		for (const handler of this.handlers.input) {
-			const result = await handler({ type: "input", text: current }, ctx);
+			const result = await handler(
+				{
+					type: "input",
+					text: current,
+					...(images ? { images } : {}),
+					source: options.source ?? "interactive",
+					...(options.streamingBehavior ? { streamingBehavior: options.streamingBehavior } : {}),
+				},
+				ctx,
+			);
 			if (!result || result.action === "continue") continue;
-			if (result.action === "handled") return { handled: true, text: current };
+			if (result.action === "handled") return { handled: true, text: current, ...(images ? { images } : {}) };
 			current = result.text;
+			if (result.images !== undefined) images = result.images;
 		}
-		return { handled: false, text: current };
+		return { handled: false, text: current, ...(images ? { images } : {}) };
 	}
 
 	/** Run tool_call handlers. Handlers may mutate event.input; a block short-circuits. */
-	async runToolCall(event: ToolCallEvent, ctx: ExtensionContext): Promise<{ blocked: boolean; reason?: string }> {
+	async runToolCall(
+		event: ToolCallEvent,
+		ctx: ExtensionContext,
+	): Promise<{ blocked: boolean; reason?: string; terminate?: boolean }> {
 		for (const handler of this.handlers.tool_call) {
 			const result = await handler(event, ctx);
-			if (result?.block) return { blocked: true, reason: result.reason };
+			if (result?.block) return { blocked: true, reason: result.reason, terminate: result.terminate === true };
 		}
 		return { blocked: false };
 	}
 
 	/** Run tool_result handlers. Partial overrides chain onto the event. */
-	async runToolResult(event: ToolResultEvent, ctx: ExtensionContext): Promise<{ output: string; isError: boolean }> {
+	async runToolResult(
+		event: ToolResultEvent,
+		ctx: ExtensionContext,
+	): Promise<Pick<ToolResultEvent, "content" | "details" | "isError" | "usage">> {
 		for (const handler of this.handlers.tool_result) {
 			const result = await handler(event, ctx);
 			if (!result) continue;
-			if (result.output !== undefined) event.output = result.output;
+			if (result.content !== undefined) event.content = result.content;
+			if (result.details !== undefined) event.details = result.details;
 			if (result.isError !== undefined) event.isError = result.isError;
+			if (result.usage !== undefined) event.usage = result.usage;
 		}
-		return { output: event.output, isError: event.isError };
+		return { content: event.content, details: event.details, isError: event.isError, usage: event.usage };
 	}
 
 	/** Run user_bash handlers. Rewrites chain; cancel short-circuits. */

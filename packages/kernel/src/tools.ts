@@ -1,13 +1,26 @@
 import { TauError } from "./errors.ts";
 import type { ExtensionContext } from "./extensions.ts";
-import type { Usage } from "./messages.ts";
+import type { ImageContent, JsonValue, TextContent, Usage } from "./messages.ts";
 import type { JsonSchema, ToolDefinition } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
 
+/**
+ * What a tool returns — pi's AgentToolResult (P23b; was `{ output, isError }`).
+ * `content` goes to the model as the tool result; `details` is kept on the
+ * ToolResultMessage for logs and renderers, never sent.
+ */
 export interface ToolResult {
-	output: string;
+	content: (TextContent | ImageContent)[];
+	/** Structured data for logs/UI. Deviation: pi types it as a required `details: T`; optional here. */
+	details?: JsonValue;
+	/** Report a failure without throwing; the model sees `content` as an error result. */
 	isError?: boolean;
+	/**
+	 * Hint that the agent should stop after the current tool batch. The run ends
+	 * early only when every finalized result of the batch sets it (pi).
+	 */
+	terminate?: boolean;
 	/** Usage of model calls the tool made itself (e.g. a subagent run); counted in session totals, not context (pi 0.81.0). */
 	usage?: Usage;
 }
@@ -40,8 +53,18 @@ export interface Tool extends ToolDefinition {
 	): Promise<ToolResult>;
 }
 
+/** A plain text result. */
+export function textResult(text: string, details?: JsonValue): ToolResult {
+	return details === undefined ? { content: [{ type: "text", text }] } : { content: [{ type: "text", text }], details };
+}
+
 export function errorResult(message: string): ToolResult {
-	return { output: message, isError: true };
+	return { content: [{ type: "text", text: message }], isError: true };
+}
+
+/** A result's content as text (images as a marker): for renderers and hosts that print results. */
+export function toolResultText(result: Pick<ToolResult, "content">): string {
+	return result.content.map((block) => (block.type === "text" ? block.text : "[image]")).join("\n");
 }
 
 export function requireString(args: Record<string, unknown>, key: string): string {

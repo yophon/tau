@@ -15,7 +15,7 @@ const echo: Tool = {
 	name: "echo",
 	description: "Echo text",
 	parameters: { type: "object", properties: { text: { type: "string" } } },
-	execute: async () => ({ output: "echoed" }),
+	execute: async () => ({ content: [{ type: "text", text: "echoed" }] }),
 };
 
 async function drain(events: AsyncGenerator<unknown>): Promise<void> {

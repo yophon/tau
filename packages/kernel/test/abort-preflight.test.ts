@@ -15,7 +15,7 @@ function recordingTool(name: string, executed: string[], options: Partial<Tool> 
 		parameters: { type: "object", properties: {} },
 		execute: async () => {
 			executed.push(name);
-			return { output: `${name}-done` };
+			return { content: [{ type: "text", text: `${name}-done` }] };
 		},
 		...options,
 	};
@@ -81,7 +81,7 @@ test("sequential batch: abort during one call stops the remaining calls of the b
 				execute: async () => {
 					executed.push("t1");
 					controller.abort();
-					return { output: "t1-done" };
+					return { content: [{ type: "text", text: "t1-done" }] };
 				},
 			}),
 			recordingTool("t2", executed),
@@ -105,7 +105,7 @@ test("an already-aborted run never asks for approval", async () => {
 				execute: async () => {
 					executed.push("a1");
 					controller.abort();
-					return { output: "a1-done" };
+					return { content: [{ type: "text", text: "a1-done" }] };
 				},
 			}),
 			recordingTool("h2", executed, { risk: "high" }),

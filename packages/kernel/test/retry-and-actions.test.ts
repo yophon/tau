@@ -244,7 +244,7 @@ test("sendMessage deliverAs steer/followUp/nextTurn queue as in pi", async () =>
 		name: "echo",
 		description: "echo",
 		parameters: { type: "object", properties: {} },
-		execute: async () => ({ output: "done" }),
+		execute: async () => ({ content: [{ type: "text" as const, text: "done" }] }),
 	};
 	const requests: { messages?: { role: string; content: string | null }[] }[] = [];
 	const agent = new Agent({
@@ -301,7 +301,7 @@ test("sendUserMessage steers while running and submits via the host while idle",
 		name: "echo",
 		description: "echo",
 		parameters: { type: "object", properties: {} },
-		execute: async () => ({ output: "done" }),
+		execute: async () => ({ content: [{ type: "text" as const, text: "done" }] }),
 	};
 	const requests: { messages?: { role: string; content: string | null }[] }[] = [];
 	const agent = new Agent({

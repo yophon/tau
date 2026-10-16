@@ -58,7 +58,7 @@ function echoTool(onExecute?: () => void): Tool {
 		parameters: { type: "object", properties: {} },
 		execute: async () => {
 			onExecute?.();
-			return { output: "echoed" };
+			return { content: [{ type: "text", text: "echoed" }] };
 		},
 	};
 }
@@ -374,7 +374,7 @@ test("an update a tool emits after execute settled is dropped (pi acceptingUpdat
 		parameters: { type: "object", properties: {} },
 		execute: async (_args, _signal, onUpdate) => {
 			late = (text) => onUpdate?.(text);
-			return { output: "ok" };
+			return { content: [{ type: "text", text: "ok" }] };
 		},
 	};
 	const updates: string[] = [];
@@ -406,4 +406,252 @@ test("max_turns still bounds a prompt across continuation runs", async () => {
 		(error: unknown) => error instanceof TauError && error.code === "max_turns",
 	);
 	assert.equal(agent.isIdle, true);
+});
+
+// --- P23b part 2: ToolResult shape, terminate, active tools, queued input, subagent guards ---
+
+test("a batch whose every result asks to terminate ends the run without another request", async () => {
+	const requests: TransportRequest[] = [];
+	const { registry } = await load((api) => {
+		api.on("tool_call", () => ({ block: true, reason: "done here", terminate: true }));
+	});
+	const agent = makeAgent(scripted([callTool("echo"), answer("never")], requests), registry, {
+		tools: [echoTool()],
+	});
+	const events = await drain(agent.prompt("go"));
+	assert.equal(requests.length, 1);
+	assert.ok(!agent.messages.some((message) => message.role === "assistant" && message.stopReason === "aborted"));
+	assert.deepEqual(
+		events.slice(-2).map((event) => event.type),
+		["agent_end", "agent_settled"],
+	);
+});
+
+test("terminate needs every result: one hint in a mixed batch does not stop the run", async () => {
+	const stopper: Tool = {
+		name: "stopper",
+		description: "stop",
+		parameters: { type: "object", properties: {} },
+		execute: async () => ({ content: [{ type: "text", text: "stop" }], terminate: true }),
+	};
+	const requests: TransportRequest[] = [];
+	const agent = makeAgent(
+		scripted(
+			[
+				async function* () {
+					const calls: ToolCall[] = [
+						{ type: "toolCall", id: "a", name: "stopper", arguments: {} },
+						{ type: "toolCall", id: "b", name: "echo", arguments: {} },
+					];
+					for (const toolCall of calls) yield { type: "tool_call", toolCall };
+					yield { type: "response_end", message: reply("", "stop", calls) };
+				},
+				answer("continued"),
+			],
+			requests,
+		),
+		undefined,
+		{ tools: [stopper, echoTool()] },
+	);
+	await drain(agent.prompt("go"));
+	assert.equal(requests.length, 2);
+
+	const solo = makeAgent(scripted([callTool("stopper"), answer("never")]), undefined, { tools: [stopper] });
+	await drain(solo.prompt("go"));
+	assert.equal(solo.messages.at(-1)?.role, "toolResult", "a lone terminating tool ends the run");
+});
+
+test("a policy denial never carries terminate", async () => {
+	const requests: TransportRequest[] = [];
+	const agent = makeAgent(scripted([callTool("bash", { command: "rm -rf /" }), answer("after")], requests), undefined, {
+		tools: [{ ...echoTool(), name: "bash" }],
+		permissionMode: "read-only",
+	});
+	await drain(agent.prompt("go"));
+	assert.equal(requests.length, 2);
+});
+
+test("a tool returns images and details: content goes to the model, details stay on the message", async () => {
+	const pixel: Tool = {
+		name: "snap",
+		description: "screenshot",
+		parameters: { type: "object", properties: {} },
+		execute: async () => ({
+			content: [
+				{ type: "text", text: "here" },
+				{ type: "image", data: "iVBORw0KGgo=", mimeType: "image/png" },
+			],
+			details: { width: 1, height: 1 },
+		}),
+	};
+	const agent = makeAgent(scripted([callTool("snap"), answer("seen")]), undefined, { tools: [pixel] });
+	await drain(agent.prompt("go"));
+	const result = agent.messages.find((message) => message.role === "toolResult");
+	assert.ok(result && result.role === "toolResult");
+	assert.deepEqual(
+		result.content.map((block) => block.type),
+		["text", "image"],
+	);
+	assert.deepEqual(result.details, { width: 1, height: 1 });
+});
+
+test("a tool still returning { output } gets an error result naming the new shape", async () => {
+	const legacy = {
+		name: "old",
+		description: "pre-P23",
+		parameters: { type: "object", properties: {} },
+		execute: async () => ({ output: "hello" }),
+	} as unknown as Tool;
+	const agent = makeAgent(scripted([callTool("old"), answer("ok")]), undefined, { tools: [legacy] });
+	await drain(agent.prompt("go"));
+	const result = agent.messages.find((message) => message.role === "toolResult");
+	assert.ok(result && result.role === "toolResult" && result.isError);
+	assert.match(JSON.stringify(result.content), /returned \{ output \}/);
+});
+
+test("setActiveTools narrows the declared tools from the next request; extensions see the same set", async () => {
+	const requests: TransportRequest[] = [];
+	const { registry, api } = await load();
+	const agent = makeAgent(scripted([answer("one"), answer("two")], requests), registry, {
+		tools: [echoTool(), { ...echoTool(), name: "other" }],
+	});
+	assert.deepEqual(api.getActiveTools(), ["echo", "other"]);
+	assert.deepEqual(
+		api.getAllTools().map((tool) => `${tool.name}:${tool.source}`),
+		["echo:builtin", "other:builtin"],
+	);
+	await drain(agent.prompt("first"));
+	api.setActiveTools(["other", "missing"]);
+	assert.deepEqual(agent.getActiveTools(), ["other"]);
+	await drain(agent.prompt("second"));
+	const toolNames = (request: TransportRequest, field: "toolsAdded" | "toolsRemoved") =>
+		request.messages.flatMap((message) =>
+			message.role === "system" ? (message[field] ?? []).map((tool) => tool.name) : [],
+		);
+	assert.deepEqual(toolNames(requests[0], "toolsAdded"), ["echo", "other"]);
+	assert.deepEqual(toolNames(requests[1], "toolsRemoved"), ["echo"]);
+});
+
+test("a tool registered mid-batch is not callable until the next request (per-request snapshot)", async () => {
+	const { registry, api } = await load();
+	let ran = false;
+	const registrar: Tool = {
+		name: "registrar",
+		description: "registers late",
+		parameters: { type: "object", properties: {} },
+		execute: async () => {
+			api.registerTool({
+				name: "late",
+				description: "late",
+				parameters: { type: "object", properties: {} },
+				execute: async () => {
+					ran = true;
+					return { content: [{ type: "text", text: "late ran" }] };
+				},
+			});
+			return { content: [{ type: "text", text: "registered" }] };
+		},
+	};
+	const agent = makeAgent(
+		scripted([
+			async function* () {
+				const calls: ToolCall[] = [
+					{ type: "toolCall", id: "r", name: "registrar", arguments: {} },
+					{ type: "toolCall", id: "l", name: "late", arguments: {} },
+				];
+				for (const toolCall of calls) yield { type: "tool_call", toolCall };
+				yield { type: "response_end", message: reply("", "stop", calls) };
+			},
+			answer("done"),
+		]),
+		registry,
+		{ tools: [registrar], toolExecution: "sequential" },
+	);
+	await drain(agent.prompt("go"));
+	assert.equal(ran, false);
+	const late = agent.messages.find((message) => message.role === "toolResult" && message.toolName === "late");
+	assert.match(JSON.stringify(late), /Unknown tool: late/);
+	assert.ok(agent.getActiveTools().includes("late"), "active for the next request");
+});
+
+test("steer() and followUp() pass input handlers: handled is not queued, transform rewrites", async () => {
+	const seen: string[] = [];
+	const { registry } = await load((api) => {
+		api.on("input", (event) => {
+			seen.push(`${event.source}:${event.streamingBehavior}:${event.text}`);
+			if (event.text === "/stop") return { action: "handled" };
+			if (event.text === "shout") return { action: "transform", text: "SHOUT" };
+			return undefined;
+		});
+	});
+	const agent = makeAgent(scripted([]), registry);
+	assert.equal(await agent.steer("/stop"), "handled");
+	assert.equal(agent.hasQueuedMessages(), false);
+	assert.equal(await agent.followUp("shout"), "queued");
+	assert.deepEqual(
+		agent.clearQueue().followUp.map((message) => message.content),
+		["SHOUT"],
+	);
+	assert.deepEqual(seen, ["interactive:steer:/stop", "interactive:followUp:shout"]);
+});
+
+test("sendUserMessage during a run reaches input handlers with source extension", async () => {
+	const seen: string[] = [];
+	let sent = false;
+	const { registry, api } = await load((extensionApi) => {
+		extensionApi.on("input", (event) => {
+			seen.push(`${event.source}:${event.streamingBehavior ?? "-"}:${event.text}`);
+		});
+	});
+	const agent = makeAgent(
+		scripted([
+			async function* () {
+				if (!sent) {
+					sent = true;
+					api.sendUserMessage("from extension");
+				}
+				yield { type: "response_end", message: reply("first") };
+			},
+			answer("second"),
+		]),
+		registry,
+	);
+	await drain(agent.prompt("go"));
+	assert.deepEqual(seen, ["interactive:-:go", "extension:steer:from extension"]);
+	assert.equal(agent.messages.filter((message) => message.role === "assistant").length, 2);
+});
+
+test("a subagent's tool calls pass the parent's tool_call guards, and no agent events replay", async () => {
+	const seen: string[] = [];
+	const { registry } = await load((api) => {
+		api.on("tool_call", (event) => {
+			if (event.toolName === "echo") {
+				seen.push(event.toolName);
+				return { block: true, reason: "guarded" };
+			}
+			return undefined;
+		});
+		api.on("agent_start", () => {
+			seen.push("agent_start");
+		});
+	});
+	let childResult = "";
+	const delegate: Tool = {
+		name: "delegate",
+		description: "run a child",
+		parameters: { type: "object", properties: {} },
+		execute: async (_args, signal, _onUpdate, ctx) => {
+			const run = await ctx?.runSubagent?.("child", {}, signal);
+			childResult = JSON.stringify(run?.messages);
+			return { content: [{ type: "text", text: run?.text ?? "" }] };
+		},
+	};
+	const agent = makeAgent(
+		scripted([callTool("delegate"), callTool("echo"), answer("child done"), answer("parent done")]),
+		registry,
+		{ tools: [delegate, echoTool()], retry: { enabled: false } },
+	);
+	await drain(agent.prompt("go"));
+	assert.deepEqual(seen, ["agent_start", "echo"]);
+	assert.match(childResult, /Tool call blocked: guarded/);
 });

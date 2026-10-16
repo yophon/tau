@@ -25,7 +25,7 @@ async function drain(run: AsyncGenerator<AgentEvent>): Promise<AgentEvent[]> {
 const schemaless = {
 	name: "loose",
 	description: "no schema",
-	execute: async () => ({ output: "x" }),
+	execute: async () => ({ content: [{ type: "text", text: "x" }] }),
 } as unknown as Tool;
 
 test("schemaless tools are rejected at registerTool and by the Agent constructor (HF-8)", async () => {

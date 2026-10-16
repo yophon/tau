@@ -101,7 +101,7 @@ const weatherTool: Tool = {
 	parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
 	execute: async (args) => {
 		toolExecutedWith = typeof args.city === "string" ? args.city : null;
-		return { output: "晴，25°C" };
+		return { content: [{ type: "text", text: "晴，25°C" }] };
 	},
 };
 

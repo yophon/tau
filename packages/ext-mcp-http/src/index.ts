@@ -371,12 +371,12 @@ function createTauTool(platform: Platform, state: ServerState, info: McpToolInfo
 		description: info.description ?? `MCP tool ${info.name} from ${state.config.name}`,
 		parameters: info.inputSchema ?? { type: "object", properties: {} },
 		execute: async (args, signal): Promise<ToolResult> => {
-			if (signal?.aborted) return { output: "MCP tool call aborted", isError: true };
+			if (signal?.aborted) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
 			try {
 				const result = await callTool(platform, state, info.name, args, signal);
-				return { output: toolOutput(result), isError: result.isError === true };
+				return { content: [{ type: "text", text: toolOutput(result) }], isError: result.isError === true };
 			} catch (cause) {
-				return { output: messageOf(cause), isError: true };
+				return { content: [{ type: "text", text: messageOf(cause) }], isError: true };
 			}
 		},
 	};

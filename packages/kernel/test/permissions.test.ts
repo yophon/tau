@@ -4,7 +4,7 @@ import { Agent, type AgentEvent } from "../src/agent.ts";
 import { createCodingTools } from "../src/coding-tools.ts";
 import { ExtensionRegistry, type UiCapability } from "../src/extensions.ts";
 import type { ApprovalRequest, RiskLevel } from "../src/policy.ts";
-import type { Tool } from "../src/tools.ts";
+import { type Tool, toolResultText } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, TestAbortController, textTurn, toolCallTurn } from "./helpers.ts";
 
 const config = { baseUrl: "https://fake.test/v1", model: "fake" };
@@ -27,7 +27,7 @@ function probeTool(name: string, risk?: RiskLevel): { tool: Tool; executions: Re
 		risk,
 		execute: async (args) => {
 			executions.push(args);
-			return { output: "executed" };
+			return { content: [{ type: "text", text: "executed" }] };
 		},
 	};
 	return { tool, executions };
@@ -40,7 +40,7 @@ async function drain(agent: Agent, input: string, signal?: TestAbortController["
 }
 
 function toolResultOutputs(events: AgentEvent[]): string[] {
-	return events.filter((event) => event.type === "tool_result").map((event) => event.result.output);
+	return events.filter((event) => event.type === "tool_result").map((event) => toolResultText(event.result));
 }
 
 function fakeUi(confirmResult: boolean, log: { title: string; message?: string }[] = []): UiCapability {

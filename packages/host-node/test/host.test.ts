@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { createCodingTools, FileError } from "@yophon/tau-kernel";
+import { createCodingTools, FileError, toolResultText } from "@yophon/tau-kernel";
 import { listExtensionFiles, loadExtensionsFromDir } from "../src/extension-loader.ts";
 import { NodeFileSystem, normalizeWindowsShellPath } from "../src/fs.ts";
 import { isWindowsStyleCommand, NodeShell } from "../src/shell.ts";
@@ -76,7 +76,7 @@ test("coding tools work end-to-end against the node host", async () => {
 
 		await byName.get("write")?.execute({ path: "a.txt", content: "one\ntwo\nthree" });
 		const read = await byName.get("read")?.execute({ path: "a.txt", offset: 2, limit: 1 });
-		assert.ok(read?.output.includes("2\ttwo"));
+		assert.ok(read && toolResultText(read).includes("2\ttwo"));
 
 		const editDupe = await byName.get("edit")?.execute({ path: "a.txt", oldText: "t", newText: "T" });
 		assert.equal(editDupe?.isError, true);
@@ -84,7 +84,7 @@ test("coding tools work end-to-end against the node host", async () => {
 		const edit = await byName.get("edit")?.execute({ path: "a.txt", oldText: "two", newText: "TWO" });
 		assert.equal(edit?.isError, undefined);
 		const bash = await byName.get("bash")?.execute({ command: "cat a.txt" });
-		assert.equal(bash?.output, "one\nTWO\nthree");
+		assert.equal(bash && toolResultText(bash), "one\nTWO\nthree");
 	});
 });
 

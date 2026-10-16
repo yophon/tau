@@ -23,6 +23,7 @@ import type {
 	ToolResult,
 	TurnEndEvent,
 } from "@yophon/tau-kernel";
+import { toolResultText } from "@yophon/tau-kernel";
 import { FeishuClient } from "./feishu-client.ts";
 import type { BridgeStatus, FeishuClientLike, FeishuConfig, FeishuExtensionOptions, InboundResource } from "./types.ts";
 import { FEISHU_MAX_CARD_CONTENT_CHARS } from "./types.ts";
@@ -134,7 +135,7 @@ interface RuntimeState {
 }
 
 function errorResult(message: string): ToolResult {
-	return { output: message, isError: true };
+	return { content: [{ type: "text", text: message }], isError: true };
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
@@ -968,7 +969,8 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 				const entry = state.toolEntries[index];
 				if (entry.toolCallId === event.toolCallId && entry.status === "running") {
 					entry.status = event.result.isError === true ? "error" : "done";
-					if (event.result.output) entry.output = event.result.output;
+					const resultText = toolResultText(event.result);
+					if (resultText) entry.output = resultText;
 					break;
 				}
 			}
@@ -1080,7 +1082,7 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 					if (!runtime.client || runtime.client.getStatus() !== "connected") return disconnectedMessage();
 					if (!chatId) return errorResult("错误: 没有活跃的飞书聊天。请先在飞书中发送一条消息。");
 					await runtime.client.sendMessage(chatId, downgradeHeadings(message));
-					return { output: `已发送到飞书 [${chatId}]: ${message}` };
+					return { content: [{ type: "text", text: `已发送到飞书 [${chatId}]: ${message}` }] };
 				} catch (error) {
 					return errorResult(error instanceof Error ? error.message : String(error));
 				}
@@ -1101,7 +1103,7 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 					const imageKey = await runtime.client.uploadImage(filePath);
 					if (!imageKey) return errorResult("错误: 图片上传失败。");
 					await runtime.client.sendImage(chatId, imageKey);
-					return { output: `图片已发送到飞书 [${chatId}]: ${filePath}` };
+					return { content: [{ type: "text", text: `图片已发送到飞书 [${chatId}]: ${filePath}` }] };
 				} catch (error) {
 					return errorResult(error instanceof Error ? error.message : String(error));
 				}
@@ -1123,7 +1125,7 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 					const fileKey = await runtime.client.uploadFile(filePath, fileName);
 					if (!fileKey) return errorResult("错误: 文件上传失败。");
 					await runtime.client.sendFile(chatId, fileKey);
-					return { output: `文件已发送到飞书 [${chatId}]: ${fileName}` };
+					return { content: [{ type: "text", text: `文件已发送到飞书 [${chatId}]: ${fileName}` }] };
 				} catch (error) {
 					return errorResult(error instanceof Error ? error.message : String(error));
 				}

@@ -48,6 +48,7 @@ import {
 	type ShellExecResult,
 	TauError,
 	type ThinkingLevel,
+	toolResultText,
 	type UiCapability,
 	type Usage,
 	type UserContent,
@@ -2231,7 +2232,8 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			state.pendingTools.delete(event.toolCall.id);
 			const liveOutput = state.toolOutputs.get(event.toolCall.id);
 			state.toolOutputs.delete(event.toolCall.id);
-			const output = liveOutput ? formatLiveStreamOutput(liveOutput) || event.result.output : event.result.output;
+			const resultText = toolResultText(event.result);
+			const output = liveOutput ? formatLiveStreamOutput(liveOutput) || resultText : resultText;
 			const rendered = await state.renderTool(
 				{ phase: "result", toolCall: event.toolCall, result: event.result, liveOutput: output },
 				isTextComponentOrUndefined(existing) ? existing : undefined,

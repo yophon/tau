@@ -88,7 +88,7 @@ test("runs a two-turn agent loop over chunked wx.request with split multibyte te
 		parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
 		execute: async (args) => {
 			executedCity = args.city;
-			return { output: "晴，25°C" };
+			return { content: [{ type: "text", text: "晴，25°C" }] };
 		},
 	};
 	const agent = new Agent({

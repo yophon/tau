@@ -6,6 +6,7 @@ import {
 	type FileInfo,
 	type FileSystem,
 	messageText,
+	toolResultText,
 } from "@yophon/tau-kernel";
 
 const cwd = "/workspace";
@@ -97,7 +98,7 @@ async function runPrompt(input: string): Promise<void> {
 				appendTranscript(`\n[tool:${event.toolCall.name}] ${JSON.stringify(event.toolCall.arguments)}\n`);
 				break;
 			case "tool_result":
-				appendTranscript(`[result:${event.toolCall.name}] ${event.result.output}\n`);
+				appendTranscript(`[result:${event.toolCall.name}] ${toolResultText(event.result)}\n`);
 				await refreshFileList();
 				break;
 			case "assistant_message": {

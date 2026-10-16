@@ -13,18 +13,21 @@ import {
 	shouldCompact,
 } from "./compaction.ts";
 import { SessionError, TauError, toError } from "./errors.ts";
-import type {
-	ActivityOutcome,
-	AgentRunResult,
-	AgentSpawnOptions,
-	BoundaryDraft,
-	ExtensionCapabilities,
-	ExtensionContext,
+import {
+	type ActivityOutcome,
+	type AgentRunResult,
+	type AgentSpawnOptions,
+	type BoundaryDraft,
+	type ExtensionCapabilities,
+	type ExtensionContext,
 	ExtensionRegistry,
-	ReadonlySessionManager,
-	ToolCallEvent,
-	TreePreparation,
-	UiCapability,
+	type InputSource,
+	type QueuedInputDisposition,
+	type ReadonlySessionManager,
+	type ToolCallEvent,
+	type ToolInfo,
+	type TreePreparation,
+	type UiCapability,
 } from "./extensions.ts";
 import {
 	type AgentMessage,
@@ -32,6 +35,7 @@ import {
 	type CustomMessage,
 	computeUsageCost,
 	emptyUsage,
+	type ImageContent,
 	type ModelPricing,
 	messageText,
 	type SystemMessage,
@@ -69,6 +73,7 @@ import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings, 
 import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
 import {
 	assertToolSchema,
+	errorResult,
 	hasToolSchema,
 	type Tool,
 	type ToolExecutionMode,
@@ -249,6 +254,13 @@ type ToolCallPreparation = PreparedToolCall | { kind: "immediate"; toolCall: Too
 /** A tool result plus how long tool.execute took (absent when it never ran). */
 type ToolOutcome = ToolResult & { durationMs?: number };
 
+/** What a tool batch committed: result messages, their entry ids, and each result's terminate hint. */
+interface ToolBatch {
+	messages: ToolResultMessage[];
+	entryIds: string[];
+	terminate: boolean[];
+}
+
 const DEFAULT_MAX_TURNS = 50;
 
 /** Text of the latest user/custom message — the "prompt" a resumed run answers. */
@@ -341,6 +353,8 @@ export class Agent {
 	private settling = false;
 	private readonly deferredStarts: (() => void)[] = [];
 	private readonly finishTurn: AgentOptions["finishTurn"];
+	/** Registered tools switched off by setActiveTools (the rest, including later registrations, are active). */
+	private inactiveTools = new Set<string>();
 	/**
 	 * True only while the LLM turn loop is in flight — pi's isStreaming. Hooks
 	 * that fire before the loop (input, before_agent_start) see false, so their
@@ -433,9 +447,9 @@ export class Agent {
 				// the host submits a fresh prompt (no host action → the call is a no-op
 				// beyond a queued message, so require it explicitly).
 				if (this.looping) {
-					const message: UserMessage = { role: "user", content, timestamp: Date.now() };
-					if (sendOptions?.deliverAs === "followUp") this.followUpQueue.enqueue(message);
-					else this.steeringQueue.enqueue(message);
+					// Queued input from an extension passes the input handlers too (pi source "extension").
+					const behavior = sendOptions?.deliverAs === "followUp" ? "followUp" : "steer";
+					this.enqueueBackground(() => this.queueUserInput(content, behavior, "extension"));
 					return;
 				}
 				// Between prompt() starting and the loop running (input, before_agent_start)
@@ -481,13 +495,50 @@ export class Agent {
 			abort: () => {
 				this.abort("Aborted by extension");
 			},
+			getActiveTools: () => this.getActiveTools(),
+			getAllTools: () => this.getAllTools(),
+			setActiveTools: (toolNames) => this.setActiveTools(toolNames),
 		});
 	}
 
+	/** Every registered tool: base tools, then extension tools (which override same-name base tools, as in pi). */
 	private currentTools(): Map<string, Tool> {
 		const tools = new Map(this.baseTools.map((tool) => [tool.name, tool]));
 		for (const [name, tool] of this.extensions?.tools ?? []) tools.set(name, tool);
 		return tools;
+	}
+
+	/** The active tools: declared to the model and callable. A tool registered later is active (pi "direct"). */
+	private activeTools(): Map<string, Tool> {
+		const tools = this.currentTools();
+		for (const name of this.inactiveTools) tools.delete(name);
+		return tools;
+	}
+
+	/** Names of the active tools (pi getActiveTools). */
+	getActiveTools(): string[] {
+		return [...this.activeTools().keys()];
+	}
+
+	/** Every registered tool, active or not (pi getAllTools, the ToolInfo subset tau has). */
+	getAllTools(): ToolInfo[] {
+		const extensionTools = this.extensions?.tools;
+		return [...this.currentTools().values()].map((tool) => ({
+			name: tool.name,
+			description: tool.description,
+			parameters: tool.parameters,
+			source: extensionTools?.get(tool.name) === tool ? "extension" : "builtin",
+		}));
+	}
+
+	/**
+	 * Set the active tools by name (pi setActiveTools): unknown names are ignored,
+	 * and the change applies from the next request. Only registered tools can be
+	 * activated, so a permission mode that never registered a tool keeps it out (D20).
+	 */
+	setActiveTools(toolNames: readonly string[]): void {
+		const wanted = new Set(toolNames);
+		this.inactiveTools = new Set([...this.currentTools().keys()].filter((name) => !wanted.has(name)));
 	}
 
 	/** The model-visible conversation: the session log's projection (read-only; P22). */
@@ -578,7 +629,7 @@ export class Agent {
 			getCurrentTools(this.messages),
 			// A schemaless tool that slipped past registration cannot be declared; the
 			// preflight guard still answers a call to it with a paired error result (HF-8).
-			[...this.currentTools().values()]
+			[...this.activeTools().values()]
 				.filter(hasToolSchema)
 				.map(toToolDeclaration),
 		);
@@ -726,7 +777,26 @@ export class Agent {
 		options: AgentSpawnOptions = {},
 		signal?: TauAbortSignal,
 	): Promise<AgentRunResult> {
+		// The parent's extension rules guard the child's tools too — only the tool hooks;
+		// replaying agent/turn/context/message events would reset host state or leak the
+		// parent's context into the child.
+		const parent = this.extensions;
+		const guards = parent
+			? await ExtensionRegistry.load([
+					(api) => {
+						api.on("tool_call", async (event, ctx) => {
+							const decision = await parent.runToolCall(event, ctx);
+							return decision.blocked
+								? { block: true, reason: decision.reason, terminate: decision.terminate }
+								: undefined;
+						});
+						api.on("tool_result", (event, ctx) => parent.runToolResult(event, ctx));
+					},
+				])
+			: undefined;
 		const child = new Agent({
+			extensions: guards,
+			retry: this.retrySettings,
 			config: this.config,
 			transport: this.transport,
 			platform: this.platform,
@@ -931,14 +1001,41 @@ export class Agent {
 		}
 	}
 
-	/** Queue a message consumed after the current turn's tools, before the next LLM call. */
-	steer(text: string): void {
-		this.steeringQueue.enqueue({ role: "user", content: text, timestamp: Date.now() });
+	/**
+	 * Queue input for the running prompt: committed after the current turn, before
+	 * the next request. Input handlers see it first (pi 0.86.0, streamingBehavior
+	 * "steer") and may transform or consume it; the result says which (pi 0.99.0).
+	 */
+	steer(content: UserContent): Promise<QueuedInputDisposition> {
+		return this.queueUserInput(content, "steer", "interactive");
 	}
 
-	/** Queue a message consumed when the prompt would otherwise end; the loop then continues. */
-	followUp(text: string): void {
-		this.followUpQueue.enqueue({ role: "user", content: text, timestamp: Date.now() });
+	/** Queue input consumed when the prompt would otherwise end; the loop then continues. Same input rules as steer(). */
+	followUp(content: UserContent): Promise<QueuedInputDisposition> {
+		return this.queueUserInput(content, "followUp", "interactive");
+	}
+
+	/** Run input handlers on queued input, then enqueue what survives (pi _queueUserInput). */
+	private async queueUserInput(
+		content: UserContent,
+		behavior: "steer" | "followUp",
+		source: InputSource,
+	): Promise<QueuedInputDisposition> {
+		const queue = behavior === "steer" ? this.steeringQueue : this.followUpQueue;
+		if (!this.extensions) {
+			queue.enqueue({ role: "user", content, timestamp: Date.now() });
+			return "queued";
+		}
+		const text = userContentText(content);
+		const images = typeof content === "string" ? undefined : content.filter((block) => block.type === "image");
+		const result = await this.extensions.runInput(text, this.extensionContext(), {
+			source,
+			streamingBehavior: behavior,
+			...(images && images.length > 0 ? { images } : {}),
+		});
+		if (result.handled) return "handled";
+		queue.enqueue({ role: "user", content: rewrittenInput(content, text, result), timestamp: Date.now() });
+		return "queued";
 	}
 
 	hasQueuedMessages(): boolean {
@@ -1139,15 +1236,16 @@ export class Agent {
 		let finalInput: UserContent = input;
 		if (this.extensions) {
 			const inputText = userContentText(input);
-			const inputResult = await this.extensions.runInput(inputText, ctx);
+			const images = typeof input === "string" ? undefined : input.filter((block) => block.type === "image");
+			const inputResult = await this.extensions.runInput(inputText, ctx, {
+				source: "interactive",
+				...(images && images.length > 0 ? { images } : {}),
+			});
 			if (inputResult.handled) {
 				yield { type: "agent_end", messages: this.messages };
 				return;
 			}
-			if (typeof input === "string") finalInput = inputResult.text;
-			else if (inputResult.text !== inputText) {
-				finalInput = [{ type: "text", text: inputResult.text }, ...input.filter((block) => block.type === "image")];
-			}
+			finalInput = rewrittenInput(input, inputText, inputResult);
 		}
 
 		const systemPrompt = await this.applyBeforeAgentStart(userContentText(finalInput), ctx);
@@ -1362,6 +1460,9 @@ export class Agent {
 				// The request is the log's projection: declare prompt/tool changes as a system
 				// message first, then check the projection against a JSON replay of the log.
 				await this.declareLoadout(systemPrompt);
+				// The tools this request declares are the ones its calls may use: a tool that
+				// changes mid-batch (registered, deactivated) takes effect from the next request (pi).
+				const toolSnapshot = this.activeTools();
 				await this.flushWrites();
 				if (this.verifyTranscript) await this.assertTranscriptMatchesLog();
 				let request: AgentMessage[] = [...this.messages];
@@ -1516,35 +1617,32 @@ export class Agent {
 				}
 
 				const toolCalls = toolCallsOf(assistantMessage);
-				const toolResults: ToolResultMessage[] = [];
-				const toolResultEntryIds: string[] = [];
+				const batch: ToolBatch = { messages: [], entryIds: [], terminate: [] };
+				const toolResults = batch.messages;
+				const toolResultEntryIds = batch.entryIds;
 				if (toolCalls.length > 0 && assistantMessage.stopReason === "length") {
 					// A length stop may have cut the arguments off: fail every call instead of
 					// running possibly borked ones (pi 0.80.4). tau routes them through the
 					// immediate-result path, like any call that never executes.
 					for (const toolCall of toolCalls) {
 						yield { type: "tool_start", toolCall };
-						yield await this.commitToolResult(
-							toolCall,
-							{ output: truncatedToolCallText(toolCall.name), isError: true },
-							ctx,
-							toolResults,
-							toolResultEntryIds,
-						);
+						yield await this.commitToolResult(toolCall, errorResult(truncatedToolCallText(toolCall.name)), ctx, batch);
 					}
 				} else {
 					// pi dispatch semantics (agent-loop.ts): global sequential config or any
 					// sequential-marked tool in the batch downgrades the whole batch.
 					const forceSequential =
 						this.toolExecution === "sequential" ||
-						toolCalls.some((tc) => this.currentTools().get(tc.name)?.executionMode === "sequential");
+						toolCalls.some((tc) => toolSnapshot.get(tc.name)?.executionMode === "sequential");
 					if (forceSequential || toolCalls.length <= 1) {
-						yield* this.runToolBatchSequential(toolCalls, ctx, signal, toolResults, toolResultEntryIds);
+						yield* this.runToolBatchSequential(toolCalls, toolSnapshot, ctx, signal, batch);
 					} else {
-						yield* this.runToolBatchParallel(toolCalls, ctx, signal, toolResults, toolResultEntryIds);
+						yield* this.runToolBatchParallel(toolCalls, toolSnapshot, ctx, signal, batch);
 					}
 				}
-				hasMoreToolCalls = toolCalls.length > 0;
+				// Early termination needs every finalized result of the batch to ask for it (pi).
+				const terminate = batch.terminate.length > 0 && batch.terminate.every(Boolean);
+				hasMoreToolCalls = toolCalls.length > 0 && !terminate;
 				lengthStreak = assistantMessage.stopReason === "length" && toolCalls.length > 0 ? lengthStreak + 1 : 0;
 
 				const decision = await this.finishTurn?.({ message: assistantMessage, toolResults }, signal);
@@ -1648,40 +1746,41 @@ export class Agent {
 		toolCall: ToolCall,
 		outcome: ToolOutcome,
 		ctx: ExtensionContext,
-		toolResults: ToolResultMessage[],
-		toolResultEntryIds: string[],
+		batch: ToolBatch,
 	): Promise<AgentEvent> {
-		const { durationMs, usage, ...result } = outcome;
+		const { durationMs, usage, terminate, ...result } = normalizeToolOutcome(toolCall.name, outcome);
 		const toolResultMessage: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: toolCall.id,
 			toolName: toolCall.name,
-			content: [{ type: "text", text: result.output }],
+			content: result.content,
 			isError: result.isError === true,
 			timestamp: Date.now(),
+			...(result.details !== undefined ? { details: result.details } : {}),
 			...(durationMs !== undefined ? { durationMs } : {}),
 			...(usage ? { usage } : {}),
 		};
 		const committed = await this.commitMessageWithId(toolResultMessage, ctx);
-		toolResults.push(committed.message as ToolResultMessage);
-		toolResultEntryIds.push(committed.entryId);
-		return { type: "tool_result", toolCall, result };
+		batch.messages.push(committed.message as ToolResultMessage);
+		batch.entryIds.push(committed.entryId);
+		batch.terminate.push(terminate === true);
+		return { type: "tool_result", toolCall, result: terminate ? { ...result, terminate } : result };
 	}
 
 	/** Sequential batch: the pre-P18 behavior — full hook chain, execute, result, one tool at a time. */
 	private async *runToolBatchSequential(
 		toolCalls: ToolCall[],
+		tools: ReadonlyMap<string, Tool>,
 		ctx: ExtensionContext,
 		signal: TauAbortSignal | undefined,
-		toolResults: ToolResultMessage[],
-		toolResultEntryIds: string[],
+		batch: ToolBatch,
 	): AsyncGenerator<AgentEvent> {
 		for (const toolCall of toolCalls) {
 			yield { type: "tool_start", toolCall };
 			const updates: ToolUpdate[] = [];
 			let wakeUpdate: (() => void) | undefined;
 			let executionDone = false;
-			const execution = this.executeToolCall(toolCall, ctx, signal, (update) => {
+			const execution = this.executeToolCall(toolCall, tools, ctx, signal, (update) => {
 				updates.push(update);
 				wakeUpdate?.();
 				wakeUpdate = undefined;
@@ -1709,7 +1808,7 @@ export class Agent {
 				});
 			}
 			const { result } = await execution;
-			yield await this.commitToolResult(toolCall, result, ctx, toolResults, toolResultEntryIds);
+			yield await this.commitToolResult(toolCall, result, ctx, batch);
 		}
 	}
 
@@ -1726,15 +1825,15 @@ export class Agent {
 	 */
 	private async *runToolBatchParallel(
 		toolCalls: ToolCall[],
+		tools: ReadonlyMap<string, Tool>,
 		ctx: ExtensionContext,
 		signal: TauAbortSignal | undefined,
-		toolResults: ToolResultMessage[],
-		toolResultEntryIds: string[],
+		batch: ToolBatch,
 	): AsyncGenerator<AgentEvent> {
 		const preps: ToolCallPreparation[] = [];
 		for (const toolCall of toolCalls) {
 			yield { type: "tool_start", toolCall };
-			preps.push(await this.preflightToolCall(toolCall, ctx, signal));
+			preps.push(await this.preflightToolCall(toolCall, tools, ctx, signal));
 		}
 
 		type PumpItem = { kind: "update"; toolCall: ToolCall; update: ToolUpdate } | { kind: "done" };
@@ -1762,7 +1861,7 @@ export class Agent {
 					push({ kind: "done" });
 				},
 				(cause) => {
-					outcomes[index] = { output: toError(cause).message, isError: true };
+					outcomes[index] = errorResult(toError(cause).message);
 					running--;
 					push({ kind: "done" });
 				},
@@ -1787,17 +1886,18 @@ export class Agent {
 		}
 
 		for (let index = 0; index < preps.length; index++) {
-			yield await this.commitToolResult(preps[index].toolCall, outcomes[index], ctx, toolResults, toolResultEntryIds);
+			yield await this.commitToolResult(preps[index].toolCall, outcomes[index], ctx, batch);
 		}
 	}
 
 	private async executeToolCall(
 		toolCall: ToolCall,
+		tools: ReadonlyMap<string, Tool>,
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 		onUpdate?: (update: ToolUpdate) => void,
 	): Promise<{ result: ToolOutcome }> {
-		const prep = await this.preflightToolCall(toolCall, ctx, signal);
+		const prep = await this.preflightToolCall(toolCall, tools, ctx, signal);
 		if (prep.kind === "immediate") return { result: prep.result };
 		return { result: await this.executePreparedToolCall(prep, ctx, signal, onUpdate) };
 	}
@@ -1810,12 +1910,13 @@ export class Agent {
 	 */
 	private async preflightToolCall(
 		toolCall: ToolCall,
+		tools: ReadonlyMap<string, Tool>,
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
 	): Promise<ToolCallPreparation> {
-		const tool = this.currentTools().get(toolCall.name);
+		const tool = tools.get(toolCall.name);
 		if (!tool) {
-			return { kind: "immediate", toolCall, result: { output: `Unknown tool: ${toolCall.name}`, isError: true } };
+			return { kind: "immediate", toolCall, result: errorResult(`Unknown tool: ${toolCall.name}`) };
 		}
 		// Execution works on a copy so tool_call handlers can rewrite arguments
 		// without mutating the stored assistant message.
@@ -1831,11 +1932,8 @@ export class Agent {
 			};
 			const decision = await this.extensions.runToolCall(event, ctx);
 			if (decision.blocked) {
-				return {
-					kind: "immediate",
-					toolCall,
-					result: { output: `Tool call blocked: ${decision.reason ?? "blocked by extension"}`, isError: true },
-				};
+				const blocked = errorResult(`Tool call blocked: ${decision.reason ?? "blocked by extension"}`);
+				return { kind: "immediate", toolCall, result: decision.terminate ? { ...blocked, terminate: true } : blocked };
 			}
 			args = event.input;
 		}
@@ -1853,7 +1951,7 @@ export class Agent {
 			return {
 				kind: "immediate",
 				toolCall,
-				result: { output: `Tool ${toolCall.name} has no parameters schema and cannot be called`, isError: true },
+				result: errorResult(`Tool ${toolCall.name} has no parameters schema and cannot be called`),
 			};
 		}
 		const problems = validateToolArgs(tool.parameters, args);
@@ -1861,7 +1959,7 @@ export class Agent {
 			return {
 				kind: "immediate",
 				toolCall,
-				result: { output: `Invalid arguments for ${toolCall.name}: ${problems.join("; ")}`, isError: true },
+				result: errorResult(`Invalid arguments for ${toolCall.name}: ${problems.join("; ")}`),
 			};
 		}
 
@@ -1874,7 +1972,7 @@ export class Agent {
 		);
 		const riskText = policyDecision.reason ?? `${policyDecision.risk}-risk tool call in ${this.permissionMode} mode`;
 		if (policyDecision.action === "deny") {
-			return { kind: "immediate", toolCall, result: { output: `Denied by policy: ${riskText}`, isError: true } };
+			return { kind: "immediate", toolCall, result: errorResult(`Denied by policy: ${riskText}`) };
 		}
 		if (policyDecision.action === "ask") {
 			const handler = this.onApproval ?? this.uiApprovalHandler();
@@ -1882,10 +1980,9 @@ export class Agent {
 				return {
 					kind: "immediate",
 					toolCall,
-					result: {
-						output: `Denied by policy: approval required (${riskText}), but no approval handler is available`,
-						isError: true,
-					},
+					result: errorResult(
+						`Denied by policy: approval required (${riskText}), but no approval handler is available`,
+					),
 				};
 			}
 			const request: ApprovalRequest = {
@@ -1902,14 +1999,14 @@ export class Agent {
 				return {
 					kind: "immediate",
 					toolCall,
-					result: { output: `Denied by policy: approval failed (${toError(cause).message})`, isError: true },
+					result: errorResult(`Denied by policy: approval failed (${toError(cause).message})`),
 				};
 			}
 			if (!approved) {
 				return {
 					kind: "immediate",
 					toolCall,
-					result: { output: `Denied by policy: approval declined (${riskText})`, isError: true },
+					result: errorResult(`Denied by policy: approval declined (${riskText})`),
 				};
 			}
 		}
@@ -1958,7 +2055,7 @@ export class Agent {
 			try {
 				result = await tool.execute(args, signal, emitUpdate, ctx);
 			} catch (cause) {
-				result = { output: cause instanceof Error ? cause.message : String(cause), isError: true };
+				result = errorResult(cause instanceof Error ? cause.message : String(cause));
 			}
 			durationMs = Math.max(0, Date.now() - startedAt);
 		}
@@ -1970,18 +2067,28 @@ export class Agent {
 		);
 
 		if (this.extensions) {
+			result = normalizeToolOutcome(toolCall.name, result);
 			const finalResult = await this.extensions.runToolResult(
 				{
 					type: "tool_result",
 					toolCallId: toolCall.id,
 					toolName: toolCall.name,
 					input: args,
-					output: result.output,
+					content: result.content,
+					...(result.details !== undefined ? { details: result.details } : {}),
 					isError: result.isError === true,
+					...(result.usage ? { usage: result.usage } : {}),
 				},
 				ctx,
 			);
-			result = { output: finalResult.output, isError: finalResult.isError };
+			// terminate rides through the tool_result chain untouched (pi AfterToolCallResult keeps it).
+			result = {
+				content: finalResult.content,
+				...(finalResult.details !== undefined ? { details: finalResult.details } : {}),
+				isError: finalResult.isError,
+				...(finalResult.usage ? { usage: finalResult.usage } : {}),
+				...(result.terminate ? { terminate: true } : {}),
+			};
 		}
 		return durationMs !== undefined ? { ...result, durationMs } : result;
 	}
@@ -2091,6 +2198,37 @@ function truncatedToolCallText(toolName: string): string {
 }
 
 /** Result for a tool call that was never started because its run was aborted. */
+/** Input content after input handlers: rewritten text replaces the text blocks; images follow the handlers. */
+function rewrittenInput(
+	original: UserContent,
+	originalText: string,
+	result: { text: string; images?: ImageContent[] },
+): UserContent {
+	const originalImages = typeof original === "string" ? [] : original.filter((block) => block.type === "image");
+	const images = result.images ?? originalImages;
+	if (result.text === originalText && images === originalImages) return original;
+	if (images.length === 0) return result.text;
+	return [{ type: "text", text: result.text }, ...images];
+}
+
 function abortedResult(): ToolResult {
-	return { output: "Operation aborted", isError: true };
+	return errorResult("Operation aborted");
+}
+
+/**
+ * Validate what a tool (or a tool_result handler) returned. A result without a
+ * `content` array — e.g. an extension still returning the pre-P23 `{ output }`
+ * — becomes an error result the model can see, instead of an empty success.
+ */
+function normalizeToolOutcome(toolName: string, outcome: ToolOutcome): ToolOutcome {
+	if (Array.isArray(outcome?.content)) return outcome;
+	const legacy = typeof (outcome as { output?: unknown } | undefined)?.output === "string";
+	return {
+		...errorResult(
+			legacy
+				? `Tool ${toolName} returned { output } — tools return { content: [{ type: "text", text }] } since P23`
+				: `Tool ${toolName} returned an invalid result (expected { content })`,
+		),
+		...(outcome?.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+	};
 }

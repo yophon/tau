@@ -13,7 +13,7 @@ const streamingTool: Tool = {
 	execute: async (_args, _signal, onUpdate) => {
 		onUpdate?.("part1", "stdout");
 		onUpdate?.("part2", "stderr");
-		return { output: "part1part2" };
+		return { content: [{ type: "text", text: "part1part2" }] };
 	},
 };
 

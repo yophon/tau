@@ -23,7 +23,7 @@ test("real-HTTP e2e: two-turn agent loop through native fetch (expo/fetch shape)
 			parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
 			execute: async (args) => {
 				executedCity = args.city;
-				return { output: "晴，25°C" };
+				return { content: [{ type: "text", text: "晴，25°C" }] };
 			},
 		};
 		const agent = new Agent({

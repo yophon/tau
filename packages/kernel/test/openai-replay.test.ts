@@ -18,7 +18,7 @@ const echo: Tool = {
 	name: "echo",
 	description: "echo",
 	parameters: { type: "object", properties: {} },
-	execute: async () => ({ output: "echoed" }),
+	execute: async () => ({ content: [{ type: "text", text: "echoed" }] }),
 };
 
 function wireMessages(request: unknown): Record<string, unknown>[] {

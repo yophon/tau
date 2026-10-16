@@ -44,13 +44,13 @@
 | `message_end` | 0.80 | ✅ P2/P3 | 可替换消息，改角色的替换被忽略 |
 | `tool_execution_start` | 0.80 | ✅ P2 | |
 | `tool_execution_update` | 0.80 | ✅ P2 | 携带流式部分输出 |
-| `tool_execution_end` | 0.80 | ✅ P2 | 并行时按完成序（P18）；durationMs 📍P23 |
+| `tool_execution_end` | 0.80 | ✅ P2 | 并行时按完成序（P18）；`durationMs`（P22）。execute 结束后的 onUpdate 丢弃（P23b，pi acceptingUpdates） |
 | `model_select` | 0.80 | ✅ P8 | before 可改写/取消，after 记录 |
 | `thinking_level_select` | 0.80 | ✅ P8 | |
-| `tool_call` | 0.80 | ✅ P2 | block/改参；terminate 📍P23 |
-| `tool_result` | 0.80 | ✅ P2 | |
+| `tool_call` | 0.80 | ✅ P2 | block/改参；`terminate` 随 block 生效（P23b），全批 finalized 结果都 terminate 才不再请求；策略/审批拒绝不产生 terminate（D20）。工具按请求快照分派，快照外调用返回 `Unknown tool` |
+| `tool_result` | 0.80 | ✅ P2 | P23b 起照抄 pi 形状：事件带 `content`/`details`/`usage`，结果按字段覆盖；`structuredContent` 📍P24。工具结果自带的 terminate 穿过处理器链保留 |
 | `user_bash` | 0.80 | ✅ P8 | TUI `!`/`!!`；fail-closed 📍P23 |
-| `input` | 0.80 | ✅ P2 | 三态拦截；图片块原样保留（P20） |
+| `input` | 0.80 | ✅ P2 | 三态拦截；事件带 `images`/`source`/`streamingBehavior`，transform 可带 images（P23b）。轮中 `steer()`/`followUp()` 与运行中的 `sendUserMessage` 也经过它（pi 0.86.0），返回 `QueuedInputDisposition`（pi 0.99.0）。⚠ 偏离：InputSource 无 `rpc`（tau 无 RPC 模式） |
 
 ## ExtensionAPI
 
@@ -72,10 +72,10 @@
 | `getSessionName` | 0.80 | 📍P23 | 快照内漏登（P21 补行），按 D7 直接补 |
 | `setLabel` | 0.80 | ✅ P22 | 写 `label` 条目，undefined 清除；目标不存在时同步抛 `not_found`（pi 同样拒绝）。标签不进上下文 |
 | `exec` | 0.80 | ⚠D4 | 经 `ctx.capabilities.shell` 能力门面执行（裸引擎可能没有 shell，能力缺失即不可用，D10/D15） |
-| `getActiveTools` | 0.80 | 📍P23 | 快照内漏登。内核 active 工具集 |
-| `getAllTools` | 0.80 | 📍P23 | 同上 |
+| `getActiveTools` | 0.80 | ✅ P23b | 内核 active 集；新注册工具缺省 active（pi direct 档） |
+| `getAllTools` | 0.80 | ✅ P23b | ToolInfo 子集 `{name, description, parameters, source}`；exposure/namespace/annotations 📍P24 |
 | `getSettings` | 1.2 | ❌D9 | 返回 pi 产品层 Settings。tau 没有 settings 层：配置是宿主装配的 AgentOptions、flag 与工厂 options（D8） |
-| `setActiveTools` | 0.80 | 📍P23 | 同 getActiveTools |
+| `setActiveTools` | 0.80 | ✅ P23b | 未知名忽略、下一次请求生效；只能激活已注册工具，权限档没注册的工具激活不到（D20） |
 | `getCommands` | 0.80 | 📍P23 | 快照内漏登 |
 | `setModel` | 0.80 | 📍P23 | 快照内漏登。宿主现经 model_select 处理切换 |
 | `getThinkingLevel` | 0.80 | 📍P23 | 快照内漏登。thinkingLevel 进内核缝 |

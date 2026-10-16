@@ -18,7 +18,7 @@ const echoTool: Tool = {
 	name: "echo_tool",
 	description: "Echo the input back",
 	parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
-	execute: async (args) => ({ output: `echo: ${String(args.text)}` }),
+	execute: async (args) => ({ content: [{ type: "text", text: `echo: ${String(args.text)}` }] }),
 };
 
 function assistantMessage(

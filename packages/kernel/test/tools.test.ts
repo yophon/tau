@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCodingTools as createCodingToolsForEdit, mutationQueueKey } from "../src/coding-tools.ts";
-import { validateToolArgs } from "../src/tools.ts";
+import { toolResultText, validateToolArgs } from "../src/tools.ts";
 
 const bashSchema = {
 	type: "object",
@@ -90,7 +90,7 @@ test("edit writes newText literally: $ replacement patterns are not interpreted 
 	assert.ok(edit);
 	const newText = "echo $$ && echo $& $` $' $HOME";
 	const result = await edit.execute({ path: "a.sh", oldText: "echo OLD", newText }, undefined, () => {}, {} as never);
-	assert.equal(result.isError, undefined, result.output);
+	assert.equal(result.isError, undefined, toolResultText(result));
 	assert.equal(files.get("a.sh"), `${newText}\n`);
 });
 

@@ -4,7 +4,7 @@ import { Agent } from "../src/agent.ts";
 import type { FileInfo, FileSystem } from "../src/capabilities.ts";
 import { type Extension, type ExtensionAPI, ExtensionRegistry } from "../src/extensions.ts";
 import { emptyUsage, messageText } from "../src/messages.ts";
-import type { Tool } from "../src/tools.ts";
+import { type Tool, toolResultText } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
 
 test("extensions register tools, transform input, and observe lifecycle events", async () => {
@@ -14,7 +14,7 @@ test("extensions register tools, transform input, and observe lifecycle events",
 			name: "greet",
 			description: "Greets",
 			parameters: { type: "object", properties: { name: { type: "string" } } },
-			execute: async (args) => ({ output: `hello ${String(args.name)}` }),
+			execute: async (args) => ({ content: [{ type: "text", text: `hello ${String(args.name)}` }] }),
 		});
 		api.on("input", (event) => ({ action: "transform", text: `${event.text} (rewritten)` }));
 		api.on("agent_start", () => {
@@ -89,7 +89,7 @@ test("tool_call can block or mutate input in place; tool_result can override fie
 		parameters: { type: "object", properties: { text: { type: "string" } } },
 		execute: async (args) => {
 			executedWith = args;
-			return { output: String(args.text) };
+			return { content: [{ type: "text", text: String(args.text) }] };
 		},
 	};
 
@@ -100,7 +100,7 @@ test("tool_call can block or mutate input in place; tool_result can override fie
 			return undefined;
 		});
 		api.on("tool_result", (event) => {
-			if (event.toolName === "echo") return { output: `${event.output}!` };
+			if (event.toolName === "echo") return { content: [{ type: "text", text: `${toolResultText(event)}!` }] };
 			return undefined;
 		});
 	};
@@ -122,7 +122,7 @@ test("tool_call can block or mutate input in place; tool_result can override fie
 		if (event.type === "tool_result") {
 			toolResults.push({
 				name: event.toolCall.name,
-				content: event.result.output,
+				content: toolResultText(event.result),
 				isError: event.result.isError === true,
 			});
 		}
@@ -339,7 +339,7 @@ test("handlers chain in registration order and TUI registrations are exposed to 
 			{
 				phase: "result",
 				toolCall: { type: "toolCall", id: "call_1", name: "ping-tool", arguments: { ok: true } },
-				result: { output: "pong" },
+				result: { content: [{ type: "text", text: "pong" }] },
 				liveOutput: "stdout\npong",
 			},
 			{ messages: [] },
@@ -379,7 +379,7 @@ test("extension tools receive context capabilities", async () => {
 			parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
 			execute: async (args, _signal, _onUpdate, ctx) => {
 				const content = await ctx?.capabilities?.fs?.readTextFile(String(args.path));
-				return { output: content ?? "missing fs", isError: content === undefined };
+				return { content: [{ type: "text", text: content ?? "missing fs" }], isError: content === undefined };
 			},
 		});
 	};
@@ -466,7 +466,7 @@ test("tools registered after agent construction are visible to later turns", asy
 		name: "late_tool",
 		description: "Registered after construction",
 		parameters: { type: "object", properties: {} },
-		execute: async () => ({ output: "late ok" }),
+		execute: async () => ({ content: [{ type: "text", text: "late ok" }] }),
 	});
 
 	for await (const _event of agent.prompt("go")) {

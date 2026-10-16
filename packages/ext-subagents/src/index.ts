@@ -40,7 +40,10 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				const description = stringArg(args, "description");
 				const prompt = stringArg(args, "prompt");
 				if (!ctx?.runSubagent) {
-					return { output: "Subagent execution is not available in this host.", isError: true };
+					return {
+						content: [{ type: "text", text: "Subagent execution is not available in this host." }],
+						isError: true,
+					};
 				}
 				onUpdate?.(`Starting subagent: ${description}`);
 				const result = await ctx.runSubagent(
@@ -50,7 +53,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				);
 				const output = result.text.trim() === "" ? "(subagent returned no text)" : result.text;
 				// The child's LLM calls are billed to the session through the tool result (pi 0.81.0).
-				return { output, usage: result.usage };
+				return { content: [{ type: "text", text: output }], usage: result.usage };
 			},
 		});
 	};
