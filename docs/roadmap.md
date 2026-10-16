@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-16（P21a AGENTS.md 完成；**当前工作 = P22**）
+> 最后更新：2026-10-16（P22 规格书确认，**当前工作 = P22 实施**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -217,7 +217,9 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 规格书：[specs/phase-21a-context-files.md](specs/phase-21a-context-files.md)。P21 审计登记的缺口（pi v0.80.3 就有），照抄 pi v1.2.0：内核 `context-files.ts` 纯 ES 发现 + 渲染，CLI/TUI 启动加载，`-nc` 关闭，`/reload` 重读。
 
-## Phase 22 ⬜ 事件日志内核：日志即唯一事实
+## Phase 22 🚧 事件日志内核：日志即唯一事实
+
+规格书：[specs/phase-22-event-log.md](specs/phase-22-event-log.md)（2026-10-16 确认，五步 22a–22e）。
 
 输入：P21 附录 A 中阶段为 P22 的 27 条。照抄 pi 1.2.0 会话模型：会话日志是 provider 上下文的唯一来源，请求前从日志重建；system prompt 与工具声明以 system 消息进入转录，线格式按协议折叠；SessionEntry 增 `usage`、`context_edit`；`ToolCall.arguments`/`details` 限定为 JSON 值；会话兼容收窄为单向读（D13 补记）。镜像 `ctx.sessionManager`、`ctx.getSystemPrompt()`、`setLabel`、`context_with_system`。
 

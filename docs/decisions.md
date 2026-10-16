@@ -146,3 +146,7 @@ pi 按模型能力表决定是否给工具 schema 发 `strict`，以及是否用
 ## D26：方言补位按端点嗅探，协议选择仍不嗅探（2026-10-15，P21，用户裁定）
 
 P16 的「显式、不嗅探」针对协议选择（OpenAI 兼容还是 Anthropic），保持不变。同一协议内的方言补位照抄 pi，按 baseUrl 缺省开启、配置可覆盖：DeepSeek 端点（host 含 deepseek.com）回放 assistant 轮时补 `reasoning_content: ""`（`OpenAICompatConfig.replayEmptyReasoning`，P21-HF-6）。P23 的 Chat Completions `finish_reason` 严格语义同理：缺省严格，`supportsFinishReason: false` 与对应环境变量作逃生口，与 D20-1、D22-1 同类处理。
+
+## D27：before_agent_start 改写的提示落盘（2026-10-16，P22，用户确认）
+
+有意偏离 pi。pi 把 `before_agent_start` 返回的 systemPrompt 当「强制提示」：不写会话，只在请求时把转录里的 system 消息折叠成以它为头的投影。P22 的核心不变式是「模型看到的就是日志里的」，ext-resources 的 skills 正是经这个钩子注入的，按 pi 的做法它们永远不会出现在日志里，不变式检查只能对它网开一面。tau 把改写后的有效提示作为具名 section `prompt` 的 patch 写进转录，只在内容变化时追加。代价：每轮都产出不同提示的扩展会让日志多出 system 消息。pi 写的会话不含这类 patch，读取不受影响（单向兼容，D13 补记 ②）。
