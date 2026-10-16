@@ -63,6 +63,7 @@ test("agent loop executes tool calls and completes with a final message", async 
 		"text_delta",
 		"assistant_message",
 		"agent_end",
+		"agent_settled",
 	]);
 
 	// Conversation state: system (prompt + tools, P22), user, assistant(toolCalls), toolResult, assistant.
@@ -128,7 +129,7 @@ test("http errors carry status and body", async () => {
 	// P11 语义(照抄 pi):HTTP 错误不再抛出,而是变成 stopReason error 的 assistant 消息。
 	const events: string[] = [];
 	for await (const event of agent.prompt("hi")) events.push(event.type);
-	assert.equal(events.at(-1), "agent_end");
+	assert.equal(events.at(-2), "agent_end");
 	const last = agent.messages.at(-1) as AssistantMessage;
 	assert.equal(last.role, "assistant");
 	assert.equal(last.stopReason, "error");

@@ -130,7 +130,7 @@ test("retries exhaust into a final error message and a failure auto_retry_end", 
 	assert.ok(end);
 	assert.equal(end.success, false);
 	assert.ok(end.finalError?.includes("HTTP 500"));
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 	const last = agent.messages.at(-1) as AssistantMessage;
 	assert.equal(last.stopReason, "error");
 });
@@ -152,7 +152,7 @@ test("aborting during backoff cancels the retry and ends the prompt", async () =
 	}
 	const end = events.find((event) => event.type === "auto_retry_end") as { finalError?: string } | undefined;
 	assert.equal(end?.finalError, "Retry cancelled");
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 });
 
 test("without Platform.sleep the retry machinery is disabled", async () => {
@@ -202,7 +202,7 @@ test("a stalled stream times out via Platform.sleep and becomes a timeout error 
 	const agent = new Agent({ config: { ...CONFIG, stallTimeoutMs: 50 }, platform, retry: { enabled: false } });
 	const events: string[] = [];
 	for await (const event of agent.prompt("hi")) events.push(event.type);
-	assert.equal(events.at(-1), "agent_end");
+	assert.equal(events.at(-2), "agent_end");
 	const last = agent.messages.at(-1) as AssistantMessage;
 	assert.equal(last.stopReason, "error");
 	assert.ok(last.errorMessage?.includes("timed out: no data for 50ms"), last.errorMessage);
@@ -216,16 +216,18 @@ test("ctx.abort() from an extension aborts the running prompt", async () => {
 			});
 		},
 	]);
+	const requests: unknown[] = [];
 	const agent = new Agent({
 		config: CONFIG,
-		platform: fakePlatform([makeSseResponse(textTurn("never"))]),
+		platform: fakePlatform([makeSseResponse(textTurn("never"))], requests),
 		extensions: registry,
 	});
 	const events: string[] = [];
 	for await (const event of agent.prompt("hi")) events.push(event.type);
-	assert.equal(events.at(-1), "agent_end");
-	const last = agent.messages.at(-1) as AssistantMessage;
-	assert.equal(last.stopReason, "aborted");
+	assert.equal(events.at(-2), "agent_end");
+	// P23b: an abort landing in turn_start ends the run before the request goes out.
+	assert.equal(requests.length, 0);
+	assert.equal(agent.messages.at(-1)?.role, "user");
 });
 
 test("sendMessage deliverAs steer/followUp/nextTurn queue as in pi", async () => {

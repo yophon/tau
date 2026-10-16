@@ -235,7 +235,7 @@ test("abort while waiting for approval counts as a rejection and ends the run", 
 	const events = await drain(agent, "go", controller.signal);
 	assert.equal(executions.length, 0);
 	assert.match(toolResultOutputs(events)[0], /^Denied by policy: approval declined/);
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 });
 
 test("subagents inherit permissionMode and onApproval", async () => {

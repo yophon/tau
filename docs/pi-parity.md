@@ -32,13 +32,13 @@
 | `provider_stream_event` | 1.2 | 📍Backlog | 只读的原始 chunk 通知，TransportRequest 可选回调（D15 模式） |
 | `before_agent_start` | 0.80 | ✅ P2/P3 | 替换 system prompt + 注入消息；`resume()` 同样触发（P21-HF-10） |
 | `agent_start` | 0.80 | ✅ P2 | |
-| `agent_end` | 0.80 | ✅ P2 | 当前在 looping 内发出，其中发起的 run 进 steering 📍P23（随 agent_settled 修） |
-| `agent_before_settle` | 1.2 | 📍P23 | 可操作的结束边界（子集） |
-| `agent_settled` | 1.2 | 📍P23 | 含 aborted |
+| `agent_end` | 0.80 | ✅ P2 | 每个 run 一次；其中入队的消息在同一个 prompt 里续跑一个 run（P23b，pi _handlePostAgentRun）。⚠ 偏离：自动重试在 run 内完成，重试之间不发 agent_end（pi 每次尝试一个 run） |
+| `agent_before_settle` | 1.2 | ✅ P23b | 可操作边界子集：草稿只收 custom/custom_message，无 `context` 预览（处理器读 ctx.messages）；continue 或队列非空则续跑一个 run，无可回答上下文时忽略并报错 |
+| `agent_settled` | 1.2 | ✅ P23b | 运行槽释放后发出，带 aborted；同步镜像到 AgentEvent；其中发起的 run 等全部处理器返回后才交给宿主 |
 | `ui_prompt_start` | 1.2 | 📍Backlog | 内核包装 UiCapability 即可实现；无消费者 |
 | `ui_prompt_end` | 1.2 | 📍Backlog | 同上 |
 | `turn_start` | 0.80 | ✅ P2 | |
-| `turn_end` | 0.80 | ✅ P2 | 带 toolResults；outcome 与可操作边界 📍P23 |
+| `turn_end` | 0.80 | ✅ P2 | P23b 起为可操作边界：outcome、messageEntryId/toolResultEntryIds，草稿子集同 agent_before_settle，continue 在 error/aborted 或无可回答上下文时忽略。照抄 pi 事件序：steering 在 turn_end 之后拉取 |
 | `message_start` | 0.80 | ✅ P2/P3 | 全部消息角色 |
 | `message_update` | 0.80 | ⚠D21 | 只有 assistant 流式；携带 tau `ChatStreamEvent` 而不是 pi `AssistantMessageEvent`（transport 是装配缝，事件形状归内核） |
 | `message_end` | 0.80 | ✅ P2/P3 | 可替换消息，改角色的替换被忽略 |
@@ -65,7 +65,7 @@
 | `registerMarkdownTransformer` | 1.2 | 📍Backlog | 纯展示变换，等 pi-tui 升级（D23 解耦） |
 | `registerEntryRenderer` | 1.2 | ✅ P8 | tau 早于 pi 自有；形状对齐与偏离注释 📍P23 |
 | `registerToolRenderer` | 1.2 | ✅ P8 | 同上 |
-| `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 triggerTurn:false 延后到 turn_end 📍P23 |
+| `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 `triggerTurn:false` 暂存到当前 turn_end 之后提交、不触发请求（P23b，pi 0.84.4）；压缩/导航占槽期间暂存到其结束后（P23a） |
 | `sendUserMessage` | 0.80 | ✅ P11 | 流中 steer/followUp，空闲经宿主 submitPrompt；启动窗口与宿主运行中抛 `busy`（P21-HF-11） |
 | `appendEntry` | 0.80 | ✅ P3 | |
 | `setSessionName` | 0.80 | ✅ P3 | |

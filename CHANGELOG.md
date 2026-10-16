@@ -5,6 +5,18 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P23b, pi runLoop event order): compaction runs before `turn_start`
+  (the first turn keeps its slot); steering is polled after `turn_end` and
+  committed after the next `turn_start` (it used to land before `turn_end`).
+  Queued custom messages count as pending work. Messages queued by `agent_end`
+  handlers start a continuation run in the same prompt (a second
+  `agent_start`/`agent_end` pair). The AgentEvent stream now ends with
+  `agent_settled`. An abort landing in a `turn_start` handler ends the run
+  before the request goes out. Tool calls of a `length`-truncated response are
+  failed instead of run (pi 0.80.4), and three such turns in a row end the run.
+  `sendMessage(…, { triggerTurn: false })` during a run lands after the current
+  `turn_end` instead of steering. `turn_end` handlers' return value now
+  matters (`{ entries?, continue? }`).
 - Kernel (P23a, run slot): `prompt`, `resume`, `compact` and `navigateTo`
   share one slot; entering while another holds the agent throws
   `TauError("busy")` (`compact()` used to run unguarded next to a prompt).
@@ -92,6 +104,12 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P23b): actionable `turn_end` (outcome, messageEntryId,
+  toolResultEntryIds; handlers return `{ entries, continue }` with custom /
+  custom_message drafts), `agent_before_settle`, `agent_settled { aborted }`
+  (extension event and AgentEvent; runs started from its handlers wait until all
+  returned), `AgentOptions.finishTurn` (`{ action: "end" }`, pi), and
+  `ExtensionRegistry.reportError()`.
 - Kernel (P23a): `Agent.abort()` stops whatever holds the agent — a run with
   its retry backoff, a host compaction, a branch summary — and `ctx.abort()`
   reaches all of them. `Agent.isIdle`, `Agent.signal`, `Agent.clearQueue()`

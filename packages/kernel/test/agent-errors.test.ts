@@ -38,7 +38,7 @@ function lastAssistant(agent: Agent): AssistantMessage {
 }
 
 function assertErrorOutcome(events: { type: string }[], agent: Agent, contains: string): AssistantMessage {
-	assert.equal(events.at(-1)?.type, "agent_end", "prompt must end with agent_end, not a throw");
+	assert.equal(events.at(-2)?.type, "agent_end", "prompt must end with agent_end, not a throw");
 	const message = lastAssistant(agent);
 	assert.equal(message.stopReason, "error");
 	assert.ok(
@@ -143,7 +143,7 @@ test("abort during streaming yields an aborted message with the partial content"
 		events.push(event.type);
 		if (event.type === "text_delta") controller.abort();
 	}
-	assert.equal(events.at(-1), "agent_end");
+	assert.equal(events.at(-2), "agent_end");
 	const message = lastAssistant(agent);
 	assert.equal(message.stopReason, "aborted");
 	assert.deepEqual(message.content, [{ type: "text", text: "halfway" }]);
@@ -167,7 +167,7 @@ test("abort during tool execution ends the prompt before the next LLM call", asy
 		tools: [abortingTool],
 	});
 	const { events } = await collect(agent, "hi", controller.signal);
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 	assert.equal(requests.length, 1, "no second LLM request after an abort observed between turns");
 	assert.equal(agent.messages.at(-1)?.role, "toolResult");
 });
@@ -293,7 +293,7 @@ test("a stream without the [DONE] sentinel still completes normally", async () =
 	});
 	const { events, text } = await collect(agent, "hi");
 	assert.equal(text, "no sentinel");
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 	assert.equal(lastAssistant(agent).stopReason, "stop");
 });
 

@@ -95,7 +95,7 @@ test("a failing threshold compaction is reported and the turn still runs to agen
 	assert.equal(failed.length, 1);
 	assert.match(failed[0], /^threshold:.*500/);
 	assert.deepEqual(ends, ["turn_end", "agent_end"]);
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 	const last = agent.messages.at(-1);
 	assert.ok(last && last.role === "assistant");
 	assert.match(JSON.stringify(last.content), /answered anyway/);

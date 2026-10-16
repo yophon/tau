@@ -80,12 +80,12 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
   - `tool_call`：结果 `{block?: boolean; reason?}`；**改参数 = 原地 mutate `event.input`**
   - `tool_execution_start` / `tool_execution_update`（工具 onUpdate 流式产生，如 bash stdout 分块）/ `tool_execution_end`
   - `tool_result`：按字段覆盖 `{output?, isError?}`
-  - `agent_start` / `agent_end` / `turn_start`（turnIndex, timestamp）/ `turn_end`（带该轮 toolResults）
+  - `agent_start` / `agent_end`（每个 run 一次，续跑 run 各自成对）/ `turn_start`（turnIndex, timestamp）/ `turn_end`（P23b 起为可操作边界：带 toolResults、outcome、messageEntryId/toolResultEntryIds，处理器可追加 custom/custom_message 草稿并要求 continue）/ `agent_before_settle`（最后一个可操作边界）/ `agent_settled`（prompt 完全结束、运行槽释放后，带 aborted；其中发起的 run 等全部处理器返回后才交给宿主）
   - `project_trust`：宿主决定是否加载项目扩展时触发，首个非 undecided 答案生效
   - `resources_discover`：扩展提供额外 skills/prompts 路径（pi 的 themes 字段不消费，Themes 已否决）；registry 按注册顺序汇总，资源加载由扩展包消费
   - `session_before_compact`（可取消 / 可返回 result 接管压缩）/ `session_compact`；ExtensionContext 提供 `getContextUsage()` 与 `compact()`（请求下轮前压缩）
   - `session_before_fork`（entry-targeted fork 前可取消）/ `session_before_tree`（树导航前可取消或接管摘要）/ `session_tree`（导航完成通知）
-- **单轮事件全序**（有约束力，hooks.test.ts / parallel-tools.test.ts 断言）：`turn_start → context → message_start → message_update* → message_end → 工具批次 → 消费 steering → turn_end`；`input → before_agent_start → agent_start` 在循环前。工具批次分两种（P18，pi 语义）：**sequential**（显式配置，或批次内任一工具标 `executionMode:"sequential"`）= 每工具 `[tool_call → tool_execution_start → tool_execution_update* → tool_execution_end → tool_result]` 严格串行；**parallel**（默认，照抄 pi）= `[tool_call → tool_execution_start]` 按 assistant 源序逐个 preflight（钩子/校验/策略/审批不并发），然后执行并发——`tool_execution_update`/`tool_execution_end` 按完成序交错，最后 toolResult 消息按**源序**入对话与 wire（会话文件与 sequential 模式不可区分）。write/edit 内置同文件互斥（per-file mutation queue，键为词法规范化路径）。
+- **事件全序**（有约束力，照抄 pi runLoop，P23b；hooks.test.ts / loop-steps.test.ts / parallel-tools.test.ts 断言）：`input → before_agent_start → agent_start` 在循环前；run 开始先拉一次 steering；每轮 `[压缩（手动请求优先，否则阈值）] → 若无待处理消息再拉 steering → turn_start → 提交待处理消息（steer/follow-up 的 message_start/end）→ context → message_start → message_update* → message_end → 工具批次 → finishTurn → turn_end → 拉 steering`；无工具调用且无 steering 时拉 follow-up，都没有则 `agent_end`；随后若队列非空则续跑一个 run（再发 agent_start），否则 `agent_before_settle`（可再要一个 run），最后 `agent_settled`。任何角色的排队消息都算待处理；首轮前保留压缩槽。工具批次分两种（P18，pi 语义）：**sequential**（显式配置，或批次内任一工具标 `executionMode:"sequential"`）= 每工具 `[tool_call → tool_execution_start → tool_execution_update* → tool_execution_end → tool_result]` 严格串行；**parallel**（默认，照抄 pi）= `[tool_call → tool_execution_start]` 按 assistant 源序逐个 preflight（钩子/校验/策略/审批不并发），然后执行并发——`tool_execution_update`/`tool_execution_end` 按完成序交错，最后 toolResult 消息按**源序**入对话与 wire（会话文件与 sequential 模式不可区分）。write/edit 内置同文件互斥（per-file mutation queue，键为词法规范化路径）。
 - 处理器按注册顺序链式执行，transform/替换串联，block/handled 短路。
 - `registerTool(tool)`（无 `parameters` schema 即抛 `invalid_tool`；同名后注册者覆盖，对齐 pi 的先注册者胜排在 P23）、`registerCommand(name, options)`、`registerFlag(name, options)`/`getFlag(name)`（值由宿主 `setFlagValues` 提供）。
 - `ExtensionContext.capabilities` 暴露宿主 facade：`fs?` / `shell?` / `platform`；`Tool.execute` 第四参收到同一个 ctx。Agent 每次请求与工具执行动态合并当前 extension tools，因此 `session_start` 等异步初始化后注册的工具也能参与后续 turn。
@@ -171,8 +171,8 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 
 ```
 用户输入 → input 钩子 → before_agent_start → [prompt/工具有变化时追加 system 消息] → 追加 user 条目
-  ↓ 循环（≤ maxTurnsPerPrompt，默认 50）
-  turn_start 钩子 → [阈值压缩] → [prompt/工具有变化时追加 system 消息]
+  ↓ 循环（≤ maxTurnsPerPrompt，默认 50，跨续跑 run 共用）
+  [压缩] → [拉 steering] → turn_start 钩子 → 提交待处理消息 → [prompt/工具有变化时追加 system 消息]
   verifyTranscript：JSON 往返重放日志 ≡ messages，否则 invalid_state
   context → context_with_system 钩子（作用于副本）
   ChatTransport({ messages })   ← 缺省 = POST {baseUrl}/chat/completions (stream: true)；
@@ -180,8 +180,8 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
   SSE 流 → text/reasoning delta 实时 yield → response_end 组装 AssistantMessage
   追加 assistant 条目（失败的尝试被重试时追加 context_edit(null) 省略）
   对每个 toolCall：tool_call 钩子(可 block/改参) → validateToolArgs → 策略评估+审批门(P15) → execute → tool_result 钩子 → 追加 toolResult 条目
-  turn_end 钩子
-  无 toolCalls → agent_end 钩子 → 结束
+  finishTurn → turn_end 钩子（草稿入日志，可要求 continue）→ 拉 steering
+  无 toolCalls、无排队 → follow-up → agent_end → [队列非空则续跑] → agent_before_settle → agent_settled
 ```
 
 **失败语义（P11，照抄 pi）**：流/网络/HTTP 失败不从 `prompt()` 抛出——它们变成 `stopReason: "error"/"aborted"` 的 assistant 消息（携带部分内容与 `errorMessage`）进入对话与会话，`turn_end`/`agent_end` 照常发出，宿主按 stopReason 渲染。可重试的失败（分类见 retry.ts）在轮间做指数退避重试：失败的尝试留在日志里，经 context_edit(null) 移出上下文（P22，pi _omitRecoveryAttempt），`auto_retry_start/end` 经扩展事件与 AgentEvent 双通道通知，退避经 `Platform.sleep` 可被 abort 中断；无 `sleep` 缝隙则重试禁用。`Agent.resume()` 不提交新用户输入直接续跑循环（扩展 `sendMessage({triggerTurn})` 的宿主支撑）。

@@ -14,8 +14,10 @@ import {
 } from "./compaction.ts";
 import { SessionError, TauError, toError } from "./errors.ts";
 import type {
+	ActivityOutcome,
 	AgentRunResult,
 	AgentSpawnOptions,
+	BoundaryDraft,
 	ExtensionCapabilities,
 	ExtensionContext,
 	ExtensionRegistry,
@@ -100,6 +102,11 @@ class PendingMessageQueue {
 		if (this.items.length === 0) return [];
 		if (this.mode === "all") return this.items.splice(0);
 		return this.items.splice(0, 1);
+	}
+
+	/** Put messages polled but never committed back at the front (an abort between poll and commit). */
+	restore(messages: (UserMessage | CustomMessage)[]): void {
+		this.items.unshift(...messages);
 	}
 
 	/** Empty the queue and return what was in it (pi clearQueue: hosts restore it to the editor). */
@@ -191,6 +198,19 @@ export interface AgentOptions {
 	 * TauError("invalid_state"). Default true.
 	 */
 	verifyTranscript?: boolean;
+	/**
+	 * Called after each turn's assistant message and tool results are final,
+	 * before turn_end (pi AgentLoopConfig.finishTurn). Returning { action: "end" }
+	 * ends the run after turn_end without draining the queues — e.g. a "done"
+	 * tool or a soft turn budget; messages already queued still get a
+	 * continuation run, as in pi. pi's "continue" is reserved (see pi-parity).
+	 * Ignored when the turn errored or was aborted.
+	 */
+	finishTurn?: (
+		turn: { message: AssistantMessage; toolResults: readonly ToolResultMessage[] },
+		signal?: TauAbortSignal,
+		// biome-ignore lint/suspicious/noConfusingVoidType: void keeps side-effect-only callbacks assignable, as pi
+	) => Promise<{ action: "end" } | undefined | void> | { action: "end" } | undefined | void;
 }
 
 export type AgentEvent =
@@ -215,7 +235,8 @@ export type AgentEvent =
 	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "agent_end"; messages: readonly AgentMessage[] };
+	| { type: "agent_end"; messages: readonly AgentMessage[] }
+	| { type: "agent_settled"; aborted: boolean };
 
 interface ToolUpdate {
 	partialOutput: string;
@@ -312,6 +333,14 @@ export class Agent {
 	private operation: AgentOperation | undefined;
 	/** Extension sendMessage calls made while a compaction or navigation holds the agent; appended when it ends. */
 	private readonly heldMessages: { message: CustomMessage; triggerTurn: boolean }[] = [];
+	/** Custom messages sent with triggerTurn:false while the loop runs; committed after the current turn_end (pi 0.84.4). */
+	private readonly afterTurnMessages: CustomMessage[] = [];
+	/** Whether the current prompt reached the turn loop (agent_settled fires only then). */
+	private runEntered = false;
+	/** True while agent_settled handlers run; runs they start wait until all returned (pi 0.87.1). */
+	private settling = false;
+	private readonly deferredStarts: (() => void)[] = [];
+	private readonly finishTurn: AgentOptions["finishTurn"];
 	/**
 	 * True only while the LLM turn loop is in flight — pi's isStreaming. Hooks
 	 * that fire before the loop (input, before_agent_start) see false, so their
@@ -360,6 +389,7 @@ export class Agent {
 		this.onApproval = options.onApproval;
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.verifyTranscript = options.verifyTranscript ?? true;
+		this.finishTurn = options.finishTurn;
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
 				const message: CustomMessage = {
@@ -378,7 +408,10 @@ export class Agent {
 					return;
 				}
 				if (this.looping) {
-					if (sendOptions?.deliverAs === "followUp") this.followUpQueue.enqueue(message);
+					// Streaming with triggerTurn:false must not steer: it lands after the current
+					// turn_end without asking for a request (pi 0.84.2/0.84.4).
+					if (sendOptions?.triggerTurn === false) this.afterTurnMessages.push(message);
+					else if (sendOptions?.deliverAs === "followUp") this.followUpQueue.enqueue(message);
 					else this.steeringQueue.enqueue(message);
 					return;
 				}
@@ -389,7 +422,11 @@ export class Agent {
 					return;
 				}
 				this.enqueueBackground(() => this.appendAndRefresh(message));
-				if (sendOptions?.triggerTurn) this.extensions?.hostAction("resumeTurn")?.();
+				if (sendOptions?.triggerTurn) {
+					const resume = this.extensions?.hostAction("resumeTurn");
+					if (resume && this.settling) this.deferredStarts.push(resume);
+					else resume?.();
+				}
 			},
 			sendUserMessage: (content, sendOptions) => {
 				// pi semantics: always triggers a turn. Streaming → steer/followUp; idle →
@@ -417,7 +454,8 @@ export class Agent {
 				if (!submit) {
 					throw new TauError("no_host", "sendUserMessage() while idle requires a host that provides submitPrompt");
 				}
-				submit(content);
+				if (this.settling) this.deferredStarts.push(() => submit(content));
+				else submit(content);
 			},
 			appendEntry: (customType, data) => {
 				this.enqueueBackground(async () => {
@@ -623,13 +661,21 @@ export class Agent {
 
 	/** Fire message_start/message_end for a non-streamed message, then log it. */
 	private async commitMessage(message: AgentMessage, ctx: ExtensionContext): Promise<AgentMessage> {
+		return (await this.commitMessageWithId(message, ctx)).message;
+	}
+
+	/** commitMessage, also returning the session entry id. */
+	private async commitMessageWithId(
+		message: AgentMessage,
+		ctx: ExtensionContext,
+	): Promise<{ message: AgentMessage; entryId: string }> {
 		let final = message;
 		if (this.extensions) {
 			await this.extensions.notifyMessageStart(final, ctx);
 			final = await this.extensions.runMessageEnd(final, ctx);
 		}
-		await this.record(final);
-		return final;
+		const entryId = await this.record(final);
+		return { message: final, entryId };
 	}
 
 	/** Context handed to extension handlers; also usable by hosts to dispatch extension commands. */
@@ -936,11 +982,34 @@ export class Agent {
 
 	async *prompt(input: UserContent, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
 		const handle = this.beginOperation("prompt", signal);
+		this.runEntered = false;
+		let finished = false;
 		try {
 			await this.flushWrites();
 			yield* this.runPrompt(input, handle.signal);
+			finished = true;
 		} finally {
 			this.endOperation();
+			// A run that threw (max_turns, a hook bug) or whose consumer stopped early still settles.
+			if (!finished && this.runEntered) await this.notifySettled(handle.signal.aborted);
+		}
+		if (this.runEntered) yield* this.settle(handle.signal.aborted);
+	}
+
+	/** agent_settled once the agent is idle; runs started from its handlers go to the host afterwards. */
+	private async *settle(aborted: boolean): AsyncGenerator<AgentEvent> {
+		await this.notifySettled(aborted);
+		yield { type: "agent_settled", aborted };
+		for (const start of this.deferredStarts.splice(0)) start();
+	}
+
+	private async notifySettled(aborted: boolean): Promise<void> {
+		this.runEntered = false;
+		this.settling = true;
+		try {
+			await this.extensions?.notifyAgentSettled(aborted, this.extensionContext());
+		} finally {
+			this.settling = false;
 		}
 	}
 
@@ -952,15 +1021,20 @@ export class Agent {
 	 */
 	async *resume(signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
 		const handle = this.beginOperation("resume", signal);
+		this.runEntered = false;
+		let finished = false;
 		try {
 			await this.flushWrites();
 			const ctx = this.extensionContext();
 			const systemPrompt = await this.applyBeforeAgentStart(lastPromptText(this.messages), ctx);
 			await this.extensions?.notifyAgentStart(ctx);
 			yield* this.runLoop(ctx, systemPrompt, handle.signal);
+			finished = true;
 		} finally {
 			this.endOperation();
+			if (!finished && this.runEntered) await this.notifySettled(handle.signal.aborted);
 		}
+		if (this.runEntered) yield* this.settle(handle.signal.aborted);
 	}
 
 	/**
@@ -1114,7 +1188,13 @@ export class Agent {
 		return beforeStart.systemPrompt;
 	}
 
-	/** The turn loop shared by prompt() and resume(). */
+	/**
+	 * A prompt's runs (pi _runAgentPrompt). The turn loop ends with agent_end;
+	 * messages queued meanwhile — e.g. by agent_end handlers — start a
+	 * continuation run in the same generator (pi _handlePostAgentRun, no timers);
+	 * then agent_before_settle may append drafts and ask for one more run. The
+	 * turn budget spans all runs of the prompt.
+	 */
 	private async *runLoop(
 		ctx: ExtensionContext,
 		systemPrompt: string,
@@ -1127,265 +1207,432 @@ export class Agent {
 		}
 
 		this.looping = true;
+		this.runEntered = true;
+		const state = { turnIndex: 0 };
 		try {
-			yield* this.runTurns(ctx, systemPrompt, signal);
+			for (let run = 0; ; run++) {
+				if (run > 0) await this.extensions?.notifyAgentStart(ctx);
+				const outcome = yield* this.runTurns(ctx, systemPrompt, signal, state);
+				if (signal?.aborted || outcome === "aborted") break;
+				if (this.hasQueuedMessages()) continue;
+				const settle = this.extensions
+					? await this.extensions.runBeforeSettle(outcome, ctx)
+					: { entries: [], continue: false };
+				await this.commitBoundaryDrafts(settle.entries, "agent_before_settle", ctx);
+				if (signal?.aborted) break;
+				if (!settle.continue && !this.hasQueuedMessages()) break;
+				if (!this.canContinue()) {
+					if (settle.continue) {
+						this.extensions?.reportError(
+							"agent_before_settle",
+							"agent_before_settle requested continuation without runnable model context",
+						);
+					}
+					break;
+				}
+			}
 		} finally {
 			this.looping = false;
+			// Custom messages held for after a turn (triggerTurn:false) still land (pi flushes them).
+			for (const held of this.afterTurnMessages.splice(0)) await this.commitMessage(held, ctx);
 		}
 	}
 
+	/** Whether a request now has something to answer: the context does not end with the assistant, or messages are queued. */
+	private canContinue(): boolean {
+		let last: AgentMessage | undefined;
+		for (let i = this.messages.length - 1; i >= 0; i--) {
+			if (this.messages[i].role !== "system") {
+				last = this.messages[i];
+				break;
+			}
+		}
+		return (last !== undefined && last.role !== "assistant") || this.hasQueuedMessages();
+	}
+
+	/** Append a boundary handler's drafts in order (custom entries and custom messages). */
+	private async commitBoundaryDrafts(drafts: BoundaryDraft[], event: string, ctx: ExtensionContext): Promise<void> {
+		for (const draft of drafts) {
+			if (draft.type === "custom") {
+				await this.enqueueWrite(async () => {
+					await this.session.appendCustom(draft.customType, draft.data);
+					await this.refresh();
+				});
+			} else if (draft.type === "custom_message") {
+				await this.commitMessage(
+					{
+						role: "custom",
+						customType: draft.customType,
+						content: draft.content,
+						display: draft.display ?? true,
+						details: draft.details,
+						timestamp: Date.now(),
+					},
+					ctx,
+				);
+			} else {
+				this.extensions?.reportError(event, `Unsupported boundary draft type: ${(draft as { type: string }).type}`);
+			}
+		}
+	}
+
+	/**
+	 * One run's turns, in pi runLoop order: steering is polled at the start;
+	 * each turn prepares (compaction) → polls steering again if none was pending →
+	 * turn_start → commits pending messages → requests → runs the tool batch →
+	 * finishTurn → turn_end; steering is polled after turn_end, follow-ups when
+	 * the run would stop. Returns how the run ended; agent_end has fired.
+	 */
 	private async *runTurns(
 		ctx: ExtensionContext,
 		systemPrompt: string,
-		signal?: TauAbortSignal,
-	): AsyncGenerator<AgentEvent> {
+		signal: TauAbortSignal | undefined,
+		state: { turnIndex: number },
+	): AsyncGenerator<AgentEvent, ActivityOutcome> {
 		let retryAttempt = 0;
-		for (let turnIndex = 0; turnIndex < this.maxTurnsPerPrompt; turnIndex++) {
-			// Abort observed between turns (e.g. signalled during tool execution) ends
-			// the prompt before the next LLM call instead of waiting to fail inside it.
-			if (signal?.aborted) {
-				yield* this.endRun(ctx, retryAttempt);
-				return;
-			}
-			await this.extensions?.notifyTurnStart(turnIndex, ctx);
+		let lengthStreak = 0;
+		let explicitContinue = false;
+		// Check for steering at start: the user may have typed while the run was starting (pi).
+		let pending: (UserMessage | CustomMessage)[] = this.steeringQueue.drain();
+		while (true) {
+			let hasMoreToolCalls = true;
+			while (hasMoreToolCalls || pending.length > 0) {
+				// Abort observed between turns (e.g. signalled during tool execution) ends
+				// the run before the next LLM call instead of waiting to fail inside it.
+				if (signal?.aborted) {
+					yield* this.endRun(ctx, retryAttempt, pending);
+					return "aborted";
+				}
+				if (state.turnIndex >= this.maxTurnsPerPrompt) {
+					throw new TauError("max_turns", `Prompt exceeded ${this.maxTurnsPerPrompt} turns without completing`);
+				}
 
-			// Compaction runs between turns (as in pi): requested first, then threshold.
-			// A failure here is reported, not thrown (D14, pi 0.84.3): the turn goes on
-			// uncompacted, so turn_end/agent_end still fire and channels un-busy (HF-9).
-			let compactionReason: "manual" | "threshold" | undefined;
-			let customInstructions: string | undefined;
-			if (this.pendingCompaction !== null) {
-				compactionReason = "manual";
-				customInstructions = this.pendingCompaction === "" ? undefined : this.pendingCompaction;
-				this.pendingCompaction = null;
-			} else if (
-				this.config.contextWindow !== undefined &&
-				shouldCompact(this.getContextUsage().tokens, this.config.contextWindow, this.effectiveCompactionSettings())
-			) {
-				compactionReason = "threshold";
-			}
-			// An abort that landed in turn_start handlers must not start a compaction (pi #9340).
-			if (compactionReason !== undefined && signal?.aborted) {
-				yield* this.endRun(ctx, retryAttempt);
-				return;
-			}
-			if (compactionReason !== undefined) {
-				const reason = compactionReason;
-				const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
-					this.runCompactionOperation(customInstructions, reason, signal, emit),
-				);
-				if (outcome.kind === "done") yield { type: "compaction", result: outcome.result };
-				if (outcome.kind === "failed") {
-					yield {
-						type: "compaction_failed",
-						reason,
-						...(outcome.errorMessage !== undefined ? { errorMessage: outcome.errorMessage } : {}),
-						aborted: outcome.aborted,
-					};
-					// Aborted: the run ends here (D14: agent_end, no throw). Failed: go on uncompacted.
+				// Prepare the turn: compaction, requested first, then threshold — before
+				// turn_start, as pi's prepareNextTurn (the first turn keeps the slot). A
+				// failure is reported, not thrown (D14): the turn goes on uncompacted.
+				let compactionReason: "manual" | "threshold" | undefined;
+				let customInstructions: string | undefined;
+				if (this.pendingCompaction !== null) {
+					compactionReason = "manual";
+					customInstructions = this.pendingCompaction === "" ? undefined : this.pendingCompaction;
+					this.pendingCompaction = null;
+				} else if (
+					this.config.contextWindow !== undefined &&
+					shouldCompact(this.getContextUsage().tokens, this.config.contextWindow, this.effectiveCompactionSettings())
+				) {
+					compactionReason = "threshold";
+				}
+				if (compactionReason !== undefined) {
+					const reason = compactionReason;
+					const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
+						this.runCompactionOperation(customInstructions, reason, signal, emit),
+					);
+					if (outcome.kind === "done") yield { type: "compaction", result: outcome.result };
+					if (outcome.kind === "failed") {
+						yield {
+							type: "compaction_failed",
+							reason,
+							...(outcome.errorMessage !== undefined ? { errorMessage: outcome.errorMessage } : {}),
+							aborted: outcome.aborted,
+						};
+					}
+					// Aborted while compacting: the run ends here (D14: agent_end, no throw).
 					if (signal?.aborted) {
-						yield* this.endRun(ctx, retryAttempt);
-						return;
+						yield* this.endRun(ctx, retryAttempt, pending);
+						return "aborted";
 					}
 				}
-			}
+				// Preparation can be long-running: pick up steering queued while it ran. Only
+				// when nothing is pending, or one-at-a-time would deliver two messages (pi).
+				if (pending.length === 0) pending = this.steeringQueue.drain();
 
-			// The request is the log's projection: declare prompt/tool changes as a system
-			// message first, then check the projection against a JSON replay of the log.
-			await this.declareLoadout(systemPrompt);
-			await this.flushWrites();
-			if (this.verifyTranscript) await this.assertTranscriptMatchesLog();
-			let request: AgentMessage[] = [...this.messages];
-			if (this.extensions) {
-				request = await this.extensions.runContext(request, ctx);
-			}
-
-			const partial: AssistantMessage = {
-				role: "assistant",
-				content: [],
-				api: this.config.api ?? OPENAI_COMPLETIONS_API,
-				provider: this.config.provider ?? "openai-compat",
-				model: this.config.model,
-				usage: emptyUsage(),
-				// A streaming partial is unfinished (pi 0.83.0); the final message lands a concrete reason.
-				stopReason: "pending",
-				timestamp: Date.now(),
-			};
-			const requestStart = partial.timestamp;
-			await this.extensions?.notifyMessageStart(partial, ctx);
-
-			let assistantMessage: AssistantMessage | undefined;
-			let streamFailure: TauError | undefined;
-			const stream = this.transport({ messages: request, signal });
-			// Pull manually so only stream failures are converted to error messages;
-			// exceptions thrown by extension hooks inside the loop still propagate as bugs.
-			const iterator = stream[Symbol.asyncIterator]();
-			while (true) {
-				let iteration: IteratorResult<ChatStreamEvent>;
-				try {
-					iteration = await iterator.next();
-				} catch (error) {
-					streamFailure =
-						error instanceof TauError ? error : new TauError("stream_error", toError(error).message, error);
-					break;
+				const turnIndex = state.turnIndex;
+				await this.extensions?.notifyTurnStart(turnIndex, ctx);
+				for (const message of pending) {
+					const committed = (await this.commitMessage(message, ctx)) as UserMessage | CustomMessage;
+					yield { type: "user_message", message: committed };
 				}
-				if (iteration.done) break;
-				const event = iteration.value;
-				switch (event.type) {
-					case "text_delta": {
-						const last = partial.content.at(-1);
-						if (last?.type === "text") last.text += event.delta;
-						else partial.content.push({ type: "text", text: event.delta });
-						await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-						yield { type: "text_delta", delta: event.delta };
-						break;
-					}
-					case "reasoning_delta": {
-						const last = partial.content.at(-1);
-						if (last?.type === "thinking") last.thinking += event.delta;
-						else partial.content.push({ type: "thinking", thinking: event.delta });
-						await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-						yield { type: "reasoning_delta", delta: event.delta };
-						break;
-					}
-					case "tool_call":
-						partial.content.push(event.toolCall);
-						await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-						break;
-					case "response_end":
-						assistantMessage = event.message;
-						// Measured by the agent for every transport alike (pi 1.1.0); Date.now()
-						// differences, where pi uses performance.now() (kernel purity).
-						assistantMessage.durationMs = Math.max(0, Date.now() - requestStart);
-						if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
-						break;
-				}
-			}
-			if (streamFailure) {
-				// As in pi (agent-loop.ts streamAssistantResponse): a stream failure does not
-				// throw — it becomes an assistant message with stopReason error/aborted that
-				// enters the conversation and the session, then the prompt ends normally.
-				// The partial keeps its request-start timestamp (pi), whatever the failure time.
-				partial.stopReason = streamFailure.code === "aborted" ? "aborted" : "error";
-				partial.errorMessage = streamFailure.message;
-				partial.durationMs = Math.max(0, Date.now() - requestStart);
-				let finalMessage: AssistantMessage = partial;
-				if (this.extensions) {
-					finalMessage = (await this.extensions.runMessageEnd(finalMessage, ctx)) as AssistantMessage;
-				}
-				const failedEntryId = await this.record(finalMessage);
-				yield { type: "assistant_message", message: finalMessage };
-				await this.extensions?.notifyTurnEnd(turnIndex, finalMessage, [], ctx);
-
-				// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff and
-				// an abortable sleep. The failed attempt stays in the log and leaves the
-				// context through a context_edit omission (pi _omitRecoveryAttempt), so a
-				// resumed session no longer replays it.
-				const retryEligible =
-					finalMessage.stopReason === "error" &&
-					this.retrySettings.enabled &&
-					this.platform.sleep !== undefined &&
-					isRetryableAssistantError(finalMessage);
-				if (retryEligible && retryAttempt < this.retrySettings.maxRetries) {
-					retryAttempt++;
-					const delayMs = retryDelayMs(this.retrySettings, retryAttempt);
-					const startEvent = {
-						attempt: retryAttempt,
-						maxAttempts: this.retrySettings.maxRetries,
-						delayMs,
-						errorMessage: finalMessage.errorMessage ?? "Unknown error",
-					};
-					await this.extensions?.notifyAutoRetryStart(startEvent, ctx);
-					yield { type: "auto_retry_start", ...startEvent };
-					await this.enqueueWrite(async () => {
-						await this.session.appendContextEdit(failedEntryId, null);
-						await this.refresh();
-					});
-					try {
-						await this.platform.sleep?.(delayMs, signal);
-					} catch {
-						yield* this.endRun(ctx, retryAttempt);
-						return;
-					}
-					turnIndex--; // A retried request does not consume the turn budget.
-					continue;
-				}
-				if (finalMessage.stopReason === "aborted") {
-					// An aborted retry closes its cycle as cancelled (pi _finishCancelledRetry).
+				pending = [];
+				// An abort that landed in turn_start handlers must not send the request (pi #9340's kin).
+				if (signal?.aborted) {
 					yield* this.endRun(ctx, retryAttempt);
-					return;
+					return "aborted";
 				}
-				if (finalMessage.stopReason === "error" && retryAttempt > 0) {
-					const endEvent = { success: false, attempt: retryAttempt, finalError: finalMessage.errorMessage };
+
+				// The request is the log's projection: declare prompt/tool changes as a system
+				// message first, then check the projection against a JSON replay of the log.
+				await this.declareLoadout(systemPrompt);
+				await this.flushWrites();
+				if (this.verifyTranscript) await this.assertTranscriptMatchesLog();
+				let request: AgentMessage[] = [...this.messages];
+				if (this.extensions) {
+					request = await this.extensions.runContext(request, ctx);
+				}
+
+				const partial: AssistantMessage = {
+					role: "assistant",
+					content: [],
+					api: this.config.api ?? OPENAI_COMPLETIONS_API,
+					provider: this.config.provider ?? "openai-compat",
+					model: this.config.model,
+					usage: emptyUsage(),
+					// A streaming partial is unfinished (pi 0.83.0); the final message lands a concrete reason.
+					stopReason: "pending",
+					timestamp: Date.now(),
+				};
+				const requestStart = partial.timestamp;
+				await this.extensions?.notifyMessageStart(partial, ctx);
+
+				let assistantMessage: AssistantMessage | undefined;
+				let streamFailure: TauError | undefined;
+				const stream = this.transport({ messages: request, signal });
+				// Pull manually so only stream failures are converted to error messages;
+				// exceptions thrown by extension hooks inside the loop still propagate as bugs.
+				const iterator = stream[Symbol.asyncIterator]();
+				while (true) {
+					let iteration: IteratorResult<ChatStreamEvent>;
+					try {
+						iteration = await iterator.next();
+					} catch (error) {
+						streamFailure =
+							error instanceof TauError ? error : new TauError("stream_error", toError(error).message, error);
+						break;
+					}
+					if (iteration.done) break;
+					const event = iteration.value;
+					switch (event.type) {
+						case "text_delta": {
+							const last = partial.content.at(-1);
+							if (last?.type === "text") last.text += event.delta;
+							else partial.content.push({ type: "text", text: event.delta });
+							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
+							yield { type: "text_delta", delta: event.delta };
+							break;
+						}
+						case "reasoning_delta": {
+							const last = partial.content.at(-1);
+							if (last?.type === "thinking") last.thinking += event.delta;
+							else partial.content.push({ type: "thinking", thinking: event.delta });
+							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
+							yield { type: "reasoning_delta", delta: event.delta };
+							break;
+						}
+						case "tool_call":
+							partial.content.push(event.toolCall);
+							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
+							break;
+						case "response_end":
+							assistantMessage = event.message;
+							// Measured by the agent for every transport alike (pi 1.1.0); Date.now()
+							// differences, where pi uses performance.now() (kernel purity).
+							assistantMessage.durationMs = Math.max(0, Date.now() - requestStart);
+							if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
+							break;
+					}
+				}
+				if (streamFailure) {
+					// As in pi (agent-loop.ts streamAssistantResponse): a stream failure does not
+					// throw — it becomes an assistant message with stopReason error/aborted that
+					// enters the conversation and the session, then the run ends normally.
+					// The partial keeps its request-start timestamp (pi), whatever the failure time.
+					partial.stopReason = streamFailure.code === "aborted" ? "aborted" : "error";
+					partial.errorMessage = streamFailure.message;
+					partial.durationMs = Math.max(0, Date.now() - requestStart);
+					let finalMessage: AssistantMessage = partial;
+					if (this.extensions) {
+						finalMessage = (await this.extensions.runMessageEnd(finalMessage, ctx)) as AssistantMessage;
+					}
+					const failedEntryId = await this.record(finalMessage);
+					yield { type: "assistant_message", message: finalMessage };
+					// error/aborted are hard exits (D14): finishTurn's decision and a boundary
+					// continue are ignored; drafts still land.
+					await this.finishTurn?.({ message: finalMessage, toolResults: [] }, signal);
+					await this.runTurnEndBoundary(turnIndex, finalMessage, failedEntryId, [], [], ctx);
+
+					// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff and
+					// an abortable sleep. The failed attempt stays in the log and leaves the
+					// context through a context_edit omission (pi _omitRecoveryAttempt), so a
+					// resumed session no longer replays it.
+					const retryEligible =
+						finalMessage.stopReason === "error" &&
+						this.retrySettings.enabled &&
+						this.platform.sleep !== undefined &&
+						isRetryableAssistantError(finalMessage);
+					if (retryEligible && retryAttempt < this.retrySettings.maxRetries) {
+						retryAttempt++;
+						const delayMs = retryDelayMs(this.retrySettings, retryAttempt);
+						const startEvent = {
+							attempt: retryAttempt,
+							maxAttempts: this.retrySettings.maxRetries,
+							delayMs,
+							errorMessage: finalMessage.errorMessage ?? "Unknown error",
+						};
+						await this.extensions?.notifyAutoRetryStart(startEvent, ctx);
+						yield { type: "auto_retry_start", ...startEvent };
+						await this.enqueueWrite(async () => {
+							await this.session.appendContextEdit(failedEntryId, null);
+							await this.refresh();
+						});
+						try {
+							await this.platform.sleep?.(delayMs, signal);
+						} catch {
+							yield* this.endRun(ctx, retryAttempt, pending);
+							return "aborted";
+						}
+						// A retried request does not consume the turn budget; it re-runs this turn.
+						hasMoreToolCalls = true;
+						continue;
+					}
+					state.turnIndex++;
+					if (finalMessage.stopReason === "aborted") {
+						// An aborted retry closes its cycle as cancelled (pi _finishCancelledRetry).
+						yield* this.endRun(ctx, retryAttempt, pending);
+						return "aborted";
+					}
+					if (retryAttempt > 0) {
+						const endEvent = { success: false, attempt: retryAttempt, finalError: finalMessage.errorMessage };
+						await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
+						yield { type: "auto_retry_end", ...endEvent };
+					}
+					await this.flushWrites();
+					await this.extensions?.notifyAgentEnd(this.messages, ctx);
+					yield { type: "agent_end", messages: this.messages };
+					return "error";
+				}
+				if (!assistantMessage) {
+					throw new TauError("stream_error", "Stream ended without a final message");
+				}
+				if (this.extensions) {
+					assistantMessage = (await this.extensions.runMessageEnd(assistantMessage, ctx)) as AssistantMessage;
+				}
+				const messageEntryId = await this.record(assistantMessage);
+				yield { type: "assistant_message", message: assistantMessage };
+				if (retryAttempt > 0) {
+					// A clean response after retries closes the cycle (pi resets on success).
+					const endEvent = { success: true, attempt: retryAttempt };
 					await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
 					yield { type: "auto_retry_end", ...endEvent };
+					retryAttempt = 0;
 				}
-				await this.flushWrites();
-				await this.extensions?.notifyAgentEnd(this.messages, ctx);
-				yield { type: "agent_end", messages: this.messages };
-				return;
-			}
-			if (!assistantMessage) {
-				throw new TauError("stream_error", "Stream ended without a final message");
-			}
-			if (this.extensions) {
-				assistantMessage = (await this.extensions.runMessageEnd(assistantMessage, ctx)) as AssistantMessage;
-			}
-			await this.record(assistantMessage);
-			yield { type: "assistant_message", message: assistantMessage };
-			if (retryAttempt > 0) {
-				// A clean response after retries closes the cycle (pi resets on success).
-				const endEvent = { success: true, attempt: retryAttempt };
-				await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
-				yield { type: "auto_retry_end", ...endEvent };
-				retryAttempt = 0;
-			}
 
-			const toolCalls = toolCallsOf(assistantMessage);
-			const toolResults: ToolResultMessage[] = [];
-			// pi dispatch semantics (agent-loop.ts): global sequential config or any
-			// sequential-marked tool in the batch downgrades the whole batch.
-			const forceSequential =
-				this.toolExecution === "sequential" ||
-				toolCalls.some((tc) => this.currentTools().get(tc.name)?.executionMode === "sequential");
-			if (forceSequential || toolCalls.length <= 1) {
-				yield* this.runToolBatchSequential(toolCalls, ctx, signal, toolResults);
-			} else {
-				yield* this.runToolBatchParallel(toolCalls, ctx, signal, toolResults);
-			}
-
-			for (const steered of this.steeringQueue.drain()) {
-				const committed = (await this.commitMessage(steered, ctx)) as UserMessage | CustomMessage;
-				yield { type: "user_message", message: committed };
-			}
-
-			await this.extensions?.notifyTurnEnd(turnIndex, assistantMessage, toolResults, ctx);
-
-			const hasPendingWork = toolCalls.length > 0 || this.messages.at(-1)?.role === "user";
-			if (!hasPendingWork) {
-				const followUps = this.followUpQueue.drain();
-				if (followUps.length > 0) {
-					for (const followUp of followUps) {
-						const committed = (await this.commitMessage(followUp, ctx)) as UserMessage | CustomMessage;
-						yield { type: "user_message", message: committed };
+				const toolCalls = toolCallsOf(assistantMessage);
+				const toolResults: ToolResultMessage[] = [];
+				const toolResultEntryIds: string[] = [];
+				if (toolCalls.length > 0 && assistantMessage.stopReason === "length") {
+					// A length stop may have cut the arguments off: fail every call instead of
+					// running possibly borked ones (pi 0.80.4). tau routes them through the
+					// immediate-result path, like any call that never executes.
+					for (const toolCall of toolCalls) {
+						yield { type: "tool_start", toolCall };
+						yield await this.commitToolResult(
+							toolCall,
+							{ output: truncatedToolCallText(toolCall.name), isError: true },
+							ctx,
+							toolResults,
+							toolResultEntryIds,
+						);
 					}
-					continue;
+				} else {
+					// pi dispatch semantics (agent-loop.ts): global sequential config or any
+					// sequential-marked tool in the batch downgrades the whole batch.
+					const forceSequential =
+						this.toolExecution === "sequential" ||
+						toolCalls.some((tc) => this.currentTools().get(tc.name)?.executionMode === "sequential");
+					if (forceSequential || toolCalls.length <= 1) {
+						yield* this.runToolBatchSequential(toolCalls, ctx, signal, toolResults, toolResultEntryIds);
+					} else {
+						yield* this.runToolBatchParallel(toolCalls, ctx, signal, toolResults, toolResultEntryIds);
+					}
 				}
-				await this.flushWrites();
-				await this.extensions?.notifyAgentEnd(this.messages, ctx);
-				yield { type: "agent_end", messages: this.messages };
-				return;
-			}
-		}
+				hasMoreToolCalls = toolCalls.length > 0;
+				lengthStreak = assistantMessage.stopReason === "length" && toolCalls.length > 0 ? lengthStreak + 1 : 0;
 
-		throw new TauError("max_turns", `Prompt exceeded ${this.maxTurnsPerPrompt} turns without completing`);
+				const decision = await this.finishTurn?.({ message: assistantMessage, toolResults }, signal);
+				const boundaryContinue = await this.runTurnEndBoundary(
+					turnIndex,
+					assistantMessage,
+					messageEntryId,
+					toolResults,
+					toolResultEntryIds,
+					ctx,
+				);
+				state.turnIndex++;
+				// Custom messages sent with triggerTurn:false while the turn ran land now (pi 0.84.4).
+				for (const held of this.afterTurnMessages.splice(0)) await this.commitMessage(held, ctx);
+
+				// tau guard: a model whose output keeps hitting the cap cannot finish its tool
+				// call; end the run instead of spinning to max_turns.
+				const truncatedOut = lengthStreak >= MAX_LENGTH_TRUNCATED_TURNS;
+				if (decision?.action === "end" || truncatedOut) {
+					await this.flushWrites();
+					await this.extensions?.notifyAgentEnd(this.messages, ctx);
+					yield { type: "agent_end", messages: this.messages };
+					return "completed";
+				}
+				explicitContinue = boundaryContinue;
+				pending = this.steeringQueue.drain();
+				if (hasMoreToolCalls || pending.length > 0) explicitContinue = false;
+			}
+
+			// The run would stop here: follow-ups continue it.
+			const followUps = this.followUpQueue.drain();
+			if (followUps.length > 0) {
+				pending = followUps;
+				explicitContinue = false;
+				continue;
+			}
+			// No natural request was selected: fulfill a turn_end continue with one context-only request.
+			if (explicitContinue) {
+				explicitContinue = false;
+				continue;
+			}
+			break;
+		}
+		await this.flushWrites();
+		await this.extensions?.notifyAgentEnd(this.messages, ctx);
+		yield { type: "agent_end", messages: this.messages };
+		return "completed";
+	}
+
+	/**
+	 * Run the actionable turn_end boundary: drafts land in order, and a continue
+	 * request is honored only for a completed turn with runnable context.
+	 */
+	private async runTurnEndBoundary(
+		turnIndex: number,
+		message: AssistantMessage,
+		messageEntryId: string,
+		toolResults: ToolResultMessage[],
+		toolResultEntryIds: string[],
+		ctx: ExtensionContext,
+	): Promise<boolean> {
+		if (!this.extensions) return false;
+		const outcome: ActivityOutcome =
+			message.stopReason === "aborted" ? "aborted" : message.stopReason === "error" ? "error" : "completed";
+		const boundary = await this.extensions.runTurnEnd(
+			{ turnIndex, message, toolResults, messageEntryId, toolResultEntryIds, outcome },
+			ctx,
+		);
+		await this.commitBoundaryDrafts(boundary.entries, "turn_end", ctx);
+		if (!boundary.continue || outcome !== "completed") return false;
+		if (!this.canContinue()) {
+			this.extensions.reportError("turn_end", "turn_end requested continuation without runnable model context");
+			return false;
+		}
+		return true;
 	}
 
 	/**
 	 * End a run early (abort): a retry cycle in progress closes as cancelled (pi
 	 * _finishCancelledRetry), then agent_end — never a throw (D14).
 	 */
-	private async *endRun(ctx: ExtensionContext, retryAttempt: number): AsyncGenerator<AgentEvent> {
+	private async *endRun(
+		ctx: ExtensionContext,
+		retryAttempt: number,
+		pending: (UserMessage | CustomMessage)[] = [],
+	): AsyncGenerator<AgentEvent> {
+		// Messages already polled from the queue go back to it, so the host can restore them.
+		this.steeringQueue.restore(pending);
 		if (retryAttempt > 0) {
 			const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
 			await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
@@ -1402,6 +1649,7 @@ export class Agent {
 		outcome: ToolOutcome,
 		ctx: ExtensionContext,
 		toolResults: ToolResultMessage[],
+		toolResultEntryIds: string[],
 	): Promise<AgentEvent> {
 		const { durationMs, usage, ...result } = outcome;
 		const toolResultMessage: ToolResultMessage = {
@@ -1414,8 +1662,9 @@ export class Agent {
 			...(durationMs !== undefined ? { durationMs } : {}),
 			...(usage ? { usage } : {}),
 		};
-		const committedToolResult = (await this.commitMessage(toolResultMessage, ctx)) as ToolResultMessage;
-		toolResults.push(committedToolResult);
+		const committed = await this.commitMessageWithId(toolResultMessage, ctx);
+		toolResults.push(committed.message as ToolResultMessage);
+		toolResultEntryIds.push(committed.entryId);
 		return { type: "tool_result", toolCall, result };
 	}
 
@@ -1425,6 +1674,7 @@ export class Agent {
 		ctx: ExtensionContext,
 		signal: TauAbortSignal | undefined,
 		toolResults: ToolResultMessage[],
+		toolResultEntryIds: string[],
 	): AsyncGenerator<AgentEvent> {
 		for (const toolCall of toolCalls) {
 			yield { type: "tool_start", toolCall };
@@ -1459,7 +1709,7 @@ export class Agent {
 				});
 			}
 			const { result } = await execution;
-			yield await this.commitToolResult(toolCall, result, ctx, toolResults);
+			yield await this.commitToolResult(toolCall, result, ctx, toolResults, toolResultEntryIds);
 		}
 	}
 
@@ -1479,6 +1729,7 @@ export class Agent {
 		ctx: ExtensionContext,
 		signal: TauAbortSignal | undefined,
 		toolResults: ToolResultMessage[],
+		toolResultEntryIds: string[],
 	): AsyncGenerator<AgentEvent> {
 		const preps: ToolCallPreparation[] = [];
 		for (const toolCall of toolCalls) {
@@ -1536,7 +1787,7 @@ export class Agent {
 		}
 
 		for (let index = 0; index < preps.length; index++) {
-			yield await this.commitToolResult(preps[index].toolCall, outcomes[index], ctx, toolResults);
+			yield await this.commitToolResult(preps[index].toolCall, outcomes[index], ctx, toolResults, toolResultEntryIds);
 		}
 	}
 
@@ -1676,7 +1927,10 @@ export class Agent {
 	): Promise<ToolOutcome> {
 		const { toolCall, tool, args } = prep;
 		const updateNotifications: Promise<void>[] = [];
+		// Updates after execute settled are dropped, so none lands after tool_execution_end (pi acceptingUpdates).
+		let acceptingUpdates = true;
 		const emitUpdate = (partialOutput: string, stream?: ToolUpdateStream): void => {
+			if (!acceptingUpdates) return;
 			if (this.extensions) {
 				const notification = this.extensions
 					.notifyToolExecutionUpdate(
@@ -1708,6 +1962,7 @@ export class Agent {
 			}
 			durationMs = Math.max(0, Date.now() - startedAt);
 		}
+		acceptingUpdates = false;
 		await Promise.all(updateNotifications);
 		await this.extensions?.notifyToolExecutionEnd(
 			{ toolCallId: toolCall.id, toolName: toolCall.name, result, ...(durationMs !== undefined ? { durationMs } : {}) },
@@ -1825,6 +2080,14 @@ async function* pumpEvents<T>(work: (emit: (event: AgentEvent) => void) => Promi
 	}
 	if (failure) throw failure.error;
 	return value as T;
+}
+
+/** Consecutive turns whose tool calls were cut off by the output cap before the run ends (tau guard). */
+const MAX_LENGTH_TRUNCATED_TURNS = 3;
+
+/** Error text for a tool call of a length-truncated response, verbatim from pi 0.80.4. */
+function truncatedToolCallText(toolName: string): string {
+	return `Tool call "${toolName}" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.`;
 }
 
 /** Result for a tool call that was never started because its run was aborted. */

@@ -87,6 +87,7 @@ test("injected transport drives a full two-turn tool loop; the agent never touch
 		"text_delta",
 		"assistant_message",
 		"agent_end",
+		"agent_settled",
 	]);
 	assert.deepEqual(
 		agent.messages.map((message) => message.role),
@@ -159,7 +160,7 @@ test("a transport failure becomes a stopReason error message, as with the built-
 	for await (const event of agent.prompt("hello")) {
 		events.push(event.type);
 	}
-	assert.deepEqual(events, ["assistant_message", "agent_end"]);
+	assert.deepEqual(events, ["assistant_message", "agent_end", "agent_settled"]);
 	const failure = agent.messages[1] as AssistantMessage;
 	assert.equal(failure.stopReason, "error");
 	assert.ok(failure.errorMessage?.includes("connection refused"));

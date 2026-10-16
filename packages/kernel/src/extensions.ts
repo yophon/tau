@@ -1,7 +1,17 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError, toError } from "./errors.ts";
-import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, Usage, UserContent } from "./messages.ts";
+import type {
+	AgentMessage,
+	AssistantMessage,
+	ImageContent,
+	JsonValue,
+	TextContent,
+	ToolCall,
+	ToolResultMessage,
+	Usage,
+	UserContent,
+} from "./messages.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
@@ -140,12 +150,70 @@ export interface TurnStartEvent {
 	timestamp: number;
 }
 
-/** Fired at the end of each turn, after the turn's tool calls completed. */
-export interface TurnEndEvent {
+/** How a turn or a run ended (pi AgentActivityOutcome). */
+export type ActivityOutcome = "completed" | "aborted" | "error";
+
+/**
+ * An entry a boundary handler asks to append (pi SessionBoundaryDraft, the
+ * subset tau commits: custom entries and custom messages).
+ */
+export type BoundaryDraft =
+	| { type: "custom"; customType: string; data?: JsonValue }
+	| {
+			type: "custom_message";
+			customType: string;
+			content: string | (TextContent | ImageContent)[];
+			display?: boolean;
+			details?: JsonValue;
+	  };
+
+/**
+ * What a boundary handler returns (pi BoundaryResult): `entries` replaces the
+ * draft list (start from `event.entries` to keep earlier handlers' drafts);
+ * `continue: true` asks for one more model request.
+ */
+export type BoundaryResult = { entries?: BoundaryDraft[]; continue?: boolean } | undefined;
+
+/** The actionable part of a boundary event as each handler sees it (pi BoundaryState minus the context preview). */
+export interface BoundaryState {
+	entries: BoundaryDraft[];
+	continue: boolean;
+	outcome: ActivityOutcome;
+}
+
+/**
+ * Fired at the end of each turn, after the turn's tool calls completed. An
+ * actionable boundary (pi 0.87.0): handlers may append drafts, committed in
+ * order before the loop decides, and ask for one more request with
+ * `continue` (ignored when the turn errored or was aborted, and when nothing
+ * would make a request valid — the context ends with the assistant and nothing
+ * is queued).
+ */
+export interface TurnEndEvent extends BoundaryState {
 	type: "turn_end";
 	turnIndex: number;
 	message: AssistantMessage;
 	toolResults: ToolResultMessage[];
+	/** Session entry of the assistant message. */
+	messageEntryId: string;
+	/** Session entries of the tool results, in order. */
+	toolResultEntryIds: string[];
+}
+
+/** Fired before a run settles: the last actionable boundary (pi 0.87.0). Same result as turn_end. */
+export interface AgentBeforeSettleEvent extends BoundaryState {
+	type: "agent_before_settle";
+}
+
+/**
+ * Fired once a prompt has fully settled — retries, compaction, follow-ups and
+ * continuations are over and the agent is idle (pi 0.80.4/1.1.0). Runs started
+ * from its handlers begin after every handler returned.
+ */
+export interface AgentSettledEvent {
+	type: "agent_settled";
+	/** Whether the prompt ended because it was aborted. */
+	aborted: boolean;
 }
 
 /**
@@ -613,8 +681,10 @@ function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessag
 export interface ExtensionAPI {
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
+	on(event: "agent_before_settle", handler: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>): void;
+	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
-	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
+	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, BoundaryResult>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
 	on(event: "context_with_system", handler: ExtensionHandler<ContextWithSystemEvent, ContextEventResult>): void;
@@ -734,6 +804,8 @@ export type Extension = (api: ExtensionAPI) => void | Promise<void>;
 interface HandlerLists {
 	agent_start: ExtensionHandler<AgentStartEvent>[];
 	agent_end: ExtensionHandler<AgentEndEvent>[];
+	agent_before_settle: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>[];
+	agent_settled: ExtensionHandler<AgentSettledEvent>[];
 	turn_start: ExtensionHandler<TurnStartEvent>[];
 	turn_end: ExtensionHandler<TurnEndEvent>[];
 	input: ExtensionHandler<InputEvent, InputEventResult>[];
@@ -815,6 +887,8 @@ export class ExtensionRegistry {
 	private readonly handlers: HandlerLists = {
 		agent_start: [],
 		agent_end: [],
+		agent_before_settle: [],
+		agent_settled: [],
 		turn_start: [],
 		turn_end: [],
 		input: [],
@@ -1302,13 +1376,62 @@ export class ExtensionRegistry {
 		await this.dispatch(this.handlers.turn_start, event, ctx);
 	}
 
-	async notifyTurnEnd(
-		turnIndex: number,
-		message: AssistantMessage,
-		toolResults: ToolResultMessage[],
+	/** Report a diagnostic to the host's error sink (dropped without one). */
+	reportError(event: string, message: string): void {
+		this.errorSink?.({ event, error: new Error(message) });
+	}
+
+	/**
+	 * Run an actionable boundary (pi emitBoundary): each handler sees the drafts
+	 * so far; a result's `entries` replaces them, its `continue` overrides the
+	 * request. Handler errors follow the notification rules (sink or throw).
+	 */
+	private async runBoundary<E extends BoundaryState & { type: string }>(
+		handlers: readonly ExtensionHandler<E, BoundaryResult>[],
+		event: E,
 		ctx: ExtensionContext,
-	): Promise<void> {
-		const event: TurnEndEvent = { type: "turn_end", turnIndex, message, toolResults };
-		await this.dispatch(this.handlers.turn_end, event, ctx);
+	): Promise<{ entries: BoundaryDraft[]; continue: boolean }> {
+		let entries: BoundaryDraft[] = [];
+		let shouldContinue = false;
+		for (const handler of handlers) {
+			const current: E = { ...event, entries: [...entries], continue: shouldContinue };
+			let result: BoundaryResult;
+			if (this.errorSink) {
+				try {
+					result = (await handler(current, ctx)) ?? undefined;
+				} catch (error) {
+					this.errorSink({ event: event.type, error: toError(error) });
+					continue;
+				}
+			} else {
+				result = (await handler(current, ctx)) ?? undefined;
+			}
+			if (!result) continue;
+			if (result.entries !== undefined) entries = [...result.entries];
+			if (result.continue !== undefined) shouldContinue = result.continue;
+		}
+		return { entries, continue: shouldContinue };
+	}
+
+	async runTurnEnd(
+		event: Omit<TurnEndEvent, "type" | "entries" | "continue">,
+		ctx: ExtensionContext,
+	): Promise<{ entries: BoundaryDraft[]; continue: boolean }> {
+		return this.runBoundary(this.handlers.turn_end, { type: "turn_end", entries: [], continue: false, ...event }, ctx);
+	}
+
+	async runBeforeSettle(
+		outcome: ActivityOutcome,
+		ctx: ExtensionContext,
+	): Promise<{ entries: BoundaryDraft[]; continue: boolean }> {
+		return this.runBoundary(
+			this.handlers.agent_before_settle,
+			{ type: "agent_before_settle", entries: [], continue: false, outcome },
+			ctx,
+		);
+	}
+
+	async notifyAgentSettled(aborted: boolean, ctx: ExtensionContext): Promise<void> {
+		await this.dispatch(this.handlers.agent_settled, { type: "agent_settled", aborted }, ctx);
 	}
 }

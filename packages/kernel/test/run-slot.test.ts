@@ -128,7 +128,7 @@ test("abort while a loop compaction summarizes: agent_end, no throw, no further 
 		},
 	]);
 	assert.ok(events.some((event) => event.type === "compaction_failed" && event.aborted));
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 	assert.ok(!agent.messages.some((message) => message.role === "compactionSummary"));
 });
 
@@ -148,16 +148,16 @@ test("an aborted retry closes its cycle: auto_retry_end pairs auto_retry_start (
 	const agent = agentWith(scripted([fail("503 Service Unavailable"), hang(() => controller.abort())]), registry);
 	const events = await drain(agent.prompt("go", controller.signal));
 	assert.deepEqual(retry, ["start:1", "end:1:false:Retry cancelled"]);
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 });
 
-test("an abort landing in a turn_start handler does not start a compaction (race C)", async () => {
+test("an abort landing in a before_agent_start handler does not start a compaction (race C)", async () => {
 	const controller = new TestAbortController();
 	const beforeCompact: string[] = [];
 	const registry = await ExtensionRegistry.load([
 		compactOnStart,
 		(api) => {
-			api.on("turn_start", async () => {
+			api.on("before_agent_start", async () => {
 				controller.abort();
 			});
 			api.on("session_before_compact", () => {
@@ -170,7 +170,7 @@ test("an abort landing in a turn_start handler does not start a compaction (race
 	const events = await drain(agent.prompt("go", controller.signal));
 	assert.deepEqual(beforeCompact, []);
 	assert.equal(requests.length, 0);
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 });
 
 test("session_before_compact always receives a signal, aborted with the compaction", async () => {
@@ -206,7 +206,7 @@ test("a run holds the agent: compact() and navigateTo() reject busy while prompt
 	);
 	agent.abort();
 	const events = await run;
-	assert.equal(events.at(-1)?.type, "agent_end");
+	assert.equal(events.at(-2)?.type, "agent_end");
 	assert.equal(agent.isIdle, true);
 	assert.equal(agent.signal, undefined);
 });
