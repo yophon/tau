@@ -9,6 +9,8 @@ export type TauErrorCode =
 	| "no_host"
 	| "no_session"
 	| "busy"
+	/** A seam was asked for something its implementation does not support (e.g. headers on a custom transport). */
+	| "unsupported"
 	/** An extension handler cancelled the operation (e.g. session_before_compact). */
 	| "cancelled"
 	| "compaction_failed"
@@ -89,4 +91,29 @@ export class ShellError extends Error {
 
 export function toError(value: unknown): Error {
 	return value instanceof Error ? value : new Error(String(value));
+}
+
+/**
+ * An error's message with its innermost cause appended (P23d): undici reports a
+ * refused local port as "fetch failed" and keeps ECONNREFUSED two causes deep,
+ * which is all a user needs to see. Falls back to the cause's `code` when its
+ * message is empty (AggregateError).
+ */
+export function describeError(value: unknown): string {
+	const outer = toError(value);
+	let inner: unknown = outer;
+	for (let depth = 0; depth < 8; depth++) {
+		const next = (inner as { cause?: unknown } | undefined)?.cause;
+		if (next === undefined || next === null || next === inner) break;
+		inner = next;
+	}
+	if (inner === outer) return outer.message;
+	const innerError = inner as { message?: unknown; code?: unknown };
+	const detail =
+		typeof innerError.message === "string" && innerError.message !== ""
+			? innerError.message
+			: typeof innerError.code === "string"
+				? innerError.code
+				: String(inner);
+	return detail === "" || outer.message.includes(detail) ? outer.message : `${outer.message} (${detail})`;
 }

@@ -19,7 +19,6 @@ import {
 	ANTHROPIC_DEFAULT_BASE_URL,
 	ANTHROPIC_MESSAGES_API,
 	type AnthropicTransportConfig,
-	anthropicThinkingForLevel,
 	createAnthropicTransport,
 } from "@yophon/tau-ext-provider-anthropic";
 import {
@@ -112,6 +111,9 @@ Extensions may declare additional --<flag> options (see registerFlag).
 Retry/timeout env knobs: TAU_MAX_RETRIES (0 disables, default 3),
 TAU_RETRY_BASE_DELAY_MS (default 2000, exponential), TAU_STALL_TIMEOUT_MS
 (default 120000, 0 disables the dry-stream watchdog).
+Chat Completions dialect knobs: TAU_MAX_TOKENS_FIELD=max_completion_tokens (OpenAI
+reasoning models; summary requests), TAU_SUPPORTS_FINISH_REASON=0 (endpoints that
+omit finish_reason), TAU_INPUT=text (text-only models: images become placeholders).
 Without -p, tau starts an interactive REPL. During a running turn, typed lines
 are queued as steering messages. Ctrl+C aborts the current turn.`;
 
@@ -298,19 +300,6 @@ type ProviderKind = (typeof PROVIDERS)[number];
 
 function isProvider(value: string): value is ProviderKind {
 	return (PROVIDERS as readonly string[]).includes(value);
-}
-
-/**
- * /thinking for --provider anthropic. Default: adaptive thinking + output_config.effort,
- * the only form current Claude models accept (4.7+/5.x answer budget_tokens and
- * {type:"disabled"} with a 400). TAU_ANTHROPIC_THINKING=budget restores pi's budget
- * table for pre-4.6 models; tau has no model registry to pick this per model.
- */
-function setAnthropicThinking(config: AnthropicTransportConfig, level: ThinkingLevel | undefined): void {
-	const mode = process.env.TAU_ANTHROPIC_THINKING === "budget" ? "budget" : "adaptive";
-	const next = anthropicThinkingForLevel(level, mode);
-	config.thinking = next.thinking;
-	config.effort = next.effort;
 }
 
 // ---------------------------------------------------------------------------
@@ -617,23 +606,6 @@ function firstLine(text: string, max = 120): string {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
-function thinkingLevelFromExtraBody(extraBody: OpenAICompatConfig["extraBody"]): ThinkingLevel | undefined {
-	const value = extraBody?.reasoning_effort;
-	return typeof value === "string" && ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value)
-		? (value as ThinkingLevel)
-		: undefined;
-}
-
-function setThinkingLevelInConfig(config: OpenAICompatConfig, level: ThinkingLevel | undefined): void {
-	if (level === undefined) {
-		if (!config.extraBody) return;
-		const { reasoning_effort: _reasoningEffort, ...rest } = config.extraBody;
-		config.extraBody = Object.keys(rest).length === 0 ? undefined : rest;
-		return;
-	}
-	config.extraBody = { ...config.extraBody, reasoning_effort: level };
-}
-
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
 /** Resolver for the single readline line currently awaited by an approval gate. */
@@ -855,6 +827,27 @@ async function main(): Promise<void> {
 	const envMaxTokens = Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : undefined;
 	// With an injected transport the config's protocol fields are inert; it still
 	// carries the message labels (provider/api/model) and contextWindow.
+	// Chat Completions dialect knobs (P23d), env only: the output-cap field for summary
+	// requests, endpoints that omit finish_reason, text-only models.
+	const dialect: Pick<OpenAICompatConfig, "maxTokensField" | "supportsFinishReason" | "input"> = {};
+	const envMaxTokensField = process.env.TAU_MAX_TOKENS_FIELD;
+	if (envMaxTokensField === "max_tokens" || envMaxTokensField === "max_completion_tokens") {
+		dialect.maxTokensField = envMaxTokensField;
+	} else if (envMaxTokensField) {
+		console.error(
+			`Ignoring TAU_MAX_TOKENS_FIELD="${envMaxTokensField}" (expected max_tokens or max_completion_tokens)`,
+		);
+	}
+	const envFinishReason = process.env.TAU_SUPPORTS_FINISH_REASON;
+	if (envFinishReason === "0" || envFinishReason === "false") dialect.supportsFinishReason = false;
+	else if (envFinishReason && envFinishReason !== "1" && envFinishReason !== "true") {
+		console.error(`Ignoring TAU_SUPPORTS_FINISH_REASON="${envFinishReason}" (expected 0 or 1)`);
+	}
+	const envInput = process.env.TAU_INPUT;
+	if (envInput === "text") dialect.input = ["text"];
+	else if (envInput && envInput !== "text,image" && envInput !== "image") {
+		console.error(`Ignoring TAU_INPUT="${envInput}" (expected text or text,image)`);
+	}
 	const config: OpenAICompatConfig = {
 		baseUrl: effectiveBaseUrl,
 		apiKey,
@@ -862,6 +855,7 @@ async function main(): Promise<void> {
 		contextWindow,
 		...(provider === "anthropic" ? { provider: "anthropic", api: ANTHROPIC_MESSAGES_API } : {}),
 		...stallTimeout,
+		...dialect,
 	};
 	const anthropicConfig: AnthropicTransportConfig | undefined =
 		provider === "anthropic"
@@ -871,17 +865,27 @@ async function main(): Promise<void> {
 					model,
 					...(baseUrl !== undefined ? { baseUrl } : {}),
 					...(envMaxTokens !== undefined ? { maxTokens: envMaxTokens } : {}),
+					...(contextWindow !== undefined ? { contextWindow } : {}),
+					thinkingMode: process.env.TAU_ANTHROPIC_THINKING === "budget" ? "budget" : "adaptive",
 					...stallTimeout,
 				}
 			: undefined;
-	let pricing = options.pricing;
-	if (!pricing && process.env.TAU_PRICING) {
+	// The thinking level travels with every request (P23d); /thinking changes it on the agent.
+	let thinkingLevel: ThinkingLevel | undefined;
+	let fixedPricing = options.pricing;
+	if (!fixedPricing && process.env.TAU_PRICING) {
 		const parsed = parsePricing(process.env.TAU_PRICING);
 		// Env is a convenience knob: a bad value degrades to "cost unknown" with a
 		// warning instead of refusing to start (the explicit flag does exit).
 		if (parsed instanceof Error) console.error(`Ignoring TAU_PRICING: ${parsed.message}`);
-		else pricing = parsed;
+		else fixedPricing = parsed;
 	}
+	// The given prices belong to the startup model: after /model the cost is unknown
+	// rather than priced at another model's rates (debt #12, D19-3).
+	const pricedModel = model;
+	const pricing = fixedPricing
+		? (forModel: string): ModelPricing | undefined => (forModel === pricedModel ? fixedPricing : undefined)
+		: undefined;
 	let permissionMode = options.permissionMode;
 	if (!permissionMode && process.env.TAU_PERMISSION_MODE) {
 		const value = process.env.TAU_PERMISSION_MODE;
@@ -1055,6 +1059,7 @@ async function main(): Promise<void> {
 			session,
 			retry,
 			pricing,
+			thinkingLevel,
 			permissionMode,
 			toolExecution,
 			onApproval,
@@ -1085,15 +1090,14 @@ async function main(): Promise<void> {
 			shell,
 			store,
 			recorder,
-			thinkingLevel: thinkingLevelFromExtraBody(config.extraBody),
+			thinkingLevel,
 			setModel: (nextModel) => {
+				// Agents built later (/reload, /resume) start from the switched model.
 				config.model = nextModel;
-				// The transport reads its own config per request; keep both in step.
 				if (anthropicConfig) anthropicConfig.model = nextModel;
 			},
 			setThinkingLevel: (nextLevel) => {
-				if (anthropicConfig) setAnthropicThinking(anthropicConfig, nextLevel);
-				else setThinkingLevelInConfig(config, nextLevel);
+				thinkingLevel = nextLevel;
 			},
 			setApprovalPrompt: (prompt) => {
 				approvalPromptRef.current = prompt;

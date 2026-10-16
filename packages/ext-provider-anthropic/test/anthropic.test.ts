@@ -509,16 +509,25 @@ test("thinking config maps to the wire and clamps into small output caps", () =>
 	assert.equal(effortOnly.thinking, undefined);
 	assert.deepEqual(effortOnly.output_config, { effort: "low" });
 
-	// pi's clamp: budget must fit under max_tokens with room for output…
-	const clamped = buildRequestBody(
+	// pi adjustMaxTokensForThinking (P23d): an explicit cap (a summary) gets the budget on top…
+	const stacked = buildRequestBody(
 		{ ...CONFIG, thinking: { budgetTokens: 16384 } },
 		{ messages: [user("hi")], maxTokens: 4096 },
 	);
-	assert.deepEqual(clamped.thinking, { type: "enabled", budget_tokens: 4096 - 1024 });
+	assert.equal(stacked.max_tokens, 4096 + 16384);
+	assert.deepEqual(stacked.thinking, { type: "enabled", budget_tokens: 16384 });
 
-	// …and a cap too small for any budget drops thinking entirely (summarization requests).
+	// …bounded by config.maxTokens, with pi's clamp leaving room for output…
+	const clamped = buildRequestBody(
+		{ ...CONFIG, maxTokens: 8000, thinking: { budgetTokens: 16384 } },
+		{ messages: [user("hi")], maxTokens: 4096 },
+	);
+	assert.equal(clamped.max_tokens, 8000);
+	assert.deepEqual(clamped.thinking, { type: "enabled", budget_tokens: 8000 - 1024 });
+
+	// …and a cap too small for any budget drops thinking entirely.
 	const dropped = buildRequestBody(
-		{ ...CONFIG, thinking: { budgetTokens: 16384 } },
+		{ ...CONFIG, maxTokens: 1024, thinking: { budgetTokens: 16384 } },
 		{ messages: [user("hi")], maxTokens: 1024 },
 	);
 	assert.equal(dropped.thinking, undefined);

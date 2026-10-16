@@ -68,9 +68,11 @@ Phase 0 曾把消息模型设计成 OpenAI wire 格式的直接镜像（string c
 
 流/网络/HTTP/超时失败规范化为 TauError 后**不从 `prompt()` 抛出**，而是变成 `stopReason: "error"/"aborted"` 的 assistant 消息（携带 `errorMessage` 与已收到的部分内容）进入对话与会话，`turn_end`/`agent_end` 照常发出。理由：pi agent-loop 同款（D7）；宿主渲染统一走消息通道；重试机制天然以错误消息为输入（pi `isRetryableAssistantError` 的参数就是 AssistantMessage）。影响：宿主必须渲染 error/aborted 两种终态；嵌入方的 try/catch 只需处理编程性错误（`busy`/`max_turns`）；压缩的 token 估算跳过 error/aborted 消息的 usage（P4 已有）。
 
+> **P23 补记（2026-10-16）**：可抛清单补三类编程性错误——transport 违约（流结束却没有 `response_end`，不转成会被重试的错误消息）、`before_provider_headers` 处理器在主循环里抛错、自定义 transport 未声明 `supportsHeaders` 却有 headers 处理器（`unsupported`）。反过来，循环内压缩的失败与中止、摘要被截断，都不抛：发 `session_compact_failed`，中止时以 `agent_end` 收尾（P23a）。摘要请求里 headers 处理器抛错按摘要失败处理（它跑在摘要 transport 的流内部）。Chat Completions 缺 `finish_reason` 或给出错误类 `finish_reason` 时在 transport 内抛 `stream_error`，按本条变成错误消息并可重试（P21 裁定 8）。
+
 ## D15：Platform 可选能力模式——`sleep` 缺失即静默禁用，不做降级模拟（2026-07-15，P11）
 
-`Platform.sleep?` 是缝隙的第一个可选成员：存在则自动重试与停滞看门狗启用；缺失则两者**整体禁用**（绝不做 0 延时忙重试或轮询模拟）。理由：裸引擎（QuickJS/flutter_js）无 timers，强求实现会破坏"内核只依赖语言标准"的主张；与能力可选（fs/shell 缺失就少注册工具）哲学一致，是 D4 的自然延伸。影响：适配器作者实现 `sleep`（一行 setTimeout）即免费获得重试+超时；未来新增缝隙成员默认走同一模式——可选、缺失静默降级、文档写明差异。另：`defaultPlatform()` 顺带承担结构化 signal → 真 AbortSignal 的桥接（原生 fetch 拒收结构子集），自定义适配器对自家传输负有同等桥接义务（债 #7）。
+`Platform.sleep?` 是缝隙的第一个可选成员：存在则自动重试与停滞看门狗启用；缺失则两者**整体禁用**（绝不做 0 延时忙重试或轮询模拟）。理由：裸引擎（QuickJS/flutter_js）无 timers，强求实现会破坏"内核只依赖语言标准"的主张；与能力可选（fs/shell 缺失就少注册工具）哲学一致，是 D4 的自然延伸。影响：适配器作者实现 `sleep`（一行 setTimeout）即免费获得重试+超时；未来新增缝隙成员默认走同一模式——可选、缺失静默降级、文档写明差异。**P23 补记**：静默降级只用于观察类或体验类能力；会改变线上请求的指令（`before_provider_headers` 的覆盖与删除）遇到不支持的 transport 必须报错（`unsupported`），不能静默丢掉。另：`defaultPlatform()` 顺带承担结构化 signal → 真 AbortSignal 的桥接（原生 fetch 拒收结构子集），自定义适配器对自家传输负有同等桥接义务（债 #7）。
 
 ## D16：适配器交付形态——官方独立宿主包 + 内核共享 UTF-8 解码器（2026-07-15，P10，用户裁决）
 
@@ -117,6 +119,8 @@ D3 预留的"扩展层协议适配"口子兑现为内核 `ChatTransport` 注入�
 配套形状决策：`TransportRequest = { systemPrompt?, messages, tools?, signal?, maxTokens? }`（pi 形状消息进，transport 负责转 wire；失败语义仍 D14——transport 内规范化为 TauError，Agent 转 stopReason error/aborted 消息）；`OpenAICompatConfig` 增可选 `api` 字段供流中 partial 消息带正确 lineage；`ThinkingContent` 补 pi 的 `thinkingSignature`/`redacted` 可选位（D13 方向的收尾——Anthropic thinking 回放需要）。首个适配包 `@yophon/tau-ext-provider-anthropic` 走 ext-mcp-http 的"抄协议不抄 SDK"路线（协议锁 `anthropic-version: 2023-06-01`），纯度门禁随之扩面覆盖纯 Platform 扩展包。
 
 > **P22 补记（2026-10-16，用户确认，改形状不推翻）**：`TransportRequest` 改为 pi TranscriptContext 的形状 `{ messages, signal?, maxTokens? }`。prompt 与工具声明是 `messages` 里的 system 消息，transport 用 `resolveTranscript()` 折叠成自家线格式（两个内置 transport 缺省都折叠，wire 与改形前逐字节相同）。理由：transport 看到的就是转录，P22 的不变式检查只有一个比较对象。注入方式、不热换、摘要随 transport 走三条不变。
+
+> **P23 补记（2026-10-16）**：`TransportRequest` 增加四个可选字段——`headers`（`before_provider_headers` 的结果，字符串增改、null 删除，大小写不敏感，排在 transport 自己的 headers 之后）、`cacheRetention: "none"`（摘要请求固定带，Anthropic transport 据此不打 cache_control）、`thinkingLevel`（协议中立下发：OpenAI 兼容写 `reasoning_effort`，Anthropic 映射 adaptive/effort 或 budget）、`model`（`Agent.setModel` 之后的请求模型，transport 缺省回落到自己的配置）。`ChatTransport` 可带 `supportsHeaders: true` 声明自己应用 headers；两个内置 transport 都声明。模型与思考等级从此由 Agent 持有并随请求下发，切换写 `model_change`/`thinking_level_change` 条目；宿主仍可改 config 以影响之后新建的 Agent。不热换协议这一条不变。
 
 ## D22：并行工具执行照抄 pi 到默认值与分派语义，写冲突走内核版 mutation queue（2026-07-20，P18）
 

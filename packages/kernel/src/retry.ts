@@ -1,7 +1,8 @@
-// pi 移植:错误分类逐字照抄 pi 的 packages/ai/src/utils/retry.ts(v0.80.3),
-// 溢出排除取其 packages/ai/src/utils/overflow.ts 的文本模式子集(usage 启发式
-// 检测不移植——tau 的压缩按阈值触发,不做溢出反应式压缩)。策略(指数退避、
-// 次数、事件形状)照抄 pi 的 agent-session.ts,由 Agent 执行。
+// pi 移植:错误分类逐字照抄 pi 的 packages/ai/src/utils/retry.ts 与
+// utils/overflow.ts(tag v1.2.0,P23d 整表同步)。溢出只取文本模式(usage 启发式
+// 检测不移植——tau 的压缩按阈值触发,不做溢出反应式压缩),并在分类函数内先排除
+// 溢出(pi 交给调用方)。策略(指数退避、次数、事件形状)照抄 pi 的
+// agent-session.ts,由 Agent 执行。
 import type { AssistantMessage } from "./messages.ts";
 import type { TauAbortSignal } from "./platform.ts";
 
@@ -19,11 +20,17 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"out of budget",
 	"quota exceeded",
 	"billing",
+	// ChatGPT subscription login (D2 excludes it; kept so the table diffs cleanly against pi).
+	"subscription_sharing_usage_limit_exceeded",
 ]);
 
 // Verbatim from pi ai/utils/retry.ts: transient provider/transport failures.
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"overloaded",
+	"server_busy",
+	"servers are currently busy",
+	"currently experiencing high demand",
+	"model is at capacity",
 	"rate.?limit",
 	"too many requests",
 	"429",
@@ -31,19 +38,26 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"502",
 	"503",
 	"504",
+	"520",
+	"524",
 	"service.?unavailable",
 	"server.?error",
 	"internal.?error",
-	"provider.?returned.?error",
+	"provider.?returned.?(?:an.?)?error",
+	"exceeded request buffer limit while retrying upstream",
 	"network.?error",
 	"connection.?error",
 	"connection.?refused",
 	"connection.?lost",
 	"other side closed",
 	"fetch failed",
+	"getaddrinfo",
+	"ENOTFOUND",
+	"EAI_AGAIN",
 	"upstream.?connect",
 	"reset before headers",
 	"socket hang up",
+	"socket connection was closed",
 	"timed? out",
 	"timeout",
 	"terminated",
@@ -51,34 +65,58 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"websocket.?error",
 	"ended without",
 	"stream ended before message_stop",
+	"stream ended before a terminal response event",
 	"http2 request did not get a response",
+	"pending stream has been canceled",
 	"retry delay",
 	"you can retry your request",
 	"try your request again",
 	"please retry your request",
-	// tau 追加:本内核自己的失败措辞(Network request failed / Stream read failed /
-	// connection reset)已被上面的 network/connection 模式覆盖,无需新增。
+	"ResourceExhausted",
+	"subscription_sharing_usage_unavailable",
+	"subscription_sharing_user_unavailable",
+	// tau additions: the kernel's own transport wording. Browsers ("Failed to fetch",
+	// Safari "Load failed"), mini-programs and React Native report a dropped
+	// connection only as "Network request failed: …" / "Stream read failed: …",
+	// which none of pi's patterns match.
+	"network request failed",
+	"stream read failed",
 ]);
 
-// Text subset of pi ai/utils/overflow.ts OVERFLOW_PATTERNS: overflow must not be
-// retried (compaction is the cure, not repetition).
+// Text patterns of pi ai/utils/overflow.ts: overflow must not be retried
+// (compaction is the cure, not repetition). Omitted: pi's Cerebras bodyless
+// 400/413 pattern, which needs a provider identity tau does not model (D21) and
+// matches an SDK message tau's "HTTP 400: " text never produces.
 const OVERFLOW_PATTERNS = [
-	/prompt is too long/i,
+	/prompt (?:is )?too long/i,
+	/prompt exceeds max length/i,
 	/request_too_large/i,
+	/input is too long for requested model/i,
 	/exceeds the context window/i,
-	/exceeds (?:the )?(?:model'?s )?maximum context length/i,
+	/exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))/i,
 	/input token count.*exceeds the maximum/i,
 	/maximum prompt length is \d+/i,
 	/reduce the length of the messages/i,
 	/maximum context length is \d+ tokens/i,
+	/exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?/i,
+	/input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)/i,
+	/exceeds the limit of \d+/i,
 	/exceeds the available context size/i,
 	/greater than the context length/i,
 	/context window exceeds limit/i,
 	/exceeded model token limit/i,
+	/too large for model with \d+ maximum context length/i,
+	/prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i,
+	/model_context_window_exceeded/i,
+	/prompt too long; exceeded (?:max )?context length/i,
+	/range of input length should be/i,
 	/context[_ ]length[_ ]exceeded/i,
 	/too many tokens/i,
 	/token limit exceeded/i,
 ];
+
+// Verbatim from pi ai/utils/overflow.ts: throttling that also matches an overflow pattern.
+const NON_OVERFLOW_PATTERNS = [/^(Throttling error|Service unavailable):/i, /rate limit/i, /too many requests/i];
 
 /** Retry policy knobs (defaults mirror pi's settings-manager: enabled, 3 attempts, 2s base). */
 export interface RetrySettings {
@@ -169,6 +207,7 @@ export async function retryAssistantCall(
 export function isContextOverflowError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const text = message.errorMessage;
+	if (NON_OVERFLOW_PATTERNS.some((pattern) => pattern.test(text))) return false;
 	return OVERFLOW_PATTERNS.some((pattern) => pattern.test(text));
 }
 

@@ -50,6 +50,7 @@ export {
 	renderProjectContext,
 } from "./context-files.ts";
 export {
+	describeError,
 	FileError,
 	type FileErrorCode,
 	HttpError,
@@ -73,6 +74,7 @@ export {
 	type AutoRetryStartEvent,
 	type BeforeAgentStartEvent,
 	type BeforeAgentStartEventResult,
+	type BeforeProviderHeadersEvent,
 	type BoundaryDraft,
 	type BoundaryResult,
 	type BoundaryState,
@@ -191,6 +193,7 @@ export {
 	userContentText,
 } from "./messages.ts";
 export {
+	applyHeaderChanges,
 	BRANCH_SUMMARY_PREFIX,
 	BRANCH_SUMMARY_SUFFIX,
 	type ChatStreamEvent,
@@ -199,9 +202,11 @@ export {
 	COMPACTION_SUMMARY_SUFFIX,
 	createOpenAICompatTransport,
 	type JsonSchema,
+	normalizeToolCallId,
 	OPENAI_COMPLETIONS_API,
 	type OpenAICompatConfig,
 	resolveTranscript,
+	sanitizeSurrogates,
 	streamChatCompletion,
 	type ToolDefinition,
 	type TransportRequest,

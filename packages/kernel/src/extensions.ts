@@ -103,6 +103,10 @@ export interface ExtensionContext {
 	isProjectTrusted?: () => boolean;
 	/** Working directory of the session (pi ctx.cwd). */
 	cwd?: string;
+	/** Current model id (pi ctx.model, an id here — no model registry, D21). */
+	readonly model?: string;
+	/** Current thinking level (pi ctx.thinkingLevel). */
+	readonly thinkingLevel?: ThinkingLevel;
 	/** Read-only view of the session log the agent's context is built from (pi ReadonlySessionManager, P22). */
 	sessionManager?: ReadonlySessionManager;
 	/** The system prompt the model currently has: the transcript's system messages replayed (P22). */
@@ -156,6 +160,17 @@ export interface TurnStartEvent {
 	type: "turn_start";
 	turnIndex: number;
 	timestamp: number;
+}
+
+/**
+ * Fired before every provider request (P23d, pi 0.80.4): handlers edit
+ * `headers` in place — a string adds or replaces, null deletes — and the
+ * changes are applied after the transport's configured headers. The transport's
+ * own headers are not visible here (D21). The return value is ignored.
+ */
+export interface BeforeProviderHeadersEvent {
+	type: "before_provider_headers";
+	headers: Record<string, string | null>;
 }
 
 /** How a turn or a run ended (pi AgentActivityOutcome). */
@@ -580,7 +595,8 @@ export interface ModelSelectEvent {
 
 export type ModelSelectEventResult = { cancel?: boolean; reason?: string; model?: string } | undefined;
 
-export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
+/** Thinking levels (pi; tau's "none" is pi's "off"). "max" sits above xhigh (pi 0.80.6). */
+export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 /** Fired when an interactive host changes the model thinking/reasoning effort override. */
 export interface ThinkingLevelSelectEvent {
@@ -758,6 +774,7 @@ export interface ExtensionAPI {
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): () => void;
 	on(event: "agent_before_settle", handler: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>): () => void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
+	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): () => void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, BoundaryResult>): () => void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): () => void;
@@ -842,6 +859,16 @@ export interface ExtensionAPI {
 	/** The session's display name, if set (pi). */
 	getSessionName(): string | undefined;
 
+	/**
+	 * Switch the session's model (pi). Runs model_select like a host switch; false
+	 * when a handler cancels. Deviation: takes a model id — tau has no model registry (D21).
+	 */
+	setModel(model: string): Promise<boolean>;
+	/** Current thinking level; undefined = the endpoint's default (pi getThinkingLevel; tau's "none" is pi's "off"). */
+	getThinkingLevel(): ThinkingLevel | undefined;
+	/** Set the thinking level for the session (pi). */
+	setThinkingLevel(level: ThinkingLevel | undefined): void;
+
 	/** Names of the active tools — the ones declared to the model (pi). */
 	getActiveTools(): string[];
 	/** Every registered tool, active or not (pi; the ToolInfo subset tau has). */
@@ -923,6 +950,7 @@ interface HandlerLists {
 	agent_end: ExtensionHandler<AgentEndEvent>[];
 	agent_before_settle: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>[];
 	agent_settled: ExtensionHandler<AgentSettledEvent>[];
+	before_provider_headers: ExtensionHandler<BeforeProviderHeadersEvent>[];
 	turn_start: ExtensionHandler<TurnStartEvent>[];
 	turn_end: ExtensionHandler<TurnEndEvent>[];
 	input: ExtensionHandler<InputEvent, InputEventResult>[];
@@ -976,6 +1004,9 @@ export interface ExtensionHostActions {
 	/** Shut the host down gracefully (ctx.shutdown backing). */
 	shutdown?(): void;
 	getSessionName?(): string | undefined;
+	setModel?(model: string): Promise<boolean>;
+	getThinkingLevel?(): ThinkingLevel | undefined;
+	setThinkingLevel?(level: ThinkingLevel | undefined): void;
 	getActiveTools?(): string[];
 	getAllTools?(): ToolInfo[];
 	setActiveTools?(toolNames: string[]): void;
@@ -1020,6 +1051,7 @@ export class ExtensionRegistry {
 		agent_end: [],
 		agent_before_settle: [],
 		agent_settled: [],
+		before_provider_headers: [],
 		turn_start: [],
 		turn_end: [],
 		input: [],
@@ -1261,6 +1293,9 @@ export class ExtensionRegistry {
 					source: this.commandOwners.get(command.invocationName ?? command.name) ?? "extension",
 				})),
 			setLabel: (entryId, label) => this.requireHostActions("setLabel")(entryId, label),
+			setModel: (model) => this.requireHostActions("setModel")(model),
+			getThinkingLevel: () => this.requireHostActions("getThinkingLevel")(),
+			setThinkingLevel: (level) => this.requireHostActions("setThinkingLevel")(level),
 			getActiveTools: () => this.requireHostActions("getActiveTools")(),
 			getAllTools: () => this.requireHostActions("getAllTools")(),
 			setActiveTools: (toolNames) => this.requireHostActions("setActiveTools")(toolNames),
@@ -1767,6 +1802,21 @@ export class ExtensionRegistry {
 			{ type: "agent_before_settle", entries: [], continue: false, outcome },
 			ctx,
 		);
+	}
+
+	/** Whether any before_provider_headers handler is registered (the agent checks transport support first). */
+	hasProviderHeaderHandlers(): boolean {
+		return this.handlers.before_provider_headers.length > 0;
+	}
+
+	/**
+	 * Run before_provider_headers: handlers mutate one headers object in turn.
+	 * Their errors propagate (they change what goes on the wire; never ignored).
+	 */
+	async runBeforeProviderHeaders(ctx: ExtensionContext): Promise<Record<string, string | null>> {
+		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} };
+		for (const handler of [...this.handlers.before_provider_headers]) await handler(event, ctx);
+		return event.headers;
 	}
 
 	async notifyAgentSettled(aborted: boolean, ctx: ExtensionContext): Promise<void> {

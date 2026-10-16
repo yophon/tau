@@ -1,5 +1,6 @@
 import { AbortHandle } from "./abort.ts";
-import { HttpError, TauError, toError } from "./errors.ts";
+import { describeError, HttpError, TauError } from "./errors.ts";
+import type { ThinkingLevel } from "./extensions.ts";
 import { parseJsonWithRepair } from "./json.ts";
 import {
 	type AgentMessage,
@@ -22,6 +23,7 @@ import {
 } from "./projection.ts";
 import { SseParser } from "./sse.ts";
 import { transformMessages } from "./transform.ts";
+import { uuidv7 } from "./uuid.ts";
 
 // Wire framing for summary messages, verbatim from pi's convertToLlm
 // (packages/agent/src/harness/messages.ts). Both summaries enter context as
@@ -81,6 +83,27 @@ export interface OpenAICompatConfig {
 	 * (absent on bare engines → no stall protection, silently).
 	 */
 	stallTimeoutMs?: number;
+	/**
+	 * Whether the endpoint ends every stream with a finish_reason (pi
+	 * compat.supportsFinishReason). Default true: a stream that ends without one
+	 * is an error ("Stream ended without finish_reason", retried), and
+	 * content_filter or unknown reasons are errors too (P21 ruling 8). false
+	 * infers stop/toolUse for endpoints that omit it.
+	 */
+	supportsFinishReason?: boolean;
+	/**
+	 * Body field for the output cap of requests that set one (summaries) — pi
+	 * compat.maxTokensField. Default "max_tokens" (deviation: pi defaults to
+	 * max_completion_tokens and sniffs URLs, which tau does not, P16). OpenAI's
+	 * reasoning models need "max_completion_tokens".
+	 */
+	maxTokensField?: "max_tokens" | "max_completion_tokens";
+	/**
+	 * What the model accepts (pi Model.input, declared by the host — tau has no
+	 * model registry). Without "image", image blocks are replaced by pi's
+	 * placeholder text instead of being sent. Absent = images are sent.
+	 */
+	input?: ("text" | "image")[];
 }
 
 /** The `api` field recorded on assistant messages, as in pi. */
@@ -114,52 +137,119 @@ interface WireDelta {
 	}[];
 }
 
+interface WireUsage {
+	prompt_tokens?: number;
+	completion_tokens?: number;
+	total_tokens?: number;
+	cached_tokens?: number;
+	prompt_cache_hit_tokens?: number;
+	prompt_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } | null;
+	completion_tokens_details?: { reasoning_tokens?: number } | null;
+}
+
 interface WireChunk {
 	id?: string;
 	model?: string;
 	error?: { message?: string };
-	choices?: { delta?: WireDelta; finish_reason?: string | null }[];
-	usage?: {
-		prompt_tokens?: number;
-		completion_tokens?: number;
-		total_tokens?: number;
-		prompt_tokens_details?: { cached_tokens?: number } | null;
-	} | null;
+	choices?: { delta?: WireDelta; finish_reason?: string | null; usage?: WireUsage | null }[];
+	usage?: WireUsage | null;
 }
 
+/**
+ * Removes unpaired UTF-16 surrogates, verbatim from pi utils/sanitize-unicode.ts:
+ * they make many providers reject the JSON body. Paired surrogates (emoji) stay.
+ */
+export function sanitizeSurrogates(text: string): string {
+	return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "");
+}
+
+/** User content on the wire; empty text parts are dropped (pi 0.87.1), undefined when nothing is left. */
 function userContentToWire(content: string | (TextContent | ImageContent)[]): unknown {
-	if (typeof content === "string") return content;
-	return content.map((block) =>
-		block.type === "text"
-			? { type: "text", text: block.text }
-			: { type: "image_url", image_url: { url: `data:${block.mimeType};base64,${block.data}` } },
-	);
+	if (typeof content === "string") return sanitizeSurrogates(content);
+	const parts = content
+		.filter((block) => block.type !== "text" || block.text.length > 0)
+		.map((block) =>
+			block.type === "text"
+				? { type: "text", text: sanitizeSurrogates(block.text) }
+				: { type: "image_url", image_url: { url: `data:${block.mimeType};base64,${block.data}` } },
+		);
+	return parts.length === 0 ? undefined : parts;
 }
 
 function toolResultContentToWire(content: (TextContent | ImageContent)[]): string {
 	// OpenAI-compatible tool messages are text-only; images degrade to a marker.
-	return content.map((block) => (block.type === "text" ? block.text : "[image omitted]")).join("\n");
+	const text = content.map((block) => (block.type === "text" ? block.text : "[image omitted]")).join("\n");
+	// An empty result is "(no tool output)", not "" (pi 0.80.4): some endpoints reject empty tool content.
+	return text === "" ? "(no tool output)" : sanitizeSurrogates(text);
 }
 
-function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Record<string, unknown> {
+/**
+ * Tool call ids for Chat Completions replay, from pi's normalizeToolCallId:
+ * Responses-style `call_id|item_id` ids are sanitized and held to 40 characters
+ * (keeping calls that share a call_id distinct); OpenAI's own endpoint caps
+ * plain ids at 40 too.
+ */
+export function normalizeToolCallId(id: string, provider: string): string {
+	if (id.includes("|")) {
+		const separatorIndex = id.indexOf("|");
+		const callId = id.slice(0, separatorIndex).replace(/[^a-zA-Z0-9_-]/g, "_");
+		const itemId = id.slice(separatorIndex + 1).replace(/[^a-zA-Z0-9_-]/g, "_");
+		const combinedId = itemId.length > 0 ? `${callId}_${itemId}` : callId;
+		if (combinedId.length <= 40) return combinedId;
+		const hash = shortHash(id).slice(0, 8);
+		const prefix = callId.slice(0, Math.max(1, 40 - hash.length - 1));
+		return `${prefix}_${hash}`;
+	}
+	if (provider === "openai") return id.length > 40 ? id.slice(0, 40) : id;
+	return id;
+}
+
+/** Fast non-cryptographic hash, verbatim from pi utils/hash.ts. */
+function shortHash(str: string): string {
+	let h1 = 0xdeadbeef;
+	let h2 = 0x41c6ce57;
+	for (let i = 0; i < str.length; i++) {
+		const ch = str.charCodeAt(i);
+		h1 = Math.imul(h1 ^ ch, 2654435761);
+		h2 = Math.imul(h2 ^ ch, 1597334677);
+	}
+	h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+	h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+	return (h2 >>> 0).toString(36) + (h1 >>> 0).toString(36);
+}
+
+function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Record<string, unknown> | undefined {
 	switch (message.role) {
-		case "user":
-			return { role: "user", content: userContentToWire(message.content) };
-		case "custom":
+		case "user": {
+			const content = userContentToWire(message.content);
+			return content === undefined ? undefined : { role: "user", content };
+		}
+		case "custom": {
 			// pi's convertToLlm sends custom messages to the model as user messages.
-			return { role: "user", content: userContentToWire(message.content) };
+			const content = userContentToWire(message.content);
+			return content === undefined ? undefined : { role: "user", content };
+		}
 		case "compactionSummary":
 			// As in pi's convertToLlm: enters context as a user message wrapped in <summary> tags.
-			return { role: "user", content: COMPACTION_SUMMARY_PREFIX + message.summary + COMPACTION_SUMMARY_SUFFIX };
+			return {
+				role: "user",
+				content: sanitizeSurrogates(COMPACTION_SUMMARY_PREFIX + message.summary + COMPACTION_SUMMARY_SUFFIX),
+			};
 		case "branchSummary":
-			return { role: "user", content: BRANCH_SUMMARY_PREFIX + message.summary + BRANCH_SUMMARY_SUFFIX };
+			return {
+				role: "user",
+				content: sanitizeSurrogates(BRANCH_SUMMARY_PREFIX + message.summary + BRANCH_SUMMARY_SUFFIX),
+			};
 		case "assistant": {
 			const text = message.content
 				.filter((block): block is TextContent => block.type === "text")
 				.map((block) => block.text)
 				.join("");
 			const toolCalls = message.content.filter((block): block is ToolCall => block.type === "toolCall");
-			const wire: Record<string, unknown> = { role: "assistant", content: text === "" ? null : text };
+			const wire: Record<string, unknown> = {
+				role: "assistant",
+				content: text === "" ? null : sanitizeSurrogates(text),
+			};
 			// Same-model reasoning is replayed under the field it arrived in (pi records the
 			// field name in thinkingSignature); transformMessages already turned foreign
 			// thinking into text, so any thinking block left here is ours.
@@ -171,7 +261,7 @@ function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Re
 					first?.type === "thinking" && isReasoningField(first.thinkingSignature)
 						? first.thinkingSignature
 						: "reasoning_content";
-				wire[field] = reasoningText;
+				wire[field] = sanitizeSurrogates(reasoningText);
 			} else if (replayEmptyReasoning) {
 				wire.reasoning_content = "";
 			}
@@ -188,7 +278,7 @@ function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Re
 			return { role: "tool", tool_call_id: message.toolCallId, content: toolResultContentToWire(message.content) };
 		case "system":
 			// Only reached with midConversationSystemMessages; otherwise the transcript is collapsed first.
-			return { role: "system", content: renderSystemMessageUpdate(message) };
+			return { role: "system", content: sanitizeSurrogates(renderSystemMessageUpdate(message)) };
 	}
 }
 
@@ -217,37 +307,72 @@ function toWireMessages(
 	replayEmptyReasoning = false,
 ): Record<string, unknown>[] {
 	const wire: Record<string, unknown>[] = [];
-	if (systemPrompt !== "") wire.push({ role: "system", content: systemPrompt });
-	for (const message of messages) wire.push(toWireMessage(message, replayEmptyReasoning));
+	if (systemPrompt !== "") wire.push({ role: "system", content: sanitizeSurrogates(systemPrompt) });
+	for (const message of messages) {
+		const converted = toWireMessage(message, replayEmptyReasoning);
+		// A user message left with no content (only empty text parts) is skipped, as in pi.
+		if (converted) wire.push(converted);
+	}
 	return wire;
 }
 
-function toUsage(wire: NonNullable<WireChunk["usage"]>): Usage {
-	const prompt = wire.prompt_tokens ?? 0;
-	const cacheRead = wire.prompt_tokens_details?.cached_tokens ?? 0;
-	// pi v0.80.3: prompt_tokens includes the cached part; Usage.input is the uncached
-	// remainder, so input + cacheRead is billed once (P14 pricing would otherwise
-	// charge cached tokens at the full input price on top of the cache price).
-	const input = Math.max(0, prompt - cacheRead);
-	const output = wire.completion_tokens ?? 0;
+/**
+ * Usage of a chunk, verbatim from pi parseChunkUsage: cache reads come from
+ * prompt_tokens_details.cached_tokens (OpenAI/OpenRouter), prompt_cache_hit_tokens
+ * (DeepSeek) or top-level cached_tokens (Kimi); cache writes are separate;
+ * `input` is the uncached remainder and `totalTokens` the sum of the four.
+ */
+function toUsage(wire: WireUsage): Usage {
+	const promptTokens = wire.prompt_tokens || 0;
+	const cacheRead =
+		wire.prompt_tokens_details?.cached_tokens ?? wire.prompt_cache_hit_tokens ?? wire.cached_tokens ?? 0;
+	const cacheWrite = wire.prompt_tokens_details?.cache_write_tokens || 0;
+	const input = Math.max(0, promptTokens - cacheRead - cacheWrite);
+	const output = wire.completion_tokens || 0;
 	return {
 		input,
 		output,
 		cacheRead,
-		cacheWrite: 0,
-		totalTokens: wire.total_tokens ?? prompt + output,
+		cacheWrite,
+		reasoning: wire.completion_tokens_details?.reasoning_tokens || 0,
+		totalTokens: input + output + cacheRead + cacheWrite,
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 	};
 }
 
-function toStopReason(finishReason: string | undefined, hasToolCalls: boolean): StopReason {
-	if (hasToolCalls) return "toolUse";
-	switch (finishReason) {
+/** finish_reason to StopReason, verbatim from pi mapStopReason: anything unknown is an error. */
+function mapStopReason(reason: string): { stopReason: StopReason; errorMessage?: string } {
+	switch (reason) {
+		case "stop":
+		case "end":
+			return { stopReason: "stop" };
 		case "length":
-			return "length";
+			return { stopReason: "length" };
+		case "function_call":
+		case "tool_calls":
+			return { stopReason: "toolUse" };
 		default:
-			return "stop";
+			return { stopReason: "error", errorMessage: `Provider finish_reason: ${reason}` };
 	}
+}
+
+/**
+ * Merge request-level header changes onto a header set (pi ProviderHeaders): a
+ * string adds or replaces, null deletes; names compare case-insensitively.
+ */
+export function applyHeaderChanges(
+	headers: Record<string, string>,
+	changes: Record<string, string | null> | undefined,
+): Record<string, string> {
+	if (!changes) return headers;
+	const result = { ...headers };
+	for (const [name, value] of Object.entries(changes)) {
+		for (const existing of Object.keys(result)) {
+			if (existing.toLowerCase() === name.toLowerCase()) delete result[existing];
+		}
+		if (value !== null) result[name] = value;
+	}
+	return result;
 }
 
 function hostOf(baseUrl: string): string {
@@ -310,8 +435,16 @@ export async function* streamChatCompletion(
 	platform: Platform,
 	config: OpenAICompatConfig,
 	messages: readonly AgentMessage[],
-	options?: { signal?: TauAbortSignal; maxTokens?: number },
+	options?: {
+		signal?: TauAbortSignal;
+		maxTokens?: number;
+		headers?: Record<string, string | null>;
+		thinkingLevel?: ThinkingLevel;
+		/** Model of this request; defaults to config.model (P23d, Agent.setModel). */
+		model?: string;
+	},
 ): AsyncGenerator<ChatStreamEvent> {
+	const model = options?.model ?? config.model;
 	throwIfAborted(options?.signal);
 	// pi v0.80.3 stamps the message at request start, on success and failure alike.
 	const startedAt = Date.now();
@@ -323,14 +456,22 @@ export async function* streamChatCompletion(
 		config.replayEmptyReasoning ?? /(^|[./])deepseek\.com(?=[:/]|$)/i.test(hostOf(config.baseUrl));
 	const transcript = resolveTranscript(messages, config.midConversationSystemMessages);
 	const body: Record<string, unknown> = {
-		model: config.model,
+		model,
 		messages: toWireMessages(
 			transcript.systemPrompt,
-			transformMessages(transcript.messages, { api, provider, model: config.model }),
+			transformMessages(transcript.messages, {
+				api,
+				provider,
+				model,
+				...(config.input ? { input: config.input } : {}),
+				normalizeToolCallId: (id) => normalizeToolCallId(id, provider),
+			}),
 			replayEmptyReasoning,
 		),
 		stream: true,
-		...(options?.maxTokens !== undefined ? { max_tokens: options.maxTokens } : {}),
+		...(options?.maxTokens !== undefined ? { [config.maxTokensField ?? "max_tokens"]: options.maxTokens } : {}),
+		// The thinking level travels on the request (P23d); extraBody still overrides it.
+		...(options?.thinkingLevel !== undefined ? { reasoning_effort: options.thinkingLevel } : {}),
 		...config.extraBody,
 	};
 	if (config.includeUsage !== false) body.stream_options = { include_usage: true };
@@ -341,9 +482,11 @@ export async function* streamChatCompletion(
 		}));
 	}
 
-	const headers: Record<string, string> = { "content-type": "application/json" };
+	let headers: Record<string, string> = { "content-type": "application/json" };
 	if (config.apiKey) headers.authorization = `Bearer ${config.apiKey}`;
-	Object.assign(headers, config.headers);
+	headers = applyHeaderChanges(headers, config.headers);
+	// before_provider_headers changes go last, after the configured headers (pi).
+	headers = applyHeaderChanges(headers, options?.headers);
 
 	let response: PlatformResponse;
 	try {
@@ -362,7 +505,7 @@ export async function* streamChatCompletion(
 		// An aborted fetch surfaces as the platform's own abort rejection; report it as ours.
 		throwIfAborted(options?.signal);
 		if (cause instanceof TauError && cause.code === "timeout") throw cause;
-		throw new TauError("network_error", `Network request failed: ${toError(cause).message}`, cause);
+		throw new TauError("network_error", `Network request failed: ${describeError(cause)}`, cause);
 	}
 	if (!response.ok) {
 		throw new HttpError(response.status, await response.text());
@@ -384,6 +527,7 @@ export async function* streamChatCompletion(
 	const rawByIndex = new Map<number, RawToolCall>();
 	const rawById = new Map<string, RawToolCall>();
 	let finishReason: string | undefined;
+	let mappedStop: { stopReason: StopReason; errorMessage?: string } | undefined;
 	let usage: Usage | undefined;
 	let responseId: string | undefined;
 	let responseModel: string | undefined;
@@ -421,7 +565,12 @@ export async function* streamChatCompletion(
 		if (typeof chunk.model === "string" && chunk.model !== "") responseModel ??= chunk.model;
 		const choice = chunk.choices?.[0];
 		if (!choice) return;
-		if (choice.finish_reason) finishReason = choice.finish_reason;
+		// Some providers (Moonshot) put usage on the choice instead of the chunk (pi).
+		if (!chunk.usage && choice.usage) usage = toUsage(choice.usage);
+		if (choice.finish_reason) {
+			finishReason = choice.finish_reason;
+			mappedStop = mapStopReason(choice.finish_reason);
+		}
 		const delta = choice.delta;
 		if (!delta) return;
 		if (typeof delta.content === "string" && delta.content !== "") {
@@ -470,7 +619,7 @@ export async function* streamChatCompletion(
 				// Reads interrupted by abort reject with the platform's own error; report it as ours.
 				throwIfAborted(options?.signal);
 				if (cause instanceof TauError && cause.code === "timeout") throw cause;
-				throw new TauError("stream_error", `Stream read failed: ${toError(cause).message}`, cause);
+				throw new TauError("stream_error", `Stream read failed: ${describeError(cause)}`, cause);
 			}
 			const { done: readerDone, value } = readResult;
 			if (readerDone) break;
@@ -497,10 +646,22 @@ export async function* streamChatCompletion(
 		}
 	}
 
+	throwIfAborted(options?.signal);
+	// Strict end-of-stream semantics (pi): an error finish_reason fails the request,
+	// and so does a stream that ended without any — unless the endpoint is declared
+	// not to send one. Thrown as stream errors, so the agent records an error message
+	// with the partial content and the retry patterns apply ("ended without").
+	if (mappedStop?.stopReason === "error") {
+		throw new TauError("stream_error", mappedStop.errorMessage ?? "Provider returned an error stop reason");
+	}
+	if (mappedStop === undefined && config.supportsFinishReason !== false) {
+		throw new TauError("stream_error", "Stream ended without finish_reason");
+	}
+
+	const seenIds = new Set<string>();
 	const toolCalls: ToolCall[] = rawToolCalls
-		.map((raw, index) => [index, raw] as const)
-		.filter(([, raw]) => raw.name !== "")
-		.map(([index, raw]) => {
+		.filter((raw) => raw.name !== "")
+		.map((raw) => {
 			let parsedArguments: JsonObject = {};
 			try {
 				const parsed: unknown = raw.argumentsText === "" ? {} : parseJsonWithRepair(raw.argumentsText);
@@ -510,12 +671,12 @@ export async function* streamChatCompletion(
 			} catch {
 				// Malformed arguments become {}; tool-side validation reports the miss.
 			}
-			return {
-				type: "toolCall" as const,
-				id: raw.id === "" ? `call_${index}` : raw.id,
-				name: raw.name,
-				arguments: parsedArguments,
-			};
+			// A missing or repeated id gets a fresh one: `call_<index>` repeated across turns,
+			// and protocols such as Anthropic's require unique tool_use ids.
+			let id = raw.id;
+			if (id === "" || seenIds.has(id)) id = `call_${uuidv7(platform.randomBytes).replace(/-/g, "").slice(-12)}`;
+			seenIds.add(id);
+			return { type: "toolCall" as const, id, name: raw.name, arguments: parsedArguments };
 		});
 
 	for (const toolCall of toolCalls) {
@@ -528,9 +689,9 @@ export async function* streamChatCompletion(
 		content: blocks,
 		api,
 		provider,
-		model: config.model,
+		model,
 		usage: usage ?? emptyUsage(),
-		stopReason: toStopReason(finishReason, toolCalls.length > 0),
+		stopReason: mappedStop?.stopReason ?? (toolCalls.length > 0 ? "toolUse" : "stop"),
 		...(finishReason !== undefined ? { rawStopReason: finishReason } : {}),
 		...(responseId !== undefined ? { responseId } : {}),
 		...(responseModel !== undefined ? { responseModel } : {}),
@@ -559,6 +720,19 @@ export interface TransportRequest {
 	signal?: TauAbortSignal;
 	/** Cap on generated tokens (summarization requests set it); maps to the protocol's own knob. */
 	maxTokens?: number;
+	/**
+	 * Header changes from before_provider_headers (P23d, pi ProviderHeaders): a
+	 * string adds or replaces, null deletes, case-insensitively, after the
+	 * transport's configured headers. Only sent to transports declaring
+	 * `supportsHeaders`.
+	 */
+	headers?: Record<string, string | null>;
+	/** "none" asks not to write a prompt cache (pi cacheRetention; summaries set it). Transports without cache writes ignore it. */
+	cacheRetention?: "none";
+	/** Thinking level of this request (P23d, pi reasoning): OpenAI-compatible → reasoning_effort, Anthropic → effort/budget. */
+	thinkingLevel?: ThinkingLevel;
+	/** Model of this request (P23d, Agent.setModel); transports fall back to their configured model. */
+	model?: string;
 }
 
 /**
@@ -566,13 +740,21 @@ export interface TransportRequest {
  * streamChatCompletion; failures must be normalized to TauError (D14) so the
  * agent converts them into stopReason error/aborted messages.
  */
-export type ChatTransport = (request: TransportRequest) => AsyncGenerator<ChatStreamEvent>;
+export type ChatTransport = ((request: TransportRequest) => AsyncGenerator<ChatStreamEvent>) & {
+	/** The transport applies TransportRequest.headers; required before before_provider_headers handlers may run (P23d). */
+	supportsHeaders?: boolean;
+};
 
 /** The default transport: the OpenAI-compatible client, verbatim. */
 export function createOpenAICompatTransport(platform: Platform, config: OpenAICompatConfig): ChatTransport {
-	return (request) =>
+	const transport: ChatTransport = (request) =>
 		streamChatCompletion(platform, config, request.messages, {
 			signal: request.signal,
 			maxTokens: request.maxTokens,
+			headers: request.headers,
+			thinkingLevel: request.thinkingLevel,
+			model: request.model,
 		});
+	transport.supportsHeaders = true;
+	return transport;
 }

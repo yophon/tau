@@ -65,6 +65,8 @@ export interface Usage {
 	output: number;
 	cacheRead: number;
 	cacheWrite: number;
+	/** Reasoning tokens, a subset of `output` (pi; reported by some endpoints). */
+	reasoning?: number;
 	totalTokens: number;
 	cost: UsageCost;
 }

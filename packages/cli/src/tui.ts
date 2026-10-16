@@ -73,7 +73,7 @@ const builtInCommands: SlashCommand[] = [
 	{ name: "model", argumentHint: "[model]", description: "Show or switch the model id." },
 	{
 		name: "thinking",
-		argumentHint: "[default|none|minimal|low|medium|high|xhigh]",
+		argumentHint: "[default|none|minimal|low|medium|high|xhigh|max]",
 		description: "Show or set reasoning effort.",
 	},
 	{ name: "tools", argumentHint: "[all|collapse|expand|reset|<id>]", description: "Inspect or fold tool output." },
@@ -595,6 +595,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		currentModel = decision.model;
 		modelChoices = uniqueModelChoices([decision.model, ...modelChoices]);
 		options.setModel(decision.model);
+		// The agent sends the model with each request and logs a model_change entry (P23d).
+		agent.setModel(decision.model);
 		setHeader();
 		setFooter();
 		await extensions.notifyModelSelected(
@@ -829,7 +831,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 			const requestedLevel = parseThinkingLevel(args);
 			if (requestedLevel === "invalid") {
-				appendText(red("Usage: /thinking [default|none|minimal|low|medium|high|xhigh]"));
+				appendText(red("Usage: /thinking [default|none|minimal|low|medium|high|xhigh|max]"));
 				return true;
 			}
 			const previousLevel = currentThinkingLevel;
@@ -843,6 +845,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			}
 			currentThinkingLevel = decision.level;
 			options.setThinkingLevel(decision.level);
+			agent.setThinkingLevel(decision.level);
 			setFooter();
 			await extensions.notifyThinkingLevelSelected(
 				{ previousLevel, requestedLevel, selectedLevel: decision.level },
@@ -1726,7 +1729,7 @@ function parseThinkingLevel(input: string): ThinkingLevel | undefined | "invalid
 }
 
 function isThinkingLevel(value: string): value is ThinkingLevel {
-	return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(value);
+	return ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
 }
 
 function formatThinkingLevel(level: ThinkingLevel | undefined): string {

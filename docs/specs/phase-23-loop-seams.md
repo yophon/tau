@@ -419,3 +419,9 @@ interface AgentOptions {
   - 命令重名照抄 pi：重名的每一个都加 `:N`（第一个也变成 `name:1`），不只是后来者。
   - 只有一个 `.tau/extensions` 的项目沿用原 digest，已有信任记录不需要重新确认；有其他受门控资源时用合并 digest。
   - 旧 ctx 失效只在 TUI `/reload` 用到（`/resume`、`/fork`、`/new` 换 Agent 但沿用同一个 registry，没有可作废的旧 registry）。
+- **23d**：
+  - `TransportRequest` 多了规格书没列的 `model` 字段：模型改由 Agent 持有并随请求下发，transport 才能在 `setModel` 之后用新模型，而不必让宿主同步两份 config。
+  - `before_provider_headers` 在主循环里于流外 await（处理器抛错是 bug，直接抛）；摘要请求的处理器跑在摘要 transport 的流内部，抛错按摘要失败处理（D14 补记）。
+  - 分支摘要与压缩共用一个"摘要 transport"包装：带当前模型、思考等级、`cacheRetention:"none"` 与 headers；没有改 `runCompaction`/`generateBranchSummary` 的签名。
+  - CLI 的 `--pricing` 只绑定启动模型（换模型后成本显示 unknown），没有引入按模型的价格表语法（保持窄）。
+  - `maxTokensField` 缺省维持 `max_tokens`（开放问题 3）。实测 DeepSeek（deepseek-chat）两种字段都接受；只验证了一个槽位，不改缺省。smoke:dialects 加了手动压缩场景，DeepSeek 真实端点 PASS。

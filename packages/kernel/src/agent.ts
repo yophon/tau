@@ -24,6 +24,7 @@ import {
 	type InputSource,
 	type QueuedInputDisposition,
 	type ReadonlySessionManager,
+	type ThinkingLevel,
 	type ToolInfo,
 	type TreePreparation,
 	type UiCapability,
@@ -172,8 +173,14 @@ export interface AgentOptions {
 	compaction?: Partial<CompactionSettings>;
 	/** Auto-retry policy for failed LLM requests (pi defaults: enabled, 3 attempts, 2s base). Requires Platform.sleep. */
 	retry?: Partial<RetrySettings>;
-	/** Host-supplied unit prices; fills usage.cost on assistant messages. Absent = cost stays zero ("unknown"). */
-	pricing?: ModelPricing;
+	/**
+	 * Host-supplied unit prices; fills usage.cost on assistant messages and
+	 * summaries. A function prices each model separately — undefined for a model
+	 * means its cost stays zero ("unknown", D19-3), e.g. after a model switch.
+	 */
+	pricing?: ModelPricing | ((model: string) => ModelPricing | undefined);
+	/** Initial thinking level sent with every request (P23d); undefined = the endpoint's default. */
+	thinkingLevel?: ThinkingLevel;
 	/**
 	 * Permission mode gating tool execution (P15). Kernel default:
 	 * "autonomous" — library consumers keep their behavior and opt into
@@ -310,7 +317,10 @@ export class Agent {
 	private readonly session: SessionRecorder;
 	private readonly compactionSettings: CompactionSettings;
 	private readonly retrySettings: RetrySettings;
-	private readonly pricing: ModelPricing | undefined;
+	private readonly pricing: AgentOptions["pricing"];
+	/** Model of this agent's requests (Agent.setModel; starts as config.model). */
+	private currentModel: string;
+	private currentThinkingLevel: ThinkingLevel | undefined;
 	private readonly permissionMode: PermissionMode;
 	private readonly policy: ToolPolicy;
 	private readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
@@ -387,6 +397,8 @@ export class Agent {
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		this.pricing = options.pricing;
+		this.currentModel = options.config.model;
+		this.currentThinkingLevel = options.thinkingLevel;
 		this.permissionMode = options.permissionMode ?? "autonomous";
 		this.policy = options.policy ?? createDefaultPolicy();
 		this.onApproval = options.onApproval;
@@ -497,6 +509,9 @@ export class Agent {
 			getAllTools: () => this.getAllTools(),
 			setActiveTools: (toolNames) => this.setActiveTools(toolNames),
 			getSessionName: () => this.sessionMetadata?.name,
+			setModel: (model) => this.switchModelForExtension(model),
+			getThinkingLevel: () => this.currentThinkingLevel,
+			setThinkingLevel: (level) => this.setThinkingLevel(level),
 		});
 	}
 
@@ -760,6 +775,12 @@ export class Agent {
 			},
 			isProjectTrusted: () => this.isProjectTrusted?.() === true,
 			cwd: this.capabilities.paths?.cwd ?? this.capabilities.fs?.cwd ?? "",
+			get model() {
+				return agent.currentModel;
+			},
+			get thinkingLevel() {
+				return agent.currentThinkingLevel;
+			},
 			sessionManager: this.sessionManager(),
 			getSystemPrompt: () => getCurrentSystemPrompt(this.messages),
 			discoverResources: (reason) => {
@@ -821,6 +842,7 @@ export class Agent {
 			onApproval: this.onApproval,
 			// The child's calls are billed like the parent's (D19).
 			pricing: this.pricing,
+			thinkingLevel: this.currentThinkingLevel,
 			toolExecution: this.toolExecution,
 		});
 		let text = "";
@@ -838,7 +860,105 @@ export class Agent {
 
 	/** A usage with its cost filled from the host pricing, when there is one (D19-3). */
 	private priced(usage: Usage): Usage {
-		return this.pricing ? { ...usage, cost: computeUsageCost(usage, this.pricing) } : usage;
+		const pricing = this.pricingFor(this.currentModel);
+		return pricing ? { ...usage, cost: computeUsageCost(usage, pricing) } : usage;
+	}
+
+	/** Prices for a model: the fixed pricing, or what the host's resolver says for it. */
+	private pricingFor(model: string): ModelPricing | undefined {
+		return typeof this.pricing === "function" ? this.pricing(model) : this.pricing;
+	}
+
+	/** The model this agent's requests use. */
+	get model(): string {
+		return this.currentModel;
+	}
+
+	/**
+	 * Use another model from the next request on and log a model_change entry
+	 * (pi). No events: hosts run model_select around it; the extension-facing
+	 * `api.setModel` does that itself.
+	 */
+	setModel(model: string): void {
+		if (model === this.currentModel) return;
+		this.currentModel = model;
+		const provider = this.config.provider ?? "openai-compat";
+		this.enqueueBackground(async () => {
+			await this.session.append({ type: "model_change", provider, modelId: model });
+			await this.refresh();
+		});
+	}
+
+	/** The thinking level sent with requests; undefined = the endpoint's default. */
+	get thinkingLevel(): ThinkingLevel | undefined {
+		return this.currentThinkingLevel;
+	}
+
+	/** Change the thinking level from the next request on; logs a thinking_level_change entry (pi words: "none" → "off"). */
+	setThinkingLevel(level: ThinkingLevel | undefined): void {
+		if (level === this.currentThinkingLevel) return;
+		this.currentThinkingLevel = level;
+		if (level === undefined) return;
+		this.enqueueBackground(async () => {
+			await this.session.append({ type: "thinking_level_change", thinkingLevel: level === "none" ? "off" : level });
+			await this.refresh();
+		});
+	}
+
+	/** The extension-facing model switch: model_select before, the switch, model_select after (pi setModel). */
+	private async switchModelForExtension(requested: string): Promise<boolean> {
+		const ctx = this.extensionContext();
+		const previous = this.currentModel;
+		const decision = this.extensions
+			? await this.extensions.runModelSelectBefore({ currentModel: previous, requestedModel: requested }, ctx)
+			: { model: requested };
+		if ("cancel" in decision && decision.cancel) return false;
+		this.setModel(decision.model);
+		await this.extensions?.notifyModelSelected(
+			{ previousModel: previous, requestedModel: requested, selectedModel: decision.model },
+			ctx,
+		);
+		return true;
+	}
+
+	/**
+	 * Header changes from before_provider_headers for one request (P23d). A
+	 * transport that does not apply headers cannot honor them, so registering a
+	 * handler with it is an error, not a silent no-op (D15 supplement).
+	 */
+	private async providerHeaders(ctx: ExtensionContext): Promise<Record<string, string | null> | undefined> {
+		if (!this.extensions?.hasProviderHeaderHandlers()) return undefined;
+		if (!this.transport.supportsHeaders) {
+			throw new TauError(
+				"unsupported",
+				"before_provider_headers handlers are registered, but the transport does not declare supportsHeaders",
+			);
+		}
+		const headers = await this.extensions.runBeforeProviderHeaders(ctx);
+		return Object.keys(headers).length > 0 ? headers : undefined;
+	}
+
+	/**
+	 * The transport for summary requests (compaction, turn prefix, branch summary):
+	 * the agent's model and thinking level, no prompt-cache write (pi 0.82.0), and
+	 * the before_provider_headers changes — pi runs the hook for every provider call.
+	 */
+	private summaryTransport(): ChatTransport {
+		const inner = this.transport;
+		const agent = this;
+		const transport: ChatTransport = (request) =>
+			(async function* () {
+				const headers = await agent.providerHeaders(agent.extensionContext());
+				yield* inner({
+					...request,
+					model: agent.currentModel,
+					cacheRetention: "none",
+					...(agent.currentThinkingLevel !== undefined ? { thinkingLevel: agent.currentThinkingLevel } : {}),
+					...(headers ? { headers } : {}),
+				});
+			})();
+		transport.supportsHeaders = inner.supportsHeaders;
+		return transport;
 	}
 
 	/** Current context-token estimate (pi semantics: last assistant usage + trailing heuristic). */
@@ -970,7 +1090,7 @@ export class Agent {
 			const result =
 				decision.result ??
 				(await runCompaction(
-					this.transport,
+					this.summaryTransport(),
 					preparation,
 					customInstructions,
 					signal,
@@ -1194,7 +1314,7 @@ export class Agent {
 		let summaryUsage = hook.summary?.usage;
 		if (!summaryText && options?.summarize !== false && entries.length > 0) {
 			try {
-				const generated = await generateBranchSummary(this.transport, entries, {
+				const generated = await generateBranchSummary(this.summaryTransport(), entries, {
 					customInstructions: hook.customInstructions ?? options?.customInstructions,
 					contextWindow: this.config.contextWindow,
 					reserveTokens: this.effectiveCompactionSettings().reserveTokens,
@@ -1480,7 +1600,7 @@ export class Agent {
 					content: [],
 					api: this.config.api ?? OPENAI_COMPLETIONS_API,
 					provider: this.config.provider ?? "openai-compat",
-					model: this.config.model,
+					model: this.currentModel,
 					usage: emptyUsage(),
 					// A streaming partial is unfinished (pi 0.83.0); the final message lands a concrete reason.
 					stopReason: "pending",
@@ -1491,7 +1611,16 @@ export class Agent {
 
 				let assistantMessage: AssistantMessage | undefined;
 				let streamFailure: TauError | undefined;
-				const stream = this.transport({ messages: request, signal });
+				let streamEnded = false;
+				// Awaited here, outside the stream: a failing headers handler is a bug, not a stream error.
+				const headers = await this.providerHeaders(ctx);
+				const stream = this.transport({
+					messages: request,
+					signal,
+					model: this.currentModel,
+					...(this.currentThinkingLevel !== undefined ? { thinkingLevel: this.currentThinkingLevel } : {}),
+					...(headers ? { headers } : {}),
+				});
 				// Pull manually so only stream failures are converted to error messages;
 				// exceptions thrown by extension hooks inside the loop still propagate as bugs.
 				const iterator = stream[Symbol.asyncIterator]();
@@ -1505,6 +1634,7 @@ export class Agent {
 						break;
 					}
 					if (iteration.done) break;
+					if (streamEnded) break;
 					const event = iteration.value;
 					switch (event.type) {
 						case "text_delta": {
@@ -1532,7 +1662,13 @@ export class Agent {
 							// Measured by the agent for every transport alike (pi 1.1.0); Date.now()
 							// differences, where pi uses performance.now() (kernel purity).
 							assistantMessage.durationMs = Math.max(0, Date.now() - requestStart);
-							if (this.pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, this.pricing);
+							{
+								const pricing = this.pricingFor(assistantMessage.model);
+								if (pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, pricing);
+							}
+							// The response is complete: stop pulling, so nothing a transport yields
+							// after its final message reaches extensions or the host (pi).
+							streamEnded = true;
 							break;
 					}
 				}

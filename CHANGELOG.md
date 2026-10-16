@@ -5,6 +5,37 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P23d, pi Chat Completions semantics, P21 ruling 8): a stream that
+  ends without `finish_reason` is an error ("Stream ended without finish_reason",
+  retried), and `content_filter` or any unknown finish reason is an error
+  ("Provider finish_reason: …"). Endpoints that omit it: set
+  `OpenAICompatConfig.supportsFinishReason: false` (CLI:
+  `TAU_SUPPORTS_FINISH_REASON=0`).
+- Kernel (P23d, pi parseChunkUsage): Chat Completions usage takes cache hits
+  from `prompt_tokens_details.cached_tokens`, `prompt_cache_hit_tokens`
+  (DeepSeek) or top-level `cached_tokens` (Kimi), reports `cache_write_tokens`
+  and `reasoning`, takes all of them out of `input`, and sums `totalTokens` —
+  DeepSeek's `usage.input` shrinks by its cache hits.
+- Kernel (P23d): empty tool results go out as "(no tool output)"; empty text
+  parts are dropped and a user message left empty is skipped; unpaired
+  surrogates are removed from outgoing text; a missing or repeated tool call id
+  gets a fresh `call_…` id instead of `call_<index>`. The retry and overflow
+  tables follow pi v1.2.0 (more transient errors retry, including "Provider
+  returned an error…", HTTP 520/524, DNS failures, and tau's own
+  "Network request failed"/"Stream read failed"; rate-limit messages that
+  mention "too many tokens" are no longer taken for overflow).
+- Kernel (P23d): `ChatTransport` may carry `supportsHeaders`; an agent with
+  `before_provider_headers` handlers refuses a transport without it
+  (`TauError("unsupported")`). `TransportRequest` gains `headers`,
+  `cacheRetention`, `thinkingLevel` and `model`.
+- ext-provider-anthropic (P23d): a request with an explicit output cap (summaries)
+  gets the budget-mode thinking budget on top of it, bounded by
+  `config.maxTokens` (pi adjustMaxTokensForThinking); with `contextWindow` set,
+  `max_tokens` is held to the room left in the window (pi clampMaxTokensToContext).
+- CLI (P23d): `/thinking` and `/model` act on the agent, which sends the level
+  and model with every request (`/thinking` no longer writes `extraBody`);
+  `--pricing`/`TAU_PRICING` apply to the startup model only — after `/model` the
+  cost shows unknown instead of another model's price.
 - Kernel (P23c, pi extension loading): `ExtensionRegistry.load()` no longer
   throws. Each extension's registrations are staged; a setup that throws is
   rolled back entirely and recorded in `registry.loadErrors`, and the remaining
@@ -144,6 +175,17 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P23d): `before_provider_headers` (pi 0.80.4; every provider call,
+  summaries included), `Agent.model`/`setModel()`, `Agent.thinkingLevel`/
+  `setThinkingLevel()` (logged as `model_change`/`thinking_level_change`),
+  `api.setModel()`/`getThinkingLevel()`/`setThinkingLevel()`, `ctx.model`/
+  `ctx.thinkingLevel`, `AgentOptions.thinkingLevel`, a per-model `pricing`
+  resolver, ThinkingLevel `"max"`, `OpenAICompatConfig.maxTokensField`
+  (`TAU_MAX_TOKENS_FIELD`) and `input` (`TAU_INPUT=text`: images become pi's
+  placeholder for text-only models), `describeError()` (network errors now name
+  the innermost cause, e.g. ECONNREFUSED), `normalizeToolCallId()`,
+  `sanitizeSurrogates()`, `applyHeaderChanges()`. Summary requests ask for no
+  prompt-cache write. The agent stops reading a stream at its final message.
 - Kernel (P23c): `InlineExtension { name, factory }`, `ExtensionRegistry.loadErrors` /
   `warnings` / `invalidate()` (a replaced registry's api and ctx throw
   `stale_extension`; the TUI's /reload uses it), `api.getCommands()`,

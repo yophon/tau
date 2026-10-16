@@ -15,13 +15,16 @@
 import {
 	type AgentMessage,
 	type AssistantMessage,
+	applyHeaderChanges,
 	BRANCH_SUMMARY_PREFIX,
 	BRANCH_SUMMARY_SUFFIX,
 	type ChatStreamEvent,
 	type ChatTransport,
 	COMPACTION_SUMMARY_PREFIX,
 	COMPACTION_SUMMARY_SUFFIX,
+	describeError,
 	emptyUsage,
+	estimateContextTokens,
 	HttpError,
 	type ImageContent,
 	type JsonObject,
@@ -39,7 +42,6 @@ import {
 	type ToolDefinition,
 	type ToolResultMessage,
 	type TransportRequest,
-	toError,
 	withStallTimeout,
 } from "@yophon/tau-kernel";
 
@@ -61,7 +63,7 @@ export type AnthropicEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type AnthropicThinkingMode = "adaptive" | "budget";
 
 /** pi's default thinking budgets (simple-options.ts) for budget-mode models; xhigh clamps to high. */
-const THINKING_BUDGETS = { minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384 } as const;
+const THINKING_BUDGETS = { minimal: 1024, low: 2048, medium: 8192, high: 16384, xhigh: 16384, max: 16384 } as const;
 
 /**
  * Map a shared thinking level (tau ThinkingLevel strings) onto transport config,
@@ -129,7 +131,22 @@ export interface AnthropicTransportConfig {
 	provider?: string;
 	/** Max silence (ms) for headers/next chunk, as in the kernel client. Default 120000; 0 disables. */
 	stallTimeoutMs?: number;
+	/**
+	 * How a request's thinking level maps onto the wire (P23d): adaptive + effort
+	 * (default, current models) or budget tokens (pre-4.6). Requests without a
+	 * thinking level use `thinking`/`effort` above.
+	 */
+	thinkingMode?: AnthropicThinkingMode;
+	/**
+	 * The model's context window. When set, max_tokens is held to the room left
+	 * after the estimated input minus 4096 tokens (pi clampMaxTokensToContext);
+	 * absent = no clamp.
+	 */
+	contextWindow?: number;
 }
+
+/** pi's safety margin between estimated input and the context window when clamping max_tokens. */
+const CONTEXT_SAFETY_TOKENS = 4096;
 
 // ---------------------------------------------------------------------------
 // Message transformation (pi transform-messages.ts): drop unfinished turns,
@@ -421,16 +438,36 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 	// The Messages API has no mid-conversation system role: the transcript's replayed
 	// prompt and tools fold into the top-level system and tools fields (P22).
 	const transcript = resolveTranscript(request.messages, false);
-	const transformed = transformMessagesForAnthropic(transcript.messages, { provider, model: config.model });
+	const model = request.model ?? config.model;
+	const transformed = transformMessagesForAnthropic(transcript.messages, { provider, model });
+	// A one-off request (a summary) asks for no cache write: its prefix is never reused (pi 0.82.0).
 	const cacheControl: WireCacheControl | undefined =
-		(config.cacheControl ?? "auto") === "auto" ? { type: "ephemeral" } : undefined;
+		(config.cacheControl ?? "auto") === "auto" && request.cacheRetention !== "none" ? { type: "ephemeral" } : undefined;
 
 	const wireMessages = messagesToWire(transformed);
 	if (cacheControl) markLastUserMessage(wireMessages, cacheControl);
 
-	const maxTokens = request.maxTokens ?? config.maxTokens ?? DEFAULT_MAX_TOKENS;
+	// The request's thinking level, when it has one, decides thinking and effort (P23d).
+	const thinkingConfig =
+		request.thinkingLevel !== undefined
+			? anthropicThinkingForLevel(request.thinkingLevel, config.thinkingMode ?? "adaptive")
+			: { thinking: config.thinking, effort: config.effort };
+	let maxTokens = request.maxTokens ?? config.maxTokens ?? DEFAULT_MAX_TOKENS;
+	const budgetThinking =
+		thinkingConfig.thinking !== undefined && thinkingConfig.thinking !== "adaptive"
+			? thinkingConfig.thinking
+			: undefined;
+	if (budgetThinking && request.maxTokens !== undefined) {
+		// pi adjustMaxTokensForThinking: an explicit output cap (summaries) gets the thinking
+		// budget on top, so reasoning cannot eat the answer; config.maxTokens bounds it.
+		maxTokens = Math.min(request.maxTokens + budgetThinking.budgetTokens, config.maxTokens ?? Number.POSITIVE_INFINITY);
+	}
+	if (config.contextWindow !== undefined && config.contextWindow > 0) {
+		const available = config.contextWindow - estimateContextTokens(transcript.messages).tokens - CONTEXT_SAFETY_TOKENS;
+		maxTokens = Math.min(maxTokens, Math.max(1, available));
+	}
 	const body: Record<string, unknown> = {
-		model: config.model,
+		model,
 		messages: wireMessages,
 		max_tokens: maxTokens,
 		stream: true,
@@ -447,15 +484,15 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 	if (transcript.tools.length > 0) {
 		body.tools = toolsToWire(transcript.tools, cacheControl);
 	}
-	if (config.thinking === "adaptive") {
+	if (thinkingConfig.thinking === "adaptive") {
 		body.thinking = { type: "adaptive", display: config.thinkingDisplay ?? "summarized" };
-	} else if (config.thinking) {
+	} else if (budgetThinking) {
 		// pi's clamp: the budget must leave room for output inside max_tokens;
-		// when it cannot (tiny summarization caps), thinking is dropped entirely.
-		const budget = Math.min(config.thinking.budgetTokens, Math.max(0, maxTokens - MIN_OUTPUT_TOKENS));
+		// when it cannot (tiny caps), thinking is dropped entirely.
+		const budget = Math.min(budgetThinking.budgetTokens, Math.max(0, maxTokens - MIN_OUTPUT_TOKENS));
 		if (budget > 0) body.thinking = { type: "enabled", budget_tokens: budget };
 	}
-	if (config.effort) body.output_config = { effort: config.effort };
+	if (thinkingConfig.effort) body.output_config = { effort: thinkingConfig.effort };
 	return body;
 }
 
@@ -538,19 +575,27 @@ type StreamingToolCall = ToolCall & { partialJson?: string };
  * `model` or `thinking` between turns.
  */
 export function createAnthropicTransport(config: AnthropicTransportConfig, platform: Platform): ChatTransport {
-	return async function* streamAnthropicMessages(request: TransportRequest): AsyncGenerator<ChatStreamEvent> {
+	const transport: ChatTransport = async function* streamAnthropicMessages(
+		request: TransportRequest,
+	): AsyncGenerator<ChatStreamEvent> {
 		throwIfAborted(request.signal);
 		// pi stamps the message at request start.
 		const startedAt = Date.now();
 
 		const baseUrl = (config.baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, "");
-		const headers: Record<string, string> = {
-			"content-type": "application/json",
-			accept: "application/json",
-			"anthropic-version": ANTHROPIC_VERSION,
-			"x-api-key": config.apiKey,
-			...config.headers,
-		};
+		// before_provider_headers changes go after the configured headers (P23d, pi).
+		const headers = applyHeaderChanges(
+			applyHeaderChanges(
+				{
+					"content-type": "application/json",
+					accept: "application/json",
+					"anthropic-version": ANTHROPIC_VERSION,
+					"x-api-key": config.apiKey,
+				},
+				config.headers,
+			),
+			request.headers,
+		);
 		const body = buildRequestBody(config, request);
 
 		let response: PlatformResponse;
@@ -569,7 +614,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 		} catch (cause) {
 			throwIfAborted(request.signal);
 			if (cause instanceof TauError && cause.code === "timeout") throw cause;
-			throw new TauError("network_error", `Network request failed: ${toError(cause).message}`, cause);
+			throw new TauError("network_error", `Network request failed: ${describeError(cause)}`, cause);
 		}
 		if (!response.ok) {
 			throw new HttpError(response.status, await response.text());
@@ -736,7 +781,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 				} catch (cause) {
 					throwIfAborted(request.signal);
 					if (cause instanceof TauError) throw cause;
-					throw new TauError("stream_error", `Stream read failed: ${toError(cause).message}`, cause);
+					throw new TauError("stream_error", `Stream read failed: ${describeError(cause)}`, cause);
 				}
 				if (readResult.done) break;
 				if (!readResult.value) continue;
@@ -784,4 +829,6 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 		};
 		yield { type: "response_end", message };
 	};
+	transport.supportsHeaders = true;
+	return transport;
 }

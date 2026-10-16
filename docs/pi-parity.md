@@ -27,7 +27,7 @@
 | `context_with_system` | 1.2 | ✅ P22 | 在全部 `context` 处理器之后、看到含 system 消息的完整转录，结果原样发出；删掉首条 system 时经 error sink 报告（pi 报错但照用） |
 | `cache_warming_decision` | 1.2 | ❌D19 | 成本感知的缓存预热需要模型库与定价（D19-3 不伪造成本），且是后台计时器（D15） |
 | `before_provider_request` | 0.80 | 📍Backlog | 快照内漏登（P21 补行）。线层事件，无消费者 |
-| `before_provider_headers` | 1.2 | 📍P23 | 每次 transport 调用触发，不缓存 |
+| `before_provider_headers` | 1.2 | ✅ P23d | 每次 transport 调用触发（主循环、压缩、turn-prefix、分支摘要），不缓存；原地改 `event.headers`，null 删除，可改写鉴权与协议头（开放问题 2）。⚠ 偏离：transport 自己的 headers 不在事件里（D21）；transport 须声明 `supportsHeaders`，否则抛 `unsupported`（D15 补记） |
 | `after_provider_response` | 0.80 | 📍Backlog | 快照内漏登（P21 补行）。与 before_provider_request 同批 |
 | `provider_stream_event` | 1.2 | 📍Backlog | 只读的原始 chunk 通知，TransportRequest 可选回调（D15 模式） |
 | `before_agent_start` | 0.80 | ✅ P2/P3 | 替换 system prompt + 注入消息；`resume()` 同样触发（P21-HF-10） |
@@ -77,9 +77,9 @@
 | `getSettings` | 1.2 | ❌D9 | 返回 pi 产品层 Settings。tau 没有 settings 层：配置是宿主装配的 AgentOptions、flag 与工厂 options（D8） |
 | `setActiveTools` | 0.80 | ✅ P23b | 未知名忽略、下一次请求生效；只能激活已注册工具，权限档没注册的工具激活不到（D20） |
 | `getCommands` | 0.80 | ✅ P23c | `{ name, description, source }`，name 为调用名（含 `:N`） |
-| `setModel` | 0.80 | 📍P23 | 快照内漏登。宿主现经 model_select 处理切换 |
-| `getThinkingLevel` | 0.80 | 📍P23 | 快照内漏登。thinkingLevel 进内核缝 |
-| `setThinkingLevel` | 0.80 | 📍P23 | 同上 |
+| `setModel` | 0.80 | ✅ P23d | 跑 model_select，被取消返回 false。⚠ 偏离：参数是模型 id（无模型库，D21） |
+| `getThinkingLevel` | 0.80 | ✅ P23d | undefined 表示端点缺省；tau 的 `none` 即 pi 的 `off`（会话条目写 `off`） |
+| `setThinkingLevel` | 0.80 | ✅ P23d | 下一次请求生效，写 `thinking_level_change` 条目；新增 `max` 档（pi 0.80.6） |
 | `registerProvider` | 0.80 | ⚠D21 | 以 `AgentOptions.transport` 装配注入兑现：协议是宿主装配决策，不做运行中热换。首个适配包 ext-provider-anthropic（P16） |
 | `unregisterProvider` | 0.80 | ❌D21 | 不注册即无从注销 |
 | `registerMcpServer` | 1.2 | ❌D21 | 见 `mcp_servers_change` |
@@ -99,9 +99,9 @@
 | `cwd` | 0.80 | ✅ P23c | 取 `capabilities.paths.cwd`（无则 `fs.cwd`），与能力门面同源 |
 | `sessionManager` | 0.80 | ⚠D7 P22 | 只读同步门面，反映 Agent 最近一次写入后的日志：getCwd/getSessionId/getSessionFile/getSessionName/getLeafId/getLeafEntry/getEntry/getLabel/getBranch/getEntries/buildContextEntries/buildSessionProjection。未镜像 getSessionDir/getHeader/getTree（宿主关注点，条目本身带树结构）；tau 的 store 是异步接口，门面读 Agent 的缓存 |
 | `modelRegistry` | 0.80 | ❌D21 | 没有模型库与凭据解析（D2/D3/D21）；同等需求用 `ctx.runSubagent(prompt, { tools: [], maxTurnsPerPrompt: 1 })` |
-| `model` | 0.80 | 📍P23 | 随 setModel |
+| `model` | 0.80 | ✅ P23d | 模型 id（D21） |
 | `scopedModels` | 1.2 | ❌D21 | 对模型目录的解析结果，tau 没有模型目录 |
-| `thinkingLevel` | 1.2 | 📍P23 | 随 getThinkingLevel |
+| `thinkingLevel` | 1.2 | ✅ P23d | |
 | `isIdle` | 0.80 | ✅ P23a | 运行槽为空（无 run、压缩、导航） |
 | `isProjectTrusted` | 0.80 | ✅ P23c | 宿主经 `AgentOptions.isProjectTrusted` 注入，只有显式 true 算信任；子 agent 继承 |
 | `signal` | 0.80 | ✅ P23a | 槽内操作的中止信号，空闲为 undefined |
@@ -140,7 +140,7 @@
 | 工具参数 JSON 修复（`repairJson`） | ✅ P21-HF-7 | |
 | 跨模型回放（`transformMessages`） | ✅ P21-HF-6 | 内核共享，Anthropic 扩展同用 |
 | 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | ✅ P21a | 内核 `loadProjectContextFiles(fs, …)` + `renderProjectContext`，CLI `-nc` 关闭、`/reload` 重读。偏离：不识别链接 worktree 的重复文件（内核无 realpath） |
-| provider 线层事件 | 📍Backlog/P23 | 见事件表 before_provider_* |
+| provider 线层事件 | 📍Backlog | `before_provider_headers` 已做（P23d）；`before_provider_request`/`after_provider_response`/`provider_stream_event` 无消费者 |
 | settings 层 | ❌D9 | 见 `getSettings` |
 | 模型库与目录（models.json、modelOverrides、models-store.json） | ❌D21 | 连同 auth.json 一起属于 pi 产品层配置面 |
 | 订阅与 OAuth 登录 | ❌D2 | |

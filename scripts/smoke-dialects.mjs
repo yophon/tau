@@ -2,7 +2,8 @@
 // 厂商方言"的验证缺口。env 驱动、缺凭据明示 SKIP（不静默装绿）、任一 FAIL 退出非零。
 // 天然 flaky（限流/余额/端点变更），因此不进必跑 gate——本地 on-demand + CI 可选 job。
 //
-// 每方言场景：两轮对话（上下文延续断言）+ 一次工具回路 + 流式增量断言 + usage 存在性断言；
+// 每方言场景：两轮对话（上下文延续断言）+ 一次工具回路 + 流式增量断言 + usage 存在性断言
+// + 一次手动压缩（摘要请求带输出上限，验证端点接受 maxTokensField，P23d）；
 // deepseek 且模型为 reasoner 系时追加 reasoning_content 增量非空断言。
 //
 // 凭据（缺哪个跳哪个）：
@@ -72,7 +73,14 @@ async function runScenario(dialect) {
 	const failures = [];
 	let toolArg = null;
 	const agent = new Agent({
-		config: { baseUrl: dialect.baseUrl, apiKey: dialect.apiKey, model: dialect.model },
+		config: {
+			baseUrl: dialect.baseUrl,
+			apiKey: dialect.apiKey,
+			model: dialect.model,
+			...(env.TAU_MAX_TOKENS_FIELD ? { maxTokensField: env.TAU_MAX_TOKENS_FIELD } : {}),
+		},
+		// Keep almost nothing out of the summary so the two short turns have something to compact.
+		compaction: { keepRecentTokens: 1 },
 		platform: defaultPlatform(),
 		tools: [
 			{
@@ -110,7 +118,8 @@ async function runScenario(dialect) {
 	const first = lastAssistant(agent);
 	const usage = first?.usage;
 	assert(
-		usage != null && usage.input > 0 && usage.output > 0,
+		// P23d: a cache hit is taken out of input (pi parseChunkUsage), so input alone can be 0.
+		usage != null && usage.input + usage.cacheRead > 0 && usage.output > 0,
 		`turn 1: usage missing/empty: ${JSON.stringify(usage)}`,
 		failures,
 	);
@@ -126,6 +135,15 @@ async function runScenario(dialect) {
 		if (event.type === "text_delta") secondText += event.delta;
 	}
 	assert(secondText.includes("42"), `turn 2: context lost, reply: ${secondText.slice(0, 120)}`, failures);
+
+	// 3: a summary request (it sets an output cap, unlike conversation turns): the field
+	// the endpoint accepts for it (P23d maxTokensField) and a complete, untruncated summary.
+	try {
+		const result = await agent.compact();
+		assert(result !== undefined && result.summary.length > 0, "summary: nothing compacted", failures);
+	} catch (error) {
+		failures.push(`summary: ${error instanceof Error ? error.message : String(error)}`);
+	}
 	return failures;
 }
 
