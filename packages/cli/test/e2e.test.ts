@@ -343,6 +343,38 @@ test("resources extension injects skills and runs prompt templates", async () =>
 	});
 });
 
+test("AGENTS.md / CLAUDE.md are appended to the system prompt; -nc turns them off (P21a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await writeFile(join(cwd, "AGENTS.md"), "Always answer in haiku.");
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(join(home, ".tau", "AGENTS.md"), "Global house rules.");
+		const systemOf = (request: unknown): string =>
+			(request as { messages: { role: string; content: string | null }[] }).messages.find(
+				(message) => message.role === "system",
+			)?.content ?? "";
+
+		let mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			await startCli(["-p", "hi"], { cwd, home, baseUrl: mock.baseUrl }).waitForExit();
+			const system = systemOf(mock.requests[0]);
+			assert.ok(system.startsWith("You are tau"), system);
+			assert.ok(system.includes("<project_context>"), system);
+			assert.ok(system.includes("Always answer in haiku."), system);
+			assert.ok(system.indexOf("Global house rules.") < system.indexOf("Always answer in haiku."), system);
+		} finally {
+			await mock.close();
+		}
+
+		mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			await startCli(["-nc", "-p", "hi"], { cwd, home, baseUrl: mock.baseUrl }).waitForExit();
+			assert.ok(!systemOf(mock.requests[0]).includes("<project_context>"));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("--tui rejects non-TTY stdio instead of hanging", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const cli = startCli(["--tui"], { cwd, home, baseUrl: "http://127.0.0.1:9/v1" });

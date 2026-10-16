@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-15（P21 pi 参照重锚完成，修复批 P21-HF 落地；**当前工作 = P22**）
+> 最后更新：2026-10-16（P21a AGENTS.md 完成；**当前工作 = P22**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -213,6 +213,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 剩余：发 **0.3.0**（`npm run release -- minor`，不是 0.2.1：`[Unreleased]` 含 Breaking）。
 
+## Phase 21a ✅ 项目上下文文件（AGENTS.md）（2026-10-16）
+
+规格书：[specs/phase-21a-context-files.md](specs/phase-21a-context-files.md)。P21 审计登记的缺口（pi v0.80.3 就有），照抄 pi v1.2.0：内核 `context-files.ts` 纯 ES 发现 + 渲染，CLI/TUI 启动加载，`-nc` 关闭，`/reload` 重读。
+
 ## Phase 22 ⬜ 事件日志内核：日志即唯一事实
 
 输入：P21 附录 A 中阶段为 P22 的 27 条。照抄 pi 1.2.0 会话模型：会话日志是 provider 上下文的唯一来源，请求前从日志重建；system prompt 与工具声明以 system 消息进入转录，线格式按协议折叠；SessionEntry 增 `usage`、`context_edit`；`ToolCall.arguments`/`details` 限定为 JSON 值；会话兼容收窄为单向读（D13 补记）。镜像 `ctx.sessionManager`、`ctx.getSystemPrompt()`、`setLabel`、`context_with_system`。
@@ -247,7 +251,7 @@ P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
 - P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
 - P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
-- pi parity 📍Backlog 行（P21）：`before_provider_request`/`after_provider_response`、`provider_stream_event`、`ui_prompt_start/end`、`registerMarkdownTransformer`、`pi.events`、项目上下文文件 AGENTS.md
+- pi parity 📍Backlog 行（P21）：`before_provider_request`/`after_provider_response`、`provider_stream_event`、`ui_prompt_start/end`、`registerMarkdownTransformer`、`pi.events`
 - MCP 2026-07-28 新规范适配（pi 1.2.0 仍协商 2025-11-25，单独立项）
 
 ## 技术债登记

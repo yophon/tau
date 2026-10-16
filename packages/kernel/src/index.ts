@@ -38,6 +38,12 @@ export {
 	shouldCompact,
 } from "./compaction.ts";
 export {
+	CONTEXT_FILE_NAMES,
+	type ContextFile,
+	loadProjectContextFiles,
+	renderProjectContext,
+} from "./context-files.ts";
+export {
 	FileError,
 	type FileErrorCode,
 	HttpError,

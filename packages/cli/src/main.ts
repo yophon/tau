@@ -37,10 +37,12 @@ import {
 	defaultPlatform,
 	ExtensionRegistry,
 	JsonlSessionRepo,
+	loadProjectContextFiles,
 	type ModelPricing,
 	messageText,
 	type OpenAICompatConfig,
 	type PermissionMode,
+	renderProjectContext,
 	restoreSession,
 	SessionRecorder,
 	type SessionStore,
@@ -96,6 +98,7 @@ Options:
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
+  -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
   -h, --help             Show this help
 
 REPL commands: /name <name>, /sessions, /compact [instructions], /tree [<id>],
@@ -126,6 +129,7 @@ interface CliOptions {
 	toolExecution?: ToolExecutionMode;
 	sessionPath?: string;
 	noSession: boolean;
+	noContextFiles?: boolean;
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading. */
 	extras: string[];
@@ -222,6 +226,10 @@ function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "--no-session":
 				options.noSession = true;
+				break;
+			case "-nc":
+			case "--no-context-files":
+				options.noContextFiles = true;
 				break;
 			case "--tui":
 				options.tui = true;
@@ -836,6 +844,8 @@ async function main(): Promise<void> {
 	const extensions = await loadExtensionRegistry(cwd, ui);
 	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
 	const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
+		// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
+		projectContext = await loadProjectContext();
 		const nextExtensions = await loadExtensionRegistry(cwd, reloadUi);
 		nextExtensions.setFlagValues(resolveExtensionFlags(nextExtensions, options.extras));
 		return nextExtensions;
@@ -879,6 +889,13 @@ async function main(): Promise<void> {
 
 	const fs = new NodeFileSystem(cwd);
 	const shell = new NodeShell(cwd);
+	// Project context files (P21a, pi loadProjectContextFiles): ~/.tau first, then
+	// every directory from the root down to cwd. Appended to any system prompt.
+	const loadProjectContext = async (): Promise<string> =>
+		options.noContextFiles
+			? ""
+			: renderProjectContext(await loadProjectContextFiles(fs, { cwd, globalDir: join(userHome(), ".tau") }));
+	let projectContext = await loadProjectContext();
 	// Approval plumbing (P15): the kernel decides *when* to ask, the host owns
 	// *how*. REPL and TUI install their prompt into approvalPromptRef below;
 	// with no UI at all onApproval stays undefined so the kernel's headless
@@ -923,12 +940,16 @@ async function main(): Promise<void> {
 			config,
 			transport,
 			platform,
-			systemPrompt:
+			systemPrompt: [
 				options.system ??
-				defaultSystemPrompt(
-					cwd,
-					codingTools.map((tool) => tool.name),
-				),
+					defaultSystemPrompt(
+						cwd,
+						codingTools.map((tool) => tool.name),
+					),
+				projectContext,
+			]
+				.filter((part) => part !== "")
+				.join("\n\n"),
 			tools: codingTools,
 			extensions: agentExtensions,
 			ui,

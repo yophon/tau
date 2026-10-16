@@ -43,6 +43,12 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel + CLI (P21a): project context files. `loadProjectContextFiles(fs, { cwd, globalDir })`
+  finds `AGENTS.override.md` / `AGENTS.md` / `CLAUDE.md` (pi order, first per
+  directory) in the global dir and every directory from the root down to cwd;
+  `renderProjectContext()` renders pi's `<project_context>` section. The CLI
+  appends it to the system prompt (also with `--system`), re-reads it on TUI
+  `/reload`, and `-nc` / `--no-context-files` turns it off. Global dir: `~/.tau`.
 - ext-provider-anthropic (P21-HF-5): `effort` (sent as `output_config.effort`),
   `thinkingDisplay` ("summarized" default, "omitted"), and
   `anthropicThinkingForLevel(level, mode)` mapping the shared thinking levels

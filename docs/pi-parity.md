@@ -139,7 +139,7 @@
 | 会话日志为上下文唯一来源、system 消息进转录 | 📍P22 | D13 补记 ① |
 | 工具参数 JSON 修复（`repairJson`） | ✅ P21-HF-7 | |
 | 跨模型回放（`transformMessages`） | ✅ P21-HF-6 | 内核共享，Anthropic 扩展同用 |
-| 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | 📍Backlog | 快照内就有，tau 全仓没有 |
+| 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | ✅ P21a | 内核 `loadProjectContextFiles(fs, …)` + `renderProjectContext`，CLI `-nc` 关闭、`/reload` 重读。偏离：不识别链接 worktree 的重复文件（内核无 realpath） |
 | provider 线层事件 | 📍Backlog/P23 | 见事件表 before_provider_* |
 | settings 层 | ❌D9 | 见 `getSettings` |
 | 模型库与目录（models.json、modelOverrides、models-store.json） | ❌D21 | 连同 auth.json 一起属于 pi 产品层配置面 |
