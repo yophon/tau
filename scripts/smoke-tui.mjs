@@ -228,7 +228,7 @@ export default async function smoke(api) {
 			onUpdate?.("SMOKE_TOOL_UPDATE_1\\n", "stdout");
 			await sleep(50);
 			onUpdate?.("SMOKE_TOOL_UPDATE_2\\n", "stdout");
-			return { output: "SMOKE_TOOL_OUTPUT" };
+			return { content: [{ type: "text", text: "SMOKE_TOOL_OUTPUT" }] };
 		},
 	});
 	api.registerToolRenderer("smoke-tool-renderer", {

@@ -20,7 +20,7 @@ const demoExtension = (api) => {
 		name: "get_time",
 		description: "获取当前设备时间",
 		parameters: { type: "object", properties: {} },
-		execute: async () => ({ output: new Date().toString() }),
+		execute: async () => ({ content: [{ type: "text", text: new Date().toString() }] }),
 	});
 };
 

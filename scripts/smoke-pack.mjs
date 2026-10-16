@@ -73,7 +73,7 @@ const agent = new Agent({
 		name: "echo",
 		description: "echo",
 		parameters: { type: "object", properties: { text: { type: "string" } } },
-		execute: async (args) => { echoed = args.text; return { output: String(args.text) }; },
+		execute: async (args) => { echoed = args.text; return { content: [{ type: "text", text: String(args.text) }] }; },
 	}],
 });
 let text = "";
@@ -98,7 +98,7 @@ const tool: Tool = {
 	name: "t",
 	description: "d",
 	parameters: { type: "object" },
-	execute: async () => ({ output: "" }),
+	execute: async () => ({ content: [{ type: "text" as const, text: "" }] }),
 };
 const agent = new Agent({ config: { baseUrl: "https://x/v1", model: "m" }, platform, tools: [tool] });
 const _events: AsyncGenerator<AgentEvent> = agent.prompt("hi");

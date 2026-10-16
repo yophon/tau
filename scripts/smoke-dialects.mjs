@@ -85,7 +85,7 @@ async function runScenario(dialect) {
 				},
 				execute: async (args) => {
 					toolArg = { a: args.a, b: args.b };
-					return { output: String(Number(args.a) + Number(args.b)) };
+					return { content: [{ type: "text", text: String(Number(args.a) + Number(args.b)) }] };
 				},
 			},
 		],

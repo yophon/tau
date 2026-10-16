@@ -71,6 +71,6 @@
 ## 代码风格与约定
 
 - biome 管格式（tab 缩进、120 列），`npm run check` 自动修
-- 错误：内核用类型化错误类（TauError/FileError/ShellError，稳定 code 字段）；工具执行失败返回 `{ output, isError: true }` 而不是抛出
+- 错误：内核用类型化错误类（TauError/FileError/ShellError，稳定 code 字段）；工具执行失败返回 `errorResult(message)`（即 `{ content: [文本块], isError: true }`，P23b）而不是抛出
 - 事件命名 snake_case 照抄 pi；能力接口 PascalCase 名词；包名 `@yophon/tau-<role>`（kernel / host-* / ext-* / cli）
 - 注释只写代码本身表达不了的约束；接口照抄 pi 处在文件头注明镜像来源；偏离处逐点注明原因
