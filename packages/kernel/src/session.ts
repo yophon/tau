@@ -164,10 +164,15 @@ export async function getEntriesToFork(store: SessionStore, options: ForkOptions
 	return store.getPathToRoot(effectiveLeafId);
 }
 
-/** Entry-id generation as in pi: first 8 hex of a uuidv7, retried on collision. */
+/**
+ * Entry-id generation as in pi: 8 random hex digits (pi: randomUUID().slice(0, 8),
+ * a v4 UUID), retried on collision, full UUID as the last resort. tau used to slice
+ * a uuidv7, whose first 8 hex digits are the millisecond clock's high bits: every
+ * entry after the first in a ~65 s window collided and fell back to a full UUID.
+ */
 function generateEntryId(randomBytes: Platform["randomBytes"], has: (id: string) => boolean): string {
 	for (let i = 0; i < 100; i++) {
-		const id = uuidv7(randomBytes).slice(0, 8);
+		const id = [...randomBytes(4)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 		if (!has(id)) return id;
 	}
 	return uuidv7(randomBytes);
@@ -177,12 +182,27 @@ function generateEntryId(randomBytes: Platform["randomBytes"], has: (id: string)
  * Shared tree state for both store implementations. The active leaf is the
  * last appended non-leaf entry unless an explicit leaf entry overrides it.
  */
+/** Freeze a JSON value and everything inside it. */
+function deepFreeze<T>(value: T): T {
+	if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+		Object.freeze(value);
+		for (const child of Object.values(value)) deepFreeze(child);
+	}
+	return value;
+}
+
 class EntryTree {
 	readonly entries: SessionEntry[] = [];
 	readonly byId = new Map<string, SessionEntry>();
 	leafId: string | null = null;
 
+	/**
+	 * Entries are append-only and deep-frozen on the way in (P22): the agent's
+	 * projection shares their message objects, so an in-place edit of a logged
+	 * message throws instead of silently rewriting history.
+	 */
 	add(entry: SessionEntry): void {
+		deepFreeze(entry);
 		this.entries.push(entry);
 		this.byId.set(entry.id, entry);
 		if (entry.type === "leaf") this.leafId = entry.leafId;

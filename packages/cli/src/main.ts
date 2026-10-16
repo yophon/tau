@@ -54,7 +54,7 @@ import {
 	type UiCapability,
 	type UserContent,
 } from "@yophon/tau-kernel";
-import { createStartupTuiUi, runTui } from "./tui.ts";
+import { conversationLength, createStartupTuiUi, runTui } from "./tui.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -879,7 +879,9 @@ async function main(): Promise<void> {
 			const restored = await restoreSession(store);
 			initialMessages = restored.messages;
 			console.log(
-				dim(`Resumed session (${restored.messages.length} messages${restored.name ? `, "${restored.name}"` : ""}).`),
+				dim(
+					`Resumed session (${conversationLength(restored.messages)} messages${restored.name ? `, "${restored.name}"` : ""}).`,
+				),
 			);
 		} else {
 			store = await sessionRepo.create();
@@ -1130,7 +1132,7 @@ async function main(): Promise<void> {
 					console.log(
 						result.cancelled
 							? dim("Navigation cancelled.")
-							: dim(`Moved to ${arg} (${agent.messages.length} messages in context).`),
+							: dim(`Moved to ${arg} (${conversationLength(agent.messages)} messages in context).`),
 					);
 				} catch (error) {
 					console.log(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -1173,7 +1175,9 @@ async function main(): Promise<void> {
 					recorder = await SessionRecorder.open(newStore);
 					agent = buildAgent(restored.messages, recorder);
 					await extensions.notifySessionStart("resume", agent.extensionContext());
-					console.log(dim(`Forked to ${meta.filePath ?? meta.id} (${restored.messages.length} messages).`));
+					console.log(
+						dim(`Forked to ${meta.filePath ?? meta.id} (${conversationLength(restored.messages)} messages).`),
+					);
 				} catch (error) {
 					console.log(red(`/fork failed: ${error instanceof Error ? error.message : String(error)}`));
 				}

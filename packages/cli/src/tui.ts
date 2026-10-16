@@ -139,6 +139,11 @@ export interface RunTuiOptions {
 	reloadExtensions(ui: UiCapability | undefined): Promise<ExtensionRegistry>;
 }
 
+/** Conversation messages in a projection, for user-facing counts (system messages are prompt state, P22). */
+export function conversationLength(messages: readonly { role: string }[]): number {
+	return messages.filter((message) => message.role !== "system").length;
+}
+
 export function createStartupTuiUi(): UiCapability {
 	return {
 		confirm: async (title, message) => {
@@ -289,7 +294,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		await refreshFooterSession(metadata);
 		await refreshStatusItems();
 		await refreshExtensionWidgets();
-		return { metadata, messageCount: restored.messages.length };
+		return { metadata, messageCount: conversationLength(restored.messages) };
 	};
 
 	const selectItem = (title: string, items: SelectItem[]): Promise<SelectItem | undefined> =>
@@ -981,7 +986,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 					appendText(
 						result.cancelled
 							? dim("Navigation cancelled.")
-							: dim(`Moved to ${selected.value} (${agent.messages.length} messages in context).`),
+							: dim(`Moved to ${selected.value} (${conversationLength(agent.messages)} messages in context).`),
 					);
 				} catch (error) {
 					appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -993,7 +998,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 				appendText(
 					result.cancelled
 						? dim("Navigation cancelled.")
-						: dim(`Moved to ${args} (${agent.messages.length} messages in context).`),
+						: dim(`Moved to ${args} (${conversationLength(agent.messages)} messages in context).`),
 				);
 			} catch (error) {
 				appendText(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));
@@ -1216,7 +1221,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		setFooter();
 		setStatus(cyan("Compacting..."));
 		const startedAt = Date.now();
-		const messagesBefore = agent.messages.length;
+		const messagesBefore = conversationLength(agent.messages);
 		const tokensBeforeEstimate = agent.getContextUsage().tokens;
 		appendText(
 			dim(`Compacting conversation (${messagesBefore} messages, ~${formatNumber(tokensBeforeEstimate)} tokens)...`),
@@ -1227,10 +1232,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			if (result) {
 				const elapsedMs = Date.now() - startedAt;
 				const tokensAfterEstimate = agent.getContextUsage().tokens;
-				const keptMessages =
-					agent.messages.length > 0 && agent.messages[0]?.role === "compactionSummary"
-						? agent.messages.length - 1
-						: agent.messages.length;
+				// Kept = conversation after the summary (the checkpoint system message is prompt state).
+				const keptMessages = agent.messages.filter(
+					(message) => message.role !== "system" && message.role !== "compactionSummary",
+				).length;
 				appendText(
 					dim(
 						formatCompactionResult(result, {

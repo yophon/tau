@@ -245,7 +245,7 @@ test("agent records the conversation; a second agent restores and continues it",
 	const restored = await restoreSession(store);
 	assert.deepEqual(
 		restored.messages.map((m) => m.role),
-		["user", "assistant", "toolResult", "assistant"],
+		["system", "user", "assistant", "toolResult", "assistant"],
 	);
 
 	// Continue in a fresh agent seeded with the restored history.
@@ -261,9 +261,19 @@ test("agent records the conversation; a second agent restores and continues it",
 		// drain
 	}
 	const wire = (requests[0] as { messages: { role: string }[] }).messages;
-	// Full prior context (4 messages) + new user message.
+	// Full prior context (4 messages) + new user message; no system prompt on the wire.
 	assert.equal(wire.length, 5);
-	assert.equal((await store.getPathToRoot(await store.getLeafId())).length, 6);
+	// Log: system(+noop), user, assistant, toolResult, assistant, then agent2 — which has
+	// no tools — declares toolsRemoved: noop before its user message and reply (P22).
+	const path = await store.getPathToRoot(await store.getLeafId());
+	assert.deepEqual(
+		path.map((entry) => (entry.type === "message" ? entry.message.role : entry.type)),
+		["system", "user", "assistant", "toolResult", "assistant", "system", "user", "assistant"],
+	);
+	const removal = path[5];
+	assert.deepEqual(removal.type === "message" && removal.message.role === "system" && removal.message.toolsRemoved, [
+		{ name: "noop" },
+	]);
 });
 
 test("extension actions: sendMessage enters context and session; appendEntry does not enter context", async () => {
@@ -305,4 +315,16 @@ test("extension actions: sendMessage enters context and session; appendEntry doe
 	assert.equal(restored.name, "named-by-extension");
 	const entries = await store.getEntries();
 	assert.ok(entries.some((entry) => entry.type === "custom" && entry.customType === "memory-state"));
+});
+
+test("entry ids are 8 random hex digits even within one clock window (pi generateId)", async () => {
+	const store = await new InMemorySessionRepo(fakePlatform([]), "/test").create();
+	const recorder = await SessionRecorder.open(store);
+	for (let i = 0; i < 20; i++) await recorder.recordMessage({ role: "user", content: `m${i}`, timestamp: i });
+	const ids = (await store.getEntries()).map((entry) => entry.id);
+	assert.ok(
+		ids.every((id) => /^[0-9a-f]{8}$/.test(id)),
+		ids.join(" "),
+	);
+	assert.equal(new Set(ids).size, ids.length);
 });

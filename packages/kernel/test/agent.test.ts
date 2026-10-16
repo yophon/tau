@@ -65,15 +65,15 @@ test("agent loop executes tool calls and completes with a final message", async 
 		"agent_end",
 	]);
 
-	// Conversation state: user, assistant(toolCalls), toolResult, assistant.
+	// Conversation state: system (prompt + tools, P22), user, assistant(toolCalls), toolResult, assistant.
 	assert.deepEqual(
 		agent.messages.map((message) => message.role),
-		["user", "assistant", "toolResult", "assistant"],
+		["system", "user", "assistant", "toolResult", "assistant"],
 	);
-	const toolResult = agent.messages[2];
+	const toolResult = agent.messages[3];
 	assert.ok(toolResult.role === "toolResult");
 	assert.equal(messageText(toolResult), "echo: hi");
-	const finalMessage = agent.messages[3] as AssistantMessage;
+	const finalMessage = agent.messages[4] as AssistantMessage;
 	assert.equal(finalMessage.usage?.totalTokens, 15);
 
 	// Second request must carry the tool call and its result in wire format.
@@ -206,9 +206,9 @@ test("runSubagent facade completes a child run without polluting parent messages
 
 	assert.deepEqual(
 		agent.messages.map((message) => message.role),
-		["user", "assistant", "toolResult", "assistant"],
+		["system", "user", "assistant", "toolResult", "assistant"],
 	);
-	assert.equal(messageText(agent.messages[2]), "child answer");
+	assert.equal(messageText(agent.messages[3]), "child answer");
 	assert.equal(messageText(agent.messages.at(-1) as AssistantMessage), "parent final");
 	assert.equal(requests.length, 3);
 	const childRequest = requests[1] as { messages: { role: string; content: string | null }[] };

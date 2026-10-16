@@ -11,7 +11,9 @@ export type TauErrorCode =
 	| "busy"
 	| "compaction_failed"
 	| "invalid_response"
-	| "invalid_tool";
+	| "invalid_tool"
+	/** Kernel invariant broken (e.g. the request diverged from the session log, P22): a bug, not a runtime condition. */
+	| "invalid_state";
 
 export class TauError extends Error {
 	readonly code: TauErrorCode;

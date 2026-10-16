@@ -98,12 +98,30 @@ async function drain(
 ): Promise<{ events: ChatStreamEvent[]; final: AssistantMessage }> {
 	const events: ChatStreamEvent[] = [];
 	let final: AssistantMessage | undefined;
-	for await (const event of transport({ messages, systemPrompt: options?.systemPrompt, tools: options?.tools })) {
+	for await (const event of transport({ messages: withSystem(messages, options) })) {
 		events.push(event);
 		if (event.type === "response_end") final = event.message;
 	}
 	assert.ok(final, "stream must end with response_end");
 	return { events, final };
+}
+
+/** P22 transcript: the prompt and tool declarations ride on a leading system message. */
+function withSystem(
+	messages: AgentMessage[],
+	options?: { systemPrompt?: string; tools?: ToolDefinition[] },
+): AgentMessage[] {
+	if (!options?.systemPrompt && !options?.tools?.length) return messages;
+	return [
+		{
+			role: "system",
+			content: "",
+			...(options.systemPrompt ? { sections: { prompt: options.systemPrompt } } : {}),
+			...(options.tools?.length ? { toolsAdded: options.tools } : {}),
+			timestamp: 0,
+		},
+		...messages,
+	];
 }
 
 // Standard happy-path scripts.
@@ -448,12 +466,13 @@ test("tool results with images reach the wire as base64 blocks, never a placehol
 
 test("cache_control auto marks system, the last tool, and the last user block; off sends none", () => {
 	const request = {
-		messages: [user("first"), user("second")],
-		systemPrompt: "be brief",
-		tools: [
-			{ name: "a", description: "a", parameters: { type: "object", properties: {} } },
-			{ name: "b", description: "b", parameters: { type: "object", properties: {} } },
-		],
+		messages: withSystem([user("first"), user("second")], {
+			systemPrompt: "be brief",
+			tools: [
+				{ name: "a", description: "a", parameters: { type: "object", properties: {} } },
+				{ name: "b", description: "b", parameters: { type: "object", properties: {} } },
+			],
+		}),
 	};
 	const auto = buildRequestBody(CONFIG, request);
 	const system = auto.system as { cache_control?: unknown }[];
@@ -713,9 +732,9 @@ test("Agent completes a two-turn tool loop over the Anthropic transport", async 
 	assert.equal(text, "done");
 	assert.deepEqual(
 		agent.messages.map((message) => message.role),
-		["user", "assistant", "toolResult", "assistant"],
+		["system", "user", "assistant", "toolResult", "assistant"],
 	);
-	const final = agent.messages[3] as AssistantMessage;
+	const final = agent.messages[4] as AssistantMessage;
 	assert.equal(final.api, ANTHROPIC_MESSAGES_API);
 	assert.equal(final.usage.cacheRead, 9);
 

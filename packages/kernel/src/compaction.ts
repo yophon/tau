@@ -535,9 +535,12 @@ export async function completeText(
 	maxTokens: number,
 	signal?: TauAbortSignal,
 ): Promise<string> {
+	const now = Date.now();
 	const stream = transport({
-		systemPrompt,
-		messages: [{ role: "user", content: promptText, timestamp: Date.now() }],
+		messages: [
+			{ role: "system", content: systemPrompt, timestamp: now },
+			{ role: "user", content: promptText, timestamp: now },
+		],
 		maxTokens,
 		signal,
 	});

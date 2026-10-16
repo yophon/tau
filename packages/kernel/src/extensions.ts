@@ -5,6 +5,7 @@ import type { AgentMessage, AssistantMessage, ToolCall, ToolResultMessage, UserC
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
+import { getCurrentSystemMessage } from "./projection.ts";
 import type { SessionEntry } from "./session.ts";
 import { assertToolSchema, type Tool, type ToolResult } from "./tools.ts";
 
@@ -106,9 +107,24 @@ export interface TurnEndEvent {
 	toolResults: ToolResultMessage[];
 }
 
-/** Fired before each LLM call with the messages about to be sent. Handlers may return a replacement. */
+/**
+ * Fired before each LLM call with the conversation about to be sent — system
+ * messages excluded (pi). Handlers may return a replacement or edit
+ * `event.messages` in place; the prompt and tool state is restored after each.
+ */
 export interface ContextEvent {
 	type: "context";
+	messages: AgentMessage[];
+}
+
+/**
+ * Fired before each LLM call after every `context` handler, with the full
+ * transcript including system messages (pi 0.87.0). The result is sent as
+ * returned: the handler owns the prompt and tool declarations. Keep the
+ * leading system message (replace a dropped prefix with getCurrentSystemMessage()).
+ */
+export interface ContextWithSystemEvent {
+	type: "context_with_system";
 	messages: AgentMessage[];
 }
 
@@ -537,6 +553,11 @@ export interface RegisteredFlag {
 	default?: boolean | string;
 }
 
+/** Same list, element by element (pi sameMessages): detects in-place edits of a context list. */
+function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessage[]): boolean {
+	return left.length === right.length && left.every((message, index) => message === right[index]);
+}
+
 /** Registration surface handed to an extension's setup function. */
 export interface ExtensionAPI {
 	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
@@ -545,6 +566,7 @@ export interface ExtensionAPI {
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent>): void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
 	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
+	on(event: "context_with_system", handler: ExtensionHandler<ContextWithSystemEvent, ContextEventResult>): void;
 	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
 	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
 	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
@@ -662,6 +684,7 @@ interface HandlerLists {
 	turn_end: ExtensionHandler<TurnEndEvent>[];
 	input: ExtensionHandler<InputEvent, InputEventResult>[];
 	context: ExtensionHandler<ContextEvent, ContextEventResult>[];
+	context_with_system: ExtensionHandler<ContextWithSystemEvent, ContextEventResult>[];
 	before_agent_start: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>[];
 	message_start: ExtensionHandler<MessageStartEvent>[];
 	message_update: ExtensionHandler<MessageUpdateEvent>[];
@@ -739,6 +762,7 @@ export class ExtensionRegistry {
 		turn_end: [],
 		input: [],
 		context: [],
+		context_with_system: [],
 		before_agent_start: [],
 		message_start: [],
 		message_update: [],
@@ -1020,12 +1044,38 @@ export class ExtensionRegistry {
 		}
 	}
 
-	/** Run context handlers. Replacements chain: each handler sees the previous replacement. */
-	async runContext(messages: AgentMessage[], ctx: ExtensionContext): Promise<AgentMessage[]> {
-		let current = messages;
+	/**
+	 * Request-time transforms in two phases (pi ExtensionRunner.emitContext).
+	 * `context` handlers see the conversation only and the prompt/tool state is
+	 * restored after each (a changed list is re-headed with the replayed system
+	 * message); `context_with_system` handlers then see the full transcript and
+	 * their output is used as returned. Works on a JSON copy, so in-place edits
+	 * never reach the session log's projection.
+	 */
+	async runContext(messages: readonly AgentMessage[], ctx: ExtensionContext): Promise<AgentMessage[]> {
+		let current = JSON.parse(JSON.stringify(messages)) as AgentMessage[];
 		for (const handler of this.handlers.context) {
-			const result = await handler({ type: "context", messages: current }, ctx);
-			if (result?.messages) current = result.messages;
+			const visible = current.filter((message) => message.role !== "system");
+			const snapshot = visible.slice();
+			const result = await handler({ type: "context", messages: visible }, ctx);
+			const returned = result?.messages ?? (sameMessages(visible, snapshot) ? undefined : visible);
+			if (!returned || sameMessages(returned, snapshot)) continue;
+			const head = getCurrentSystemMessage(current);
+			current = head ? [head, ...returned] : returned;
+		}
+		for (const handler of this.handlers.context_with_system) {
+			const hadLeadingSystemMessage = current[0]?.role === "system";
+			const result = await handler({ type: "context_with_system", messages: current }, ctx);
+			current = result?.messages ?? current;
+			if (hadLeadingSystemMessage && current[0]?.role !== "system") {
+				// pi reports this but honors the handler's output.
+				this.errorSink?.({
+					event: "context_with_system",
+					error: new Error(
+						"Handler removed the leading system message; the request has no prompt or initial tool declarations",
+					),
+				});
+			}
 		}
 		return current;
 	}

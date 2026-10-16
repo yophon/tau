@@ -28,6 +28,7 @@ import {
 	type Platform,
 	type PlatformResponse,
 	parseJsonWithRepair,
+	resolveTranscript,
 	SseParser,
 	type StopReason,
 	type TauAbortSignal,
@@ -417,7 +418,10 @@ function markLastUserMessage(wire: WireMessage[], cacheControl: WireCacheControl
 
 export function buildRequestBody(config: AnthropicTransportConfig, request: TransportRequest): Record<string, unknown> {
 	const provider = config.provider ?? "anthropic";
-	const transformed = transformMessagesForAnthropic(request.messages, { provider, model: config.model });
+	// The Messages API has no mid-conversation system role: the transcript's replayed
+	// prompt and tools fold into the top-level system and tools fields (P22).
+	const transcript = resolveTranscript(request.messages, false);
+	const transformed = transformMessagesForAnthropic(transcript.messages, { provider, model: config.model });
 	const cacheControl: WireCacheControl | undefined =
 		(config.cacheControl ?? "auto") === "auto" ? { type: "ephemeral" } : undefined;
 
@@ -431,17 +435,17 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 		max_tokens: maxTokens,
 		stream: true,
 	};
-	if (request.systemPrompt !== undefined && request.systemPrompt !== "") {
+	if (transcript.systemPrompt !== "") {
 		body.system = [
 			{
 				type: "text",
-				text: sanitizeSurrogates(request.systemPrompt),
+				text: sanitizeSurrogates(transcript.systemPrompt),
 				...(cacheControl ? { cache_control: cacheControl } : {}),
 			},
 		];
 	}
-	if (request.tools && request.tools.length > 0) {
-		body.tools = toolsToWire(request.tools, cacheControl);
+	if (transcript.tools.length > 0) {
+		body.tools = toolsToWire(transcript.tools, cacheControl);
 	}
 	if (config.thinking === "adaptive") {
 		body.thinking = { type: "adaptive", display: config.thinkingDisplay ?? "summarized" };

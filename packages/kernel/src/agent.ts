@@ -29,6 +29,7 @@ import {
 	emptyUsage,
 	type ModelPricing,
 	messageText,
+	type SystemMessage,
 	type ToolCall,
 	type ToolResultMessage,
 	toolCallsOf,
@@ -45,7 +46,15 @@ import {
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
-import { buildSessionProjection, normalizeMessageContent } from "./projection.ts";
+import {
+	buildSessionProjection,
+	diffSystemPromptSections,
+	getCurrentSystemMessage,
+	getCurrentTools,
+	getToolStateChanges,
+	normalizeMessageContent,
+	toToolDeclaration,
+} from "./projection.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings } from "./retry.ts";
 import { InMemorySessionStore, SessionRecorder } from "./session.ts";
 import {
@@ -155,6 +164,13 @@ export interface AgentOptions {
 	 * batch to sequential (pi dispatch semantics).
 	 */
 	toolExecution?: ToolExecutionMode;
+	/**
+	 * Before every LLM request, rebuild the projection from a JSON round trip of
+	 * the session log and require it to equal the conversation about to be sent
+	 * (P22: model-visible means logged). A mismatch is a kernel bug and throws
+	 * TauError("invalid_state"). Default true.
+	 */
+	verifyTranscript?: boolean;
 }
 
 export type AgentEvent =
@@ -240,6 +256,7 @@ export class Agent {
 	private readonly policy: ToolPolicy;
 	private readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	private readonly toolExecution: ToolExecutionMode;
+	private readonly verifyTranscript: boolean;
 	/** Custom instructions of a requested compaction, or null when none is pending. */
 	private pendingCompaction: string | null = null;
 	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
@@ -300,6 +317,7 @@ export class Agent {
 		this.policy = options.policy ?? createDefaultPolicy();
 		this.onApproval = options.onApproval;
 		this.toolExecution = options.toolExecution ?? "parallel";
+		this.verifyTranscript = options.verifyTranscript ?? true;
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
 				const message: CustomMessage = {
@@ -433,6 +451,48 @@ export class Agent {
 		await this.record(normalizeMessageContent(message));
 	}
 
+	/**
+	 * Log a system message when the prompt or the tool set differs from what the
+	 * transcript replays to (pi _preparePromptAndToolLoadout + declareToolChanges).
+	 * The kernel has one section, `prompt`, holding the effective prompt text, so
+	 * the folded wire prompt equals the plain prompt byte for byte.
+	 */
+	private async declareLoadout(promptText: string): Promise<void> {
+		await this.flushWrites();
+		const current = getCurrentSystemMessage(this.messages);
+		const sections = diffSystemPromptSections(current?.sections ?? {}, promptText === "" ? {} : { prompt: promptText });
+		const tools = getToolStateChanges(
+			getCurrentTools(this.messages),
+			// A schemaless tool that slipped past registration cannot be declared; the
+			// preflight guard still answers a call to it with a paired error result (HF-8).
+			[...this.currentTools().values()]
+				.filter(hasToolSchema)
+				.map(toToolDeclaration),
+		);
+		if (!sections && tools.toolsAdded.length === 0 && tools.toolsRemoved.length === 0) return;
+		const update: SystemMessage = {
+			role: "system",
+			content: "",
+			...(sections ? { sections } : {}),
+			...(tools.toolsAdded.length > 0 ? { toolsAdded: tools.toolsAdded } : {}),
+			...(tools.toolsRemoved.length > 0 ? { toolsRemoved: tools.toolsRemoved } : {}),
+			timestamp: Date.now(),
+		};
+		await this.record(update);
+	}
+
+	/** The verifyTranscript check: projection of a JSON replay of the log === `messages`. */
+	private async assertTranscriptMatchesLog(): Promise<void> {
+		const path = await this.session.store.getPathToRoot(this.session.currentLeafId);
+		const replayed = buildSessionProjection(JSON.parse(JSON.stringify(path)) as typeof path).messages;
+		if (JSON.stringify(replayed) !== JSON.stringify(this.messages)) {
+			throw new TauError(
+				"invalid_state",
+				"Model context diverged from the session log: the request would contain something the log does not (kernel bug)",
+			);
+		}
+	}
+
 	/** Session entry id a projected message came from (undefined for messages not in `messages`). */
 	entryIdOf(message: AgentMessage): string | undefined {
 		return this.entryIds.get(message);
@@ -545,7 +605,14 @@ export class Agent {
 		const result = decision.result ?? (await runCompaction(this.transport, preparation, customInstructions, signal));
 
 		await this.enqueueWrite(async () => {
-			await this.session.recordCompaction({ ...result, fromHook: fromExtension || undefined });
+			// The boundary checkpoints the full prompt/tool state: the system messages it
+			// summarizes leave the context with it (pi CompactionEntry.systemMessage).
+			const systemMessage = getCurrentSystemMessage(this.messages);
+			await this.session.recordCompaction({
+				...result,
+				fromHook: fromExtension || undefined,
+				...(systemMessage ? { systemMessage } : {}),
+			});
 			await this.refresh();
 		});
 		await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
@@ -715,8 +782,14 @@ export class Agent {
 	 */
 	private async applyBeforeAgentStart(promptText: string, ctx: ExtensionContext): Promise<string> {
 		const base = this.systemPrompt ?? "";
-		if (!this.extensions) return base;
+		if (!this.extensions) {
+			await this.declareLoadout(base);
+			return base;
+		}
 		const beforeStart = await this.extensions.runBeforeAgentStart(promptText, base, ctx);
+		// The rewritten prompt is logged like any other (D27, deviation from pi's
+		// unrecorded forced prompt): the model must only ever see what the log holds.
+		await this.declareLoadout(beforeStart.systemPrompt);
 		for (const injected of beforeStart.messages) {
 			await this.commitMessage(
 				{
@@ -803,6 +876,11 @@ export class Agent {
 				}
 			}
 
+			// The request is the log's projection: declare prompt/tool changes as a system
+			// message first, then check the projection against a JSON replay of the log.
+			await this.declareLoadout(systemPrompt);
+			await this.flushWrites();
+			if (this.verifyTranscript) await this.assertTranscriptMatchesLog();
 			let request: AgentMessage[] = [...this.messages];
 			if (this.extensions) {
 				request = await this.extensions.runContext(request, ctx);
@@ -824,13 +902,7 @@ export class Agent {
 
 			let assistantMessage: AssistantMessage | undefined;
 			let streamFailure: TauError | undefined;
-			const tools = this.currentTools();
-			const stream = this.transport({
-				systemPrompt: systemPrompt === "" ? undefined : systemPrompt,
-				messages: request,
-				tools: tools.size > 0 ? [...tools.values()] : undefined,
-				signal,
-			});
+			const stream = this.transport({ messages: request, signal });
 			// Pull manually so only stream failures are converted to error messages;
 			// exceptions thrown by extension hooks inside the loop still propagate as bugs.
 			const iterator = stream[Symbol.asyncIterator]();

@@ -179,6 +179,7 @@ export {
 	type JsonSchema,
 	OPENAI_COMPLETIONS_API,
 	type OpenAICompatConfig,
+	resolveTranscript,
 	streamChatCompletion,
 	type ToolDefinition,
 	type TransportRequest,

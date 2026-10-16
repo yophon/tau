@@ -14,7 +14,12 @@ import {
 	type Usage,
 } from "./messages.ts";
 import type { Platform, PlatformResponse, TauAbortSignal } from "./platform.ts";
-import { renderSystemMessageUpdate } from "./projection.ts";
+import {
+	collapseSystemMessages,
+	getCurrentTools,
+	getSystemMessageText,
+	renderSystemMessageUpdate,
+} from "./projection.ts";
 import { SseParser } from "./sse.ts";
 import { transformMessages } from "./transform.ts";
 
@@ -54,6 +59,12 @@ export interface OpenAICompatConfig {
 	headers?: Record<string, string>;
 	/** Extra top-level body fields (temperature, provider-specific knobs, …). */
 	extraBody?: Record<string, unknown>;
+	/**
+	 * Send later system messages in place (pi supportsMidConvoSystemMessages).
+	 * Default false: the replayed prompt and tools are folded into the leading
+	 * system message, so the wire format matches a plain system prompt.
+	 */
+	midConversationSystemMessages?: boolean;
 	/** Set false for providers that reject stream_options. Defaults to true. */
 	includeUsage?: boolean;
 	/**
@@ -181,15 +192,32 @@ function toWireMessage(message: AgentMessage, replayEmptyReasoning: boolean): Re
 	}
 }
 
+/**
+ * Resolve a transcript for the wire (pi resolveTranscript): without
+ * mid-conversation system messages the replayed system state is folded into
+ * one leading system message; with them, later system messages stay in place.
+ * Tools are always the replayed current set.
+ */
+export function resolveTranscript(
+	messages: readonly AgentMessage[],
+	midConversationSystemMessages: boolean | undefined,
+): { systemPrompt: string; messages: AgentMessage[]; tools: ToolDefinition[] } {
+	const transcript = midConversationSystemMessages ? [...messages] : collapseSystemMessages(messages);
+	const head = transcript[0]?.role === "system" ? transcript[0] : undefined;
+	return {
+		systemPrompt: head ? getSystemMessageText(head) : "",
+		messages: head ? transcript.slice(1) : transcript,
+		tools: getCurrentTools(messages),
+	};
+}
+
 function toWireMessages(
-	systemPrompt: string | undefined,
+	systemPrompt: string,
 	messages: AgentMessage[],
 	replayEmptyReasoning = false,
 ): Record<string, unknown>[] {
 	const wire: Record<string, unknown>[] = [];
-	if (systemPrompt !== undefined && systemPrompt !== "") {
-		wire.push({ role: "system", content: systemPrompt });
-	}
+	if (systemPrompt !== "") wire.push({ role: "system", content: systemPrompt });
 	for (const message of messages) wire.push(toWireMessage(message, replayEmptyReasoning));
 	return wire;
 }
@@ -281,8 +309,8 @@ export async function withStallTimeout<T>(
 export async function* streamChatCompletion(
 	platform: Platform,
 	config: OpenAICompatConfig,
-	messages: AgentMessage[],
-	options?: { systemPrompt?: string; tools?: ToolDefinition[]; signal?: TauAbortSignal; maxTokens?: number },
+	messages: readonly AgentMessage[],
+	options?: { signal?: TauAbortSignal; maxTokens?: number },
 ): AsyncGenerator<ChatStreamEvent> {
 	throwIfAborted(options?.signal);
 	// pi v0.80.3 stamps the message at request start, on success and failure alike.
@@ -293,11 +321,12 @@ export async function* streamChatCompletion(
 	const provider = config.provider ?? "openai-compat";
 	const replayEmptyReasoning =
 		config.replayEmptyReasoning ?? /(^|[./])deepseek\.com(?=[:/]|$)/i.test(hostOf(config.baseUrl));
+	const transcript = resolveTranscript(messages, config.midConversationSystemMessages);
 	const body: Record<string, unknown> = {
 		model: config.model,
 		messages: toWireMessages(
-			options?.systemPrompt,
-			transformMessages(messages, { api, provider, model: config.model }),
+			transcript.systemPrompt,
+			transformMessages(transcript.messages, { api, provider, model: config.model }),
 			replayEmptyReasoning,
 		),
 		stream: true,
@@ -305,8 +334,8 @@ export async function* streamChatCompletion(
 		...config.extraBody,
 	};
 	if (config.includeUsage !== false) body.stream_options = { include_usage: true };
-	if (options?.tools && options.tools.length > 0) {
-		body.tools = options.tools.map((tool) => ({
+	if (transcript.tools.length > 0) {
+		body.tools = transcript.tools.map((tool) => ({
 			type: "function",
 			function: { name: tool.name, description: tool.description, parameters: tool.parameters },
 		}));
@@ -518,11 +547,15 @@ export async function* streamChatCompletion(
 // protocol config via closure — the kernel never sees baseUrl/apiKey.
 // ---------------------------------------------------------------------------
 
+/**
+ * One LLM request (P22, pi TranscriptContext). `messages` is the transcript
+ * the agent rebuilt from the session log, system messages included: the
+ * leading one carries the prompt and tool declarations, later ones patch them.
+ * Transports fold it into their wire shape (resolveTranscript /
+ * collapseSystemMessages); there are no separate prompt or tool fields.
+ */
 export interface TransportRequest {
-	systemPrompt?: string;
-	/** Conversation in pi shape (D13); the transport converts to its wire format. */
 	messages: AgentMessage[];
-	tools?: ToolDefinition[];
 	signal?: TauAbortSignal;
 	/** Cap on generated tokens (summarization requests set it); maps to the protocol's own knob. */
 	maxTokens?: number;
@@ -539,8 +572,6 @@ export type ChatTransport = (request: TransportRequest) => AsyncGenerator<ChatSt
 export function createOpenAICompatTransport(platform: Platform, config: OpenAICompatConfig): ChatTransport {
 	return (request) =>
 		streamChatCompletion(platform, config, request.messages, {
-			systemPrompt: request.systemPrompt,
-			tools: request.tools,
 			signal: request.signal,
 			maxTokens: request.maxTokens,
 		});

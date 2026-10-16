@@ -10,6 +10,7 @@ import {
 	createOpenAICompatTransport,
 	type TransportRequest,
 } from "../src/openai.ts";
+import { getCurrentSystemPrompt, getCurrentTools } from "../src/projection.ts";
 import type { Tool } from "../src/tools.ts";
 import { fakePlatform, makeSseResponse, textTurn } from "./helpers.ts";
 
@@ -89,22 +90,26 @@ test("injected transport drives a full two-turn tool loop; the agent never touch
 	]);
 	assert.deepEqual(
 		agent.messages.map((message) => message.role),
-		["user", "assistant", "toolResult", "assistant"],
+		["system", "user", "assistant", "toolResult", "assistant"],
 	);
-	assert.equal(messageText(agent.messages[2]), "echo: hi");
-	const finalMessage = agent.messages[3] as AssistantMessage;
+	assert.equal(messageText(agent.messages[3]), "echo: hi");
+	const finalMessage = agent.messages[4] as AssistantMessage;
 	assert.equal(finalMessage.api, "fake-protocol");
 	assert.equal(finalMessage.provider, "fake-provider");
 
-	// The transport received pi-shaped messages plus system prompt and tools —
-	// the whole protocol surface lives behind the seam.
+	// The transport received the transcript (P22, pi TranscriptContext): the leading
+	// system message carries the prompt and tool declarations — the whole protocol
+	// surface lives behind the seam. The second request replays the same head; no new
+	// system message, since neither prompt nor tools changed.
 	assert.equal(requests.length, 2);
-	assert.equal(requests[0].systemPrompt, "You are a test agent.");
-	assert.equal(requests[0].tools?.length, 1);
-	assert.equal(requests[0].tools?.[0].name, "echo_tool");
+	assert.equal(getCurrentSystemPrompt(requests[0].messages), "You are a test agent.");
+	assert.deepEqual(
+		getCurrentTools(requests[0].messages).map((tool) => tool.name),
+		["echo_tool"],
+	);
 	assert.deepEqual(
 		requests[1].messages.map((message) => message.role),
-		["user", "assistant", "toolResult"],
+		["system", "user", "assistant", "toolResult"],
 	);
 });
 
@@ -132,7 +137,7 @@ test("manual compaction issues its summarization request through the same transp
 	// The summarization request went through the transport with the verbatim
 	// pi system prompt and an explicit output cap.
 	assert.equal(requests.length, 2);
-	assert.equal(requests[1].systemPrompt, SUMMARIZATION_SYSTEM_PROMPT);
+	assert.equal(getCurrentSystemPrompt(requests[1].messages), SUMMARIZATION_SYSTEM_PROMPT);
 	assert.ok(typeof requests[1].maxTokens === "number" && requests[1].maxTokens > 0);
 });
 
