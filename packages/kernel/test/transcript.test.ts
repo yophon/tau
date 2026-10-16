@@ -319,3 +319,19 @@ test("extension surface: ctx.sessionManager reads the log, getSystemPrompt repla
 	assert.ok(sessionManager.getEntries().some((entry) => entry.type === "label"));
 	assert.equal(agent.messages.filter((message) => message.role === "user").length, 2, "labels never enter context");
 });
+
+test("an idle extension sendMessage lands in messages once the host awaits agent.flush() (TUI command rendering)", async () => {
+	let send: ((text: string) => void) | undefined;
+	const registry = await ExtensionRegistry.load([
+		(api) => {
+			send = (text) => api.sendMessage({ customType: "note", content: text, display: true });
+		},
+	]);
+	const agent = new Agent({ config, extensions: registry, platform: fakePlatform([]) });
+	send?.("from a command");
+	await agent.flush();
+	assert.deepEqual(
+		agent.messages.map((message) => [message.role, message.role === "custom" ? message.content : ""]),
+		[["custom", "from a command"]],
+	);
+});

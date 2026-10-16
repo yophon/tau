@@ -398,6 +398,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const shortcut = extensions.shortcuts.get(name);
 		if (!shortcut) return;
 		try {
+			await agent.flush();
 			const messageStart = agent.messages.length;
 			const output = await shortcut.handler(agent.extensionContext());
 			await renderNewMessages(messageStart);
@@ -430,6 +431,8 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 	};
 
 	const renderNewMessages = async (startIndex: number): Promise<void> => {
+		// Extension actions append to the session log asynchronously (P22).
+		await agent.flush();
 		for (const message of agent.messages.slice(startIndex)) {
 			if (message.role === "custom" && !message.display) continue;
 			if (await renderMessageWithExtensions(message)) continue;
@@ -1076,6 +1079,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 		const command = extensions.commands.get(name);
 		if (!command) return false;
 		try {
+			await agent.flush();
 			const messageStart = agent.messages.length;
 			const output = await command.handler(args, agent.extensionContext());
 			await renderNewMessages(messageStart);

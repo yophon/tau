@@ -711,6 +711,8 @@ async function runCommand(
 	}
 	try {
 		const output = await command.handler(args, agent.extensionContext());
+		// Extension actions (sendMessage, appendEntry, …) append to the log asynchronously (P22).
+		await agent.flush();
 		if (typeof output === "string") {
 			console.log(output);
 		} else if (output?.action === "prompt") {

@@ -568,6 +568,16 @@ export class Agent {
 		return this.readonlySessionManager;
 	}
 
+	/**
+	 * Wait until every queued log write has landed in `messages`. Extension
+	 * actions such as an idle `sendMessage` append asynchronously (the store is
+	 * async); a host that renders new messages after running an extension command
+	 * awaits this first. Rethrows a failed background write.
+	 */
+	async flush(): Promise<void> {
+		await this.flushWrites();
+	}
+
 	/** Session entry id a projected message came from (undefined for messages not in `messages`). */
 	entryIdOf(message: AgentMessage): string | undefined {
 		return this.entryIds.get(message);

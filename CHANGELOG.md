@@ -79,6 +79,9 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P22): `Agent.flush()` waits until queued log writes (an idle
+  extension `sendMessage`, `appendEntry`, `setLabel`) have landed in `messages`;
+  the CLI and TUI await it before rendering what an extension command added.
 - Kernel (P22, pi extension surface): `ctx.sessionManager` — a synchronous,
   read-only view of the session log (pi ReadonlySessionManager subset:
   getEntries/getBranch/getLeafId/getLeafEntry/getEntry/getLabel/
