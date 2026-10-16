@@ -249,6 +249,53 @@ test("project extensions are skipped in headless mode until trusted", async () =
 	});
 });
 
+test("untrusted project settings and skills are ignored headless; a broken extension is skipped, not fatal (P23c)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await mkdir(join(cwd, ".tau", "skills", "local"), { recursive: true });
+		await writeFile(join(cwd, ".tau", "skills", "local", "SKILL.md"), "---\ndescription: x\n---\nx");
+		await writeFile(join(cwd, ".tau", "settings.json"), JSON.stringify({ feishu: { domain: "lark" } }));
+
+		let mock = await startMockOpenAI([() => mockTextTurn("plain")]);
+		try {
+			const cli = startCli(["-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("Ignored .tau/settings.json, .tau/skills: directory not trusted."), cli.output());
+		} finally {
+			await mock.close();
+		}
+
+		// Trusted, with one extension whose setup throws and one that works.
+		await mkdir(join(cwd, ".tau", "extensions"), { recursive: true });
+		await writeFile(
+			join(cwd, ".tau", "extensions", "broken.ts"),
+			['export default () => { throw new Error("broken on purpose"); };', ""].join("\n"),
+		);
+		await writeFile(
+			join(cwd, ".tau", "extensions", "deny.ts"),
+			[
+				"export default (api) => {",
+				'\tapi.on("tool_call", () => ({ block: true, reason: "denied by the working extension" }));',
+				"};",
+				"",
+			].join("\n"),
+		);
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(join(home, ".tau", "trust.json"), JSON.stringify({ trusted: { [cwd]: true } }));
+		mock = await startMockOpenAI([
+			() => mockToolCallTurn("bash", { command: "echo nope" }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const cli = startCli(["-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
+			await cli.waitForExit();
+			assert.match(cli.output(), /\[extension failed to load, skipped\] .*broken\.ts: broken on purpose/);
+			assert.ok(cli.output().includes("Tool call blocked: denied by the working extension"), cli.output());
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("project extension package can register the subagent task tool", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		await mkdir(join(cwd, ".tau", "extensions"), { recursive: true });

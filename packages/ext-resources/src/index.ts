@@ -371,18 +371,22 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 				if (!fs) return { skills: [], promptTemplates: [], skillPaths: [], promptPaths: [], diagnostics: [], reason };
 				const paths = ctx.capabilities?.paths;
 				const defaultsEnabled = options.includeDefaults !== false;
+				// Project skills and prompts reach the system prompt: only from a trusted project (P23c, pi).
+				const projectTrusted = ctx.isProjectTrusted?.() === true;
+				const projectTauDir = projectTrusted ? paths?.projectTauDir : undefined;
+				const projectPiDir = projectTrusted ? paths?.projectPiDir : undefined;
 				const discovered = await ctx.discoverResources?.(reason);
 				const skillPaths = unique([
 					...(defaultsEnabled && paths?.userTauDir ? [joinPath(paths.userTauDir, "skills")] : []),
-					...(defaultsEnabled && paths?.projectTauDir ? [joinPath(paths.projectTauDir, "skills")] : []),
-					...(defaultsEnabled && paths?.projectPiDir ? [joinPath(paths.projectPiDir, "skills")] : []),
+					...(defaultsEnabled && projectTauDir ? [joinPath(projectTauDir, "skills")] : []),
+					...(defaultsEnabled && projectPiDir ? [joinPath(projectPiDir, "skills")] : []),
 					...(discovered?.skillPaths ?? []),
 					...(options.skillPaths ?? []),
 				]);
 				const promptPaths = unique([
 					...(defaultsEnabled && paths?.userTauDir ? [joinPath(paths.userTauDir, "prompts")] : []),
-					...(defaultsEnabled && paths?.projectTauDir ? [joinPath(paths.projectTauDir, "prompts")] : []),
-					...(defaultsEnabled && paths?.projectPiDir ? [joinPath(paths.projectPiDir, "prompts")] : []),
+					...(defaultsEnabled && projectTauDir ? [joinPath(projectTauDir, "prompts")] : []),
+					...(defaultsEnabled && projectPiDir ? [joinPath(projectPiDir, "prompts")] : []),
 					...(discovered?.promptPaths ?? []),
 					...(options.promptPaths ?? []),
 				]);

@@ -647,6 +647,9 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			extensions = nextExtensions;
 			attachTuiHostActions(nextExtensions);
 			agent = nextAgent;
+			// Only now that the new registry took over: a captured api/ctx of the old one throws
+			// instead of reaching the new agent (pi runtime invalidate). A failed reload keeps it.
+			previousExtensions.invalidate();
 			lastSessionStartReason = "reload";
 			lastReloadStatus = `success ${new Date().toISOString()}`;
 			editor.setAutocompleteProvider(
@@ -1148,7 +1151,10 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			appendText(red(recordInContext ? "Usage: ! <command>" : "Usage: !! <command>"));
 			return;
 		}
-		const decision = await extensions.runUserBash({ command, recordInContext }, agent.extensionContext());
+		const decision = await extensions.runUserBash(
+			{ command, recordInContext, cwd: options.cwd },
+			agent.extensionContext(),
+		);
 		if (decision.cancel) {
 			appendText(dim(`Bash cancelled${decision.reason ? `: ${decision.reason}` : "."}`));
 			return;
@@ -2235,7 +2241,13 @@ async function renderEvent(event: AgentEvent, state: RenderState): Promise<void>
 			const resultText = toolResultText(event.result);
 			const output = liveOutput ? formatLiveStreamOutput(liveOutput) || resultText : resultText;
 			const rendered = await state.renderTool(
-				{ phase: "result", toolCall: event.toolCall, result: event.result, liveOutput: output },
+				{
+					phase: "result",
+					toolCall: event.toolCall,
+					result: event.result,
+					liveOutput: output,
+					...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+				},
 				isTextComponentOrUndefined(existing) ? existing : undefined,
 			);
 			if (rendered) {

@@ -413,3 +413,9 @@ interface AgentOptions {
   - `finishTurn` 返回 `end` 只结束当次 run；队列里已有的消息仍由续跑 run 处理，与 pi（AgentSession 的 post-run 检查）一致。
   - pi 的扩展 `ToolResultEventResult` 没有 `terminate`，照抄 pi 不加；工具结果自带的 `terminate` 穿过 tool_result 处理器链保留。
   - 运行中 `sendUserMessage` 经 `input` 处理器后才入队（异步），入队时刻比原来晚一个微任务链；同一轮内的相对顺序不变。
+- **23c**：
+  - `ExtensionRegistry.load()` 保持返回 registry（不改成 `{ registry, errors, warnings }`），错误与告警放在 `registry.loadErrors`/`registry.warnings`，`add()` 返回本批的 `{ errors, warnings }`。语义与规格相同（不再抛、错误交给宿主），省掉 70 多处调用点的改动。
+  - `Extension` 仍是工厂函数类型，另加 `InlineExtension { name, factory }`，`load()`/`add()` 接受两者的数组；规格草案里把 `Extension` 改成联合类型的写法没有采用，避免给所有扩展作者一次无谓的类型破坏。
+  - 命令重名照抄 pi：重名的每一个都加 `:N`（第一个也变成 `name:1`），不只是后来者。
+  - 只有一个 `.tau/extensions` 的项目沿用原 digest，已有信任记录不需要重新确认；有其他受门控资源时用合并 digest。
+  - 旧 ctx 失效只在 TUI `/reload` 用到（`/resume`、`/fork`、`/new` 换 Agent 但沿用同一个 registry，没有可作废的旧 registry）。

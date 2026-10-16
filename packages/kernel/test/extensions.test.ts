@@ -151,11 +151,11 @@ test("user_bash handlers can rewrite, change recording, or cancel", async () => 
 
 	const registry = await ExtensionRegistry.load([extension]);
 	const rewritten = await registry.runUserBash(
-		{ command: "echo hi", recordInContext: true },
+		{ command: "echo hi", recordInContext: true, cwd: "/repo" },
 		{ messages: [], capabilities: { platform: fakePlatform([]) } },
 	);
 	const blocked = await registry.runUserBash(
-		{ command: "blocked", recordInContext: true },
+		{ command: "blocked", recordInContext: true, cwd: "/repo" },
 		{ messages: [], capabilities: { platform: fakePlatform([]) } },
 	);
 

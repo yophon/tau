@@ -5,6 +5,29 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P23c, pi extension loading): `ExtensionRegistry.load()` no longer
+  throws. Each extension's registrations are staged; a setup that throws is
+  rolled back entirely and recorded in `registry.loadErrors`, and the remaining
+  extensions load (`add()` returns `{ errors, warnings }`). Same-name tools and
+  flags keep the first registration (it used to be the last) and record a
+  warning; duplicate commands all get pi's `name:N` invocation names. A flag
+  default of the wrong type, a command without name or handler, and a tool
+  without an object schema fail that extension's load. `registerCommand`
+  commands carry an `invocationName`.
+- Kernel (P23c): every `api.on()` overload returns an unsubscribe function, and
+  a dispatch runs on a snapshot of the handlers. `user_bash` fails closed: a
+  throwing handler or a malformed result cancels the command; `UserBashEvent`
+  gains a required `cwd`.
+- host-node (P23c): `loadExtensionsFromDir()`/`importExtensionFiles()` return
+  `{ name, factory }` entries named by file path; a module that fails to import
+  becomes a load error instead of throwing.
+- CLI (P23c, security): the trust decision covers every project resource under
+  `.tau/` and `.pi/` — extensions, settings.json, skills, prompts — and its
+  digest covers them all, so changing any of them asks again (a project with only
+  `.tau/extensions` keeps its old digest). Untrusted projects get no project
+  paths and `ctx.isProjectTrusted()` is false; ext-feishu and ext-resources read
+  project settings, skills and prompts only from a trusted project. A broken
+  extension is reported on stderr and skipped instead of stopping tau.
 - Kernel (P23b, pi AgentToolResult): `ToolResult` is
   `{ content: (TextContent | ImageContent)[], details?, isError?, terminate?, usage? }`
   (was `{ output, isError? }`). Migrate `return { output: text }` to
@@ -121,6 +144,12 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P23c): `InlineExtension { name, factory }`, `ExtensionRegistry.loadErrors` /
+  `warnings` / `invalidate()` (a replaced registry's api and ctx throw
+  `stale_extension`; the TUI's /reload uses it), `api.getCommands()`,
+  `api.getSessionName()`, `ctx.isProjectTrusted()` (`AgentOptions.isProjectTrusted`,
+  inherited by subagents), `ctx.cwd`, `RegisteredToolRenderEvent.durationMs` and
+  `durationMs` on the `tool_result` AgentEvent.
 - Kernel (P23b): active tool set — `Agent.getActiveTools()`, `getAllTools()`,
   `setActiveTools()` and the same three on `ExtensionAPI` (pi); `terminate` on
   `ToolResult` and `ToolCallEventResult` (pi 0.84.1); `textResult()`,

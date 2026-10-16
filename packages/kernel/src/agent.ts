@@ -203,6 +203,11 @@ export interface AgentOptions {
 	 */
 	verifyTranscript?: boolean;
 	/**
+	 * Whether the host trusts project-local resources (backs ctx.isProjectTrusted,
+	 * pi). Only an explicit true counts (D20-3); subagents inherit it.
+	 */
+	isProjectTrusted?: () => boolean;
+	/**
 	 * Called after each turn's assistant message and tool results are final,
 	 * before turn_end (pi AgentLoopConfig.finishTurn). Returning { action: "end" }
 	 * ends the run after turn_end without draining the queues — e.g. a "done"
@@ -224,7 +229,7 @@ export type AgentEvent =
 	| { type: "user_message"; message: UserMessage | CustomMessage }
 	| { type: "tool_start"; toolCall: ToolCall }
 	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string; stream?: ToolUpdateStream }
-	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult }
+	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult; durationMs?: number }
 	| { type: "compaction"; result: CompactionResult }
 	| { type: "compaction_failed"; reason: "manual" | "threshold"; errorMessage?: string; aborted: boolean }
 	| {
@@ -334,6 +339,7 @@ export class Agent {
 	private settling = false;
 	private readonly deferredStarts: (() => void)[] = [];
 	private readonly finishTurn: AgentOptions["finishTurn"];
+	private readonly isProjectTrusted: (() => boolean) | undefined;
 	/** Runs tool batches: preflight (hooks, validation, policy, approval), execution, result hooks. */
 	private readonly toolRunner: ToolBatchRunner;
 	/** Registered tools switched off by setActiveTools (the rest, including later registrations, are active). */
@@ -387,6 +393,7 @@ export class Agent {
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.verifyTranscript = options.verifyTranscript ?? true;
 		this.finishTurn = options.finishTurn;
+		this.isProjectTrusted = options.isProjectTrusted;
 		this.toolRunner = new ToolBatchRunner({
 			extensions: this.extensions,
 			policy: this.policy,
@@ -489,6 +496,7 @@ export class Agent {
 			getActiveTools: () => this.getActiveTools(),
 			getAllTools: () => this.getAllTools(),
 			setActiveTools: (toolNames) => this.setActiveTools(toolNames),
+			getSessionName: () => this.sessionMetadata?.name,
 		});
 	}
 
@@ -731,10 +739,12 @@ export class Agent {
 			capabilities: this.capabilities,
 			getContextUsage: () => this.getContextUsage(),
 			compact: (customInstructions) => {
+				this.extensions?.assertActive();
 				this.pendingCompaction = customInstructions ?? "";
 			},
 			runSubagent: (prompt, options, signal) => this.runSubagent(prompt, options, signal),
 			abort: () => {
+				this.extensions?.assertActive();
 				const hostAbort = this.extensions?.hostAction("abort");
 				if (hostAbort) hostAbort();
 				else this.abort("Aborted by extension");
@@ -745,8 +755,11 @@ export class Agent {
 			},
 			hasPendingMessages: () => this.hasQueuedMessages(),
 			shutdown: () => {
+				this.extensions?.assertActive();
 				this.extensions?.hostAction("shutdown")?.();
 			},
+			isProjectTrusted: () => this.isProjectTrusted?.() === true,
+			cwd: this.capabilities.paths?.cwd ?? this.capabilities.fs?.cwd ?? "",
 			sessionManager: this.sessionManager(),
 			getSystemPrompt: () => getCurrentSystemPrompt(this.messages),
 			discoverResources: (reason) => {
@@ -788,6 +801,7 @@ export class Agent {
 		const child = new Agent({
 			extensions: guards,
 			retry: this.retrySettings,
+			isProjectTrusted: this.isProjectTrusted,
 			config: this.config,
 			transport: this.transport,
 			platform: this.platform,
@@ -1755,7 +1769,12 @@ export class Agent {
 		batch.messages.push(committed.message as ToolResultMessage);
 		batch.entryIds.push(committed.entryId);
 		batch.terminate.push(terminate === true);
-		return { type: "tool_result", toolCall, result: terminate ? { ...result, terminate } : result };
+		return {
+			type: "tool_result",
+			toolCall,
+			result: terminate ? { ...result, terminate } : result,
+			...(durationMs !== undefined ? { durationMs } : {}),
+		};
 	}
 }
 

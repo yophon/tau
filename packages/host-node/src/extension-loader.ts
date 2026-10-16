@@ -1,7 +1,7 @@
 import { readdir, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import type { Extension } from "@yophon/tau-kernel";
+import type { Extension, InlineExtension } from "@yophon/tau-kernel";
 
 const EXTENSION_FILE = /\.(ts|js|mjs)$/;
 
@@ -39,16 +39,30 @@ export async function listExtensionFiles(dir: string): Promise<string[]> {
 	return files;
 }
 
-/** Import already-listed extension files. Each must default-export an Extension setup function. */
-export async function importExtensionFiles(files: string[]): Promise<Extension[]> {
-	const extensions: Extension[] = [];
+/**
+ * Import already-listed extension files, each named by its path (P23c). Each must
+ * default-export an Extension setup function. A module that fails to import or
+ * exports something else becomes an extension whose setup throws, so the
+ * registry reports it as a load error and loads the rest (pi).
+ */
+export async function importExtensionFiles(files: string[]): Promise<InlineExtension[]> {
+	const extensions: InlineExtension[] = [];
 	for (const path of files) {
-		const modifiedAt = (await stat(path)).mtimeMs;
-		const module = (await import(`${pathToFileURL(path).href}?mtime=${modifiedAt}`)) as { default?: unknown };
-		if (typeof module.default !== "function") {
-			throw new Error(`Extension ${path} must default-export a setup function`);
+		try {
+			const modifiedAt = (await stat(path)).mtimeMs;
+			const module = (await import(`${pathToFileURL(path).href}?mtime=${modifiedAt}`)) as { default?: unknown };
+			if (typeof module.default !== "function") {
+				throw new Error(`Extension ${path} must default-export a setup function`);
+			}
+			extensions.push({ name: path, factory: module.default as Extension });
+		} catch (error) {
+			extensions.push({
+				name: path,
+				factory: () => {
+					throw error;
+				},
+			});
 		}
-		extensions.push(module.default as Extension);
 	}
 	return extensions;
 }
@@ -63,6 +77,6 @@ export async function importExtensionFiles(files: string[]): Promise<Extension[]
  * Importing runs the modules' top-level code. For directories that need a trust
  * decision first, call {@link listExtensionFiles}, decide, then {@link importExtensionFiles}.
  */
-export async function loadExtensionsFromDir(dir: string): Promise<Extension[]> {
+export async function loadExtensionsFromDir(dir: string): Promise<InlineExtension[]> {
 	return importExtensionFiles(await listExtensionFiles(dir));
 }

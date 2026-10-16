@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 /**
@@ -464,14 +465,51 @@ function writeTrustStore(store: TrustStore): void {
 	writeFileSync(path, `${JSON.stringify(store, null, "\t")}\n`, "utf8");
 }
 
+/**
+ * Project-local resources that load only from a trusted directory (P23c, pi): code,
+ * settings that pick endpoints or credentials, and skills/prompts that reach the
+ * system prompt.
+ */
+const GATED_PROJECT_RESOURCES = [
+	".tau/extensions",
+	".tau/settings.json",
+	".tau/skills",
+	".tau/prompts",
+	".pi/settings.json",
+	".pi/skills",
+	".pi/prompts",
+] as const;
+
+function presentGatedResources(cwd: string): string[] {
+	return GATED_PROJECT_RESOURCES.filter((relative) => existsSync(join(cwd, relative)));
+}
+
+/**
+ * Content digest of the gated resources (D20-5: a change asks again). A project
+ * with only .tau/extensions keeps the pre-P23 digest of that directory, so
+ * existing trust records stay valid.
+ */
+async function digestProjectResources(cwd: string, present: readonly string[]): Promise<string | undefined> {
+	if (present.length === 1 && present[0] === ".tau/extensions") return digestDirectory(join(cwd, ".tau/extensions"));
+	const hash = createHash("sha256");
+	for (const relative of present) {
+		const path = join(cwd, relative);
+		const digest = statSync(path).isDirectory()
+			? await digestDirectory(path)
+			: createHash("sha256").update(readFileSync(path)).digest("hex");
+		hash.update(`${relative}\0${digest ?? ""}\n`);
+	}
+	return hash.digest("hex");
+}
+
 async function isProjectTrusted(
 	registry: ExtensionRegistry,
 	cwd: string,
 	ui: UiCapability | undefined,
-	extensionsDir: string,
+	present: readonly string[],
 ): Promise<boolean> {
 	const store = readTrustStore();
-	const digest = await digestDirectory(extensionsDir);
+	const digest = await digestProjectResources(cwd, present);
 	const recorded = store.trusted[cwd];
 	if (recorded !== undefined) {
 		const entry = typeof recorded === "boolean" ? { trusted: recorded } : recorded;
@@ -485,7 +523,7 @@ async function isProjectTrusted(
 			return true;
 		}
 		if (entry.digest === digest) return true;
-		console.log(dim("Project extensions changed since they were last trusted — confirming again."));
+		console.log(dim("Project resources changed since they were last trusted — confirming again."));
 	}
 
 	// Global (always-trusted) extensions may decide via the project_trust event.
@@ -500,13 +538,22 @@ async function isProjectTrusted(
 	}
 
 	if (!ui) return false; // headless + no valid record = reject
-	const approved = await ui.confirm("Trust this directory and load its .tau/extensions?", cwd);
+	const approved = await ui.confirm(
+		"Trust this directory and load its project resources?",
+		`${cwd}\n${present.join(", ")}`,
+	);
 	store.trusted[cwd] = { trusted: approved, digest };
 	writeTrustStore(store);
 	return approved;
 }
 
-async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<ExtensionRegistry> {
+/** The registry plus the trust decision for the project's gated resources (backs ctx.isProjectTrusted). */
+interface LoadedExtensions {
+	registry: ExtensionRegistry;
+	projectTrusted: boolean;
+}
+
+async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<LoadedExtensions> {
 	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")));
 	// A failing notification handler (an unreachable MCP server in session_start, a
 	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
@@ -517,13 +564,40 @@ async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined):
 	// List first, decide trust, and only then import: importing runs the modules' top-level
 	// code, so an untrusted directory must never get that far (cd into a repo ≠ run its code).
 	const projectFiles = await listExtensionFiles(extensionsDir);
-	if (projectFiles.length === 0) return registry;
-	if (await isProjectTrusted(registry, cwd, ui, extensionsDir)) {
-		await registry.add(await importExtensionFiles(projectFiles));
-	} else {
-		console.log(dim(`Skipped ${projectFiles.length} project extension(s): directory not trusted.`));
+	// Any gated resource asks for the decision, not only extensions (P23c): project
+	// settings, skills and prompts are read only from a trusted directory.
+	const present = presentGatedResources(cwd).filter(
+		(relative) => relative !== ".tau/extensions" || projectFiles.length > 0,
+	);
+	let projectTrusted = false;
+	if (present.length > 0) {
+		projectTrusted = await isProjectTrusted(registry, cwd, ui, present);
+		if (projectTrusted) {
+			if (projectFiles.length > 0) await registry.add(await importExtensionFiles(projectFiles));
+		} else {
+			if (projectFiles.length > 0) {
+				console.log(dim(`Skipped ${projectFiles.length} project extension(s): directory not trusted.`));
+			}
+			const ignored = present.filter((relative) => relative !== ".tau/extensions");
+			if (ignored.length > 0) console.log(dim(`Ignored ${ignored.join(", ")}: directory not trusted.`));
+		}
 	}
-	return registry;
+	reportExtensionLoad(registry);
+	return { registry, projectTrusted };
+}
+
+/**
+ * Extensions that failed to load were rolled back and skipped (pi); say which and
+ * why, and name same-name registrations that lost to an earlier one (P23c).
+ */
+function reportExtensionLoad(registry: ExtensionRegistry): void {
+	for (const { extension, error } of registry.loadErrors) {
+		process.stderr.write(`[extension failed to load, skipped] ${extension}: ${error.message}
+`);
+	}
+	for (const warning of registry.warnings)
+		process.stderr.write(`[extension conflict] ${warning}
+`);
 }
 
 function defaultSystemPrompt(cwd: string, toolNames: readonly string[]): string {
@@ -848,14 +922,18 @@ async function main(): Promise<void> {
 			: readline && process.stdin.isTTY
 				? createUi(readline)
 				: undefined;
-	const extensions = await loadExtensionRegistry(cwd, ui);
+	const loaded = await loadExtensionRegistry(cwd, ui);
+	const extensions = loaded.registry;
+	// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
+	let projectTrusted = loaded.projectTrusted;
 	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
 	const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 		// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 		projectContext = await loadProjectContext();
-		const nextExtensions = await loadExtensionRegistry(cwd, reloadUi);
-		nextExtensions.setFlagValues(resolveExtensionFlags(nextExtensions, options.extras));
-		return nextExtensions;
+		const next = await loadExtensionRegistry(cwd, reloadUi);
+		projectTrusted = next.projectTrusted;
+		next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
+		return next.registry;
 	};
 
 	const platform = defaultPlatform();
@@ -968,10 +1046,11 @@ async function main(): Promise<void> {
 				paths: {
 					cwd,
 					userTauDir: join(userHome(), ".tau"),
-					projectTauDir: join(cwd, ".tau"),
-					projectPiDir: join(cwd, ".pi"),
+					// Project paths only for a trusted project (defense in depth; extensions also ask ctx).
+					...(projectTrusted ? { projectTauDir: join(cwd, ".tau"), projectPiDir: join(cwd, ".pi") } : {}),
 				},
 			},
+			isProjectTrusted: () => projectTrusted,
 			initialMessages: messages,
 			session,
 			retry,

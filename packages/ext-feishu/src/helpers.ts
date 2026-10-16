@@ -10,6 +10,11 @@ export interface FeishuConfigLoadOptions {
 	projectPiDir?: string;
 	globalSettingsPath?: string;
 	projectSettingsPath?: string;
+	/**
+	 * Read the project settings files (P23c). Off unless the host trusts the project
+	 * (ctx.isProjectTrusted()) — an explicit `projectSettingsPath` also opts in.
+	 */
+	includeProjectSettings?: boolean;
 	config?: Partial<FeishuConfig>;
 	env?: Record<string, string | undefined>;
 }
@@ -71,16 +76,18 @@ function uniquePaths(paths: string[]): string[] {
  * be moved to tau without duplicating credentials.
  */
 export function loadFeishuConfig(options: FeishuConfigLoadOptions = {}): FeishuConfig {
-	const cwd = options.cwd ?? process.cwd();
 	const userTauDir = options.userTauDir ?? join(homedir(), ".tau");
-	const projectTauDir = options.projectTauDir ?? join(cwd, ".tau");
-	const projectPiDir = options.projectPiDir ?? join(cwd, ".pi");
 	const globalPaths = options.globalSettingsPath
 		? [options.globalSettingsPath]
 		: uniquePaths([join(homedir(), ".pi", "agent", "settings.json"), join(userTauDir, "settings.json")]);
+	// Project settings come from an untrusted working tree until the host says otherwise:
+	// no cwd fallback, and nothing read unless trusted (P23c, the pi "sessionDir before trust" lesson).
+	const projectDirs = options.includeProjectSettings
+		? [options.projectPiDir, options.projectTauDir].filter((dir): dir is string => dir !== undefined)
+		: [];
 	const projectPaths = options.projectSettingsPath
 		? [options.projectSettingsPath]
-		: uniquePaths([join(projectPiDir, "settings.json"), join(projectTauDir, "settings.json")]);
+		: uniquePaths(projectDirs.map((dir) => join(dir, "settings.json")));
 
 	let values: Partial<FeishuConfig> = {};
 	for (const path of globalPaths) values = { ...values, ...readFeishuFromSettingsFile(path) };

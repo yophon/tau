@@ -252,29 +252,14 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 			api.registerFlag(name, { description, type: "string", default: "" });
 		}
 
-		function pathsFromContext(ctx: ExtensionContext | null): {
-			cwd: string;
-			userTauDir: string;
-			projectTauDir: string;
-			projectPiDir: string;
-		} {
-			const paths = ctx?.capabilities?.paths;
-			const cwd = paths?.cwd ?? ctx?.capabilities?.fs?.cwd ?? process.cwd();
-			return {
-				cwd,
-				userTauDir: paths?.userTauDir ?? join(homedir(), ".tau"),
-				projectTauDir: paths?.projectTauDir ?? join(cwd, ".tau"),
-				projectPiDir: paths?.projectPiDir ?? join(cwd, ".pi"),
-			};
-		}
-
 		function configWithFlags(ctx: ExtensionContext | null): FeishuConfig {
-			const paths = pathsFromContext(ctx);
+			const paths = ctx?.capabilities?.paths;
+			// Project settings only for a trusted project, and only from the host's paths (P23c).
 			const loaded = loadFeishuConfig({
-				cwd: paths.cwd,
-				userTauDir: paths.userTauDir,
-				projectTauDir: paths.projectTauDir,
-				projectPiDir: paths.projectPiDir,
+				userTauDir: paths?.userTauDir ?? join(homedir(), ".tau"),
+				projectTauDir: paths?.projectTauDir,
+				projectPiDir: paths?.projectPiDir,
+				includeProjectSettings: ctx?.isProjectTrusted?.() === true,
 				config: options.config,
 			});
 			const flagMap: Partial<Record<keyof FeishuConfig, string>> = {

@@ -268,10 +268,8 @@ P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
 |---|---|---|---|
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
-| 11 | 项目级 settings 与资源（skills、prompts、mcp.json、ext-feishu 非凭据设置）未过信任门即读取（**安全**，P21 审计） | 不可信仓库可影响提示词与工具配置（凭据已在 HF-1 堵住） | 绑定 P23 信任门扩展 |
 | 12 | `/model` 切换后仍用全局单一 pricing | 换模型后 footer 成本失真 | 绑定 P23（model 入缝） |
-| 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 首发以 P23 信任修复为前提（发布阻断） |
-| 14 | extensions.ts 的 entry/tool renderer 与 pi 1.2 形状不一致，偏离未注释 | 照抄核对困难 | 绑定 P23 |
+| 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 信任修复已随 P23c 完成；媒体目录 owner-only 随 P23e，之后可首发 |
 | 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | 绑定 pi-tui 升级（P24 之后） |
 | 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |

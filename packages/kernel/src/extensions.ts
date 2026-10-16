@@ -95,6 +95,14 @@ export interface ExtensionContext {
 	hasPendingMessages?: () => boolean;
 	/** Ask the host to shut down gracefully (pi ctx.shutdown); no-op without a host that supports it (D10). */
 	shutdown?: () => void;
+	/**
+	 * Whether project-local resources are trusted (pi). Only an explicit host
+	 * decision counts (D20-3): read project settings, skills or prompts only when
+	 * this returns true.
+	 */
+	isProjectTrusted?: () => boolean;
+	/** Working directory of the session (pi ctx.cwd). */
+	cwd?: string;
 	/** Read-only view of the session log the agent's context is built from (pi ReadonlySessionManager, P22). */
 	sessionManager?: ReadonlySessionManager;
 	/** The system prompt the model currently has: the transcript's system messages replayed (P22). */
@@ -544,11 +552,17 @@ export interface ToolResultEventResult {
 	usage?: Usage;
 }
 
-/** Fired by interactive hosts before running a user-entered bash command. */
+/**
+ * Fired by interactive hosts before running a user-entered bash command. tau's
+ * own shape (P8, D28): `recordInContext` is pi's `!excludeFromContext`, and
+ * results chain (cancel / rewrite) where pi stops at the first result.
+ */
 export interface UserBashEvent {
 	type: "user_bash";
 	command: string;
 	recordInContext: boolean;
+	/** Working directory the command runs in (pi). */
+	cwd: string;
 }
 
 export type UserBashEventResult =
@@ -584,6 +598,11 @@ export type RegisteredCommandResult = string | { action: "prompt"; text: string 
 
 export interface RegisteredCommand {
 	name: string;
+	/**
+	 * What the user types after "/": the name, or `name:N` when several extensions
+	 * register the same name (pi: every one of them gets its occurrence suffix).
+	 */
+	invocationName?: string;
 	description: string;
 	handler: (args: string, ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
 }
@@ -625,6 +644,14 @@ export type RegisteredEntryRenderResult =
 	| ExtensionRenderComponent
 	| undefined;
 
+/**
+ * Deviation from pi 1.2 (D9/D10): tau had entry and tool renderers before pi
+ * (P8), with its own shape — a name plus entry/custom types or tool names and
+ * phases, and a handler returning a string, `{ text, format }` or an
+ * ExtensionRenderComponent. pi's registerEntryRenderer/registerToolRenderer take
+ * a Theme and return pi-tui Components, which would tie the kernel to one TUI.
+ * Same names, different shape; porting a pi renderer means rewriting its output.
+ */
 export interface RegisteredEntryRenderer {
 	name: string;
 	description?: string;
@@ -638,6 +665,7 @@ export interface RegisteredEntryRenderer {
 
 export type ToolRenderPhase = "start" | "update" | "result";
 
+/** What a tool renderer gets. `durationMs` is how long tool.execute took, on the result phase (pi 1.1.0). */
 export interface RegisteredToolRenderEvent {
 	phase: ToolRenderPhase;
 	toolCall: ToolCall;
@@ -645,6 +673,7 @@ export interface RegisteredToolRenderEvent {
 	stream?: "stdout" | "stderr";
 	result?: ToolResult;
 	liveOutput?: string;
+	durationMs?: number;
 }
 
 export type RegisteredToolRenderResult =
@@ -707,6 +736,17 @@ export interface RegisteredFlag {
 	default?: boolean | string;
 }
 
+/** A user_bash result is an object whose present fields have the right types. */
+function isValidUserBashResult(value: unknown): value is NonNullable<UserBashEventResult> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	const result = value as Record<string, unknown>;
+	if (result.cancel !== undefined && typeof result.cancel !== "boolean") return false;
+	if (result.reason !== undefined && typeof result.reason !== "string") return false;
+	if (result.command !== undefined && typeof result.command !== "string") return false;
+	if (result.recordInContext !== undefined && typeof result.recordInContext !== "boolean") return false;
+	return true;
+}
+
 /** Same list, element by element (pi sameMessages): detects in-place edits of a context list. */
 function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessage[]): boolean {
 	return left.length === right.length && left.every((message, index) => message === right[index]);
@@ -714,50 +754,62 @@ function sameMessages(left: readonly AgentMessage[], right: readonly AgentMessag
 
 /** Registration surface handed to an extension's setup function. */
 export interface ExtensionAPI {
-	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): void;
-	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): void;
-	on(event: "agent_before_settle", handler: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>): void;
-	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): void;
-	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): void;
-	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, BoundaryResult>): void;
-	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): void;
-	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): void;
-	on(event: "context_with_system", handler: ExtensionHandler<ContextWithSystemEvent, ContextEventResult>): void;
-	on(event: "before_agent_start", handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>): void;
-	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): void;
-	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): void;
-	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): void;
-	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): void;
-	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): void;
-	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): void;
-	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): void;
-	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): void;
-	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): void;
-	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent, ModelSelectEventResult>): void;
+	on(event: "agent_start", handler: ExtensionHandler<AgentStartEvent>): () => void;
+	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): () => void;
+	on(event: "agent_before_settle", handler: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>): () => void;
+	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
+	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
+	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, BoundaryResult>): () => void;
+	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): () => void;
+	on(event: "context", handler: ExtensionHandler<ContextEvent, ContextEventResult>): () => void;
+	on(event: "context_with_system", handler: ExtensionHandler<ContextWithSystemEvent, ContextEventResult>): () => void;
+	on(
+		event: "before_agent_start",
+		handler: ExtensionHandler<BeforeAgentStartEvent, BeforeAgentStartEventResult>,
+	): () => void;
+	on(event: "message_start", handler: ExtensionHandler<MessageStartEvent>): () => void;
+	on(event: "message_update", handler: ExtensionHandler<MessageUpdateEvent>): () => void;
+	on(event: "message_end", handler: ExtensionHandler<MessageEndEvent, MessageEndEventResult>): () => void;
+	on(event: "tool_call", handler: ExtensionHandler<ToolCallEvent, ToolCallEventResult>): () => void;
+	on(event: "tool_execution_start", handler: ExtensionHandler<ToolExecutionStartEvent>): () => void;
+	on(event: "tool_execution_update", handler: ExtensionHandler<ToolExecutionUpdateEvent>): () => void;
+	on(event: "tool_execution_end", handler: ExtensionHandler<ToolExecutionEndEvent>): () => void;
+	on(event: "tool_result", handler: ExtensionHandler<ToolResultEvent, ToolResultEventResult>): () => void;
+	on(event: "user_bash", handler: ExtensionHandler<UserBashEvent, UserBashEventResult>): () => void;
+	on(event: "model_select", handler: ExtensionHandler<ModelSelectEvent, ModelSelectEventResult>): () => void;
 	on(
 		event: "thinking_level_select",
 		handler: ExtensionHandler<ThinkingLevelSelectEvent, ThinkingLevelSelectEventResult>,
-	): void;
-	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): void;
-	on(event: "resources_discover", handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>): void;
-	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): void;
-	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): void;
-	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): void;
+	): () => void;
+	on(event: "project_trust", handler: ExtensionHandler<ProjectTrustEvent, ProjectTrustEventResult>): () => void;
+	on(
+		event: "resources_discover",
+		handler: ExtensionHandler<ResourcesDiscoverEvent, ResourcesDiscoverResult>,
+	): () => void;
+	on(event: "session_start", handler: ExtensionHandler<SessionStartEvent>): () => void;
+	on(event: "session_shutdown", handler: ExtensionHandler<SessionShutdownEvent>): () => void;
+	on(event: "session_info_changed", handler: ExtensionHandler<SessionInfoChangedEvent>): () => void;
 	on(
 		event: "session_before_compact",
 		handler: ExtensionHandler<SessionBeforeCompactEvent, SessionBeforeCompactResult>,
-	): void;
-	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): void;
-	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): void;
-	on(event: "session_before_fork", handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>): void;
-	on(event: "session_before_tree", handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>): void;
-	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): void;
+	): () => void;
+	on(event: "session_compact", handler: ExtensionHandler<SessionCompactEvent>): () => void;
+	on(event: "session_compact_failed", handler: ExtensionHandler<SessionCompactFailedEvent>): () => void;
+	on(
+		event: "session_before_fork",
+		handler: ExtensionHandler<SessionBeforeForkEvent, SessionBeforeForkResult>,
+	): () => void;
+	on(
+		event: "session_before_tree",
+		handler: ExtensionHandler<SessionBeforeTreeEvent, SessionBeforeTreeResult>,
+	): () => void;
+	on(event: "session_tree", handler: ExtensionHandler<SessionTreeEvent>): () => void;
 	on(
 		event: "session_before_switch",
 		handler: ExtensionHandler<SessionBeforeSwitchEvent, SessionBeforeSwitchResult>,
-	): void;
-	on(event: "auto_retry_start", handler: ExtensionHandler<AutoRetryStartEvent>): void;
-	on(event: "auto_retry_end", handler: ExtensionHandler<AutoRetryEndEvent>): void;
+	): () => void;
+	on(event: "auto_retry_start", handler: ExtensionHandler<AutoRetryStartEvent>): () => void;
+	on(event: "auto_retry_end", handler: ExtensionHandler<AutoRetryEndEvent>): () => void;
 
 	/**
 	 * Inject a custom message into the conversation (enters LLM context as a
@@ -785,6 +837,11 @@ export interface ExtensionAPI {
 	/** Set or clear (undefined) a label on an entry: a bookmark that never enters context (pi). */
 	setLabel(entryId: string, label: string | undefined): void;
 
+	/** Slash commands registered in this session (pi getCommands; `source` is the registering extension). */
+	getCommands(): { name: string; description: string; source: string }[];
+	/** The session's display name, if set (pi). */
+	getSessionName(): string | undefined;
+
 	/** Names of the active tools — the ones declared to the model (pi). */
 	getActiveTools(): string[];
 	/** Every registered tool, active or not (pi; the ToolInfo subset tau has). */
@@ -802,7 +859,7 @@ export interface ExtensionAPI {
 	registerTool(tool: Tool, options?: { risk?: RiskLevel }): void;
 
 	/** Register a custom command. */
-	registerCommand(name: string, options: Omit<RegisteredCommand, "name">): void;
+	registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "invocationName">): void;
 
 	/** Register a TUI keyboard shortcut. Hosts that do not support shortcuts may ignore it. */
 	registerShortcut(name: string, options: Omit<RegisteredShortcut, "name">): void;
@@ -842,6 +899,24 @@ export interface ExtensionAPI {
  * statically and pass them in. The kernel never loads code.
  */
 export type Extension = (api: ExtensionAPI) => void | Promise<void>;
+
+/**
+ * A factory with a name (pi InlineExtension's `name`; still a static value, D8).
+ * The name attributes load errors and conflicts; host-node uses the file path.
+ */
+export interface InlineExtension {
+	name: string;
+	factory: Extension;
+}
+
+/** One extension that failed to load; its registrations were rolled back (pi LoadExtensionsResult.errors). */
+export interface ExtensionLoadError {
+	extension: string;
+	error: Error;
+}
+
+const STALE_EXTENSION_MESSAGE =
+	"This extension api/ctx is stale: its registry was replaced (reload, resume, fork, new session) or its setup failed. Do not keep using a captured api or ctx after that.";
 
 interface HandlerLists {
 	agent_start: ExtensionHandler<AgentStartEvent>[];
@@ -900,6 +975,7 @@ export interface ExtensionHostActions {
 	abort?(): void;
 	/** Shut the host down gracefully (ctx.shutdown backing). */
 	shutdown?(): void;
+	getSessionName?(): string | undefined;
 	getActiveTools?(): string[];
 	getAllTools?(): ToolInfo[];
 	setActiveTools?(toolNames: string[]): void;
@@ -926,7 +1002,17 @@ export class ExtensionRegistry {
 	readonly footerItems = new Map<string, RegisteredStatusItem>();
 	readonly diagnostics = new Map<string, RegisteredDiagnostic>();
 	readonly flags = new Map<string, RegisteredFlag>();
+	/** Every extension that failed to load so far (rolled back; see add()). */
+	readonly loadErrors: ExtensionLoadError[] = [];
+	/** Registration conflicts so far (first registration kept). */
+	readonly warnings: string[] = [];
 	private readonly flagValues = new Map<string, boolean | string>();
+	private readonly toolOwners = new Map<string, string>();
+	private readonly flagOwners = new Map<string, string>();
+	private readonly commandOwners = new Map<string, string>();
+	private readonly commandOccurrences = new Map<string, number>();
+	private extensionCount = 0;
+	private invalidated = false;
 	private hostActions: ExtensionHostActions | undefined;
 	private errorSink: ExtensionErrorSink | undefined;
 	private readonly handlers: HandlerLists = {
@@ -967,25 +1053,161 @@ export class ExtensionRegistry {
 		auto_retry_end: [],
 	};
 
-	static async load(extensions: Extension[]): Promise<ExtensionRegistry> {
+	static async load(extensions: (Extension | InlineExtension)[]): Promise<ExtensionRegistry> {
 		const registry = new ExtensionRegistry();
 		await registry.add(extensions);
 		return registry;
 	}
 
-	/** Run additional extensions' setup against this registry (e.g. project extensions after a trust decision). */
-	async add(extensions: Extension[]): Promise<void> {
-		const on = (event: keyof HandlerLists, handler: unknown): void => {
-			(this.handlers[event] as unknown[]).push(handler);
+	/**
+	 * Run extensions' setup against this registry (e.g. project extensions after a
+	 * trust decision), one at a time. Each extension's registrations are staged: a
+	 * setup that throws is rolled back entirely — no half-registered tool without
+	 * its guard — and reported in `errors`; the others still load (pi). Same-name
+	 * tools and flags keep the first registration and report a warning. Never
+	 * throws; the results also accumulate in `loadErrors` / `warnings`.
+	 */
+	async add(
+		extensions: (Extension | InlineExtension)[],
+	): Promise<{ errors: ExtensionLoadError[]; warnings: string[] }> {
+		const errors: ExtensionLoadError[] = [];
+		const warnings: string[] = [];
+		for (const entry of extensions) {
+			this.extensionCount++;
+			const name = typeof entry === "function" ? `extension #${this.extensionCount}` : entry.name;
+			const factory = typeof entry === "function" ? entry : entry.factory;
+			const snapshot = this.snapshot();
+			const staged: string[] = [];
+			const live = { active: true };
+			try {
+				await factory(this.createApi(name, staged, live));
+				warnings.push(...staged);
+			} catch (cause) {
+				this.restore(snapshot);
+				live.active = false;
+				errors.push({ extension: name, error: toError(cause) });
+			}
+		}
+		this.loadErrors.push(...errors);
+		this.warnings.push(...warnings);
+		return { errors, warnings };
+	}
+
+	/**
+	 * Mark this registry stale (pi runtime invalidate): every api and ctx it handed
+	 * out throws from now on. Hosts call it after a replacement registry took over.
+	 */
+	invalidate(): void {
+		this.invalidated = true;
+	}
+
+	/** Throw when this registry was invalidated; the Agent checks it before acting on a ctx call. */
+	assertActive(): void {
+		if (this.invalidated) throw new TauError("stale_extension", STALE_EXTENSION_MESSAGE);
+	}
+
+	/** Register a command; duplicates get pi's occurrence suffixes (`name:1`, `name:2`, …). */
+	private addCommand(name: string, options: Omit<RegisteredCommand, "name" | "invocationName">, owner: string): void {
+		const occurrences = (this.commandOccurrences.get(name) ?? 0) + 1;
+		this.commandOccurrences.set(name, occurrences);
+		if (occurrences === 2) {
+			// The first registration was plain `name`; it becomes `name:1` now that there are two.
+			const first = this.commands.get(name);
+			if (first) {
+				this.commands.delete(name);
+				this.commands.set(`${name}:1`, { ...first, invocationName: `${name}:1` });
+				this.commandOwners.set(`${name}:1`, this.commandOwners.get(name) ?? owner);
+				this.commandOwners.delete(name);
+			}
+		}
+		let invocationName = occurrences > 1 ? `${name}:${occurrences}` : name;
+		for (let suffix = occurrences; this.commands.has(invocationName); suffix++)
+			invocationName = `${name}:${suffix + 1}`;
+		this.commands.set(invocationName, { name, ...options, invocationName });
+		this.commandOwners.set(invocationName, owner);
+	}
+
+	/** Copy of everything an extension's setup can change, for rollback. */
+	private snapshot(): () => void {
+		const maps: Map<string, unknown>[] = [
+			this.tools,
+			this.commands,
+			this.shortcuts,
+			this.messageRenderers,
+			this.entryRenderers,
+			this.toolRenderers,
+			this.widgets,
+			this.headerItems,
+			this.footerItems,
+			this.diagnostics,
+			this.flags,
+			this.toolOwners,
+			this.flagOwners,
+			this.commandOwners,
+		];
+		const mapCopies = maps.map((map) => new Map(map));
+		const occurrences = new Map(this.commandOccurrences);
+		const handlerCopies = Object.entries(this.handlers).map(
+			([event, list]) => [event, [...(list as unknown[])]] as const,
+		);
+		return () => {
+			maps.forEach((map, index) => {
+				map.clear();
+				for (const [key, value] of mapCopies[index]) map.set(key, value);
+			});
+			this.commandOccurrences.clear();
+			for (const [key, value] of occurrences) this.commandOccurrences.set(key, value);
+			for (const [event, list] of handlerCopies) {
+				const target = this.handlers[event as keyof HandlerLists] as unknown[];
+				target.length = 0;
+				target.push(...list);
+			}
+		};
+	}
+
+	private restore(snapshot: () => void): void {
+		snapshot();
+	}
+
+	/** The api one extension's setup receives; it goes stale with a failed setup or an invalidated registry. */
+	private createApi(name: string, warnings: string[], live: { active: boolean }): ExtensionAPI {
+		const on = (event: keyof HandlerLists, handler: (...args: unknown[]) => unknown): (() => void) => {
+			// Each registration is its own entry, so unsubscribing removes exactly this one (pi).
+			const registered = (...args: unknown[]) => handler(...args);
+			(this.handlers[event] as unknown[]).push(registered);
+			return () => {
+				const list = this.handlers[event] as unknown[];
+				const index = list.indexOf(registered);
+				if (index >= 0) list.splice(index, 1);
+			};
 		};
 		const api: ExtensionAPI = {
 			on: on as ExtensionAPI["on"],
 			registerTool: (tool, options) => {
 				assertToolSchema(tool);
+				// First registration wins; a later one is reported, not applied (pi detectExtensionConflicts).
+				const owner = this.toolOwners.get(tool.name);
+				if (owner !== undefined) {
+					warnings.push(`Tool "${tool.name}" conflicts with ${owner}`);
+					return;
+				}
+				this.toolOwners.set(tool.name, name);
 				this.tools.set(tool.name, options?.risk !== undefined ? { ...tool, risk: options.risk } : tool);
 			},
-			registerCommand: (name, options) => {
-				this.commands.set(name, { name, ...options });
+			registerCommand: (commandName, options) => {
+				if (typeof commandName !== "string" || commandName === "") {
+					throw new TauError(
+						"invalid_extension",
+						`Command registered by extension "${name}" must have a non-empty string name. Use api.registerCommand("name", { description, handler }).`,
+					);
+				}
+				if (typeof options?.handler !== "function") {
+					throw new TauError(
+						"invalid_extension",
+						`Command "/${commandName}" registered by extension "${name}" must define handler().`,
+					);
+				}
+				this.addCommand(commandName, options, name);
 			},
 			registerShortcut: (name, options) => {
 				this.shortcuts.set(name, { name, ...options });
@@ -1011,22 +1233,53 @@ export class ExtensionRegistry {
 			registerDiagnostic: (name, options) => {
 				this.diagnostics.set(name, { name, ...options });
 			},
-			registerFlag: (name, options) => {
-				this.flags.set(name, { name, ...options });
+			registerFlag: (flagName, options) => {
+				if (options.default !== undefined && typeof options.default !== options.type) {
+					throw new TauError(
+						"invalid_extension",
+						`Invalid default for flag "${flagName}": expected ${options.type}, got ${typeof options.default}`,
+					);
+				}
+				const owner = this.flagOwners.get(flagName);
+				if (owner !== undefined) {
+					warnings.push(`Flag "--${flagName}" conflicts with ${owner}`);
+					return;
+				}
+				this.flagOwners.set(flagName, name);
+				this.flags.set(flagName, { name: flagName, ...options });
 			},
 			getFlag: (name) => this.getFlag(name),
 			sendMessage: (message, options) => this.requireHostActions("sendMessage")(message, options),
 			sendUserMessage: (content, options) => this.requireHostActions("sendUserMessage")(content, options),
 			appendEntry: (customType, data) => this.requireHostActions("appendEntry")(customType, data),
-			setSessionName: (name) => this.requireHostActions("setSessionName")(name),
+			setSessionName: (sessionName) => this.requireHostActions("setSessionName")(sessionName),
+			getSessionName: () => this.requireHostActions("getSessionName")(),
+			getCommands: () =>
+				[...this.commands.values()].map((command) => ({
+					name: command.invocationName ?? command.name,
+					description: command.description,
+					source: this.commandOwners.get(command.invocationName ?? command.name) ?? "extension",
+				})),
 			setLabel: (entryId, label) => this.requireHostActions("setLabel")(entryId, label),
 			getActiveTools: () => this.requireHostActions("getActiveTools")(),
 			getAllTools: () => this.requireHostActions("getAllTools")(),
 			setActiveTools: (toolNames) => this.requireHostActions("setActiveTools")(toolNames),
 		};
-		for (const extension of extensions) {
-			await extension(api);
+		const assertLive = (): void => {
+			if (!live.active) throw new TauError("stale_extension", STALE_EXTENSION_MESSAGE);
+			this.assertActive();
+		};
+		const guarded = {} as Record<string, unknown>;
+		for (const [key, value] of Object.entries(api)) {
+			guarded[key] =
+				typeof value === "function"
+					? (...args: unknown[]) => {
+							assertLive();
+							return (value as (...a: unknown[]) => unknown)(...args);
+						}
+					: value;
 		}
+		return guarded as unknown as ExtensionAPI;
 	}
 
 	/**
@@ -1063,7 +1316,7 @@ export class ExtensionRegistry {
 		event: E,
 		ctx: ExtensionContext,
 	): Promise<void> {
-		for (const handler of handlers) {
+		for (const handler of [...handlers]) {
 			if (!this.errorSink) {
 				await handler(event, ctx);
 				continue;
@@ -1100,7 +1353,7 @@ export class ExtensionRegistry {
 	): Promise<{ handled: boolean; text: string; images?: ImageContent[] }> {
 		let current = text;
 		let images = options.images;
-		for (const handler of this.handlers.input) {
+		for (const handler of [...this.handlers.input]) {
 			const result = await handler(
 				{
 					type: "input",
@@ -1124,7 +1377,7 @@ export class ExtensionRegistry {
 		event: ToolCallEvent,
 		ctx: ExtensionContext,
 	): Promise<{ blocked: boolean; reason?: string; terminate?: boolean }> {
-		for (const handler of this.handlers.tool_call) {
+		for (const handler of [...this.handlers.tool_call]) {
 			const result = await handler(event, ctx);
 			if (result?.block) return { blocked: true, reason: result.reason, terminate: result.terminate === true };
 		}
@@ -1136,7 +1389,7 @@ export class ExtensionRegistry {
 		event: ToolResultEvent,
 		ctx: ExtensionContext,
 	): Promise<Pick<ToolResultEvent, "content" | "details" | "isError" | "usage">> {
-		for (const handler of this.handlers.tool_result) {
+		for (const handler of [...this.handlers.tool_result]) {
 			const result = await handler(event, ctx);
 			if (!result) continue;
 			if (result.content !== undefined) event.content = result.content;
@@ -1153,9 +1406,23 @@ export class ExtensionRegistry {
 		ctx: ExtensionContext,
 	): Promise<NonNullable<UserBashEventResult> & { command: string; recordInContext: boolean }> {
 		const current: UserBashEvent = { type: "user_bash", ...event };
-		for (const handler of this.handlers.user_bash) {
-			const result = await handler(current, ctx);
-			if (!result) continue;
+		const cancelled = (reason: string) => ({
+			cancel: true,
+			reason,
+			command: current.command,
+			recordInContext: current.recordInContext,
+		});
+		for (const handler of [...this.handlers.user_bash]) {
+			// Fail closed (pi 0.86.0): a throwing handler or a malformed result cancels the
+			// command instead of letting it run unchecked.
+			let result: unknown;
+			try {
+				result = await handler(current, ctx);
+			} catch (error) {
+				return cancelled(`user_bash handler failed: ${toError(error).message}`);
+			}
+			if (result === undefined || result === null) continue;
+			if (!isValidUserBashResult(result)) return cancelled("user_bash handler returned an invalid result");
 			if (result.cancel)
 				return {
 					cancel: true,
@@ -1181,7 +1448,7 @@ export class ExtensionRegistry {
 			requestedModel: event.requestedModel,
 			selectedModel: event.requestedModel,
 		};
-		for (const handler of this.handlers.model_select) {
+		for (const handler of [...this.handlers.model_select]) {
 			const result = await handler(current, ctx);
 			if (!result) continue;
 			if (result.cancel) return { cancel: true, reason: result.reason, model: current.selectedModel };
@@ -1194,7 +1461,7 @@ export class ExtensionRegistry {
 		event: { previousModel: string; requestedModel: string; selectedModel: string },
 		ctx: ExtensionContext,
 	): Promise<void> {
-		for (const handler of this.handlers.model_select) {
+		for (const handler of [...this.handlers.model_select]) {
 			await handler(
 				{
 					type: "model_select",
@@ -1220,7 +1487,7 @@ export class ExtensionRegistry {
 			requestedLevel: event.requestedLevel,
 			selectedLevel: event.requestedLevel,
 		};
-		for (const handler of this.handlers.thinking_level_select) {
+		for (const handler of [...this.handlers.thinking_level_select]) {
 			const result = await handler(current, ctx);
 			if (!result) continue;
 			if (result.cancel) return { cancel: true, reason: result.reason, level: current.selectedLevel };
@@ -1233,7 +1500,7 @@ export class ExtensionRegistry {
 		event: { previousLevel?: ThinkingLevel; requestedLevel?: ThinkingLevel; selectedLevel?: ThinkingLevel },
 		ctx: ExtensionContext,
 	): Promise<void> {
-		for (const handler of this.handlers.thinking_level_select) {
+		for (const handler of [...this.handlers.thinking_level_select]) {
 			await handler(
 				{
 					type: "thinking_level_select",
@@ -1257,7 +1524,7 @@ export class ExtensionRegistry {
 	 */
 	async runContext(messages: readonly AgentMessage[], ctx: ExtensionContext): Promise<AgentMessage[]> {
 		let current = JSON.parse(JSON.stringify(messages)) as AgentMessage[];
-		for (const handler of this.handlers.context) {
+		for (const handler of [...this.handlers.context]) {
 			const visible = current.filter((message) => message.role !== "system");
 			const snapshot = visible.slice();
 			const result = await handler({ type: "context", messages: visible }, ctx);
@@ -1266,7 +1533,7 @@ export class ExtensionRegistry {
 			const head = getCurrentSystemMessage(current);
 			current = head ? [head, ...returned] : returned;
 		}
-		for (const handler of this.handlers.context_with_system) {
+		for (const handler of [...this.handlers.context_with_system]) {
 			const hadLeadingSystemMessage = current[0]?.role === "system";
 			const result = await handler({ type: "context_with_system", messages: current }, ctx);
 			current = result?.messages ?? current;
@@ -1291,7 +1558,7 @@ export class ExtensionRegistry {
 	): Promise<{ systemPrompt: string; messages: CustomMessageInput[] }> {
 		let current = systemPrompt;
 		const messages: CustomMessageInput[] = [];
-		for (const handler of this.handlers.before_agent_start) {
+		for (const handler of [...this.handlers.before_agent_start]) {
 			const result = await handler({ type: "before_agent_start", prompt, systemPrompt: current }, ctx);
 			if (result?.systemPrompt !== undefined) current = result.systemPrompt;
 			if (result?.message) messages.push(result.message);
@@ -1310,7 +1577,7 @@ export class ExtensionRegistry {
 	/** Run message_end handlers. Replacements chain; a replacement changing the role is ignored. */
 	async runMessageEnd(message: AgentMessage, ctx: ExtensionContext): Promise<AgentMessage> {
 		let current = message;
-		for (const handler of this.handlers.message_end) {
+		for (const handler of [...this.handlers.message_end]) {
 			const result = await handler({ type: "message_end", message: current }, ctx);
 			if (result?.message && result.message.role === current.role) current = result.message;
 		}
@@ -1331,7 +1598,7 @@ export class ExtensionRegistry {
 
 	/** Run project_trust handlers. The first decisive answer (yes/no) wins. */
 	async runProjectTrust(cwd: string, ctx: ExtensionContext): Promise<NonNullable<ProjectTrustEventResult>> {
-		for (const handler of this.handlers.project_trust) {
+		for (const handler of [...this.handlers.project_trust]) {
 			const result = await handler({ type: "project_trust", cwd }, ctx);
 			if (result && result.trusted !== "undecided") return result;
 		}
@@ -1344,7 +1611,7 @@ export class ExtensionRegistry {
 		ctx: ExtensionContext,
 	): Promise<Required<ResourcesDiscoverResult>> {
 		const discovered: Required<ResourcesDiscoverResult> = { skillPaths: [], promptPaths: [], themePaths: [] };
-		for (const handler of this.handlers.resources_discover) {
+		for (const handler of [...this.handlers.resources_discover]) {
 			const result = await handler({ type: "resources_discover", cwd, reason }, ctx);
 			if (!result) continue;
 			if (result.skillPaths) discovered.skillPaths.push(...result.skillPaths);
@@ -1371,7 +1638,7 @@ export class ExtensionRegistry {
 		event: Omit<SessionBeforeCompactEvent, "type">,
 		ctx: ExtensionContext,
 	): Promise<NonNullable<SessionBeforeCompactResult>> {
-		for (const handler of this.handlers.session_before_compact) {
+		for (const handler of [...this.handlers.session_before_compact]) {
 			const result = await handler({ type: "session_before_compact", ...event }, ctx);
 			if (result?.cancel || result?.result) return result;
 		}
@@ -1387,7 +1654,7 @@ export class ExtensionRegistry {
 		event: Omit<SessionBeforeForkEvent, "type">,
 		ctx: ExtensionContext,
 	): Promise<NonNullable<SessionBeforeForkResult>> {
-		for (const handler of this.handlers.session_before_fork) {
+		for (const handler of [...this.handlers.session_before_fork]) {
 			const result = await handler({ type: "session_before_fork", ...event }, ctx);
 			if (result?.cancel) return result;
 		}
@@ -1400,7 +1667,7 @@ export class ExtensionRegistry {
 		ctx: ExtensionContext,
 	): Promise<NonNullable<SessionBeforeTreeResult>> {
 		const merged: NonNullable<SessionBeforeTreeResult> = {};
-		for (const handler of this.handlers.session_before_tree) {
+		for (const handler of [...this.handlers.session_before_tree]) {
 			const result = await handler({ type: "session_before_tree", ...event }, ctx);
 			if (!result) continue;
 			if (result.cancel) return { cancel: true };
@@ -1419,7 +1686,7 @@ export class ExtensionRegistry {
 		event: Omit<SessionBeforeSwitchEvent, "type">,
 		ctx: ExtensionContext,
 	): Promise<{ cancelled: boolean }> {
-		for (const handler of this.handlers.session_before_switch) {
+		for (const handler of [...this.handlers.session_before_switch]) {
 			const result = await handler({ type: "session_before_switch", ...event }, ctx);
 			if (result?.cancel) return { cancelled: true };
 		}
@@ -1464,7 +1731,7 @@ export class ExtensionRegistry {
 	): Promise<{ entries: BoundaryDraft[]; continue: boolean }> {
 		let entries: BoundaryDraft[] = [];
 		let shouldContinue = false;
-		for (const handler of handlers) {
+		for (const handler of [...handlers]) {
 			const current: E = { ...event, entries: [...entries], continue: shouldContinue };
 			let result: BoundaryResult;
 			if (this.errorSink) {

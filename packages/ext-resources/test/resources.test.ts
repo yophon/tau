@@ -163,3 +163,30 @@ test("resources extension exposes loaded resource diagnostics", async () => {
 		});
 	});
 });
+
+test("project skills reach the prompt only from a trusted project (P23c)", async () => {
+	await withTempDir(async (dir) => {
+		const projectTauDir = join(dir, ".tau");
+		await mkdir(join(projectTauDir, "skills", "local"), { recursive: true });
+		await writeFile(join(projectTauDir, "skills", "local", "SKILL.md"), "---\ndescription: Project skill\n---\nLocal");
+		const systemPromptFor = async (trusted: boolean): Promise<string> => {
+			const requests: unknown[] = [];
+			const registry = await ExtensionRegistry.load([createResourcesExtension()]);
+			const agent = new Agent({
+				config: { baseUrl: "https://fake.test/v1", model: "fake" },
+				platform: fakePlatform([makeSseResponse(textTurn("ok"))], requests),
+				extensions: registry,
+				capabilities: { fs: new NodeFileSystem(dir), paths: { cwd: dir, projectTauDir } },
+				isProjectTrusted: () => trusted,
+			});
+			await registry.notifySessionStart("startup", agent.extensionContext());
+			for await (const _event of agent.prompt("hi")) {
+				// drain
+			}
+			const request = requests[0] as { messages: { role: string; content: string | null }[] };
+			return request.messages.find((message) => message.role === "system")?.content ?? "";
+		};
+		assert.ok(!(await systemPromptFor(false)).includes("<name>local</name>"));
+		assert.ok((await systemPromptFor(true)).includes("<name>local</name>"));
+	});
+});

@@ -29,10 +29,12 @@ const schemaless = {
 } as unknown as Tool;
 
 test("schemaless tools are rejected at registerTool and by the Agent constructor (HF-8)", async () => {
-	await assert.rejects(
-		ExtensionRegistry.load([(api) => api.registerTool(schemaless)]),
-		(error: unknown) => error instanceof TauError && error.code === "invalid_tool",
-	);
+	// P23c: a failing setup no longer throws from load(); it is rolled back and reported.
+	const registry = await ExtensionRegistry.load([(api) => api.registerTool(schemaless)]);
+	assert.equal(registry.loadErrors.length, 1);
+	const failure = registry.loadErrors[0].error;
+	assert.ok(failure instanceof TauError && failure.code === "invalid_tool");
+	assert.equal(registry.tools.size, 0);
 	assert.throws(
 		() => new Agent({ config, platform: fakePlatform([]), tools: [schemaless] }),
 		(error: unknown) => error instanceof TauError && error.code === "invalid_tool",

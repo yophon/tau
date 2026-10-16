@@ -10,7 +10,7 @@
 
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
-| `project_trust` | 0.80 | ✅ P2 | 事件 + CLI 信任门 + trust.json。信任门扩到 settings、skills、prompts、mcp.json 📍P23 |
+| `project_trust` | 0.80 | ✅ P2 | 事件 + CLI 信任门 + trust.json。P23c 起信任门覆盖 .tau/.pi 下的 extensions、settings.json、skills、prompts，digest 覆盖全部；未信任时宿主不给项目路径。tau 没有文件式 MCP 配置（服务器在扩展代码里声明，随扩展过门）。父目录继承、defaultProjectTrust、--approve 未做（保持窄） |
 | `resources_discover` | 0.80 | ✅ P7/P8 | startup/reload；ext-resources 重建 prompt commands |
 | `session_start` | 0.80 | ✅ P3/P8 | reason：startup/resume/reload |
 | `session_info_changed` | 0.80 | ✅ P3 | |
@@ -49,34 +49,34 @@
 | `thinking_level_select` | 0.80 | ✅ P8 | |
 | `tool_call` | 0.80 | ✅ P2 | block/改参；`terminate` 随 block 生效（P23b），全批 finalized 结果都 terminate 才不再请求；策略/审批拒绝不产生 terminate（D20）。工具按请求快照分派，快照外调用返回 `Unknown tool` |
 | `tool_result` | 0.80 | ✅ P2 | P23b 起照抄 pi 形状：事件带 `content`/`details`/`usage`，结果按字段覆盖；`structuredContent` 📍P24。工具结果自带的 terminate 穿过处理器链保留 |
-| `user_bash` | 0.80 | ✅ P8 | TUI `!`/`!!`；fail-closed 📍P23 |
+| `user_bash` | 0.80 | ✅ P8 | TUI `!`/`!!`；事件补 `cwd`、失败即关闭（P23c，pi 0.86.0）。⚠ 偏离：tau 形状与改写链，见 D28 |
 | `input` | 0.80 | ✅ P2 | 三态拦截；事件带 `images`/`source`/`streamingBehavior`，transform 可带 images（P23b）。轮中 `steer()`/`followUp()` 与运行中的 `sendUserMessage` 也经过它（pi 0.86.0），返回 `QueuedInputDisposition`（pi 0.99.0）。⚠ 偏离：InputSource 无 `rpc`（tau 无 RPC 模式） |
 
 ## ExtensionAPI
 
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
-| `registerTool` | 0.80 | ✅ P2 | 无 `parameters` schema 即抛 `invalid_tool`（P21-HF-8）。同名冲突先注册者胜 📍P23 |
-| `registerCommand` | 0.80 | ✅ P2 | 重名加后缀 📍P23 |
+| `registerTool` | 0.80 | ✅ P2 | 无对象 `parameters` schema 即判该扩展加载失败（P21-HF-8）。同名先注册者胜，后来者记 warning（P23c） |
+| `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；重名时每个都加 `:N`（P23c，pi） |
 | `registerShortcut` | 0.80 | ✅ P8 | TUI 空闲快捷键，`/help` 显示 |
-| `registerFlag` | 0.80 | ✅ P2 | 默认值类型校验 📍P23 |
+| `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
 | `getFlag` | 0.80 | ✅ P2 | |
 | `registerMessageRenderer` | 0.80 | ✅ P8 | 按 role/customType 匹配 |
 | `registerMarkdownTransformer` | 1.2 | 📍Backlog | 纯展示变换，等 pi-tui 升级（D23 解耦） |
-| `registerEntryRenderer` | 1.2 | ✅ P8 | tau 早于 pi 自有；形状对齐与偏离注释 📍P23 |
+| `registerEntryRenderer` | 1.2 | ✅ P8 | ⚠ 同名异形：tau 早于 pi 自有（P8 形状，返回 string/`{text,format}`/组件，不接 Theme），代码注明偏离（D9/D10） |
 | `registerToolRenderer` | 1.2 | ✅ P8 | 同上 |
 | `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 `triggerTurn:false` 暂存到当前 turn_end 之后提交、不触发请求（P23b，pi 0.84.4）；压缩/导航占槽期间暂存到其结束后（P23a） |
 | `sendUserMessage` | 0.80 | ✅ P11 | 流中 steer/followUp，空闲经宿主 submitPrompt；启动窗口与宿主运行中抛 `busy`（P21-HF-11） |
 | `appendEntry` | 0.80 | ✅ P3 | |
 | `setSessionName` | 0.80 | ✅ P3 | |
-| `getSessionName` | 0.80 | 📍P23 | 快照内漏登（P21 补行），按 D7 直接补 |
+| `getSessionName` | 0.80 | ✅ P23c | |
 | `setLabel` | 0.80 | ✅ P22 | 写 `label` 条目，undefined 清除；目标不存在时同步抛 `not_found`（pi 同样拒绝）。标签不进上下文 |
 | `exec` | 0.80 | ⚠D4 | 经 `ctx.capabilities.shell` 能力门面执行（裸引擎可能没有 shell，能力缺失即不可用，D10/D15） |
 | `getActiveTools` | 0.80 | ✅ P23b | 内核 active 集；新注册工具缺省 active（pi direct 档） |
 | `getAllTools` | 0.80 | ✅ P23b | ToolInfo 子集 `{name, description, parameters, source}`；exposure/namespace/annotations 📍P24 |
 | `getSettings` | 1.2 | ❌D9 | 返回 pi 产品层 Settings。tau 没有 settings 层：配置是宿主装配的 AgentOptions、flag 与工厂 options（D8） |
 | `setActiveTools` | 0.80 | ✅ P23b | 未知名忽略、下一次请求生效；只能激活已注册工具，权限档没注册的工具激活不到（D20） |
-| `getCommands` | 0.80 | 📍P23 | 快照内漏登 |
+| `getCommands` | 0.80 | ✅ P23c | `{ name, description, source }`，name 为调用名（含 `:N`） |
 | `setModel` | 0.80 | 📍P23 | 快照内漏登。宿主现经 model_select 处理切换 |
 | `getThinkingLevel` | 0.80 | 📍P23 | 快照内漏登。thinkingLevel 进内核缝 |
 | `setThinkingLevel` | 0.80 | 📍P23 | 同上 |
@@ -96,14 +96,14 @@
 | `ui` | 0.80 | ✅ P2 | 可选能力，headless 缺失（D10） |
 | `mode` | 0.80 | ❌D10 | 宿主模式不进内核；扩展按 `ui` 能力是否存在降级 |
 | `hasUI` | 0.80 | ⚠D10 | 即 `ctx.ui !== undefined` |
-| `cwd` | 0.80 | ⚠D4 | `ctx.capabilities.paths.cwd`，路径随能力门面提供 |
+| `cwd` | 0.80 | ✅ P23c | 取 `capabilities.paths.cwd`（无则 `fs.cwd`），与能力门面同源 |
 | `sessionManager` | 0.80 | ⚠D7 P22 | 只读同步门面，反映 Agent 最近一次写入后的日志：getCwd/getSessionId/getSessionFile/getSessionName/getLeafId/getLeafEntry/getEntry/getLabel/getBranch/getEntries/buildContextEntries/buildSessionProjection。未镜像 getSessionDir/getHeader/getTree（宿主关注点，条目本身带树结构）；tau 的 store 是异步接口，门面读 Agent 的缓存 |
 | `modelRegistry` | 0.80 | ❌D21 | 没有模型库与凭据解析（D2/D3/D21）；同等需求用 `ctx.runSubagent(prompt, { tools: [], maxTurnsPerPrompt: 1 })` |
 | `model` | 0.80 | 📍P23 | 随 setModel |
 | `scopedModels` | 1.2 | ❌D21 | 对模型目录的解析结果，tau 没有模型目录 |
 | `thinkingLevel` | 1.2 | 📍P23 | 随 getThinkingLevel |
 | `isIdle` | 0.80 | ✅ P23a | 运行槽为空（无 run、压缩、导航） |
-| `isProjectTrusted` | 0.80 | 📍P23 | 快照内漏登。随信任门扩展 |
+| `isProjectTrusted` | 0.80 | ✅ P23c | 宿主经 `AgentOptions.isProjectTrusted` 注入，只有显式 true 算信任；子 agent 继承 |
 | `signal` | 0.80 | ✅ P23a | 槽内操作的中止信号，空闲为 undefined |
 | `abort` | 0.80 | ✅ P11 | 中止槽内任何操作：run 与重试退避、宿主发起的压缩、分支摘要（P23a，pi AgentSession.abort） |
 | `hasPendingMessages` | 0.80 | ✅ P23a | steering 或 follow-up 队列非空 |
@@ -124,7 +124,7 @@
 | `ctx.discoverResources()` | 触发 resources_discover（P7/P8） |
 | `registerWidget` / `registerHeaderItem` / `registerFooterItem` / `registerDiagnostic` | TUI 周边组件、状态段、诊断（P8） |
 | `auto_retry_start` / `auto_retry_end` 事件 | pi 是 AgentSessionEvent，tau 提为扩展事件（P11） |
-| `ExtensionRegistry.setErrorSink()` | 宿主侧：通知类处理器的错误隔离（P21-HF-12）；加载失败回滚 📍P23 |
+| `ExtensionRegistry.setErrorSink()` | 宿主侧：通知类处理器的错误隔离（P21-HF-12）；加载失败回滚、`loadErrors`/`warnings`、`invalidate()` 见 P23c |
 
 ## 扩展面之外的生命周期能力
 

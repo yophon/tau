@@ -36,6 +36,8 @@ pi 是成熟产品，API 形状经过实战打磨。新模块动手前**先读 p
 
 扩展是 `(api: ExtensionAPI) => void` 纯函数。动态发现/加载（`loadExtensionsFromDir` 的 `import()`）是 **Node 宿主便利**，位于 host-node；小程序/RN（禁 eval/动态加载）静态 import 同样的函数传入。这使扩展生态天然可移植，也是与 pi（jiti 运行时加载 .ts，Node-only）的关键偏离点。
 
+**P23c 补记**：扩展也可以写成 `{ name, factory }`（照抄 pi InlineExtension 的 `name`，仍是静态值），名字用于加载错误与冲突告警，host-node 用文件路径。`ExtensionRegistry.load()/add()` 逐个暂存每个扩展的注册，setup 抛错就整体回滚该扩展、记入 `loadErrors` 并继续加载其余扩展（P21 裁定 3，照抄 pi）；不再从 `load()` 抛出。工具与 flag 先注册者胜，命令重名加 `:N`。被替换的 registry 经 `invalidate()` 作废，旧 api/ctx 调用即抛 `stale_extension`。
+
 ## D9：不做 pi 插件生态的完全兼容
 
 pi 扩展 API 类型 1638 行，暴露 TUI/typebox/ModelRegistry/session manager 等产品层内部；pi 0.x 锁步版本无稳定性承诺。策略：**文件格式兼容**（skills/prompt templates，Phase 4）+ **概念级镜像**（D7，已使移植成为机械劳动）+ 将来可选 `@tau/pi-compat` 垫片（Node 宿主，覆盖高频 API 子集）。深度依赖 pi TUI 组件/主题/自定义 provider 的扩展永不兼容。
@@ -154,3 +156,7 @@ P16 的「显式、不嗅探」针对协议选择（OpenAI 兼容还是 Anthropi
 ## D27：before_agent_start 改写的提示落盘（2026-10-16，P22，用户确认）
 
 有意偏离 pi。pi 把 `before_agent_start` 返回的 systemPrompt 当「强制提示」：不写会话，只在请求时把转录里的 system 消息折叠成以它为头的投影。P22 的核心不变式是「模型看到的就是日志里的」，ext-resources 的 skills 正是经这个钩子注入的，按 pi 的做法它们永远不会出现在日志里，不变式检查只能对它网开一面。tau 把改写后的有效提示作为具名 section `prompt` 的 patch 写进转录，只在内容变化时追加。代价：每轮都产出不同提示的扩展会让日志多出 system 消息。pi 写的会话不含这类 patch，读取不受影响（单向兼容，D13 补记 ②）。
+
+## D28：user_bash 保持 tau 形状（2026-10-16，P23，用户确认）
+
+tau 的 `user_bash` 是 P8 自己设计的：事件 `{ command, recordInContext, cwd }`，结果 `{ cancel?, reason?, command?, recordInContext? }` 按处理器顺序链式改写。pi 的事件是 `{ command, excludeFromContext, cwd }`，结果 `{ operations? } | { result? }`，遇到第一个已定义结果就停止。P23 只向 pi 靠拢两处：补上 `cwd`；照抄 pi 0.86.0 的失败即关闭（处理器抛错或结果结构非法就取消命令）。其余保持：`recordInContext` 不改名（0.2.0 已发布，语义与 `excludeFromContext` 相反，改名纯属破坏）；cancel/改写链是 tau 原创面；pi 的 `operations`（Buffer、进程环境）是运行时耦合，不镜像；`{ result }`（扩展自己执行并回传结果）记 Backlog。

@@ -14,6 +14,10 @@ export type TauErrorCode =
 	| "compaction_failed"
 	| "invalid_response"
 	| "invalid_tool"
+	/** An extension registered something malformed (a command without handler, a flag default of the wrong type). */
+	| "invalid_extension"
+	/** A captured extension api/ctx was used after its registry was replaced or its setup failed. */
+	| "stale_extension"
 	/** Kernel invariant broken (e.g. the request diverged from the session log, P22): a bug, not a runtime condition. */
 	| "invalid_state";
 
