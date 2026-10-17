@@ -104,7 +104,7 @@ async function report(text) {
 try {
 	const fs = new OpfsFileSystem({ cwd: "/tau-browser-runtime-smoke" });
 	const tools = createCodingTools({ fs });
-	if (tools.map((tool) => tool.name).join(",") !== "read,write,edit") {
+	if (tools.map((tool) => tool.name).join(",") !== "read,grep,find,ls,write,edit") {
 		throw new Error("unexpected tools: " + tools.map((tool) => tool.name).join(","));
 	}
 	const agent = new Agent({
@@ -121,6 +121,12 @@ try {
 	if (file !== "opfs browser runtime") throw new Error("file mismatch: " + file);
 	if (toolResults[1] !== "1\\topfs browser runtime") throw new Error("read result mismatch: " + toolResults[1]);
 	if (messageText(agent.messages.at(-1)) !== "runtime done") throw new Error("assistant mismatch");
+	// P26a: the pure-ES search tools on a real OPFS.
+	const byName = new Map(tools.map((tool) => [tool.name, tool]));
+	const grepText = (await byName.get("grep").execute({ pattern: "opfs" })).content[0].text;
+	if (grepText !== "runtime.txt:1: opfs browser runtime") throw new Error("grep mismatch: " + grepText);
+	const findText = (await byName.get("find").execute({ pattern: "*.txt" })).content[0].text;
+	if (findText !== "runtime.txt") throw new Error("find mismatch: " + findText);
 	await report("PASS tau browser runtime OPFS");
 } catch (error) {
 	await report("FAIL " + (error instanceof Error ? error.stack : String(error)));
