@@ -3,5 +3,5 @@
 	"compilerOptions": {
 		"types": ["node"]
 	},
-	"include": ["src", "test", "../../test-fixtures"]
+	"include": ["src", "test", "../../test-fixtures", "../ext-mcp/src/cross-spawn.d.ts"]
 }

@@ -249,6 +249,17 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   do that). `/export` writes HTML unless the path ends in `.jsonl` (pi).
 
 ### Added
+- CLI (P29): `--mode json` (one run as pi's JSONL event stream; the prompt
+  from `-p` or stdin; exit codes 0/1/130), `--mode rpc` (pi's RPC protocol:
+  prompt with streamingBehavior, steer, follow_up, abort, sessions, models,
+  thinking, compact, bash, export_html, stats, commands, plus
+  `set_permission_mode`; `ctx.ui` and tool approvals as `extension_ui_request`,
+  approvals a select with an `approval` field) and `--mode acp` (Agent Client
+  Protocol v1 for editors such as Zed: a workspace per session cwd, approvals
+  via session/request_permission, reads and writes through the client's fs
+  methods, todo_write as the plan, permission modes as session modes, the
+  client's MCP servers, session/load). See docs/rpc.md. The CLI now depends on
+  `@yophon/tau-ext-mcp`.
 - CLI (P28): `~/.tau/models.json` (a subset of pi's format: providers with
   `baseUrl`, `api` — `openai-completions` or `anthropic-messages` — `apiKey`
   as `$NAME`, `${NAME}`, `!command` or a literal, and `headers`; models with

@@ -195,6 +195,18 @@ npm run demo:weapp                # 生成 examples/weapp/miniprogram/lib/tau.js
 - `examples/flutter/`——手机上的 agent（内核跑在 `flutter_js`）+ 它经局域网驱动的
   零 tau 依赖电脑侧 MCP server（[app](examples/flutter/app/README.md) · [mcp-server](examples/flutter/mcp-server/README.md)）
 
+## 在脚本和编辑器里用 tau
+
+```bash
+tau --mode json -p "审查这次改动" | jq -c 'select(.type=="tool_execution_end")'   # JSONL 事件流
+tau --mode rpc                      # stdin 收 JSONL 命令（pi 的 RPC 协议），stdout 出事件
+tau --mode acp                      # Agent Client Protocol：在 Zed 等编辑器里用 tau
+```
+
+Zed 里配置 `{ "agent_servers": { "tau": { "command": "tau", "args": ["--mode", "acp"] } } }`。
+审批变成编辑器的权限对话框，读写走编辑器缓冲区，todo_write 显示成计划，权限档位就是
+会话模式。协议细节与和 pi 的差异见 [docs/rpc.md](docs/rpc.md)。
+
 ## 嵌入内核
 
 ```ts
@@ -258,6 +270,7 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
 - [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D33）
+- [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

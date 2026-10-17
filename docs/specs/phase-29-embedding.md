@@ -1,6 +1,6 @@
 # Phase 29：嵌入接口（JSON、RPC、ACP）规格书
 
-> 状态：已确认（2026-10-17，开放问题全部按建议裁定）
+> 状态：已完成（2026-10-17；开放问题全部按建议裁定）。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 29（依赖 P28：RPC 的 `get_available_models`/`set_model` 用到模型表）
 
 ## 目标
@@ -109,11 +109,11 @@ Zed 配置示例：
 
 ## 验收清单
 
-- [ ] JSON 模式：会话头 + 事件序列与 pi 文档示例同形；工具调用全过程；错误与中止的退出码
-- [ ] RPC：每个支持的命令有测试；运行中 `prompt` 不带 `streamingBehavior` 报错；扩展 UI 与审批往返；关闭 stdin 有序退出
-- [ ] ACP：假客户端跑通 initialize → session/new → prompt（含工具、审批、diff、plan）→ cancel → session/load 回放；client fs 读到「未保存内容」
-- [ ] 真实验收：DeepSeek 下用 JSON 模式跑一次带工具的任务并用 jq 解析；用一个小脚本经 RPC 完成一轮对话与审批；如本机装有 Zed，在 Zed 里接上 tau 完成一次编辑（没有 Zed 时以假客户端为准，并在实施记录里写明）
-- [ ] DoD 通用项（见 development.md）
+- [x] JSON 模式：会话头 + 事件序列与 pi 文档示例同形；工具调用全过程；错误与中止的退出码
+- [x] RPC：每个支持的命令有测试；运行中 `prompt` 不带 `streamingBehavior` 报错；扩展 UI 与审批往返；关闭 stdin 有序退出
+- [x] ACP：假客户端跑通 initialize → session/new → prompt（含工具、审批、diff、plan）→ cancel → session/load 回放；client fs 读到「未保存内容」
+- [x] 真实验收（本机没有 Zed，以脚本模拟的编辑器客户端为准）：DeepSeek 下用 JSON 模式跑一次带工具的任务并用 jq 解析；用一个小脚本经 RPC 完成一轮对话与审批；如本机装有 Zed，在 Zed 里接上 tau 完成一次编辑（没有 Zed 时以假客户端为准，并在实施记录里写明）
+- [x] DoD 通用项（见 development.md）
 
 ## 风险与开放问题
 
@@ -121,3 +121,23 @@ Zed 配置示例：
 2. **RPC 审批借用 `select` 还是新开记录类型。** 借用 `select` 能让 pi 的客户端直接用；新开 `approval_request` 语义更干净但 pi 客户端不认识。**建议**：借用 `select`，附带结构化的 `approval` 字段。
 3. **ACP 里要不要暴露 bypass 档位。** 编辑器里一键跳过所有审批风险较大。**建议**：不暴露，需要时用命令行参数启动。
 4. **三个模式放 CLI 包还是拆新包。** 它们都依赖 Node 的 stdio 与 CLI 的会话、配置装配。**建议**：放 CLI 包，不拆。
+
+## 实施记录
+
+全量 584 个测试，581 通过、3 跳过（Windows 上本来就跳过的三项）；check、纯度门禁、pack smoke（15 个包，安装后的 CLI 能启动）通过；smoke-tui 十二个场景在 `main.ts` 重构后仍全部通过。模式测试（`packages/cli/test/modes.test.ts`）起真实 CLI 子进程，对 mock 服务跑 JSON、RPC、ACP 全流程，并断言 stdout 只有 JSON 记录。
+
+**真实验收**（DeepSeek）：
+- JSON：带工具的任务（bash 数行数）退出码 0，会话头带 id，最后一条是 `agent_settled`，答案「3」。本机没有 jq，用 node 解析。
+- RPC：脚本客户端发 prompt，收到审批 select（`bash wants to run: echo hello-rpc (medium risk)`）并回「Allow once」，答对；`set_model` 切到 DeepSeek 的 Anthropic 协议端点后追问，模型记得上一轮输出；`get_session_stats` 数字正确。
+- ACP：本机没有 Zed，用脚本模拟编辑器（声明 fs 读写能力）：读文件时收到 `fs/read_text_file`，回一份「未保存」内容，模型据此作答；让它把 Friday 改成 Monday 时先收到 `session/request_permission`（kind edit），允许后经 `fs/write_text_file` 把改好的内容写给客户端，最终 `stopReason: end_turn`。
+
+与规格书不同、或规格书没写到的地方：
+
+- **`main.ts` 收出 `openWorkspace`**：按工作目录装配的部分（扩展与项目信任、FileSystem/Shell、项目上下文、会话库、buildAgent）原本散在 `main()` 里，绑死进程 cwd。ACP 每个会话一个 cwd，于是收成一个函数，TUI、REPL、`-p`、JSON、RPC 走同一条路径。
+- **这三种模式下 `console.log` 改道 stderr**：扩展加载等处会往 stdout 打印提示，协议流必须干净。
+- **`--no-session` 的 JSON 会话头 id 是一次性的**：内存会话在第一条条目写入前没有可读的 id。
+- **事件顺序与 pi 的一处差异**：用户消息的 `message_start/end` 排在 `agent_start` 之前（tau 的扩展事件顺序），写进 docs/rpc.md。
+- **工具调用在审批前就宣告**：ACP 的 `tool_call` 先以 `pending` 出现，再有权限请求，结果到达时变 `completed`/`failed`。
+- **ACP 模块按需加载**：它依赖 MCP 客户端（CLI 新增依赖 `@yophon/tau-ext-mcp`），普通启动不加载。
+- **`/memory` 等内置扩展的全局状态按最后一个工作区**：ACP 同时开多个不同目录的会话时，长期记忆文件跟随最后打开的那个。少见，先记下。
+- 协议说明写在 `docs/rpc.md`。

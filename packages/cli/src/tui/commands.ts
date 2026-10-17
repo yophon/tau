@@ -429,7 +429,7 @@ const BUILTINS: BuiltinCommand[] = [
 					await copyFile(metadata.filePath, target);
 				} else {
 					const entries = await store.getEntries();
-					await writeFile(target, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+					await writeFile(target, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
 				}
 			} else {
 				const html = sessionHtml(tui.agent.messages, {

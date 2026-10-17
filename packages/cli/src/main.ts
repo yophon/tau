@@ -31,12 +31,14 @@ import {
 } from "@yophon/tau-host-node";
 import {
 	Agent,
+	type AgentMessage,
 	type ApprovalRequest,
 	type ChatTransport,
 	createCodingTools,
 	createOpenAICompatTransport,
 	defaultPlatform,
 	ExtensionRegistry,
+	type FileSystem,
 	JsonlSessionRepo,
 	loadProjectContextFiles,
 	type ModelPricing,
@@ -74,8 +76,17 @@ import {
 	resolveHeaders,
 	type ValueResolver,
 } from "./models.ts";
+import { HeadlessSession } from "./modes/headless.ts";
+import { runJsonMode } from "./modes/json.ts";
+import { stdoutWriter } from "./modes/jsonl.ts";
+import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
 import { readSettings, writeSettings } from "./settings.ts";
 import { conversationLength } from "./tui/controller.ts";
+
+/** The CLI package version (src/ and dist/ both sit one level below package.json). */
+const CLI_VERSION = (
+	JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
+).version;
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -102,6 +113,9 @@ Options:
       --models <list>    Comma-separated TUI model selector candidates (env: TAU_MODELS)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
+      --mode <mode>      json: -p (or stdin) as a JSONL event stream on stdout;
+                         rpc: JSONL commands on stdin (pi's RPC protocol);
+                         acp: Agent Client Protocol over stdio (editors)
       --tui              Use the TUI (the default on a terminal)
       --repl             Use the line-based REPL instead of the TUI
   -w, --context-window <n>  Model context window in tokens; enables auto-compaction
@@ -171,6 +185,8 @@ interface CliOptions {
 	noSession: boolean;
 	noContextFiles?: boolean;
 	listModels?: boolean;
+	/** P29: json | rpc | acp. */
+	mode?: "json" | "rpc" | "acp";
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading. */
 	extras: string[];
@@ -298,6 +314,15 @@ function parseArgs(argv: string[]): CliOptions {
 			case "--list-models":
 				options.listModels = true;
 				break;
+			case "--mode": {
+				const value = next();
+				if (value !== "json" && value !== "rpc" && value !== "acp") {
+					console.error("--mode must be one of: json, rpc, acp");
+					process.exit(1);
+				}
+				options.mode = value;
+				break;
+			}
 			case "-h":
 			case "--help":
 				options.help = true;
@@ -385,6 +410,13 @@ function parsePricing(spec: string): ModelPricing | Error {
 		return new Error('Pricing requires both "in" and "out" (USD per million tokens)');
 	}
 	return { inputPerMTok: values.inputPerMTok, outputPerMTok: values.outputPerMTok, ...values };
+}
+
+/** All of stdin as text (--mode json takes its prompt there). */
+async function readAllStdin(): Promise<string> {
+	const chunks: Buffer[] = [];
+	for await (const chunk of process.stdin) chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+	return Buffer.concat(chunks).toString("utf8");
 }
 
 /** The last model_change on a session path (pi restores that model on resume). */
@@ -947,6 +979,8 @@ async function runCommand(
 
 async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
+	// The JSON, RPC and ACP modes own stdout: everything else goes to stderr (pi json.md).
+	if (options.mode) console.log = (...args: unknown[]) => console.error(...args);
 	if (options.help) {
 		console.log(USAGE);
 		return;
@@ -1181,31 +1215,26 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 	// On a terminal the TUI is the interactive default (P25); --repl keeps the line-based REPL.
-	const useTui = options.print === undefined && !options.repl && (options.tui || terminal);
-	const readline = useTui ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+	const useTui =
+		options.mode === undefined && options.print === undefined && !options.repl && (options.tui || terminal);
+	// The JSON, RPC and ACP modes read stdin themselves (or not at all).
+	const readline =
+		useTui || options.mode !== undefined
+			? undefined
+			: createInterface({ input: process.stdin, output: process.stdout });
+	const out = stdoutWriter();
+	const rpcBridge = options.mode === "rpc" ? new RpcUiBridge(out) : undefined;
 	// Before anything imports Ink: a shell exporting CI must not leave the TUI blank.
 	if (useTui) await (await import("./tui/ink-env.ts")).loadInk();
 	// Headless stdin (pipes, CI) cannot answer prompts; omit the UI capability
 	// so extensions take their no-UI degradation path instead of hanging.
-	const ui = useTui
-		? (await import("./tui/startup.ts")).createStartupUi()
-		: readline && process.stdin.isTTY
-			? createUi(readline)
-			: undefined;
-	const loaded = await loadExtensionRegistry(cwd, ui);
-	const extensions = loaded.registry;
-	// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
-	let projectTrusted = loaded.projectTrusted;
-	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
-	const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
-		// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
-		projectContext = await loadProjectContext();
-		const next = await loadExtensionRegistry(cwd, reloadUi);
-		projectTrusted = next.projectTrusted;
-		next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
-		return next.registry;
-	};
-
+	const ui = rpcBridge
+		? rpcBridge.ui
+		: useTui
+			? (await import("./tui/startup.ts")).createStartupUi()
+			: readline && process.stdin.isTTY
+				? createUi(readline)
+				: undefined;
 	let transport: ChatTransport | undefined = anthropicConfig
 		? createAnthropicTransport(anthropicConfig, platform)
 		: undefined;
@@ -1264,12 +1293,194 @@ async function main(): Promise<void> {
 			},
 		};
 	};
-	const sessionRepo = new JsonlSessionRepo(
-		new NodeFileSystem("/"),
-		platform,
-		join(userHome(), ".tau", "sessions", sessionDirSlug(cwd)),
-		cwd,
-	);
+	// Approval plumbing (P15): the kernel decides *when* to ask, the host owns
+	// *how*. REPL and TUI install their prompt into approvalPromptRef below;
+	// with no UI at all onApproval stays undefined so the kernel's headless
+	// degradation (ask → deny) applies.
+	const approvalPromptRef: { current?: (request: ApprovalRequest) => Promise<ApprovalChoice> } = {};
+	const onApproval =
+		ui === undefined
+			? undefined
+			: async (request: ApprovalRequest): Promise<boolean> => {
+					if (isAlwaysAllowed(request)) return true;
+					const choice = approvalPromptRef.current
+						? await approvalPromptRef.current(request)
+						: (await ui.confirm(
+									`Allow ${request.toolName}? (${request.risk} risk${nestedNote(request)})`,
+									request.reason,
+								))
+							? "once"
+							: "deny";
+					if (choice === "always") recordAlwaysAllow(request);
+					return choice !== "deny";
+				};
+	// RPC: approvals are a select on the client (P29).
+	if (rpcBridge) approvalPromptRef.current = (request) => rpcBridge.approve(request);
+	if (readline && ui) {
+		// Readline prompt shared by the REPL and one-shot TTY runs; the TUI
+		// replaces it with a selector via setApprovalPrompt.
+		approvalPromptRef.current = async (request) => {
+			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk${nestedNote(request)})`)}`);
+			if (request.reason) console.log(dim(request.reason));
+			console.log(dim(firstLine(JSON.stringify(request.args), 200)));
+			process.stdout.write("\nAllow? [y]es once / [a]lways / [N]o ");
+			return await new Promise<ApprovalChoice>((resolve) => {
+				// Tool preflight is serial, but resolving a stale gate defensively keeps
+				// an aborted/closed turn from blocking the next one forever.
+				cancelPendingApproval();
+				pendingApproval = { resolve };
+			});
+		};
+	}
+	/**
+	 * Everything rooted at one working directory (P29): the extensions and the
+	 * project trust decision, the filesystem and shell, the project context, the
+	 * session repo, and building agents. The CLI opens one for process.cwd();
+	 * ACP opens one per session/new (its cwd, its file access through the client).
+	 */
+	const openWorkspace = async (spec: {
+		cwd: string;
+		ui: UiCapability | undefined;
+		onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
+		fs?: FileSystem;
+	}) => {
+		const cwd = spec.cwd;
+		const loaded = await loadExtensionRegistry(cwd, spec.ui);
+		const extensions = loaded.registry;
+		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
+		let projectTrusted = loaded.projectTrusted;
+		extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
+		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
+			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
+			projectContext = await loadProjectContext();
+			const next = await loadExtensionRegistry(cwd, reloadUi);
+			projectTrusted = next.projectTrusted;
+			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
+			return next.registry;
+		};
+
+		const fs: FileSystem = spec.fs ?? new NodeFileSystem(cwd);
+		const shell = new NodeShell(cwd);
+		// Project context files (P21a, pi loadProjectContextFiles): ~/.tau first, then
+		// every directory from the root down to cwd. Appended to any system prompt.
+		const loadProjectContext = async (): Promise<string> =>
+			options.noContextFiles
+				? ""
+				: renderProjectContext(await loadProjectContextFiles(fs, { cwd, globalDir: join(userHome(), ".tau") }));
+		let projectContext = await loadProjectContext();
+		const sessionRepo = new JsonlSessionRepo(
+			new NodeFileSystem("/"),
+			platform,
+			join(userHome(), ".tau", "sessions", sessionDirSlug(cwd)),
+			cwd,
+		);
+		const buildAgent = (
+			messages: AgentMessage[] | undefined,
+			session: SessionRecorder | undefined,
+			agentExtensions = extensions,
+		): Agent => {
+			const codingTools = createCodingTools({ fs, shell }, { mode: permissionMode });
+			const built = new Agent({
+				config,
+				transport,
+				platform,
+				systemPrompt: [
+					options.system ??
+						defaultSystemPrompt(
+							cwd,
+							codingTools.map((tool) => tool.name),
+						),
+					projectContext,
+				]
+					.filter((part) => part !== "")
+					.join("\n\n"),
+				tools: codingTools,
+				extensions: agentExtensions,
+				ui: spec.ui,
+				capabilities: {
+					fs,
+					shell,
+					paths: {
+						cwd,
+						userTauDir: join(userHome(), ".tau"),
+						// Project paths only for a trusted project (defense in depth; extensions also ask ctx).
+						...(projectTrusted ? { projectTauDir: join(cwd, ".tau"), projectPiDir: join(cwd, ".pi") } : {}),
+					},
+				},
+				isProjectTrusted: () => projectTrusted,
+				initialMessages: messages,
+				session,
+				retry,
+				pricing,
+				thinkingLevel,
+				permissionMode,
+				toolExecution,
+				onApproval: spec.onApproval,
+			});
+			// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
+			const active = selectActiveTools(
+				built.getAllTools(),
+				built.getActiveTools(),
+				options.tools,
+				options.noTools === true,
+			);
+			if (active) built.setActiveTools(active);
+			attachPromptAgent(built, options.system === undefined);
+			return built;
+		};
+		return {
+			cwd,
+			extensions,
+			fs,
+			shell,
+			sessionRepo,
+			buildAgent,
+			reloadExtensions,
+			isProjectTrusted: () => projectTrusted,
+		};
+	};
+	type Workspace = Awaited<ReturnType<typeof openWorkspace>>;
+	const modelDisplay = (): string =>
+		activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model;
+	const tableEntries = configuredModels.map((entry) => ({
+		provider: entry.provider,
+		id: entry.id,
+		...(entry.name ? { name: entry.name } : {}),
+		...(entry.contextWindow ? { contextWindow: entry.contextWindow } : {}),
+		...(entry.maxTokens ? { maxTokens: entry.maxTokens } : {}),
+		reasoning: entry.reasoning,
+	}));
+	const hostSetters = {
+		setHostModel: (nextModel: string) => {
+			config.model = nextModel;
+			if (anthropicConfig) anthropicConfig.model = nextModel;
+		},
+		setHostThinking: (nextLevel: ThinkingLevel | undefined) => {
+			thinkingLevel = nextLevel;
+		},
+		setHostPermissionMode: (nextMode: PermissionMode) => {
+			permissionMode = nextMode;
+		},
+	};
+	if (options.mode === "acp") {
+		// One workspace per session/new, at the client's cwd (P29). Loaded on demand: it pulls in the MCP client.
+		const { runAcpMode } = await import("./modes/acp.ts");
+		await runAcpMode({
+			out,
+			host: {
+				openWorkspace,
+				isAlwaysAllowed,
+				recordAlwaysAllow,
+				modelDisplay,
+				modelChoices,
+				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+				version: CLI_VERSION,
+			},
+		});
+		return;
+	}
+	const workspace: Workspace = await openWorkspace({ cwd, ui, onApproval });
+	const { extensions, sessionRepo, shell, buildAgent, reloadExtensions } = workspace;
 	let store: SessionStore | undefined;
 	let sessionReason: "startup" | "resume" = "startup";
 	let initialMessages = undefined as Awaited<ReturnType<typeof restoreSession>>["messages"] | undefined;
@@ -1309,107 +1520,35 @@ async function main(): Promise<void> {
 	}
 	let recorder = store ? await SessionRecorder.open(store) : undefined;
 
-	const fs = new NodeFileSystem(cwd);
-	const shell = new NodeShell(cwd);
-	// Project context files (P21a, pi loadProjectContextFiles): ~/.tau first, then
-	// every directory from the root down to cwd. Appended to any system prompt.
-	const loadProjectContext = async (): Promise<string> =>
-		options.noContextFiles
-			? ""
-			: renderProjectContext(await loadProjectContextFiles(fs, { cwd, globalDir: join(userHome(), ".tau") }));
-	let projectContext = await loadProjectContext();
-	// Approval plumbing (P15): the kernel decides *when* to ask, the host owns
-	// *how*. REPL and TUI install their prompt into approvalPromptRef below;
-	// with no UI at all onApproval stays undefined so the kernel's headless
-	// degradation (ask → deny) applies.
-	const approvalPromptRef: { current?: (request: ApprovalRequest) => Promise<ApprovalChoice> } = {};
-	const onApproval =
-		ui === undefined
-			? undefined
-			: async (request: ApprovalRequest): Promise<boolean> => {
-					if (isAlwaysAllowed(request)) return true;
-					const choice = approvalPromptRef.current
-						? await approvalPromptRef.current(request)
-						: (await ui.confirm(
-									`Allow ${request.toolName}? (${request.risk} risk${nestedNote(request)})`,
-									request.reason,
-								))
-							? "once"
-							: "deny";
-					if (choice === "always") recordAlwaysAllow(request);
-					return choice !== "deny";
-				};
-	if (readline && ui) {
-		// Readline prompt shared by the REPL and one-shot TTY runs; the TUI
-		// replaces it with a selector via setApprovalPrompt.
-		approvalPromptRef.current = async (request) => {
-			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk${nestedNote(request)})`)}`);
-			if (request.reason) console.log(dim(request.reason));
-			console.log(dim(firstLine(JSON.stringify(request.args), 200)));
-			process.stdout.write("\nAllow? [y]es once / [a]lways / [N]o ");
-			return await new Promise<ApprovalChoice>((resolve) => {
-				// Tool preflight is serial, but resolving a stale gate defensively keeps
-				// an aborted/closed turn from blocking the next one forever.
-				cancelPendingApproval();
-				pendingApproval = { resolve };
-			});
-		};
-	}
-	const buildAgent = (
-		messages: typeof initialMessages,
-		session: SessionRecorder | undefined,
-		agentExtensions = extensions,
-	): Agent => {
-		const codingTools = createCodingTools({ fs, shell }, { mode: permissionMode });
-		const built = new Agent({
-			config,
-			transport,
-			platform,
-			systemPrompt: [
-				options.system ??
-					defaultSystemPrompt(
-						cwd,
-						codingTools.map((tool) => tool.name),
-					),
-				projectContext,
-			]
-				.filter((part) => part !== "")
-				.join("\n\n"),
-			tools: codingTools,
-			extensions: agentExtensions,
-			ui,
-			capabilities: {
-				fs,
-				shell,
-				paths: {
-					cwd,
-					userTauDir: join(userHome(), ".tau"),
-					// Project paths only for a trusted project (defense in depth; extensions also ask ctx).
-					...(projectTrusted ? { projectTauDir: join(cwd, ".tau"), projectPiDir: join(cwd, ".pi") } : {}),
-				},
-			},
-			isProjectTrusted: () => projectTrusted,
-			initialMessages: messages,
-			session,
-			retry,
-			pricing,
-			thinkingLevel,
-			permissionMode,
-			toolExecution,
-			onApproval,
-		});
-		// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
-		const active = selectActiveTools(
-			built.getAllTools(),
-			built.getActiveTools(),
-			options.tools,
-			options.noTools === true,
-		);
-		if (active) built.setActiveTools(active);
-		attachPromptAgent(built, options.system === undefined);
-		return built;
-	};
 	let agent = buildAgent(initialMessages, recorder);
+
+	if (options.mode === "json") {
+		const prompt = options.print ?? (process.stdin.isTTY ? "" : (await readAllStdin()).trim());
+		if (prompt === "") {
+			console.error("--mode json needs a prompt: -p <prompt>, or the prompt on stdin.");
+			process.exit(1);
+		}
+		process.exitCode = await runJsonMode({ agent, extensions, store, cwd, prompt, sessionReason, out });
+		return;
+	}
+
+	if (options.mode === "rpc" && rpcBridge) {
+		const session = new HeadlessSession(
+			{
+				workspace,
+				modelDisplay: modelDisplay(),
+				modelChoices,
+				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+				onNotice: (level, text) => rpcBridge.ui.notify(text, level),
+				...hostSetters,
+			},
+			agent,
+			store,
+			recorder,
+		);
+		await runRpcMode({ session, bridge: rpcBridge, out, cwd, models: tableEntries, sessionReason });
+		return;
+	}
 
 	if (options.print !== undefined) {
 		if (!readline) throw new Error("print mode requires readline");

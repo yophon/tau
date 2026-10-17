@@ -213,6 +213,20 @@ npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js 
 - `examples/flutter/` — a phone agent (kernel in `flutter_js`) plus a zero-tau
   computer-side MCP server it drives over the LAN ([app](examples/flutter/app/README.md) · [mcp-server](examples/flutter/mcp-server/README.md))
 
+## Scripts and editors
+
+```bash
+tau --mode json -p "review the diff" | jq -c 'select(.type=="tool_execution_end")'   # a JSONL event stream
+tau --mode rpc                      # JSONL commands on stdin (pi's RPC protocol), events on stdout
+tau --mode acp                      # Agent Client Protocol: use tau inside an editor such as Zed
+```
+
+In Zed: `{ "agent_servers": { "tau": { "command": "tau", "args": ["--mode", "acp"] } } }`.
+Approvals become the editor's permission prompts, reads and edits go through the
+editor's buffers, todo_write shows as the plan, and the permission modes are the
+session modes. See [docs/rpc.md](docs/rpc.md) for the protocols and where they
+differ from pi.
+
 ## Embedding the kernel
 
 ```ts
@@ -282,6 +296,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
 - [docs/decisions.md](docs/decisions.md) — design decision records (D1–D33)
+- [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

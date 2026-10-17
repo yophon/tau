@@ -50,7 +50,7 @@
 | `tool_call` | 0.80 | ✅ P2 | block/改参；`terminate` 随 block 生效（P23b），全批 finalized 结果都 terminate 才不再请求；策略/审批拒绝不产生 terminate（D20）。工具按请求快照分派，快照外调用返回 `Unknown tool` |
 | `tool_result` | 0.80 | ✅ P2 | P23b 起照抄 pi 形状：事件带 `content`/`details`/`usage`，结果按字段覆盖；`structuredContent`（P24b）：只换 `content` 不带它即丢弃（pi）。工具结果自带的 terminate 穿过处理器链保留 |
 | `user_bash` | 0.80 | ✅ P8 | TUI `!`/`!!`；事件补 `cwd`、失败即关闭（P23c，pi 0.86.0）。⚠ 偏离：tau 形状与改写链，见 D28 |
-| `input` | 0.80 | ✅ P2 | 三态拦截；事件带 `images`/`source`/`streamingBehavior`，transform 可带 images（P23b）。轮中 `steer()`/`followUp()` 与运行中的 `sendUserMessage` 也经过它（pi 0.86.0），返回 `QueuedInputDisposition`（pi 0.99.0）。⚠ 偏离：InputSource 无 `rpc`（tau 无 RPC 模式） |
+| `input` | 0.80 | ✅ P2 | 三态拦截；事件带 `images`/`source`/`streamingBehavior`，transform 可带 images（P23b）。轮中 `steer()`/`followUp()` 与运行中的 `sendUserMessage` 也经过它（pi 0.86.0），返回 `QueuedInputDisposition`（pi 0.99.0）。⚠ 偏离：InputSource 无 `rpc`（P29 的 RPC 模式按普通输入处理） |
 
 ## ExtensionAPI
 
