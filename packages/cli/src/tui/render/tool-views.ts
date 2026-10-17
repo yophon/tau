@@ -63,7 +63,8 @@ const RENDERERS: Record<string, Renderer> = {
 		if (tool.status !== "ok") return view;
 		const lines = outputLines(tool).filter((line) => !/^\[\d+ more lines; continue with offset=\d+\]$/.test(line));
 		// A file ending in a newline reads back with an empty last numbered line.
-		if (/^\s*\d+\t$/.test(lines.at(-1) ?? "")) lines.pop();
+		// (The trailing-whitespace trim leaves just the number.)
+		if (/^\s*\d+\t?$/.test(lines.at(-1) ?? "")) lines.pop();
 		const body = [plainLine(`${lines.length} line${lines.length === 1 ? "" : "s"}`, { dim: true })];
 		if (verbose) body.push(...head(lines, 40));
 		return { ...view, body };

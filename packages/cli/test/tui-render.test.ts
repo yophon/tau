@@ -99,6 +99,10 @@ describe("tool views", () => {
 		);
 		assert.equal(view.head, "read(a.ts)");
 		assert.deepEqual(texts(view.body), ["3 lines"]);
+		// A file ending in a newline: the empty numbered last line is not counted.
+		assert.deepEqual(texts(toolView(tool({ args: { path: "b" }, result: "1\tx\n2\ty\n3\tz\n4\t" }), false).body), [
+			"3 lines",
+		]);
 		assert.equal(toolView(tool({ args: { path: "a.ts", offset: 5, limit: 10 } }), false).head, "read(a.ts:5+10)");
 	});
 
@@ -392,5 +396,15 @@ describe("reducer", () => {
 		state = run([{ type: "clear" }], state);
 		assert.equal(state.committed.length, 0);
 		assert.equal(state.epoch, 1);
+	});
+});
+
+describe("layout glyphs", () => {
+	it("every glyph used in prefixes, markers and borders measures one cell", async () => {
+		const { SPINNER_FRAMES } = await import("../src/tui/format.ts");
+		// Emoji-class symbols (⏺ ⏹ ⚠ ⏸) measure two cells but most terminals draw one: they shift columns.
+		for (const glyph of ["●", "⎿", "›", "■", "▲", "↳", "❯", "•", "╭", "╮", "│", "╰", "╯", "─", ...SPINNER_FRAMES]) {
+			assert.equal(strWidth(glyph), 1, `${glyph} U+${glyph.codePointAt(0)?.toString(16)}`);
+		}
 	});
 });

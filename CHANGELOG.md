@@ -5,6 +5,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- CLI (P25): a new TUI, now the interactive default. On a terminal, `tau` without
+  `-p` starts it; `--repl` keeps the line-based REPL, and piped stdio still gets the
+  REPL. `--tui` still works (and still refuses non-TTY stdio). The TUI is rebuilt on
+  Ink after yo-agent's design: finished output goes to the terminal scrollback once,
+  only the live part and the input area redraw, and tool calls show as `● name(arg)`
+  with a `⎿` result line, collapsed by default (Ctrl+O shows details for new output).
+  The `@earendil-works/pi-tui` dependency is gone (the CLI now depends on `ink`,
+  `react` and `string-width`).
+- CLI keys (P25): Esc interrupts (and clears the input when idle); Ctrl+C interrupts,
+  and when idle exits on a second press; Ctrl+T shows/hides reasoning (was Ctrl+R);
+  Ctrl+O expands/collapses tool details (was Ctrl+T); Alt+Enter queues a follow-up
+  while a turn runs (`/follow` still works); ↑ on an empty input takes queued
+  messages back. Ctrl+G opens the external editor, so an extension shortcut on
+  Ctrl+G (or any other key the TUI binds) is ignored and reported. `/tools` only
+  takes `expand`/`collapse` (output already in the scrollback cannot change).
+- Extension UI (P25): a component returned by a message, entry, tool or widget
+  renderer only renders in the TUI; its `handleInput` is no longer called.
 - ext-mcp / ext-mcp-http (P24d, pi 0.99.2): servers connect in the background at
   `session_start` instead of blocking it; the first prompt waits up to 10 s for
   servers with direct tools. An unavailable server is reported through
@@ -214,6 +231,28 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- CLI TUI (P25): approvals show what the call will do (the whole bash command, a
+  diff for edit) and offer "Deny and tell the agent what to do instead", which sends
+  your text with the denial; pickers, approvals and `ctx.ui` dialogs replace the input
+  box instead of floating. Streaming markdown, per-tool views (read, write, edit,
+  bash, codemode, tool_search, MCP as `server:tool`), a one-line status line (model,
+  mode, context left, tokens, cost, branch, cwd, extension items), a grapheme-aware
+  editor with correct CJK widths, bracketed paste (long pastes fold to
+  `[Pasted #n · N lines]`), persistent prompt history in `~/.tau/history.jsonl`
+  (`TAU_HISTORY=` turns it off), `/` command and `@` file completion. Resumed and
+  switched sessions show their history.
+- CLI TUI commands (P25): `/new`, `/clone`, `/session`, `/copy` (clip, pbcopy,
+  wl-copy/xclip/xsel, else OSC 52), `/export [path]` (JSONL), `/trust` (saves the
+  project trust decision; `/reload` applies it), `/clear`, `/reasoning`; `/resume`
+  without an argument opens a picker (`/sessions` is an alias). Shift+Tab cycles the
+  permission mode supervised → autonomous → read-only; bare `exit`/`quit` quit.
+- CLI TUI (P25): while it runs, console output from extensions, SDKs and libraries
+  is captured: all of it to `~/.tau/logs/tui-<date>.log`, warnings, errors and stderr
+  also as one notice line each, so nothing draws over the screen. Notices extensions
+  send in `session_start` are visible (they were swallowed before).
+- Kernel (P25): `Agent.setPermissionMode()` / `getPermissionMode()`. The new mode
+  applies from the next tool call and to subagents spawned afterwards; it is not
+  written to the session, so a resumed session takes its mode from the host again.
 - New package `@yophon/tau-ext-codemode` (P24e, pi 0.99.0–1.2.0): the `codemode`
   tool. The model writes JavaScript that calls tools (`tools.<name>()`, resolving to
   structured results where declared), finds unlisted ones with `searchTools()` /
@@ -405,6 +444,11 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   the approval handler. Mirrors pi v0.80.3 `prepareToolCall` and pi 0.85.0.
 
 ### Fixed
+- ext-feishu (P25): the Lark SDK logs below warn level no longer reach the console
+  (its `[info]` connection logs drew over the TUI); SDK warnings and errors go through
+  the extension's own warnings.
+- ext-resources (P25): a conventional skills or prompts directory that does not
+  exist is skipped quietly instead of reporting a `list_failed` warning on every start.
 - Kernel (P22): the barrel now exports `ToolUpdateStream`,
   `ExtensionErrorSink`, `SessionCompactFailedEvent`, `ContextWithSystemEvent`
   and `mutationQueueKey`, which public signatures already referenced; a

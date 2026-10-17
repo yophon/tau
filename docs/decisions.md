@@ -144,7 +144,20 @@ tau 偏离一处：参数因超限被省略时，read/write/edit 仍记 `argumen
 
 `@yophon/tau-ext-codemode` 的 Node 入口精确钉版依赖 `@earendil-works/pi-codemode`（MIT，唯一依赖 `quickjs-wasi`），不自己维护 QuickJS 沙箱。冻结内置对象、输出硬上限、图片校验、死锁检测、畸形载荷不挂宿主都是安全敏感的 VM 加固，随依赖获得；手工镜像的话上游每修一次都要追。纯 ES 的 `./declarations`、`./source` 子路径可进纯度门禁。
 
-这不是 D1 否决的 fork，也不是 D9 否决的 pi-compat 生态兼容：tau 消费的是一个自述「无 pi 依赖、可独立使用」的库，先例是 CLI 精确钉版依赖 `@earendil-works/pi-tui`。钉版随 D23 重锚的参照版本走，受 `check:pinned-deps` 与 CLI shrinkwrap 门禁约束。pi-mcp 不在此列：它的主入口 import `node:child_process`，裸引擎用不了，tau 抄形状不抄包（P24a）。
+这不是 D1 否决的 fork，也不是 D9 否决的 pi-compat 生态兼容：tau 消费的是一个自述「无 pi 依赖、可独立使用」的库，先例是 P8–P24 的 CLI 精确钉版依赖 `@earendil-works/pi-tui`（P25 起 CLI 改用 Ink，见 D31）。钉版随 D23 重锚的参照版本走，受 `check:pinned-deps` 与 CLI shrinkwrap 门禁约束。pi-mcp 不在此列：它的主入口 import `node:child_process`，裸引擎用不了，tau 抄形状不抄包（P24a）。
+
+## D31：TUI 换用 Ink，界面与架构来自 yo-agent（2026-10-17，P25，用户确认）
+
+P8 的 TUI 基于 pi-tui，消息与工具输出是手拼的 ANSI 字符串，`tui.ts` 里一个 1260 行的闭包包揽事件、按键、渲染和命令。用户反馈难看、错位（截图：第三方日志穿进画面、启动倒出诊断段落、对话里混进状态行、两行调试字段的状态栏、选择器浮层错位）。P25 推倒重写，不再以 pi 的界面为模板：
+
+- **底座换 Ink 5**（加 React 18、string-width），去掉 pi-tui。已完成的区块经 `<Static>` 一次性写进终端回滚，只有进行中的区块和底部区重绘（Claude Code 的做法）；流式 markdown 在段落边界提前提交，重绘区保持很小。代价：已提交的区块改不了（Ctrl+O 只影响之后的输出），没有全屏模式和会话内搜索（用终端自己的回滚和搜索）。
+- **架构与视觉照搬 yo-agent**（用户自己的仓库，surface-cli 4.6/4.7）：纯 reducer 折叠事件、纯函数按键路由、渲染为纯函数（StyledLine）、编辑器按字素簇操作；tau 在此之上把 Agent、会话、扩展和对话框收进一个不依赖 Ink 的 controller，Ink 树只订阅状态。界面文字为英文。
+- **键位照 yo-agent**，与 pi 一致处不变（Esc 中止、运行中 Enter 引导、Alt+Enter 排队、Ctrl+O 详情）；推理切换从 Ctrl+R 改到 Ctrl+T；Ctrl+C 运行中中止、空闲连按两次退出；Shift+Tab 切权限档位；扩展快捷键撞内置键时内置优先并报告。
+- **终端只属于 TUI**：运行期间接管 `console.*` 与 stderr，全部写日志，警告和错误各显示一行。
+- **布局字形只用测得 1 格的字符**：⏺ ⏹ ⚠ ⏸ 这类 emoji 区字形 string-width 计 2 格、多数终端画 1 格，会让边框和缩进错位，换成 ● ■ ▲ ↳，并有测试守住。
+- **扩展渲染接口不变**（字符串、`{ text, format }` 或 `render(width)` 组件，D9/D10），换底座不影响扩展作者；组件只渲染，`handleInput` 不再调用。
+- **交互式终端默认进 TUI**，`--repl` 保留逐行 REPL，非 TTY 仍走 REPL。
+- 内核为 Shift+Tab 新增 `Agent.setPermissionMode()`，**不写进会话**：恢复的会话由宿主重新给档位，不会比宿主启动时更宽松（偏离规格书草拟时「写进会话以便恢复」的设想）。
 
 ## D23：pi 参照系重锚到 v1.2.0（2026-10-15，P21，用户确认）
 
@@ -154,7 +167,7 @@ tau 偏离一处：参数因超限被省略时，read/write/edit 仍记 `argumen
 - 只照抄打过 tag 的版本。Unreleased 与 main 只作信息，不作照抄依据。
 - 快照内漏抄（旧快照已有、tau 未镜像）按 D7 直接补，不需单独决策。快照后新增的成员，由所属阶段的规格书逐项照抄或排除。
 - pi-parity.md 以快照 `types.ts` 抽取的成员集合为行集合，每行必须有状态。
-- **pi-tui 与本决策解耦**：TUI 是 D7 列出的运行时耦合点，CLI 依赖的 pi-tui 版本由宿主维护阶段显式升级（排在 P24 之后），不随参照快照走。
+- **TUI 与本决策解耦**：TUI 是 D7 列出的运行时耦合点，不随参照快照走。P25 起 CLI 的 TUI 不再基于 pi-tui（D31）。
 - 下次重锚的触发条件：pi 发大版本，或某阶段规格书需要快照之外的成员。阶段进行中不换参照。
 
 ## D24：MCP 服务器认证只走请求头（2026-10-15，P21）

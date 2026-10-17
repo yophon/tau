@@ -99,7 +99,7 @@ describe("P25b extension surfaces", () => {
 		await h.waitFor((f) => f.includes("CARD_RENDERED") && f.includes("RENDER_COMMAND_DONE"), "the rendered message");
 		await h.submit("probe it");
 		const frame = await h.waitFor((f) => f.includes("probed"), "the answer");
-		assert.match(frame, /⏺ PROBE_RENDER_result/);
+		assert.match(frame, /● PROBE_RENDER_result/);
 		assert.doesNotMatch(frame, /raw probe output/);
 	});
 
@@ -173,7 +173,7 @@ describe("P25b commands and sessions", () => {
 		const h = await harness({ responses: [] });
 		await h.submit("!echo one");
 		await h.waitFor((f) => f.includes("Output added to the context."), "the recorded command");
-		assert.match(h.frame(), /⏺ bash\(echo one\)\n {2}⎿ ran: echo one/);
+		assert.match(h.frame(), /● bash\(echo one\)\n {2}⎿ ran: echo one/);
 		const recorded = h.controller.agent.messages.filter((message) => message.role === "custom");
 		assert.equal(recorded.length, 1);
 		await h.submit("!!echo two");

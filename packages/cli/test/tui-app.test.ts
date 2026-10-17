@@ -46,7 +46,7 @@ describe("P25 TUI", () => {
 		assert.equal(h.requests.length, 1);
 	});
 
-	it("draws tool calls as ⏺ name(arg) with a ⎿ result line", async () => {
+	it("draws tool calls as ● name(arg) with a ⎿ result line", async () => {
 		const h = await harness({
 			responses: [makeSseResponse(toolCallTurn("read", { path: "a.txt" })), makeSseResponse(textTurn("done"))],
 			tools: [textTool("read", "1\talpha\n2\tbeta")],
@@ -54,7 +54,7 @@ describe("P25 TUI", () => {
 		await h.type("read it");
 		await h.key(ENTER);
 		const frame = await h.waitFor((f) => f.includes("done") && f.includes("⎿"), "the tool block");
-		assert.match(frame, /⏺ read\(a\.txt\)/);
+		assert.match(frame, /● read\(a\.txt\)/);
 		assert.match(frame, /⎿ 2 lines/);
 	});
 
@@ -75,6 +75,8 @@ describe("P25 TUI", () => {
 		assert.match(panel, /npm test/);
 		assert.match(panel, /1\. Allow once/);
 		assert.match(panel, /4\. Deny and tell the agent what to do instead/);
+		const box = panel.split("\n").filter((line) => /^[╭│╰]/.test(line));
+		assert.equal(new Set(box.map((line) => strWidth(line))).size, 1, `approval box lines differ:\n${box.join("\n")}`);
 		await h.key("1");
 		await h.waitFor((f) => f.includes("tests ran"), "the answer after approval");
 		assert.equal(executions.length, 1);
@@ -128,8 +130,8 @@ describe("P25 TUI", () => {
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("Running bash"), "the running tool");
 		await h.key(ESC);
-		const frame = await h.waitFor((f) => f.includes("⏹ Interrupted"), "the interruption");
-		assert.match(frame, /⏺ bash\(sleep 100\)\n {2}⎿ aborted/);
+		const frame = await h.waitFor((f) => f.includes("■ Interrupted"), "the interruption");
+		assert.match(frame, /● bash\(sleep 100\)\n {2}⎿ aborted/);
 		gate.resolve("late");
 	});
 
@@ -148,11 +150,11 @@ describe("P25 TUI", () => {
 		await h.waitFor((f) => f.includes("Running bash"), "the running tool");
 		await h.type("then test");
 		await h.key(ALT_ENTER);
-		await h.waitFor((f) => f.includes("⏸ queued: then test"), "the queued line");
+		await h.waitFor((f) => f.includes("↳ queued: then test"), "the queued line");
 		gate.resolve("ok");
 		const frame = await h.waitFor((f) => f.includes("and the follow-up"), "the follow-up answer");
 		assert.match(frame, /› then test/);
-		assert.doesNotMatch(frame, /⏸ queued/);
+		assert.doesNotMatch(frame, /↳ queued/);
 		assert.equal(h.requests.length, 3);
 	});
 

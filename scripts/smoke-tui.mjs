@@ -79,7 +79,7 @@ async function runPromptToolAbortSmoke(root, baseUrl) {
 		await session.send("hang smoke", "Enter");
 		await session.waitFor("SMOKE_ABORT_STREAM", 10_000);
 		await session.send("C-c");
-		await session.waitFor("⏹ Interrupted", 10_000);
+		await session.waitFor("■ Interrupted", 10_000);
 
 		await session.send("exit", "Enter");
 		await session.waitForExit();
@@ -158,7 +158,7 @@ async function runExtensionAbortSmoke(root, baseUrl) {
 		await session.waitFor("SMOKE_WIDGET", 10_000);
 		await session.send("ext abort smoke", "Enter");
 		await session.waitFor("EXT_ABORT_TRIGGER", 10_000);
-		await session.waitFor("⏹ Interrupted", 10_000);
+		await session.waitFor("■ Interrupted", 10_000);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok extension ctx.abort");

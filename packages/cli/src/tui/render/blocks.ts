@@ -1,6 +1,6 @@
 /**
  * Blocks → Ink elements (visual language from yo-agent surface-cli
- * render/blocks.ts): `›` user, markdown answers, `⏺ tool(arg)` with a `⎿`
+ * render/blocks.ts): `›` user, markdown answers, `● tool(arg)` with a `⎿`
  * result tail and a status-colored dot, dimmed reasoning. Shared by the
  * committed (<Static>) and live areas; every block keeps one blank line above
  * it so turns and tool calls read as separate items.
@@ -9,6 +9,7 @@
 import { Box, Text } from "ink";
 import React from "react";
 import { fmtElapsed, type Tone } from "../format.ts";
+import { strWidth } from "../input/width.ts";
 import type { Block } from "../model.ts";
 import { renderMarkdown } from "./markdown.ts";
 import type { Span, StyledLine } from "./spans.ts";
@@ -46,8 +47,32 @@ function spanElement(part: Span, key: number): React.ReactElement {
 	);
 }
 
-export function styledLine(line: StyledLine, key: string, prefix?: React.ReactElement): React.ReactElement {
-	return h(Text, { key }, prefix ?? null, ...line.map(spanElement));
+export interface Prefix {
+	text: string;
+	color?: string;
+	dim?: boolean;
+}
+
+/**
+ * A prefix column with a hanging indent: wrapped lines continue under the
+ * content, not under the prefix. (Two sibling <Text>s in a row wrap badly.)
+ */
+export function prefixed(key: string, prefix: Prefix, content: React.ReactElement): React.ReactElement {
+	return h(
+		Box,
+		{ key, flexDirection: "row" },
+		h(
+			Box,
+			{ width: strWidth(prefix.text), flexShrink: 0 },
+			h(Text, { color: prefix.color, dimColor: prefix.dim }, prefix.text),
+		),
+		h(Box, { flexGrow: 1, flexShrink: 1 }, content),
+	);
+}
+
+export function styledLine(line: StyledLine, key: string, prefix?: Prefix): React.ReactElement {
+	const text = h(Text, { key: prefix ? "text" : key }, ...line.map(spanElement));
+	return prefix ? prefixed(key, prefix, text) : text;
 }
 
 function linesElement(lines: StyledLine[], key: string): React.ReactElement {
@@ -61,11 +86,7 @@ function toolElement(block: Extract<Block, { kind: "tool" }>, options: RenderOpt
 	if (block.rendered) {
 		children.push(
 			...block.rendered.map((line, i) =>
-				styledLine(
-					line,
-					`r${i}`,
-					i === 0 ? h(Text, { key: "dot", color: dotColor }, "⏺ ") : h(Text, { key: "pad" }, "  "),
-				),
+				styledLine(line, `r${i}`, i === 0 ? { text: "● ", color: dotColor } : { text: "  " }),
 			),
 		);
 	} else {
@@ -77,16 +98,19 @@ function toolElement(block: Extract<Block, { kind: "tool" }>, options: RenderOpt
 					? ` · ${fmtElapsed(block.durationMs)}`
 					: "";
 		children.push(
-			h(
-				Text,
-				{ key: "head" },
-				h(Text, { key: "dot", color: dotColor }, "⏺ "),
-				h(Text, { key: "name", bold: true }, view.head),
-				suffix === "" ? null : h(Text, { key: "suffix", dimColor: true }, suffix),
+			prefixed(
+				"head",
+				{ text: "● ", color: dotColor },
+				h(
+					Text,
+					null,
+					h(Text, { key: "name", bold: true }, view.head),
+					suffix === "" ? null : h(Text, { key: "suffix", dimColor: true }, suffix),
+				),
 			),
 		);
 		view.body.forEach((line, i) => {
-			children.push(styledLine(line, `b${i}`, h(Text, { key: "pre", dimColor: true }, i === 0 ? "  ⎿ " : "    ")));
+			children.push(styledLine(line, `b${i}`, { text: i === 0 ? "  ⎿ " : "    ", dim: true }));
 		});
 	}
 	return h(Box, { key: block.id, flexDirection: "column", marginTop: 1 }, ...children);
@@ -98,14 +122,17 @@ export function renderBlock(block: Block, options: RenderOptions): React.ReactEl
 			return h(
 				Box,
 				{ key: block.id, marginTop: 1 },
-				h(Text, { color: "cyan" }, "› "),
-				h(
-					Text,
-					{ color: "cyan" },
-					block.text,
-					block.images > 0
-						? h(Text, { dimColor: true }, ` [${block.images} image${block.images === 1 ? "" : "s"}]`)
-						: null,
+				prefixed(
+					"user",
+					{ text: "› ", color: "cyan" },
+					h(
+						Text,
+						{ color: "cyan" },
+						block.text,
+						block.images > 0
+							? h(Text, { dimColor: true }, ` [${block.images} image${block.images === 1 ? "" : "s"}]`)
+							: null,
+					),
 				),
 			);
 		case "assistant":
@@ -132,7 +159,13 @@ export function renderBlock(block: Block, options: RenderOptions): React.ReactEl
  * spinner tick or a keystroke.
  */
 export const BlockView = React.memo(
-	(props: { block: Block; options: RenderOptions }): React.ReactElement => renderBlock(props.block, props.options),
+	(props: { block: Block; options: RenderOptions }): React.ReactElement =>
+		// An explicit width: <Static> lays children out without one, so wrapped text would overrun the terminal.
+		h(
+			Box,
+			{ width: Math.max(10, props.options.width - 1), flexDirection: "column" },
+			renderBlock(props.block, props.options),
+		),
 	(prev, next) =>
 		prev.block === next.block &&
 		prev.options.width === next.options.width &&

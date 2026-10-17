@@ -111,8 +111,8 @@ npm test        # node --test：内核单测 + 宿主测试 + CLI e2e
 export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
 export TAU_MODEL=deepseek-chat
-npm run tau                       # readline REPL
-npm run tau -- --tui              # TUI 模式（流式 markdown、/tree、/fork、/model……）
+npm run tau                       # 终端下进 TUI（/help 列出命令和键位）
+npm run tau -- --repl             # 改用逐行 REPL
 npm run tau -- -p "列出这里的文件并总结"
 
 # 或原生说 Anthropic Messages 协议（base URL 可省略）

@@ -14,7 +14,7 @@
 | `resources_discover` | 0.80 | ✅ P7/P8 | startup/reload；ext-resources 重建 prompt commands |
 | `session_start` | 0.80 | ✅ P3/P8 | reason：startup/resume/reload |
 | `session_info_changed` | 0.80 | ✅ P3 | |
-| `session_before_switch` | 0.80 | ✅ P11 | TUI /resume、/sessions、双宿主 /fork 切换前；CLI 无 new-session 动作，"new" 暂无触发点 |
+| `session_before_switch` | 0.80 | ✅ P11 | TUI /resume、/sessions、/fork、/clone 与 REPL /fork 切换前；P25 起 TUI /new 以 reason "new" 触发 |
 | `session_before_fork` | 0.80 | ✅ P5 | 按 entry 的 /fork 触发；全量复制没有分叉点，不触发 |
 | `session_before_compact` | 0.80 | ✅ P4 | 可取消、可接管；`signal` 必填（P23a，未传时内核给一个永不中止的）；reason 取 manual/threshold，overflow 📍Backlog |
 | `session_compact` | 0.80 | ✅ P4 | |
@@ -58,11 +58,11 @@
 |---|---|---|---|
 | `registerTool` | 0.80 | ✅ P2 | 无对象 `parameters` schema 即判该扩展加载失败（P21-HF-8）。跨扩展同名先注册者胜，后来者记 warning（P23c）；同一扩展再注册同名 = 替换（P24b，pi 按扩展存工具），重新注册为 hidden 即撤回。P24b 起 Tool 带 pi 的 `outputSchema`/`exposure`/`namespace`/`reachesTools`/`defaultActive`/`prepareLoadout`/`promptSnippet`/`promptGuidelines`；`ToolLoadout` 的元素是不含 `execute` 的 ToolInfo（偏离：pi 给 AgentTool），`annotations` 不进内核类型（作者自报、未经校验，D20） |
 | `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；重名时每个都加 `:N`（P23c，pi） |
-| `registerShortcut` | 0.80 | ✅ P8 | TUI 空闲快捷键，`/help` 显示 |
+| `registerShortcut` | 0.80 | ✅ P8 | TUI 空闲快捷键，`/help` 显示；P25 起撞 TUI 内置键时内置优先，启动提示并列进 `/diagnostics` |
 | `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
 | `getFlag` | 0.80 | ✅ P2 | |
 | `registerMessageRenderer` | 0.80 | ✅ P8 | 按 role/customType 匹配 |
-| `registerMarkdownTransformer` | 1.2 | 📍Backlog | 纯展示变换，等 pi-tui 升级（D23 解耦） |
+| `registerMarkdownTransformer` | 1.2 | 📍Backlog | 纯展示变换。P25 的 TUI 自带 markdown 渲染（D31），按需在 `render/markdown.ts` 前加变换链，未排期 |
 | `registerEntryRenderer` | 1.2 | ✅ P8 | ⚠ 同名异形：tau 早于 pi 自有（P8 形状，返回 string/`{text,format}`/组件，不接 Theme），代码注明偏离（D9/D10） |
 | `registerToolRenderer` | 1.2 | ✅ P8 | 同上 |
 | `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 `triggerTurn:false` 暂存到当前 turn_end 之后提交、不触发请求（P23b，pi 0.84.4）；压缩/导航占槽期间暂存到其结束后（P23a） |

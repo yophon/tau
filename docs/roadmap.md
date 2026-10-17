@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-17（P23 完成；P24 完成；**当前工作 = P25 TUI 重写（规格书已确认）**；0.4.0（含 P22–P24）待发布；网关草案待定）
+> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成；**当前工作 = 用户在 Windows Terminal 验收新 TUI，然后发 0.4.0（含 P22–P25）**；网关草案待定）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -241,9 +241,11 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 399 个测试，396 通过、3 跳过（Windows 上本来就跳过的三项，CI Linux 跑）。24a MCP 收敛（faacbb5）：ext-mcp-http 成为照抄 pi-mcp 形状的纯 ES 核心，ext-mcp 加 stdio、退役官方 SDK，工具名 `mcp__<server>__<tool>`；24b 工具面（bade033）：exposure 五档、namespace、structuredContent、prepareLoadout、显式 active 集与转录复原；24c 嵌套调用（4e64adf）：`ctx.executeTool`、`nestedCalls`、整棵 Agent 树一把 preflight 锁、bash 结构化结果，D29；24d（bb19675）：新包 ext-tool-search，MCP 暴露档位、namespace、结构化结果、`mcp_servers` 段、后台连接；24e（535c0f0）：新包 ext-codemode（钉版 pi-codemode，D30），CLI 内置 tool_search 与 codemode，提示工具行跟随声明集。真实 DeepSeek：codemode 并行读文件、tool_search 加载 deferred MCP 工具、store 跨 `--continue` 均通过。偏差见规格书「实施记录」。
 
-## Phase 25 ⬜ TUI 重写
+## Phase 25 ✅ TUI 重写（2026-10-17）
 
 规格书：[specs/phase-25-tui.md](specs/phase-25-tui.md)（2026-10-17 确认，四步 25a–25d）。用户反馈现在的 TUI 难看、有错位，参考 yo-agent 重写：事件经纯 reducer 折叠成区块、按键纯函数路由、渲染为纯函数，已完成区块写进终端回滚（Ink `<Static>`）；视觉语言与审批面板来自 yo-agent；旧 TUI 的功能与扩展 UI 接口一项不丢；新增 `/new`、`/session`、`/clone`、`/copy`、`/export`、`/trust`；TTY 下 `tau` 默认进 TUI。
+
+**完成记录**：全量 487 个测试，484 通过、3 跳过；新 TUI 测试 86 个（ink-testing-library 驱动真实 Agent，本机可跑）；smoke-tui 九个场景在 tmux（WSL）里以默认入口跑通；pack smoke 加了 TUI 安装布局渲染。25a 骨架（e89dc94）：Ink 5、纯 reducer、keymap、按工具视图、审批面板、队列与中止、字素簇编辑器；25b 功能对齐（656c443）：旧 TUI 全部命令与扩展 UI 接口、会话切换重放、console 捕获、债 #15、ext-feishu SDK 日志与 ext-resources 缺目录告警；25c 切换（3ac148c）：终端下 `tau` 默认进 TUI、`--repl`、删除 tui.ts 与 pi-tui、`/new` `/clone` `/session` `/copy` `/export` `/trust`、Shift+Tab（内核 `Agent.setPermissionMode`）、Ctrl+G；25d：D31、文档、真终端修复（布局字形、悬挂缩进、Static 宽度）。真实 DeepSeek 在真终端里完成读、改、跑命令、审批、中止、`--continue` 重放。待办：用户在 Windows Terminal 亲手验收。偏差见规格书「实施记录」。
 
 ## 产品层 ⬜ 待定
 
@@ -279,8 +281,7 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
 | 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 阻断已解除（P23c 信任门、P23e 媒体 owner-only）；随下次发版首发 |
-| 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | P25（TUI 重写） |
 | 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 
-（#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
+（#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

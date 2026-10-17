@@ -771,7 +771,7 @@ export class TuiController {
 		});
 		const last = this.agent.messages.findLast((message) => message.role === "assistant");
 		if (interrupted || (last?.role === "assistant" && last.stopReason === "aborted")) {
-			this.notice("warn", "⏹ Interrupted");
+			this.notice("warn", "■ Interrupted");
 			return;
 		}
 		const after = this.agent.getSessionUsage();

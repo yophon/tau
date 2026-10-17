@@ -344,7 +344,13 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, approval: { ...state.approval, selected: (state.approval.selected + action.delta + n) % n } };
 		}
 		case "approval-close": {
-			if (state.approval?.id === action.id) return promoteApproval({ ...state, approval: undefined });
+			if (state.approval?.id === action.id) {
+				const next = promoteApproval({ ...state, approval: undefined });
+				// Answered: the call runs (or is denied) now; the next approval keeps its own wording.
+				return next.approval
+					? next
+					: { ...next, activity: state.task ? `Running ${state.approval.request.toolName}` : next.activity };
+			}
 			return { ...state, approvalQueue: state.approvalQueue.filter((view) => view.id !== action.id) };
 		}
 		case "picker-open":

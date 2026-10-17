@@ -1,6 +1,6 @@
 # Phase 25：TUI 重写 规格书
 
-> 状态：已确认（2026-10-17）。五个开放问题按建议裁定（Ink、`tau` 默认进 TUI、yo-agent 键位、Shift+Tab 切档位、扩展组件只渲染），见「风险与开放问题」。
+> 状态：已完成（2026-10-17），Windows Terminal 亲手验收待用户执行。五个开放问题按建议裁定（Ink、`tau` 默认进 TUI、yo-agent 键位、Shift+Tab 切档位、扩展组件只渲染），见「风险与开放问题」；决策记 D31。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 25
 > 输入：用户反馈（2026-10-17：现在的 TUI 难看、有错位，需要重构，参考 yo-agent）；yo-agent 的 TUI（`packages/surface-cli/src/tui/`，Phase 4.6 重设计、4.7 架构收敛，用户在 Windows 上真机用过）；tau P8 TUI（`packages/cli/src/tui.ts`，pi-tui 0.80.3）；技术债 #15。
 
@@ -237,12 +237,12 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
 
 ## 验收清单
 
-- [ ] **25a**：
+- [x] **25a**（e89dc94）：
   - `TAU_TUI=next tau --tui` 能完成一轮带工具的对话。
   - reducer 单测覆盖 tau 的全部 `AgentEvent` 类型。
   - keymap、editor、decoder、completion、paste、markdown、diff、tool-views 单测从 yo-agent 移植并按 tau 改写，本机 Windows 跑通。
   - ink-testing-library 集成测试：流式文本、工具区块从运行中到完成、审批四个选项（含拒绝并引导发出 steer）、Esc 中止、Alt+Enter 排队并在一轮结束后自动发送、↑ 取回队列、CJK 输入光标位置、多行粘贴不提交且折叠。
-- [ ] **25b**：
+- [x] **25b**（656c443；console 捕获以单测覆盖 captureConsole，未在渲染帧里端到端验）：
   - 旧 TUI 功能清单逐项打勾，记在实施记录里。
   - ink-testing-library 覆盖扩展渲染器（消息、条目、工具、widget、header、footer）、`ctx.ui` 三种对话、`/reload`、`/resume` 重放、`/tree`、`/fork`。
   - 扩展在 `session_start` 中的 `notify` 可见。
@@ -254,17 +254,17 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
     - `/model` 选择器出现在底部区、紧接在对话内容之后。
   - ext-feishu 单测：构造 SDK 客户端时日志级别为 warn，且带 `logger`。
   - smoke-tui（tmux，CI）全部场景按新界面断言通过。
-- [ ] **25c**：
+- [x] **25c**（3ac148c；`/copy` 的 Windows 剪贴板手测并入用户验收）：
   - 交互式 TTY 下不带参数的 `tau` 进新 TUI，`--repl` 进 REPL，非 TTY 行为不变。
   - 旧 `tui.ts` 和 pi-tui 依赖已删除，`npm ls` 里没有 pi-tui。
   - `/new` 后出现新会话文件，`session_before_switch` 收到 reason `new`。
   - `/clone` 的新会话内容与当前位置一致。
   - `/export` 写出合法 JSONL；`/session` 显示 id 和条目数；`/copy` 在 Windows 上写进剪贴板（本机手测）。
   - Shift+Tab 后状态栏档位变化，并且下一个工具调用按新档位审批。
-- [ ] **25d**：
+- [x] **25d**（Windows Terminal 亲手验收一项待用户）：
   - 真实 DeepSeek 在新 TUI 里完成一次真实改动：读、改、跑命令、审批、中止、`--continue` 恢复，过程中界面无错位。
   - 用户在 Windows Terminal 亲手验收：中文输入、粘贴、Alt+Enter、窗口缩放，以及加载 ext-feishu 时启动和收发消息画面不乱。结果记入实施记录。
-- [ ] DoD 通用项（见 development.md）：check、全量测试、纯度门禁、smoke 全家桶、pack smoke（安装布局下 Ink 能运行）、CI 通过；CHANGELOG、README、architecture、pi-parity 更新。
+- [x] DoD 通用项（见 development.md；CI 随推送复核）：check、全量测试、纯度门禁、smoke 全家桶、pack smoke（安装布局下 Ink 能运行）、CI 通过；CHANGELOG、README、architecture、pi-parity 更新。
 
 ## 风险与开放问题
 
@@ -297,3 +297,26 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
 5. **扩展组件的 `handleInput`**：
    - 建议：新 TUI 里扩展组件只渲染，`handleInput` 不再调用。仓库里没有扩展用它，在 CHANGELOG 和 pi-parity 里注明。
    - 另一种：给扩展组件做焦点机制，让它能接收按键。
+
+## 实施记录
+
+四步各一次提交：25a e89dc94、25b 656c443、25c 3ac148c，25d 为文档与收尾修复。全量测试 487 个，484 通过、3 跳过（Windows 上本来就跳过的三项）；新 TUI 的测试 86 个（`tui-input`、`tui-render`、`tui-app`、`tui-features`，ink-testing-library 驱动真实 Agent，本机 Windows 跑通）。smoke-tui 九个场景在 WSL 的 tmux 里跑通（不带 `--tui`，即默认入口）；pack smoke 新增「打包的 kernel 加钉版 ink/react/string-width 的安装布局下加载并渲染 TUI」。
+
+**真实端点**：DeepSeek（deepseek-flash）在 WSL tmux 的真终端里完成读文件、跑 bash、两次审批、edit 改文件（`alpha BETA gamma`）、markdown 列表回复；`sleep 30` 经 Esc 约 1 秒中止，显示 `■ Interrupted`；`--continue` 启动即重放整段历史。另经 ink-testing-library 用真实 DeepSeek 跑过同一流程。
+
+**旧 TUI 功能清单**（逐项对照 P8–P24 的 tui.ts）：流式回复与推理、工具卡片与扩展工具渲染器、嵌套调用输出、`!`/`!!`、steer 与 follow-up、run 结束回填队列、Ctrl+C/Esc 中止轮·压缩·bash·导航、`/help` `/compact` `/name` `/sessions` `/resume` `/tree` `/fork` `/follow` `/model` `/thinking` `/tools` `/diagnostics` `/reload` `/quit`、`model_select`/`thinking_level_select`/`session_before_switch`/`session_before_fork`/`user_bash` 事件、扩展命令·快捷键·消息/条目/工具渲染器·widgets·header/footer·diagnostics、`ctx.ui` 四项、宿主动作（submitPrompt/resumeTurn/shutdown，busy 拒绝与排后）、启动信任确认、审批三选项与「总是允许」持久化、`/tree` 摘要失败可不摘要导航、补全。全部搬到新 TUI。去掉的：`/tools <id>` 单卡片切换（`<Static>` 已提交的区块改不了）、footer 里的调试字段（挪到 `/session`、`/diagnostics`）。
+
+与规格书不同、或规格书没写到的地方：
+
+- **权限档位不写进会话**：规格书在开放问题 4 里设想「切换写进会话以便 --continue 时恢复」。实现时改为不写：恢复的会话若自动回到 autonomous，就比宿主这次启动时更宽松，属于安全退化。档位每次由宿主（参数、环境变量、缺省 supervised）给。从 read-only 启动时写工具没加载，切到其他档位后提示 `/reload` 加载（main.ts 的 buildAgent 随 `setPermissionMode` 宿主钩子用新档位）。
+- **`/new` 不发 `session_shutdown`**：内核的 `session_shutdown` 只有 `quit` 一种 reason；与旧 TUI 的 `/resume`、`/fork` 一致，只发 `session_before_switch`（reason `new`）和新会话的 `session_start`。
+- **布局字形**：规格书写的 `⏺`、`⚠`、`⏹`、`⏸` 被 string-width 计为 2 格、多数终端画 1 格，会让固定宽度的前缀列和审批框右边框错位（真终端里实际看到了双空格）。换成 `●`、`▲`、`■`、`↳`，并加测试守住所有布局字形测得 1 格；审批框各行等宽也有测试。
+- **悬挂缩进与显式宽度**：两个并排的 `<Text>` 在 Ink 里换行错乱，前缀改为固定宽度列加内容列；`<Static>` 里的子元素没有父宽度，每个区块包一层显式宽度（列数减 1），否则长行越出终端一两列（真终端里看到的 `shor`/`t` 折行）。
+- **用户提示自己回显**：内核对 prompt 本身不发 `user_message`（只对排队的 steer/follow-up 发），TUI 在提交时自己画用户区块。
+- **工具渲染器的 result 阶段**先渲染、再派发 `tool_result`：区块一完成就提交进回滚，之后的更新落不上去（真终端 smoke 发现）。
+- **合并的输入块**：快速输入时按键和回车可能在一个 chunk 里到达（`y\r`、`1\r`）；启动对话框和 TUI 的面板层都按逐字符路由处理，不当作文本插入（smoke 发现）。
+- **ext-resources**：不存在的约定资源目录不再报 `list_failed`。旧 TUI 吞掉了所有 notify（债 #15），这些告警从没人看到；修好通知后它们每次启动刷屏。
+- **pack smoke 没装 CLI 包本身**：CLI 的 shrinkwrap 把内部包钉到 registry 地址，发版前装不了（和原来 pi-tui 时一样），改为在安装布局里加载渲染构建出的 `tui/` 模块。
+- **WSL 下首屏慢**：/mnt 盘上加载 Ink 约 6.7 s（es-toolkit 四千多个文件），Windows 本机 235 ms；smoke 的每个会话首屏等待加了 30 s 余量，CI 不受影响。
+- **`registerMarkdownTransformer`** 没做（规格书没列，pi-parity 维持 📍Backlog）。
+- **Windows Terminal 亲手验收**（中文输入、粘贴、Alt+Enter、窗口缩放、加载 ext-feishu 时的画面、`/copy`）待用户执行，结果补记于此。

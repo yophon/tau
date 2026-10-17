@@ -122,8 +122,8 @@ npm test        # node --test: kernel unit tests + host tests + CLI e2e
 export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
 export TAU_MODEL=deepseek-chat
-npm run tau                       # readline REPL
-npm run tau -- --tui              # TUI mode (streaming markdown, /tree, /fork, /model, …)
+npm run tau                       # the TUI on a terminal (/help lists commands and keys)
+npm run tau -- --repl             # line-based REPL instead
 npm run tau -- -p "list the files here and summarize"
 
 # Or speak the Anthropic Messages API natively (base URL optional)

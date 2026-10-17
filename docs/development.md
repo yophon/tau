@@ -19,7 +19,7 @@
 
 - pi 快照位于本仓库同级目录 `../pi`，**tag v1.2.0**（D23，2026-10-15 重锚；此前为 v0.80.3，见 D11）。快照不在仓库里，丢失或换机后用 `git clone --depth 1 --branch v1.2.0 https://github.com/earendil-works/pi ../pi` 重建（上游已由 `pi-mono` 更名为 `pi`）。核对：`../pi/packages/coding-agent/package.json` 的 version 为 1.2.0
 - "先读 pi / 照抄 pi" 一律以该快照为准。只照抄打过 tag 的版本，Unreleased 与 main 只作信息。升级快照 = 在 decisions.md 追加记录，并重跑 `node scripts/check-pi-parity.mjs`（从快照 `types.ts` 抽取扩展面成员，与 pi-parity.md 三张表比对；不进 `npm run check`，CI 没有快照）
-- CLI 依赖的 `@earendil-works/pi-tui` 版本与参照快照解耦（D23），由宿主维护阶段显式升级
+- CLI 的 TUI 基于 Ink（D31），不随参照快照走；TUI 的单测和集成测试用 ink-testing-library（`packages/cli/test/tui-*.test.ts`），真终端行为由 `npm run smoke:tui`（tmux）覆盖，Windows 本机可在 WSL 里跑
 - roadmap 每个阶段列有"先读 pi"的具体文件清单；读了清单之外的关键文件，补记进该阶段规格书
 
 ## 硬规则

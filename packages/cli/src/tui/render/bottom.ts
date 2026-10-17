@@ -120,10 +120,10 @@ function renderApproval(view: ApprovalView, queued: number): React.ReactElement 
 		h(
 			Text,
 			{ key: "t" },
-			h(Text, { key: "w", color, bold: true }, `⚠ ${approvalTitle(view.request)}`),
+			h(Text, { key: "w", color, bold: true }, `▲ ${approvalTitle(view.request)}`),
 			h(Text, { key: "r", dimColor: true }, `  ${view.request.risk} risk`),
 		),
-		...approvalBody(view.request).map((line, i) => styledLine(line, `b${i}`, h(Text, { key: "pad" }, "  "))),
+		...approvalBody(view.request).map((line, i) => styledLine(line, `b${i}`, { text: "  " })),
 		h(Text, { key: "sp" }, " "),
 		...APPROVAL_OPTIONS.map((option, i) =>
 			h(
@@ -213,7 +213,7 @@ export function renderBottom(state: UiState, columns: number, completion: Comple
 				h(
 					Text,
 					{ key: `q${i}`, dimColor: true },
-					`${queued.kind === "steer" ? "↳ steering" : "⏸ queued"}: ${truncateCells(queued.text.replace(/\s+/g, " "), Math.max(10, columns - 16))}`,
+					`${queued.kind === "steer" ? "↳ steering" : "↳ queued"}: ${truncateCells(queued.text.replace(/\s+/g, " "), Math.max(10, columns - 16))}`,
 				),
 			);
 		}
