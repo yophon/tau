@@ -124,6 +124,16 @@ export const todoExtension: Extension = (api) => {
 		{ risk: "low" },
 	);
 
+	api.registerCommand("todos", {
+		description: "Show the todo list",
+		handler: (_args, ctx) => {
+			const todos = current(ctx);
+			if (todos.length === 0) return "The todo list is empty.";
+			const done = todos.filter((todo) => todo.status === "completed").length;
+			return `Todos (${done}/${todos.length} done)\n${formatTodos(todos)}`;
+		},
+	});
+
 	api.registerWidget("todos", {
 		placement: "above-editor",
 		description: "The todo item in progress",

@@ -42,6 +42,8 @@ export interface UiCapability {
 	input(title: string, placeholder?: string): Promise<string | undefined>;
 	select(title: string, options: string[]): Promise<string | undefined>;
 	notify(message: string, level?: "info" | "warning" | "error"): void;
+	/** Edit text in a full editor (pi ui.editor); undefined when cancelled. Hosts without one omit it. */
+	editor?(title: string, prefill?: string): Promise<string | undefined>;
 }
 
 /** Host capabilities exposed to extensions through a facade. Every host capability is optional. */
@@ -673,6 +675,13 @@ export type ThinkingLevelSelectEventResult = { cancel?: boolean; reason?: string
 /** Host-invocable command (e.g. "/checkpoint" in a REPL). Dispatch is up to the host. */
 export type RegisteredCommandResult = string | { action: "prompt"; text: string } | undefined;
 
+/** One argument completion (pi AutocompleteItem): `value` replaces the text after "/name ". */
+export interface CommandCompletion {
+	value: string;
+	label: string;
+	description?: string;
+}
+
 export interface RegisteredCommand {
 	name: string;
 	/**
@@ -682,6 +691,8 @@ export interface RegisteredCommand {
 	invocationName?: string;
 	description: string;
 	handler: (args: string, ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
+	/** Completions for the text typed after "/name " (pi); null or [] = none. */
+	getArgumentCompletions?: (argumentPrefix: string) => CommandCompletion[] | null | Promise<CommandCompletion[] | null>;
 }
 
 export interface RegisteredShortcut {

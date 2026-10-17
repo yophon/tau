@@ -4,7 +4,7 @@
 // The model writes through memory_write (medium risk: it asks in supervised
 // mode); the TUI's `#text` and /remember write directly. The file is added to
 // the system prompt as notes, not instructions, capped at its last 200 lines.
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Extension } from "@yophon/tau-kernel";
 
@@ -37,6 +37,13 @@ export function writeMemory(file: string, content: string): { line: string; dedu
 	mkdirSync(dirname(file), { recursive: true });
 	appendFileSync(file, `${existing === "" || existing.endsWith("\n") ? "" : "\n"}${line}\n`, "utf8");
 	return { line, deduped: false };
+}
+
+/** Replace the whole memory file (/memory edit and clear). */
+export function replaceMemory(file: string, content: string): void {
+	mkdirSync(dirname(file), { recursive: true });
+	const text = content.replace(/\r\n/g, "\n").trimEnd();
+	writeFileSync(file, text === "" ? "" : `${text}\n`, "utf8");
 }
 
 /** The memory as a system prompt section, or undefined when there is none. */
@@ -102,6 +109,41 @@ export function createMemoryExtension(getFile: () => string | undefined): Extens
 				if (args.trim() === "") return "Usage: /remember <fact>";
 				const result = writeMemory(file, args);
 				return result.deduped ? `Already remembered: ${result.line.slice(2)}` : `Remembered: ${result.line.slice(2)}`;
+			},
+		});
+
+		api.registerCommand("memory", {
+			description: "Show long-term project memory; edit opens it in your editor, clear empties it",
+			getArgumentCompletions: (prefix) =>
+				[
+					{ value: "edit", label: "edit", description: "open MEMORY.md in $VISUAL / $EDITOR" },
+					{ value: "clear", label: "clear", description: "forget everything for this project" },
+				].filter((item) => item.value.startsWith(prefix.trim())),
+			handler: async (args, ctx) => {
+				const file = getFile();
+				if (!file) return "Memory is not available here.";
+				const action = args.trim();
+				const content = readMemory(file);
+				if (action === "") {
+					return content.trim() === ""
+						? `No memories yet (${file}). Save one with #fact, /remember or memory_write.`
+						: `Memory (${file})\n${content.trimEnd()}`;
+				}
+				if (action === "edit") {
+					if (!ctx.ui?.editor) return `No editor here; edit ${file} directly.`;
+					const edited = await ctx.ui.editor("Edit long-term memory", content);
+					if (edited === undefined || edited === content) return "Memory unchanged.";
+					replaceMemory(file, edited);
+					return `Memory saved (${file}).`;
+				}
+				if (action === "clear") {
+					if (content.trim() === "") return "Memory is already empty.";
+					if (ctx.ui && !(await ctx.ui.confirm("Forget everything in long-term memory?", file)))
+						return "Memory unchanged.";
+					replaceMemory(file, "");
+					return "Memory cleared.";
+				}
+				return "Usage: /memory [edit|clear]";
 			},
 		});
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -33,6 +33,7 @@ async function main() {
 		await run("approval", runApprovalSmoke);
 		await run("trust", runTrustDigestSmoke);
 		await run("subagent", runSubagentSmoke);
+		await run("commands", runCommandsSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -424,6 +425,42 @@ async function runApprovalSmoke(root, baseUrl) {
 		console.log("ok approval gate");
 	} finally {
 		await second.kill();
+	}
+}
+
+// P27 验收：真终端里 Shift+Tab 切档、/mode 选择器与参数补全、/tools 选择器、
+// /export 写出 HTML、/hotkeys。
+async function runCommandsSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "commands", false);
+	const session = await startTui("commands", dirs, baseUrl, ["--no-session", "--permission-mode", "supervised"]);
+	try {
+		await session.waitFor("· supervised", 10_000);
+		await session.send("BTab");
+		await session.waitFor("Accept edits:", 10_000);
+		await session.waitFor("· accept-edits", 10_000);
+		await session.send("/mode", "Enter");
+		await session.waitFor("Permission mode (current: accept-edits)", 10_000);
+		await session.send("Escape");
+		await session.send("/mode rea");
+		await session.waitFor("tools that change files or run commands are denied", 10_000);
+		await session.send("Enter");
+		await session.send("Enter");
+		await session.waitFor("Read-only:", 10_000);
+		await session.waitFor("· read-only", 10_000);
+		await session.send("/tools", "Enter");
+		await session.waitFor("Tools (", 10_000);
+		await session.send("Escape");
+		await session.send("/export", "Enter");
+		await session.waitFor("Exported the session to", 10_000);
+		const exported = (await readdir(dirs.cwd)).filter((name) => name.endsWith(".html"));
+		if (exported.length !== 1) throw new Error(`expected one exported HTML file, found ${exported.join(", ")}`);
+		await session.send("/hotkeys", "Enter");
+		await session.waitFor("/mode for bypass", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok commands");
+	} finally {
+		await session.kill();
 	}
 }
 

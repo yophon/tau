@@ -185,6 +185,38 @@ test("JsonlSessionRepo fork: new file with parentSession header, lineage survive
 	}
 });
 
+test("JsonlSessionRepo importFile copies a session file in, suffixes a taken name, opens one already here (P27)", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "tau-session-import-"));
+	try {
+		const fs = new NodeFileSystem(dir);
+		const header = '{"type":"session","version":3,"id":"imp","timestamp":"t","cwd":"/elsewhere"}';
+		const user =
+			'{"type":"message","id":"u1","parentId":null,"timestamp":"2026-10-16T00:00:00.000Z","message":{"role":"user","content":"imported question","timestamp":1}}';
+		await fs.writeTextFile(`${dir}/outside/s.jsonl`, `${header}\n${user}\n`);
+		const repo = new JsonlSessionRepo(fs, fakePlatform([]), `${dir}/sessions`, "/test");
+
+		const first = await repo.importFile(`${dir}/outside/s.jsonl`);
+		assert.equal((await first.getMetadata()).filePath, `${dir}/sessions/s.jsonl`);
+		assert.deepEqual(
+			(await restoreSession(first)).messages.map((message) => messageText(message)),
+			["imported question"],
+		);
+		const second = await repo.importFile(`${dir}/outside/s.jsonl`);
+		assert.equal((await second.getMetadata()).filePath, `${dir}/sessions/s-1.jsonl`);
+		const inPlace = await repo.importFile(`${dir}/sessions/s.jsonl`);
+		assert.equal((await inPlace.getMetadata()).filePath, `${dir}/sessions/s.jsonl`);
+		assert.equal((await repo.list()).length, 2);
+
+		await fs.writeTextFile(`${dir}/outside/bad.jsonl`, '{"type":"nope"}\n');
+		await assert.rejects(
+			() => repo.importFile(`${dir}/outside/bad.jsonl`),
+			(error: unknown) => error instanceof SessionError && error.code === "invalid_session",
+		);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
 test("JsonlSessionRepo rejects bad headers; skips malformed lines and repairs a missing final newline (P22)", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "tau-session-bad-"));
 	try {

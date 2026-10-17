@@ -168,9 +168,27 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 	let sessionCtx: ExtensionContext | undefined;
 	let waitedForStartup = false;
 
+	/** The last status of each server, for /mcp. */
+	const lastStatus = new Map<string, McpServerStatus>();
 	const report = (status: McpServerStatus): McpServerStatus => {
+		lastStatus.set(status.server, status);
 		options.onStatus?.(status);
 		return status;
+	};
+
+	/** One /mcp line per server (pi formatStatus). */
+	const describe = (state: ServerState): string => {
+		const name = state.config.name;
+		const transport = state.config.url ? "http" : "stdio";
+		if (state.conflict) return `✗ ${name} (${transport}) · offline: ${state.conflict}`;
+		if (state.connecting) return `◐ ${name} (${transport}) · connecting`;
+		if (state.client?.connectionState === "connected") {
+			return `● ${name} (${transport}) · connected · ${state.tools.size} tool${state.tools.size === 1 ? "" : "s"}`;
+		}
+		const last = lastStatus.get(name);
+		return last?.state === "offline"
+			? `✗ ${name} (${transport}) · offline: ${last.error ?? "unknown error"}`
+			: `○ ${name} (${transport}) · not connected`;
 	};
 
 	const reportUnavailable = (server: string, error: string): void => {
@@ -453,6 +471,53 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 					: states.filter((state) => state.config.name === owner);
 			await waitFor(waiting, ctx.signal);
 			return undefined;
+		});
+
+		extensionApi.registerCommand("mcp", {
+			description: "Show MCP servers; reconnect <server> reconnects one",
+			getArgumentCompletions: (prefix) => {
+				const [action = "", server, ...rest] = prefix.trimStart().split(/\s+/);
+				if (rest.length > 0) return null;
+				if (server === undefined) {
+					return "reconnect".startsWith(action) ? [{ value: "reconnect ", label: "reconnect" }] : null;
+				}
+				if (action !== "reconnect") return null;
+				return states
+					.filter((state) => state.config.name.startsWith(server))
+					.map((state) => ({
+						value: `reconnect ${state.config.name}`,
+						label: state.config.name,
+						description: describe(state),
+					}));
+			},
+			handler: async (args) => {
+				const [action, name, ...extra] = args.trim().split(/\s+/).filter(Boolean);
+				if (action === undefined) {
+					if (states.length === 0) return "No MCP servers configured.";
+					return [`MCP servers (${states.length})`, ...states.map(describe)].join("\n");
+				}
+				if (action !== "reconnect" || extra.length > 0) return "Usage: /mcp [reconnect <server>]";
+				const targets =
+					name === undefined
+						? states.filter((state) => state.client?.connectionState !== "connected")
+						: states.filter((state) => state.config.name === name);
+				if (name !== undefined && targets.length === 0) return `No MCP server named "${name}".`;
+				if (targets.length === 0) return "Every MCP server is connected.";
+				for (const state of targets) {
+					if (state.connecting) await state.connecting;
+					const client = state.client;
+					state.client = undefined;
+					await client?.close().catch(() => {});
+				}
+				const statuses = await Promise.all(targets.map(connectOne));
+				return statuses
+					.map((status) =>
+						status.state === "connected"
+							? `Reconnected to "${status.server}" (${status.toolCount ?? 0} tools).`
+							: `"${status.server}" is offline: ${status.error ?? "unknown error"}`,
+					)
+					.join("\n");
+			},
 		});
 
 		extensionApi.on("session_shutdown", async () => {

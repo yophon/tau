@@ -15,6 +15,7 @@ import {
 	type ApprovalRequest,
 	type CustomMessage,
 	type ExtensionRegistry,
+	type PermissionMode,
 	restoreSession,
 	type SessionMetadata,
 	SessionRecorder,
@@ -29,7 +30,14 @@ import { copyToClipboard } from "./clipboard.ts";
 import { commandList, runCommand } from "./commands.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { errorText, fmtCost, fmtElapsed, fmtInt, shortPath, type Tone } from "./format.ts";
-import { acceptCompletion, type Completion, computeCompletion, listFiles } from "./input/completion.ts";
+import {
+	acceptCompletion,
+	type Completion,
+	type CompletionItem,
+	type CompletionSources,
+	computeCompletion,
+	listFiles,
+} from "./input/completion.ts";
 import { InputDecoder } from "./input/decoder.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
@@ -69,6 +77,8 @@ export class TuiController {
 		| { text: string; cursor: number; files: unknown; suppressed: unknown; result: Completion | undefined }
 		| undefined;
 	private lastToken: string | undefined;
+	/** Settled argument completions by name and prefix; undefined while a promise is pending. */
+	private readonly argumentCache = new Map<string, readonly CompletionItem[] | undefined>();
 	private controller: AbortController | undefined;
 	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
 	private readonly pendingStarts: (UserContent | null)[] = [];
@@ -136,6 +146,16 @@ export class TuiController {
 				),
 			notify: (message, level) =>
 				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message),
+			// pi ui.editor: the external editor ($VISUAL / $EDITOR); the title has nowhere to go.
+			editor: async (_title, prefill) => {
+				try {
+					const edited = (this.deps.editText ?? editInExternalEditor)(prefill ?? "");
+					return edited?.replace(/\r\n/g, "\n");
+				} catch (error) {
+					this.notice("error", `External editor failed: ${errorText(error)}`);
+					return undefined;
+				}
+			},
 		};
 	}
 
@@ -375,10 +395,7 @@ export class TuiController {
 		) {
 			return cache.result;
 		}
-		const computed = computeCompletion(editor.text, editor.cursor, {
-			commands: commandList(this.extensions),
-			files: this.files,
-		});
+		const computed = computeCompletion(editor.text, editor.cursor, this.completionSources());
 		const result = computed && computed.token !== menu.suppressedToken ? computed : undefined;
 		this.menuCache = {
 			text: editor.text,
@@ -390,12 +407,48 @@ export class TuiController {
 		return result;
 	}
 
+	private completionSources(): CompletionSources {
+		return {
+			commands: commandList(this.extensions, this),
+			files: this.files,
+			argumentCompletions: (name, prefix) => this.argumentCompletions(name, prefix),
+		};
+	}
+
+	/**
+	 * A command's argument completions. Synchronous results show at once; a promise
+	 * (an extension's, or one that lists sessions) fills a cache and redraws the menu
+	 * when it settles, if the input still asks for it.
+	 */
+	private argumentCompletions(name: string, prefix: string): readonly CompletionItem[] | undefined {
+		const key = `${name}\u0000${prefix}`;
+		if (this.argumentCache.has(key)) return this.argumentCache.get(key);
+		const command = commandList(this.extensions, this).find((entry) => entry.name === `/${name}`);
+		if (!command?.complete) return undefined;
+		let result: ReturnType<NonNullable<typeof command.complete>>;
+		try {
+			result = command.complete(prefix);
+		} catch {
+			return undefined;
+		}
+		if (!(result instanceof Promise)) return result ?? undefined;
+		if (this.argumentCache.size > 50) this.argumentCache.clear();
+		this.argumentCache.set(key, undefined);
+		void result.then(
+			(items) => {
+				this.argumentCache.set(key, items ?? undefined);
+				this.menuCache = undefined;
+				this.syncMenu();
+				this.dispatch({ type: "menu-select", index: this.state.menu.selected });
+			},
+			() => undefined,
+		);
+		return undefined;
+	}
+
 	/** A new token resets the selection and lifts a suppression; `@` loads the file list once. */
 	private syncMenu(): void {
-		const completion = computeCompletion(this.state.editor.text, this.state.editor.cursor, {
-			commands: commandList(this.extensions),
-			files: this.files,
-		});
+		const completion = computeCompletion(this.state.editor.text, this.state.editor.cursor, this.completionSources());
 		const token = completion?.token;
 		if (token !== this.lastToken) {
 			this.lastToken = token;
@@ -484,8 +537,8 @@ export class TuiController {
 				const completion = this.completion();
 				const item = completion?.items[Math.min(state.menu.selected, completion.items.length - 1)];
 				if (!completion || !item) return;
-				// A fully typed command name runs right away (Enter completes and submits in one step).
-				if (completion.kind === "slash" && item.value === completion.token) {
+				// A fully typed command name or argument runs right away (Enter completes and submits in one step).
+				if ((completion.kind === "slash" || completion.kind === "argument") && item.value === completion.token) {
 					this.submit();
 					return;
 				}
@@ -549,18 +602,25 @@ export class TuiController {
 	/** Shift+Tab: supervised → accept-edits → autonomous → read-only → supervised (bypass rejoins at supervised). */
 	cycleMode(): void {
 		const current = this.agent.getPermissionMode();
-		const next =
+		this.setMode(
 			current === "supervised"
 				? "accept-edits"
 				: current === "accept-edits"
 					? "autonomous"
 					: current === "autonomous"
 						? "read-only"
-						: "supervised";
+						: "supervised",
+		);
+	}
+
+	/** Switch the permission mode (Shift+Tab and /mode). */
+	setMode(next: PermissionMode): void {
 		this.agent.setPermissionMode(next);
 		this.options.setPermissionMode?.(next);
 		this.dispatch({ type: "status", status: { mode: next } });
-		if (next === "autonomous") {
+		if (next === "bypass") {
+			this.notice("warn", "Bypass: every approval is skipped (Shift+Tab or /mode to switch back).");
+		} else if (next === "autonomous") {
 			this.notice("warn", "Autonomous: tool calls run without asking (Shift+Tab to switch).");
 		} else if (next === "accept-edits") {
 			this.notice("info", "Accept edits: file edits in this directory run without asking; commands still ask.");
@@ -1295,11 +1355,14 @@ export class TuiController {
 		}
 	}
 
-	pick(title: string, items: PickerItem[]): Promise<string | undefined> {
+	pick(title: string, items: PickerItem[], selected = 0): Promise<string | undefined> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.pickers.set(id, resolve);
-			this.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0 } });
+			this.dispatch({
+				type: "picker-open",
+				picker: { id, title, items, selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)) },
+			});
 			this.store.flush();
 		});
 	}

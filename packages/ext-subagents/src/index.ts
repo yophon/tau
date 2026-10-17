@@ -362,6 +362,32 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 			controllers.clear();
 		});
 
+		api.registerCommand("agents", {
+			description: "List the subagents the subagent tool can run",
+			handler: async (_args, ctx) => {
+				const agents = await discoverAgents(ctx.capabilities?.fs, options.directories ?? defaultDirectories(ctx));
+				const label = (agent: AgentDefinition): string =>
+					[
+						agent.name,
+						agent.source,
+						agent.tools ? `tools: ${agent.tools.join(", ")}` : "all tools",
+						...(agent.model ? [`model: ${agent.model}`] : []),
+						...(agent.mode ? [`mode: ${agent.mode}`] : []),
+					].join(" · ");
+				if (!ctx.ui) return agents.map((agent) => `${label(agent)}\n  ${agent.description}`).join("\n");
+				const labels = agents.map(label);
+				const picked = await ctx.ui.select("Subagents", labels);
+				const agent = picked === undefined ? undefined : agents[labels.indexOf(picked)];
+				if (!agent) return undefined;
+				return [
+					`${agent.name} (${agent.source}${agent.filePath ? `, ${agent.filePath}` : ""})`,
+					agent.description,
+					"",
+					agent.systemPrompt.trim(),
+				].join("\n");
+			},
+		});
+
 		api.registerCommand("tasks", {
 			description: "Show background subagents and their results",
 			handler: async (_args, ctx) => {

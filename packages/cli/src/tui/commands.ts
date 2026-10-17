@@ -7,16 +7,23 @@
 import { copyFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+	type AgentMessage,
 	type ExtensionRegistry,
+	estimateStringTokens,
+	estimateTokens,
 	messageText,
+	type PermissionMode,
 	type SessionEntry,
 	type SessionMetadata,
 	type ThinkingLevel,
+	type Usage,
 } from "@yophon/tau-kernel";
 import type { TuiController } from "./controller.ts";
 import { conversationLength } from "./controller.ts";
+import { sessionHtml } from "./export-html.ts";
 import { entryRendererMatches, isRenderComponent } from "./extensions.ts";
-import { errorText, firstLine } from "./format.ts";
+import { errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
+import type { CompletionItem } from "./input/completion.ts";
 import type { PickerItem } from "./model.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
 
@@ -26,10 +33,48 @@ export interface BuiltinCommand {
 	args?: string;
 	description: string;
 	run(tui: TuiController, args: string): Promise<void> | void;
+	/** Completions for the text after "/name " (filtered by the command). */
+	complete?(tui: TuiController, prefix: string): CompletionItem[] | Promise<CompletionItem[]>;
+}
+
+/** A command as the completion menu and the argument completer see it. */
+export interface CommandEntry {
+	name: string;
+	description: string;
+	complete?: (prefix: string) => CompletionItem[] | null | Promise<CompletionItem[] | null>;
 }
 
 const THINKING_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const FULL_SESSION = "__full_session__";
+
+/** Every permission mode with one line on what it does (yo-agent /mode). */
+export const PERMISSION_MODES: ReadonlyArray<{ mode: PermissionMode; hint: string }> = [
+	{ mode: "read-only", hint: "tools that change files or run commands are denied" },
+	{ mode: "supervised", hint: "medium- and high-risk tool calls ask first" },
+	{ mode: "accept-edits", hint: "file edits in this directory run; commands still ask" },
+	{ mode: "autonomous", hint: "tool calls run without asking" },
+	{ mode: "bypass", hint: "every approval skipped, policy rules included" },
+];
+
+/** Values that start with the prefix (case-insensitive), as completion items. */
+function startingWith(prefix: string, values: ReadonlyArray<string | CompletionItem>): CompletionItem[] {
+	const lower = prefix.toLowerCase();
+	return values
+		.map((value) => (typeof value === "string" ? { value, label: value } : value))
+		.filter((item) => item.value.toLowerCase().startsWith(lower));
+}
+
+const INIT_PROMPT = `Please analyze this codebase and create an AGENTS.md file at the project root. It is read at the start of every future session by coding agents working in this repository.
+
+Include:
+1. The commands for building, linting and testing, including how to run a single test.
+2. The high-level architecture and code structure that takes reading several files to understand.
+3. Conventions a newcomer would get wrong (naming, error handling, formatting, commit rules).
+
+Usage notes:
+- If AGENTS.md (or CLAUDE.md, .cursorrules, .github/copilot-instructions.md, README.md) already exists, read it first; improve an existing AGENTS.md instead of replacing it, and carry over the important parts of the others.
+- Keep it concise: no generic advice, no obvious instructions, no listing of every file.
+- Do not invent sections or facts that you cannot back with what you read in the repository.`;
 
 const BUILTINS: BuiltinCommand[] = [
 	{
@@ -47,6 +92,15 @@ const BUILTINS: BuiltinCommand[] = [
 		name: "model",
 		args: "[model]",
 		description: "Show or switch the model",
+		complete: (tui, prefix) =>
+			startingWith(
+				prefix,
+				tui.modelChoices.map((model) => ({
+					value: model,
+					label: model,
+					...(model === tui.model ? { hint: "current" } : {}),
+				})),
+			),
 		run: async (tui, args) => {
 			if (args !== "") {
 				await tui.switchModel(args);
@@ -65,8 +119,9 @@ const BUILTINS: BuiltinCommand[] = [
 	},
 	{
 		name: "thinking",
-		args: "[default|none|minimal|low|medium|high|xhigh|max]",
+		args: "[level]",
 		description: "Show or set the reasoning effort",
+		complete: (_tui, prefix) => startingWith(prefix, ["default", ...THINKING_LEVELS]),
 		run: async (tui, args) => {
 			let requested = args.trim().toLowerCase();
 			if (requested === "") {
@@ -94,6 +149,7 @@ const BUILTINS: BuiltinCommand[] = [
 	},
 	{
 		name: "name",
+		aliases: ["rename"],
 		args: "<name>",
 		description: "Name the current session",
 		run: async (tui, args) => {
@@ -114,8 +170,17 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "resume",
 		aliases: ["sessions"],
-		args: "[id|path|timestamp|name]",
+		args: "[session]",
 		description: "Switch to a saved session",
+		complete: async (tui, prefix) =>
+			startingWith(
+				prefix,
+				(await tui.options.sessionRepo.list()).map((session) => ({
+					value: session.name ?? session.id,
+					label: session.name ?? session.id.slice(0, 8),
+					hint: session.modified ?? session.timestamp,
+				})),
+			),
 		run: async (tui, args) => {
 			const sessions = await tui.options.sessionRepo.list();
 			if (sessions.length === 0) {
@@ -282,6 +347,7 @@ const BUILTINS: BuiltinCommand[] = [
 	},
 	{
 		name: "session",
+		aliases: ["status"],
 		description: "Show the session file, id, size and usage",
 		run: async (tui) => {
 			const usage = tui.agent.getSessionUsage();
@@ -311,6 +377,7 @@ const BUILTINS: BuiltinCommand[] = [
 					`${usage.input + usage.cacheRead + usage.cacheWrite} in · ${usage.output} out${usage.cost.total > 0 ? ` · $${usage.cost.total.toFixed(4)}` : ""}`,
 				),
 			);
+			lines.push(row("cwd", tui.options.cwd));
 			lines.push(row("model", `${tui.model} · ${tui.thinkingLevel ?? "default"} reasoning`));
 			lines.push(row("mode", tui.agent.getPermissionMode()));
 			tui.lines(lines);
@@ -333,22 +400,61 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "export",
 		args: "[path]",
-		description: "Write the session as JSONL",
+		description: "Write the session as HTML (default) or JSONL",
 		run: async (tui, args) => {
 			const store = tui.sessionStore;
-			if (!store) {
+			const metadata = store ? await store.getMetadata() : undefined;
+			const stem = `tau-session-${(metadata?.id ?? new Date().toISOString().replaceAll(":", "-")).slice(0, 8)}`;
+			const target = resolve(tui.options.cwd, args === "" ? `${stem}.html` : args);
+			if (target.toLowerCase().endsWith(".jsonl")) {
+				if (!store || !metadata) {
+					tui.notice("error", "No active session (--no-session): only HTML export is available.");
+					return;
+				}
+				if (metadata.filePath) {
+					await copyFile(metadata.filePath, target);
+				} else {
+					const entries = await store.getEntries();
+					await writeFile(target, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+				}
+			} else {
+				const html = sessionHtml(tui.agent.messages, {
+					title: metadata?.name ?? `tau session ${metadata?.id.slice(0, 8) ?? ""}`.trim(),
+					model: tui.model,
+					cwd: tui.options.cwd,
+					exportedAt: new Date().toISOString(),
+				});
+				await writeFile(target, html, "utf8");
+			}
+			tui.notice("dim", `Exported the session to ${target}.`);
+		},
+	},
+	{
+		name: "import",
+		args: "<path.jsonl>",
+		description: "Import a session file and switch to it",
+		run: async (tui, args) => {
+			if (!tui.sessionStore) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
-			const metadata = await store.getMetadata();
-			const target = resolve(tui.options.cwd, args === "" ? `tau-session-${metadata.id.slice(0, 8)}.jsonl` : args);
-			if (metadata.filePath) {
-				await copyFile(metadata.filePath, target);
-			} else {
-				const entries = await store.getEntries();
-				await writeFile(target, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+			if (args === "") {
+				tui.notice("error", "Usage: /import <path.jsonl>");
+				return;
 			}
-			tui.notice("dim", `Exported the session to ${target}.`);
+			const source = resolve(tui.options.cwd, args);
+			const answer = await tui.pick(`Replace the current session with ${source}?`, [
+				{ label: "Import", value: "yes", key: "y" },
+				{ label: "Cancel", value: "no", key: "n" },
+			]);
+			if (answer !== "yes") {
+				tui.notice("dim", "Import cancelled.");
+				return;
+			}
+			const imported = await tui.options.sessionRepo.importFile(source);
+			const result = await tui.switchSession(imported, "resume");
+			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the imported file was kept).");
+			else tui.notice("dim", `Imported ${source}.`);
 		},
 	},
 	{
@@ -396,12 +502,123 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "tools",
 		args: "[expand|collapse]",
-		description: "Expand or collapse tool details for new output (Ctrl+O)",
-		run: (tui, args) => {
-			const verbose = tui.state.verbose;
-			if (args === "expand" ? !verbose : args === "collapse" ? verbose : true) tui.execute({ type: "toggle-verbose" });
-			else tui.notice("dim", `Tool details are already ${verbose ? "expanded" : "collapsed"}.`);
+		description: "Turn tools on or off; expand|collapse shows tool details (Ctrl+O)",
+		complete: (_tui, prefix) => startingWith(prefix, ["expand", "collapse"]),
+		run: async (tui, args) => {
+			if (args === "expand" || args === "collapse") {
+				const verbose = tui.state.verbose;
+				if (args === "expand" ? !verbose : verbose) tui.execute({ type: "toggle-verbose" });
+				else tui.notice("dim", `Tool details are already ${verbose ? "expanded" : "collapsed"}.`);
+				return;
+			}
+			if (args !== "") {
+				tui.notice("error", "Usage: /tools [expand|collapse]");
+				return;
+			}
+			await toggleTools(tui);
 		},
+	},
+	{
+		name: "mode",
+		args: "[mode]",
+		description: "Show or switch the permission mode (Shift+Tab cycles)",
+		complete: (tui, prefix) => {
+			const current = tui.agent.getPermissionMode();
+			return startingWith(
+				prefix,
+				PERMISSION_MODES.map(({ mode, hint }) => ({
+					value: mode,
+					label: mode,
+					hint: mode === current ? `current · ${hint}` : hint,
+				})),
+			);
+		},
+		run: async (tui, args) => {
+			const current = tui.agent.getPermissionMode();
+			let requested = args.trim().toLowerCase();
+			if (requested === "") {
+				const picked = await tui.pick(
+					`Permission mode (current: ${current})`,
+					PERMISSION_MODES.map(({ mode, hint }) => ({
+						label: mode,
+						value: mode,
+						hint: mode === current ? `current · ${hint}` : hint,
+					})),
+					Math.max(
+						0,
+						PERMISSION_MODES.findIndex(({ mode }) => mode === current),
+					),
+				);
+				if (picked === undefined) return;
+				requested = picked;
+			}
+			const target = PERMISSION_MODES.find(({ mode }) => mode === requested)?.mode;
+			if (!target) {
+				tui.notice("error", `Usage: /mode [${PERMISSION_MODES.map(({ mode }) => mode).join("|")}]`);
+				return;
+			}
+			if (target === current) {
+				tui.notice("dim", `Already in ${current} mode.`);
+				return;
+			}
+			if (target === "bypass") {
+				const answer = await tui.pick("Bypass skips every approval, high-risk commands included. Switch?", [
+					{ label: "Cancel", value: "no", key: "n" },
+					{ label: "Switch to bypass", value: "yes", key: "y" },
+				]);
+				if (answer !== "yes") {
+					tui.notice("dim", "Mode unchanged.");
+					return;
+				}
+			}
+			tui.setMode(target);
+		},
+	},
+	{
+		name: "usage",
+		aliases: ["cost"],
+		description: "Show token usage and cost per turn",
+		run: (tui) => tui.lines(usageLines(tui.agent.messages, tui.agent.getSessionUsage())),
+	},
+	{
+		name: "context",
+		description: "Show what fills the context window",
+		run: (tui) => tui.lines(contextLines(tui)),
+	},
+	{
+		name: "init",
+		description: "Have the model write AGENTS.md for this project",
+		run: (tui) => {
+			if (tui.state.task !== undefined) {
+				tui.notice("dim", "A task is running; run /init when it ends.");
+				return;
+			}
+			void tui.runPrompt(INIT_PROMPT);
+		},
+	},
+	{
+		name: "settings",
+		description: "Change the model, reasoning, permission mode and display",
+		run: async (tui) => {
+			const items: PickerItem[] = [
+				{ label: "Model", hint: tui.model, value: "model" },
+				{ label: "Reasoning effort", hint: tui.thinkingLevel ?? "default", value: "thinking" },
+				{ label: "Permission mode", hint: tui.agent.getPermissionMode(), value: "mode" },
+				{ label: "Show reasoning", hint: tui.state.showReasoning ? "on" : "off", value: "reasoning" },
+				{ label: "Tool details", hint: tui.state.verbose ? "expanded" : "collapsed", value: "details" },
+				{ label: "Tools", hint: `${tui.agent.getActiveTools().length} on`, value: "tools" },
+			];
+			const picked = await tui.pick("Settings", items);
+			if (picked === undefined) return;
+			if (picked === "reasoning") tui.execute({ type: "toggle-reasoning" });
+			else if (picked === "details") tui.execute({ type: "toggle-verbose" });
+			else await findBuiltin(picked)?.run(tui, "");
+		},
+	},
+	{
+		name: "hotkeys",
+		description: "Show keyboard shortcuts",
+		run: (tui) => tui.lines(hotkeyLines(tui.extensions)),
 	},
 	{
 		name: "diagnostics",
@@ -440,13 +657,190 @@ function findBuiltin(name: string): BuiltinCommand | undefined {
 }
 
 /** Every command for completion: built-ins first, then extension commands that do not clash. */
-export function commandList(extensions: ExtensionRegistry): Array<{ name: string; description: string }> {
-	const list = BUILTINS.map((command) => ({ name: `/${command.name}`, description: command.description }));
-	for (const command of extensions.commands.values()) {
-		if (findBuiltin(command.name)) continue;
-		list.push({ name: `/${command.name}`, description: command.description ?? "" });
+export function commandList(extensions: ExtensionRegistry, tui?: TuiController): CommandEntry[] {
+	const list: CommandEntry[] = BUILTINS.map((command) => {
+		const complete = command.complete;
+		return {
+			name: `/${command.name}`,
+			description: command.description,
+			...(complete && tui ? { complete: (prefix: string) => complete(tui, prefix) } : {}),
+		};
+	});
+	for (const [invocation, command] of extensions.commands) {
+		if (findBuiltin(invocation)) continue;
+		const complete = command.getArgumentCompletions;
+		list.push({
+			name: `/${invocation}`,
+			description: command.description ?? "",
+			...(complete
+				? {
+						complete: async (prefix: string) =>
+							(await complete(prefix))?.map((item) => ({
+								value: item.value,
+								label: item.label,
+								...(item.description !== undefined ? { hint: item.description } : {}),
+							})) ?? null,
+					}
+				: {}),
+		});
 	}
 	return list;
+}
+
+/** /tools: a picker of every tool; picking one turns it on or off, Esc closes. */
+async function toggleTools(tui: TuiController): Promise<void> {
+	let selected = 0;
+	for (;;) {
+		const active = new Set(tui.agent.getActiveTools());
+		const tools = tui.agent.getAllTools().filter((tool) => tool.exposure !== "hidden");
+		if (tools.length === 0) {
+			tui.notice("dim", "No tools are registered.");
+			return;
+		}
+		const picked = await tui.pick(
+			`Tools (${active.size} on) — Enter turns one on or off, Esc closes`,
+			tools.map((tool) => ({
+				label: `${active.has(tool.name) ? "●" : "○"} ${tool.name}`,
+				hint: [tool.exposure === "direct" ? "" : tool.exposure, firstLine(tool.description, 60)]
+					.filter((part) => part !== "")
+					.join(" · "),
+				value: tool.name,
+			})),
+			selected,
+		);
+		if (picked === undefined) return;
+		selected = Math.max(
+			0,
+			tools.findIndex((tool) => tool.name === picked),
+		);
+		const next = active.has(picked) ? [...active].filter((name) => name !== picked) : [...active, picked];
+		tui.agent.setActiveTools(next);
+		const on = new Set(tui.agent.getActiveTools()).has(picked);
+		tui.notice("dim", `${picked} ${on ? "on" : "off"}.`);
+	}
+}
+
+function usageTotal(usage: Usage): number {
+	return usage.input + usage.cacheRead + usage.cacheWrite;
+}
+
+/** /usage: one row per user turn on the current branch, then the session total (every branch, D19). */
+export function usageLines(messages: readonly AgentMessage[], session: Usage): StyledLine[] {
+	interface Turn {
+		label: string;
+		input: number;
+		output: number;
+		cacheRead: number;
+		cost: number;
+		calls: number;
+	}
+	const turns: Turn[] = [];
+	for (const message of messages) {
+		if (message.role === "user") {
+			turns.push({ label: firstLine(messageText(message), 40), input: 0, output: 0, cacheRead: 0, cost: 0, calls: 0 });
+			continue;
+		}
+		const usage =
+			message.role === "assistant" ? message.usage : message.role === "toolResult" ? message.usage : undefined;
+		if (!usage) continue;
+		if (turns.length === 0)
+			turns.push({ label: "(before the first prompt)", input: 0, output: 0, cacheRead: 0, cost: 0, calls: 0 });
+		const turn = turns[turns.length - 1] as Turn;
+		turn.input += usageTotal(usage);
+		turn.output += usage.output;
+		turn.cacheRead += usage.cacheRead;
+		turn.cost += usage.cost.total;
+		if (message.role === "assistant") turn.calls++;
+	}
+	const lines: StyledLine[] = [plainLine("Usage", { bold: true })];
+	const used = turns.filter((turn) => turn.calls > 0 || turn.input > 0);
+	if (used.length === 0) lines.push([span("  No model calls on this branch yet.", { dim: true })]);
+	const cell = (text: string, width: number): string => text.padStart(width);
+	lines.push([
+		span(
+			`  ${"#".padEnd(4)}${cell("in", 10)}${cell("cached", 10)}${cell("out", 9)}${cell("calls", 7)}${cell("cost", 10)}  prompt`,
+			{ dim: true },
+		),
+	]);
+	turns.forEach((turn, i) => {
+		if (turn.calls === 0 && turn.input === 0) return;
+		lines.push([
+			span(
+				`  ${String(i + 1).padEnd(4)}${cell(fmtInt(turn.input), 10)}${cell(fmtInt(turn.cacheRead), 10)}${cell(fmtInt(turn.output), 9)}${cell(String(turn.calls), 7)}${cell(fmtCost(turn.cost) ?? "-", 10)}  `,
+			),
+			span(turn.label, { dim: true }),
+		]);
+	});
+	lines.push([
+		span(
+			`  ${"all".padEnd(4)}${cell(fmtInt(usageTotal(session)), 10)}${cell(fmtInt(session.cacheRead), 10)}${cell(fmtInt(session.output), 9)}${cell("", 7)}${cell(fmtCost(session.cost.total) ?? "-", 10)}  `,
+			{ bold: true },
+		),
+		span("session total, every branch", { dim: true }),
+	]);
+	return lines;
+}
+
+/** /context: the window and an estimate of what fills it. */
+function contextLines(tui: TuiController): StyledLine[] {
+	const context = tui.agent.getContextUsage();
+	const window = context.contextWindow;
+	const groups = new Map<string, number>();
+	const add = (label: string, tokens: number): void => {
+		groups.set(label, (groups.get(label) ?? 0) + tokens);
+	};
+	for (const message of tui.agent.messages) {
+		if (message.role === "system") {
+			add(
+				"system prompt",
+				estimateStringTokens(typeof message.content === "string" ? message.content : messageText(message)) +
+					Object.values(message.sections ?? {}).reduce(
+						(sum, section) => sum + (section ? estimateStringTokens(section) : 0),
+						0,
+					),
+			);
+			continue;
+		}
+		const label =
+			message.role === "toolResult"
+				? "tool results"
+				: message.role === "assistant"
+					? "assistant"
+					: message.role === "user"
+						? "user"
+						: message.role === "custom"
+							? "extension messages"
+							: "summaries";
+		add(label, estimateTokens(message));
+	}
+	const active = new Set(tui.agent.getActiveTools());
+	const declared = tui.agent.getAllTools().filter((tool) => active.has(tool.name) && tool.exposure === "direct");
+	add(
+		`tool definitions (${declared.length})`,
+		estimateStringTokens(
+			JSON.stringify(
+				declared.map((tool) => ({ name: tool.name, description: tool.description, parameters: tool.parameters })),
+			),
+		),
+	);
+	const lines: StyledLine[] = [plainLine("Context", { bold: true })];
+	lines.push([
+		span(
+			`  ~${fmtInt(context.tokens)} tokens${window ? ` of ${fmtInt(window)} (${Math.round((context.tokens / window) * 100)}% used)` : ""}`,
+		),
+	]);
+	if (window) {
+		const width = 40;
+		const filled = Math.min(width, Math.round((context.tokens / window) * width));
+		lines.push([span(`  ${"█".repeat(filled)}`, { color: "cyan" }), span("░".repeat(width - filled), { dim: true })]);
+	}
+	lines.push([span("  Estimated by part (heuristic):", { dim: true })]);
+	for (const [label, tokens] of groups) {
+		if (tokens === 0) continue;
+		lines.push([span(`    ${label.padEnd(26)}`, { dim: true }), span(`~${fmtInt(tokens)}`)]);
+	}
+	lines.push([span("  /compact summarizes older messages to free space.", { dim: true })]);
+	return lines;
 }
 
 export function parseCommandLine(text: string): { name: string; args: string } | undefined {
@@ -530,7 +924,7 @@ const KEYS: Array<[string, string]> = [
 	["↑ / ↓", "history; ↑ on an empty input takes queued messages back"],
 	["Ctrl+O", "expand or collapse tool details"],
 	["Ctrl+T", "show or hide reasoning"],
-	["Shift+Tab", "permission mode: supervised → accept-edits → autonomous → read-only"],
+	["Shift+Tab", "permission mode: supervised → accept-edits → autonomous → read-only (/mode for bypass)"],
 	["Ctrl+G", "edit the input in $VISUAL / $EDITOR"],
 	["Tab", "complete / commands and @ files"],
 	["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],
@@ -546,18 +940,28 @@ function helpLines(extensions: ExtensionRegistry): StyledLine[] {
 	const lines: StyledLine[] = [plainLine("Commands", { bold: true })];
 	for (const command of BUILTINS)
 		lines.push(row(`/${command.name}${command.args ? ` ${command.args}` : ""}`, command.description));
-	const extensionCommands = [...extensions.commands.values()].filter((command) => !findBuiltin(command.name));
+	const extensionCommands = [...extensions.commands].filter(([invocation]) => !findBuiltin(invocation));
 	if (extensionCommands.length > 0) {
 		lines.push(plainLine("Extension commands", { bold: true }));
-		for (const command of extensionCommands) lines.push(row(`/${command.name}`, command.description ?? ""));
+		for (const [invocation, command] of extensionCommands) lines.push(row(`/${invocation}`, command.description ?? ""));
 	}
+	lines.push(...hotkeyLines(extensions));
+	return lines;
+}
+
+/** /hotkeys (pi): the built-in keys, then extension shortcuts. */
+function hotkeyLines(extensions: ExtensionRegistry): StyledLine[] {
+	const row = (name: string, what: string): StyledLine => [
+		span(`  ${name.padEnd(26)}`, { color: "cyan" }),
+		span(what, { dim: true }),
+	];
+	const lines: StyledLine[] = [plainLine("Keys", { bold: true })];
+	for (const [key, what] of KEYS) lines.push(row(key, what));
 	const shortcuts = [...extensions.shortcuts.values()];
 	if (shortcuts.length > 0) {
 		lines.push(plainLine("Extension shortcuts", { bold: true }));
 		for (const shortcut of shortcuts) lines.push(row(shortcut.key, shortcut.description ?? shortcut.name));
 	}
-	lines.push(plainLine("Keys", { bold: true }));
-	for (const [key, what] of KEYS) lines.push(row(key, what));
 	return lines;
 }
 

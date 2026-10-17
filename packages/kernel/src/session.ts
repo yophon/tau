@@ -555,6 +555,33 @@ export class JsonlSessionRepo implements SessionRepo {
 		await this.fs.remove(metadata.filePath);
 	}
 
+	/**
+	 * Copy a session file into this directory and open the copy (pi importFromJsonl):
+	 * a taken file name gets `-1`, `-2`, …; a file already in this directory opens in place.
+	 */
+	async importFile(sourcePath: string): Promise<SessionStore> {
+		const text = await this.fs.readTextFile(sourcePath);
+		const first = text.split("\n").find((line) => line !== "");
+		if (first === undefined) throw new SessionError("invalid_session", `Invalid session file ${sourcePath}: empty`);
+		parseHeaderLine(first, sourcePath);
+		const normalize = (path: string): string => path.replaceAll("\\", "/").replace(/\/+$/, "");
+		const fileName = normalize(sourcePath).split("/").at(-1) ?? "session.jsonl";
+		const sourceDir = normalize(sourcePath).slice(0, -fileName.length - 1);
+		if (sourceDir === normalize(this.sessionsDir)) return this.loadStore(sourcePath);
+		let taken: Set<string>;
+		try {
+			taken = new Set((await this.fs.listDir(this.sessionsDir)).map((file) => file.name));
+		} catch {
+			taken = new Set();
+		}
+		const stem = fileName.endsWith(".jsonl") ? fileName.slice(0, -".jsonl".length) : fileName;
+		let target = `${stem}.jsonl`;
+		for (let n = 1; taken.has(target); n++) target = `${stem}-${n}.jsonl`;
+		const filePath = joinSessionPath(this.sessionsDir, target);
+		await this.fs.writeTextFile(filePath, text);
+		return this.loadStore(filePath);
+	}
+
 	async fork(source: SessionMetadata, options?: ForkOptions): Promise<SessionStore> {
 		if (!source.filePath) throw new SessionError("not_found", `Session ${source.id} has no file path`);
 		const sourceStore = await this.loadStore(source.filePath);

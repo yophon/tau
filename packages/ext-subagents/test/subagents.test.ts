@@ -347,3 +347,38 @@ describe("agent definitions", () => {
 		assert.equal(byName.get("worker")?.source, "builtin");
 	});
 });
+
+describe("/agents (P27)", () => {
+	it("lists every agent with its source, tools and mode; with a UI, shows the one picked", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "tau-agents-cmd-"));
+		mkdirSync(join(dir, "user"), { recursive: true });
+		writeFileSync(
+			join(dir, "user", "docs.md"),
+			"---\nname: docs\ndescription: Writes docs\ntools: read, write\nmode: accept-edits\n---\nYou write docs.",
+		);
+		const registry = await ExtensionRegistry.load([
+			createSubagentsExtension({ directories: { user: [join(dir, "user")], project: [] } }),
+		]);
+		const command = registry.commands.get("agents");
+		assert.ok(command);
+		const fs = new NodeFileSystem(dir);
+		const plain = String(
+			await command.handler("", { messages: [], capabilities: { fs, platform: {} as Platform } } as never),
+		);
+		assert.match(plain, /worker · builtin · all tools/);
+		assert.match(plain, /docs · user · tools: read, write · mode: accept-edits\n {2}Writes docs/);
+		const picked = String(
+			await command.handler("", {
+				messages: [],
+				capabilities: { fs, platform: {} as Platform },
+				ui: {
+					confirm: async () => true,
+					input: async () => undefined,
+					select: async (_title: string, options: string[]) => options.find((option) => option.startsWith("docs")),
+					notify: () => undefined,
+				},
+			} as never),
+		);
+		assert.match(picked, /^docs \(user, .*docs\.md\)\nWrites docs\n\nYou write docs\.$/);
+	});
+});

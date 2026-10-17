@@ -85,6 +85,7 @@ export {
 	type BoundaryDraft,
 	type BoundaryResult,
 	type BoundaryState,
+	type CommandCompletion,
 	type CompactionReason,
 	type ContextEvent,
 	type ContextEventResult,

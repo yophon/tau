@@ -120,9 +120,9 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
   - `controller.ts`：不依赖 Ink 的控制器，持有 Agent、会话、扩展注册表，跑 prompt 与任务（turn / compaction / bash / navigate / reload，一次一个），把事件和扩展渲染结果派发成 action；会话切换清屏并按 `replay.ts` 重放对话。`store.ts` 同步 reduce、按帧通知订阅者。
   - `keymap.ts`（纯路由）、`input/`（字素簇编辑器、括号粘贴解码、粘贴折叠、`~/.tau/history.jsonl` 历史、`/` 与 `@` 补全）、`render/`（markdown、diff、按工具的视图、审批正文、区块与底部区）、`commands.ts`（内置命令表，扩展命令并入、内置优先）、`startup.ts`（启动期信任对话框）、`console-capture.ts`、`clipboard.ts`。
 - 交互面：`›` 用户、markdown 回复、`● 工具(参数)` 加 `⎿` 结果（默认折叠，Ctrl+O 只影响之后的输出）、审批面板（按工具显示正文，允许一次 / 总是允许 / 拒绝 / 拒绝并告诉它怎么做）、活动行、一行状态栏、按状态变化的提示行。选择器、审批、`ctx.ui` 对话框占输入框的位置，不浮动。键位见 D31；Shift+Tab 经内核 `Agent.setPermissionMode()` 切档位。
-- 命令：`/help` `/compact` `/model` `/thinking` `/name` `/new` `/resume`（`/sessions`）`/tree` `/fork` `/clone` `/session` `/copy` `/export` `/trust` `/follow` `/reasoning` `/tools` `/diagnostics` `/reload` `/clear` `/quit`；`!cmd` 记入上下文、`!!cmd` 只显示。
+- 命令（P27 补全）：`/help` `/hotkeys` `/compact` `/context` `/usage`（`/cost`）`/model` `/thinking` `/mode` `/settings` `/tools`（选择器开关工具；`expand|collapse` 管详情）`/name`（`/rename`）`/new` `/resume`（`/sessions`）`/tree` `/fork` `/clone` `/import` `/export`（缺省 HTML，`export-html.ts`；`.jsonl` 写 JSONL）`/session`（`/status`）`/copy` `/init` `/trust` `/follow` `/reasoning` `/diagnostics` `/reload` `/clear` `/quit`；内置扩展带 `/todos` `/memory` `/remember` `/agents` `/tasks` `/skills` `/skill:<名字>` `/mcp`。`/命令 ` 之后的文字按命令的补全器补全（内置命令的 `complete`、扩展的 `getArgumentCompletions`，异步结果缓存后重画菜单）。`!cmd` 记入上下文、`!!cmd` 只显示。
 - 宿主契约（P23e，照旧）：先挂宿主动作再发 `session_start`（启动与 `/reload`）；压缩、bash、导航期间扩展的 `submitPrompt` 抛 `busy`，轮收尾时的提交与 `resumeTurn` 排到当前任务之后；run 结束时 `agent.clearQueue()`，排队文本回填编辑器；`/tree` 摘要失败可选择不摘要导航。
-- 扩展 surfaces：message / entry / tool renderer、widgets（输入框上下）、header / footer items（进状态栏）、shortcuts、diagnostics、`ctx.ui` confirm / select / input / notify；错误隔离降级。组件只渲染（D31）。
+- 扩展 surfaces：message / entry / tool renderer、widgets（输入框上下）、header / footer items（进状态栏）、shortcuts、diagnostics、`ctx.ui` confirm / select / input / notify / editor（外部编辑器）；错误隔离降级。组件只渲染（D31）。
 - 终端只属于 TUI：运行期间 `console.*` 与 stderr 写 `~/.tau/logs/tui-<日期>.log`，警告、错误、stderr 各显示一行（相同的连续行合并）。
 - 测试：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent（Windows 本机可跑）；`npm run smoke:tui` 在 tmux 里跑九个场景（CI；本机可在 WSL 里跑，`SMOKE_ONLY` 过滤）。Themes 已否决（2026-07-20）。
 

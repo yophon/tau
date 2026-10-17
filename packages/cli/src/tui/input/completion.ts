@@ -1,8 +1,9 @@
 /**
  * Completion engine (ported from yo-agent surface-cli input/completion.ts):
- * `/` at the start of the input completes commands, `@` anywhere completes
- * file paths (fuzzy). Candidates come from the caller; this module only parses
- * the token and filters.
+ * `/` at the start of the input completes commands, the text after
+ * "/command " completes that command's arguments (pi getArgumentCompletions),
+ * `@` anywhere completes file paths (fuzzy). Candidates come from the caller;
+ * this module only parses the token and filters.
  */
 export interface CompletionItem {
 	/** Replaces the token when accepted. */
@@ -12,7 +13,7 @@ export interface CompletionItem {
 }
 
 export interface Completion {
-	kind: "slash" | "file";
+	kind: "slash" | "argument" | "file";
 	/** The replaced token spans [tokenStart, tokenStart + token.length). */
 	tokenStart: number;
 	token: string;
@@ -52,6 +53,8 @@ export interface CompletionSources {
 	commands: ReadonlyArray<{ name: string; description: string }>;
 	/** Relative file paths; undefined while still loading. */
 	files: readonly string[] | undefined;
+	/** Completions for the arguments of command `name` (no slash); undefined = none (yet). */
+	argumentCompletions?: (name: string, prefix: string) => readonly CompletionItem[] | undefined;
 }
 
 export function computeCompletion(text: string, cursor: number, sources: CompletionSources): Completion | undefined {
@@ -68,6 +71,17 @@ export function computeCompletion(text: string, cursor: number, sources: Complet
 			hint: sources.commands.find((command) => command.name === `/${name}`)?.description,
 		}));
 		return items.length > 0 ? { kind: "slash", tokenStart: 0, token: `/${query}`, items } : undefined;
+	}
+
+	// Arguments: one line, cursor at the end; the item value replaces everything after "/name ".
+	const argument = cursor === text.length ? before.match(/^\/([\w:-]+) ([^\n]*)$/) : null;
+	if (argument && sources.argumentCompletions) {
+		const name = argument[1] ?? "";
+		const prefix = argument[2] ?? "";
+		const items = sources.argumentCompletions(name, prefix)?.slice(0, COMPLETION_LIMIT);
+		if (items && items.length > 0) {
+			return { kind: "argument", tokenStart: before.length - prefix.length, token: prefix, items: [...items] };
+		}
 	}
 
 	const file = before.match(/(?:^|\s)@([^\s@]*)$/);

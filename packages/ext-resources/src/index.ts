@@ -380,6 +380,13 @@ export function substituteArgs(content: string, args: string[]): string {
 	);
 }
 
+/** `/skill:<name> [args]` as the user message (pi _expandSkillCommand). */
+export function formatSkillInvocation(skill: Skill, args = ""): string {
+	const baseDir = skill.filePath.replace(/[\\/][^\\/]*$/, "");
+	const block = `<skill name="${skill.name}" location="${skill.filePath}">\nReferences are relative to ${baseDir}.\n\n${skill.content.trim()}\n</skill>`;
+	return args.trim() === "" ? block : `${block}\n\n${args.trim()}`;
+}
+
 export function formatPromptTemplateInvocation(template: PromptTemplate, args: string[] = []): string {
 	return substituteArgs(template.content, args);
 }
@@ -400,6 +407,23 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 			const resources = await load(ctx);
 			const block = formatSkillsForSystemPrompt(resources.skills);
 			return block === "" ? undefined : { systemPrompt: `${event.systemPrompt}\n\n${block}`.trim() };
+		});
+
+		api.registerCommand("skills", {
+			description: "List the loaded skills (/skill:<name> runs one)",
+			handler: async (_args, ctx) => {
+				const resources = await load(ctx);
+				if (resources.skills.length === 0) {
+					return `No skills loaded. Skill paths: ${resources.skillPaths.length === 0 ? "none" : resources.skillPaths.join(", ")}`;
+				}
+				return [
+					`Skills (${resources.skills.length}) — /skill:<name> [request] runs one`,
+					...resources.skills.map(
+						(skill) =>
+							`${skill.name}${skill.disableModelInvocation ? " (manual only)" : ""}: ${skill.description}\n  ${skill.filePath}`,
+					),
+				].join("\n");
+			},
 		});
 
 		api.registerDiagnostic("resources", {
@@ -462,6 +486,13 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 							action: "prompt",
 							text: formatPromptTemplateInvocation(template, parseCommandArgs(args)),
 						}),
+					});
+				}
+				// `/skill:<name> [args]` sends the skill to the model (pi _expandSkillCommand).
+				for (const skill of resources.skills) {
+					api.registerCommand(`skill:${skill.name}`, {
+						description: skill.description,
+						handler: (args) => ({ action: "prompt", text: formatSkillInvocation(skill, args) }),
 					});
 				}
 				for (const diagnostic of resources.diagnostics) {

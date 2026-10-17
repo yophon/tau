@@ -239,8 +239,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 - examples/flutter/mcp-server (not an npm package): `--host` now defaults to
   `127.0.0.1` (P19). LAN access needs an explicit `--host 0.0.0.0`; the new
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
+- CLI TUI (P27): `/tools` without arguments opens a picker that turns tools on
+  and off (it toggled tool details; `/tools expand|collapse` and Ctrl+O still
+  do that). `/export` writes HTML unless the path ends in `.jsonl` (pi).
 
 ### Added
+- CLI TUI (P27): slash commands `/mode` (picker or argument; bypass asks
+  first), `/usage` (`/cost`: tokens and cost per turn), `/context` (what
+  fills the window), `/import <file.jsonl>` (pi), `/init` (the model writes
+  AGENTS.md), `/settings`, `/hotkeys` (pi), aliases `/status` and
+  `/rename`; `/todos` and `/memory [edit|clear]` in the CLI's built-in
+  extensions; `/agents` in ext-subagents; `/skills` and `/skill:<name>`
+  (pi's skill block) in ext-resources; `/mcp [reconnect <server>]` in the MCP
+  extensions. Typing after `/command ` completes its arguments.
+- Kernel (P27, pi): `RegisteredCommand.getArgumentCompletions`,
+  `UiCapability.editor` (optional; the TUI opens the external editor),
+  `JsonlSessionRepo.importFile()` (pi importFromJsonl); `CommandCompletion` is
+  exported.
 - Kernel (P26a, pi 1.2.0): grep, find and ls tools with pi's parameters, output
   and limit notices, implemented in pure ES over the injected FileSystem (no
   rg/fd), so they work on every host; they skip `.git` and `node_modules` and

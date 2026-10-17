@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；**当前工作 = 发 0.4.0（含 P22–P26）**；网关草案待定）
+> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；**当前工作 = 发 0.4.0（含 P22–P27）**；网关草案待定）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -252,6 +252,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 规格书：[specs/phase-26-yoagent-capabilities.md](specs/phase-26-yoagent-capabilities.md)（2026-10-17 确认，五步 26a–26e）。编码工具对齐 pi 1.2.0（grep、find、ls 纯 ES 实现，edit 多段，read 读图片）；子代理重写（pi 示例的单个、并行、串联与 agent 定义，加 yo-agent 的后台模式、只收紧、`/tasks`）；todo_write 与 TUI 清单；长期记忆（memory_write、`#` 快捷记忆）；accept-edits 档位。
 
 **完成记录**：全量 531 个测试，528 通过、3 跳过；smoke-tui 十个场景（新增子代理）通过。26a（36f028e）grep、find、ls 纯 ES 实现（照 `.gitignore`），edit 多段，read 读图片；26b（4b053bc、7247cfc）subagent 重写：单个、并行、串联、后台，Markdown agent 定义，只收紧、禁止递归、`/tasks`，后台审批不随父会话一轮结束结清；26c（f5c0ae3）todo_write 与 TUI 清单、长期记忆；26d（0e0711d）accept-edits 档位；决策 D32。真实 DeepSeek 在真终端里完成待办、检索、一次改两处、并行与后台子代理、记忆跨会话生效。偏差见规格书「实施记录」。
+
+## Phase 27 ✅ 斜杠命令补全（2026-10-17）
+
+规格书：[specs/phase-27-slash-commands.md](specs/phase-27-slash-commands.md)。用户问 Shift+Tab 之外怎么切档位，随后要求「补全下斜杠命令，该有的功能都要有」。对照 pi 1.2.0、yo-agent 补齐：`/mode` `/usage` `/context` `/tools` 选择器 `/import` `/export` HTML `/init` `/settings` `/hotkeys`，扩展命令 `/todos` `/memory` `/agents` `/skills` `/skill:<名字>` `/mcp`，命令参数补全（内核 `getArgumentCompletions`）。不做 login/logout、share、bug、scoped-models、changelog（理由见规格书）。
 
 ## 产品层 ⬜ 待定
 

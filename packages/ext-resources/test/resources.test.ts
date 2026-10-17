@@ -231,3 +231,39 @@ test("a SKILL.md with a BOM loads; a long first line becomes a 60-char descripti
 		assert.ok(prompts.diagnostics.some((diagnostic) => diagnostic.code === "invalid_frontmatter"));
 	});
 });
+
+test("/skills lists skills; /skill:<name> sends the skill block and the request (pi _expandSkillCommand, P27)", async () => {
+	await withTempDir(async (dir) => {
+		const skills = join(dir, "skills");
+		await mkdir(join(skills, "review"), { recursive: true });
+		await writeFile(join(skills, "review", "SKILL.md"), "---\ndescription: Review a diff\n---\nRead the diff first.\n");
+
+		const registry = await ExtensionRegistry.load([
+			createResourcesExtension({ includeDefaults: false, skillPaths: [skills] }),
+		]);
+		const agent = new Agent({
+			config: { baseUrl: "https://fake.test/v1", model: "fake" },
+			platform: fakePlatform([]),
+			extensions: registry,
+			capabilities: { fs: new NodeFileSystem(dir), paths: { cwd: dir } },
+		});
+		await registry.notifySessionStart("startup", agent.extensionContext());
+
+		const list = await registry.commands.get("skills")?.handler("", agent.extensionContext());
+		assert.match(String(list), /Skills \(1\)/);
+		assert.match(String(list), /review: Review a diff/);
+
+		const command = registry.commands.get("skill:review");
+		assert.ok(command);
+		assert.equal(command.description, "Review a diff");
+		const result = (await command.handler("check PR 12", agent.extensionContext())) as { action: string; text: string };
+		assert.equal(result.action, "prompt");
+		const file = join(skills, "review", "SKILL.md");
+		assert.equal(
+			result.text,
+			`<skill name="review" location="${file}">\nReferences are relative to ${join(skills, "review")}.\n\nRead the diff first.\n</skill>\n\ncheck PR 12`,
+		);
+		const bare = (await command.handler("", agent.extensionContext())) as { text: string };
+		assert.ok(bare.text.endsWith("</skill>"));
+	});
+});

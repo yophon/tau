@@ -484,3 +484,44 @@ test("with serverNotifications, tools/list_changed on the GET stream withdraws a
 	assert.equal(withdrawn?.isError, true);
 	assert.match(toolResultText(withdrawn ?? { content: [] }), /no longer available/);
 });
+
+test("/mcp lists servers with state and tool count; reconnect brings an offline server back (P27)", async () => {
+	const requests: RecordedRequest[] = [];
+	let reachable = false;
+	const scripted = scriptedHandler({ requests, tools: [ECHO_TOOL] });
+	const platform = fakePlatform(async (url, init) => {
+		if (!reachable && url.startsWith("http://down.test")) throw new Error("connect ECONNREFUSED");
+		return scripted(url, init);
+	});
+	const { handle, registry } = await loadExtension({
+		servers: [
+			{ name: "up", url: "http://up.test" },
+			{ name: "down", url: "http://down.test" },
+		],
+		platform,
+	});
+	await handle.connect();
+	const command = registry.commands.get("mcp");
+	assert.ok(command);
+	const status = String(await command.handler("", ctx));
+	assert.match(status, /MCP servers \(2\)/);
+	assert.match(status, /● up \(http\) · connected · 1 tool/);
+	assert.match(status, /✗ down \(http\) · offline: .*ECONNREFUSED/);
+
+	assert.deepEqual(
+		(await command.getArgumentCompletions?.("rec"))?.map((item) => item.value),
+		["reconnect "],
+	);
+	assert.deepEqual(
+		(await command.getArgumentCompletions?.("reconnect d"))?.map((item) => item.value),
+		["reconnect down"],
+	);
+	assert.equal(await command.getArgumentCompletions?.("zzz"), null);
+
+	reachable = true;
+	assert.equal(String(await command.handler("reconnect down", ctx)), 'Reconnected to "down" (1 tools).');
+	assert.ok(registry.tools.get("mcp__down__echo"));
+	assert.match(String(await command.handler("", ctx)), /● down \(http\) · connected/);
+	assert.equal(String(await command.handler("reconnect nope", ctx)), 'No MCP server named "nope".');
+	assert.equal(String(await command.handler("restart", ctx)), "Usage: /mcp [reconnect <server>]");
+});
