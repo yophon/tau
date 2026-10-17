@@ -372,6 +372,7 @@ export class ToolBatchRunner {
 					...(result.details !== undefined ? { details: result.details } : {}),
 					isError: result.isError === true,
 					...(result.usage ? { usage: result.usage } : {}),
+					...(result.structuredContent !== undefined ? { structuredContent: result.structuredContent } : {}),
 				},
 				ctx,
 			);
@@ -381,6 +382,7 @@ export class ToolBatchRunner {
 				...(finalResult.details !== undefined ? { details: finalResult.details } : {}),
 				isError: finalResult.isError,
 				...(finalResult.usage ? { usage: finalResult.usage } : {}),
+				...(finalResult.structuredContent !== undefined ? { structuredContent: finalResult.structuredContent } : {}),
 				...(result.terminate ? { terminate: true } : {}),
 			};
 		}

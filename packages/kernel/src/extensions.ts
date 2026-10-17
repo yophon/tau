@@ -12,12 +12,14 @@ import type {
 	Usage,
 	UserContent,
 } from "./messages.ts";
-import type { ChatStreamEvent, JsonSchema } from "./openai.ts";
+import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
 import { getCurrentSystemMessage, type SessionProjection } from "./projection.ts";
 import type { SessionEntry } from "./session.ts";
-import { assertToolSchema, type Tool, type ToolResult } from "./tools.ts";
+import { assertToolSchema, type Tool, type ToolInfo, type ToolResult } from "./tools.ts";
+
+export type { ToolInfo };
 
 /**
  * The extension API deliberately mirrors pi's extension API
@@ -518,14 +520,6 @@ export type InputEventResult =
 /** What steer()/followUp() did with the input (pi 0.99.0 QueuedInputDisposition). */
 export type QueuedInputDisposition = "queued" | "handled";
 
-/** A tool as extensions see it through getAllTools() (the pi ToolInfo subset tau has; exposure/namespace come with P24). */
-export interface ToolInfo {
-	name: string;
-	description: string;
-	parameters: JsonSchema;
-	source: "builtin" | "extension";
-}
-
 /** Fired before a tool executes. To modify arguments, mutate `event.input` in place. */
 export interface ToolCallEvent {
 	type: "tool_call";
@@ -557,12 +551,22 @@ export interface ToolResultEvent {
 	isError: boolean;
 	/** Usage from the tool execution itself, if any. */
 	usage?: Usage;
+	/**
+	 * Machine-readable result for tools that declare an `outputSchema`. Handlers that
+	 * redact `content` should also replace this; replacing `content` alone drops it.
+	 */
+	structuredContent?: JsonValue;
 }
 
-/** Partial overrides of a tool result (pi ToolResultEventResult, minus structuredContent until P24). */
+/**
+ * Partial overrides of a tool result (pi ToolResultEventResult). Omitted fields stay,
+ * except that replacing `content` without returning `structuredContent` drops the
+ * structured content, because it may no longer match.
+ */
 export interface ToolResultEventResult {
 	content?: (TextContent | ImageContent)[];
 	details?: JsonValue;
+	structuredContent?: JsonValue;
 	isError?: boolean;
 	usage?: Usage;
 }
@@ -871,14 +875,18 @@ export interface ExtensionAPI {
 
 	/** Names of the active tools — the ones declared to the model (pi). */
 	getActiveTools(): string[];
-	/** Every registered tool, active or not (pi; the ToolInfo subset tau has). */
+	/** Every registered tool, active or not, with exposure and namespace (pi). */
 	getAllTools(): ToolInfo[];
-	/** Set the active tools by name; unknown names are ignored. Takes effect from the next request (pi). */
+	/**
+	 * Set the active tools by name; unknown and `hidden` tools are ignored. Takes effect
+	 * from the next request (pi). `codemode`/`deferred` tools stay callable whether active or not.
+	 */
 	setActiveTools(toolNames: string[]): void;
 
 	/**
-	 * Register a tool the model can call. Same-name registrations override
-	 * (later wins). `risk` self-declares the tool's risk for the permission
+	 * Register a tool the model can call. Across extensions the first registration of
+	 * a name wins (later ones become warnings); the same extension registering a name
+	 * again replaces its tool. `risk` self-declares the tool's risk for the permission
 	 * policy (P15): low skips approval in supervised mode, high forces it in
 	 * autonomous mode; undeclared extension tools default to medium. Built-in
 	 * tool names (read/write/edit/bash) keep their built-in classification.
@@ -1217,9 +1225,11 @@ export class ExtensionRegistry {
 			on: on as ExtensionAPI["on"],
 			registerTool: (tool, options) => {
 				assertToolSchema(tool);
-				// First registration wins; a later one is reported, not applied (pi detectExtensionConflicts).
+				// First registration wins across extensions; a later one is reported, not applied
+				// (pi detectExtensionConflicts). The same extension registering the name again
+				// replaces its tool (pi keeps tools per extension), e.g. to withdraw it as hidden.
 				const owner = this.toolOwners.get(tool.name);
-				if (owner !== undefined) {
+				if (owner !== undefined && owner !== name) {
 					warnings.push(`Tool "${tool.name}" conflicts with ${owner}`);
 					return;
 				}
@@ -1423,16 +1433,27 @@ export class ExtensionRegistry {
 	async runToolResult(
 		event: ToolResultEvent,
 		ctx: ExtensionContext,
-	): Promise<Pick<ToolResultEvent, "content" | "details" | "isError" | "usage">> {
+	): Promise<Pick<ToolResultEvent, "content" | "details" | "isError" | "usage" | "structuredContent">> {
 		for (const handler of [...this.handlers.tool_result]) {
 			const result = await handler(event, ctx);
 			if (!result) continue;
-			if (result.content !== undefined) event.content = result.content;
+			if (result.content !== undefined) {
+				event.content = result.content;
+				// New content without new structured content: the old one may no longer match (pi).
+				if (result.structuredContent === undefined) delete event.structuredContent;
+			}
+			if (result.structuredContent !== undefined) event.structuredContent = result.structuredContent;
 			if (result.details !== undefined) event.details = result.details;
 			if (result.isError !== undefined) event.isError = result.isError;
 			if (result.usage !== undefined) event.usage = result.usage;
 		}
-		return { content: event.content, details: event.details, isError: event.isError, usage: event.usage };
+		return {
+			content: event.content,
+			details: event.details,
+			isError: event.isError,
+			usage: event.usage,
+			...(event.structuredContent !== undefined ? { structuredContent: event.structuredContent } : {}),
+		};
 	}
 
 	/** Run user_bash handlers. Rewrites chain; cancel short-circuits. */

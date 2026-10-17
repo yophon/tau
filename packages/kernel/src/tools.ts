@@ -23,6 +23,86 @@ export interface ToolResult {
 	terminate?: boolean;
 	/** Usage of model calls the tool made itself (e.g. a subagent run); counted in session totals, not context (pi 0.81.0). */
 	usage?: Usage;
+	/**
+	 * Machine-readable result for tools that declare an `outputSchema` (pi 0.99.0). It
+	 * may come with an error result too. Never sent to the model: codemode scripts
+	 * receive it instead of the text content.
+	 */
+	structuredContent?: JsonValue;
+}
+
+/**
+ * How the model reaches a tool (pi ToolExposure). "Callable" means callable from
+ * other tools through `ctx.executeTool()`, as the codemode tool does.
+ *
+ * - `direct`: declared to the model while active, and callable while active.
+ * - `model-only`: declared to the model while active, never callable. For
+ *   orchestrating or interactive tools.
+ * - `codemode`: callable whenever registered. Not declared to the model unless
+ *   explicitly activated. Codemode tools list it in their description.
+ * - `deferred`: like `codemode`, but codemode tools do not list it; tool search can find it.
+ * - `hidden`: registered but unreachable. Activating it has no effect.
+ *
+ * `direct` and `model-only` tools are activated when they are registered; the
+ * others are not. The active tool set is the set declared to the model.
+ */
+export type ToolExposure = "direct" | "model-only" | "codemode" | "deferred" | "hidden";
+
+/** A group of related tools, such as the tools of one MCP server (pi 1.2.0). Codemode tools list them together. */
+export interface ToolNamespace {
+	/** For example `mcp__docs`. */
+	name: string;
+	/** Other names tools look the namespace up by (codemode's describeNamespace()), for example `docs`. */
+	aliases?: readonly string[];
+	/** Short summary shown once with the group in model-facing tool listings. */
+	description?: string;
+	/** Longer usage guidance, such as MCP server instructions; returned on request, not listed. */
+	instructions?: string;
+}
+
+/**
+ * The tools of an agent as {@link Tool.prepareLoadout} sees them (pi ToolLoadout).
+ * Deviation: entries are ToolInfo (no `execute`) instead of pi's AgentTool, so the
+ * only way for a tool to run another is `ctx.executeTool()` and its gates (D20).
+ */
+export interface ToolLoadout {
+	/** Tools declared to the model (the active tools), in order, with their original descriptions. */
+	readonly declared: readonly ToolInfo[];
+	/** Tools callable through `ctx.executeTool()`. */
+	readonly callable: readonly ToolInfo[];
+	/** Every registered tool. */
+	readonly registered: readonly ToolInfo[];
+	getExposure(name: string): ToolExposure;
+	getNamespace(name: string): ToolNamespace | undefined;
+	/** A tool's `promptGuidelines`. */
+	getPromptGuidelines(name: string): readonly string[];
+}
+
+/** Changes {@link Tool.prepareLoadout} makes to what the model sees (pi ToolLoadoutChanges). */
+export interface ToolLoadoutChanges {
+	/** Model-facing descriptions of declared tools, by tool name. */
+	descriptions?: Readonly<Record<string, string>>;
+	/**
+	 * Declared tools whose declarations requests leave out. They stay active and
+	 * callable, and the transcript still declares them, so the active set survives
+	 * `/tree` and resume.
+	 */
+	hiddenDeclarations?: readonly string[];
+}
+
+/** A tool without `execute`, as extensions see it: getAllTools(), ToolLoadout, ctx.tools (pi ToolInfo). */
+export interface ToolInfo {
+	name: string;
+	description: string;
+	parameters: JsonSchema;
+	/** Deviation: pi's ToolInfo has no outputSchema; tau hands out ToolInfo where pi hands out AgentTool. */
+	outputSchema?: JsonSchema;
+	exposure: ToolExposure;
+	namespace?: ToolNamespace;
+	promptSnippet?: string;
+	promptGuidelines?: readonly string[];
+	reachesTools?: (input: Record<string, unknown>) => "all" | readonly string[];
+	source: "builtin" | "extension";
 }
 
 export type ToolUpdateStream = "stdout" | "stderr";
@@ -45,12 +125,75 @@ export interface Tool extends ToolDefinition {
 	 * mirroring pi: write/edit rely on the per-file mutation queue instead.
 	 */
 	executionMode?: ToolExecutionMode;
+	/**
+	 * JSON Schema of `structuredContent` in successful results (pi 0.99.0). Tools that
+	 * declare it should always set `structuredContent`.
+	 */
+	outputSchema?: JsonSchema;
+	/** How the model reaches the tool. Default: `"direct"`. See {@link ToolExposure}. */
+	exposure?: ToolExposure;
+	/** Group the tool belongs to, for example its MCP server. */
+	namespace?: ToolNamespace;
+	/**
+	 * For tools that reach other tools (codemode calls them, tool_search loads them):
+	 * which tools a call with `input` may reach — `"all"`, or words of the input
+	 * that may name a tool or namespace. Extensions that register tools late (MCP
+	 * servers still connecting) use it from their tool_call handler.
+	 */
+	reachesTools?: (input: Record<string, unknown>) => "all" | readonly string[];
+	/**
+	 * Whether registering the tool activates it. Default: true for `direct` and
+	 * `model-only` tools; other exposures are never activated on registration.
+	 */
+	defaultActive?: boolean;
+	/**
+	 * Adjust how the loadout is presented to the model while this tool is active
+	 * (pi 0.99.0). Called whenever the request's tools are assembled; tools that
+	 * orchestrate others list the callable tools in their own description.
+	 */
+	prepareLoadout?: (loadout: ToolLoadout) => ToolLoadoutChanges | undefined;
+	/** One-line snippet for a host's tool list in the system prompt (pi). */
+	promptSnippet?: string;
+	/** Guideline bullets a host adds to the system prompt while the tool is declared (pi). */
+	promptGuidelines?: string[];
 	execute(
 		args: Record<string, unknown>,
 		signal?: TauAbortSignal,
 		onUpdate?: (partialOutput: string, stream?: ToolUpdateStream) => void,
 		ctx?: ExtensionContext,
 	): Promise<ToolResult>;
+}
+
+/** A tool's exposure; absent = `"direct"` (pi). */
+export function toolExposure(tool: Pick<Tool, "exposure">): ToolExposure {
+	return tool.exposure ?? "direct";
+}
+
+/** Whether activating the tool declares it to the model (pi _isDeclarable). */
+export function isDeclarable(tool: Pick<Tool, "exposure">): boolean {
+	const exposure = toolExposure(tool);
+	return exposure === "direct" || exposure === "model-only";
+}
+
+/** Whether registering the tool activates it (pi _isActivatedOnRegistration). */
+export function isActivatedOnRegistration(tool: Pick<Tool, "exposure" | "defaultActive">): boolean {
+	return isDeclarable(tool) && tool.defaultActive !== false;
+}
+
+/** Tool information without `execute` (a copy: extensions cannot mutate the registered tool through it). */
+export function toToolInfo(tool: Tool, source: ToolInfo["source"]): ToolInfo {
+	return {
+		name: tool.name,
+		description: tool.description,
+		parameters: tool.parameters,
+		...(tool.outputSchema ? { outputSchema: tool.outputSchema } : {}),
+		exposure: toolExposure(tool),
+		...(tool.namespace ? { namespace: tool.namespace } : {}),
+		...(tool.promptSnippet ? { promptSnippet: tool.promptSnippet } : {}),
+		...(tool.promptGuidelines ? { promptGuidelines: [...tool.promptGuidelines] } : {}),
+		...(tool.reachesTools ? { reachesTools: tool.reachesTools } : {}),
+		source,
+	};
 }
 
 /** UTF-8 byte length of a code point (pure ES: no TextEncoder on bare engines). */

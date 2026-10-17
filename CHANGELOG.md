@@ -5,6 +5,13 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- Kernel (P24b, pi 0.99.0): the active tool set is explicit, as in pi. Registering a
+  `direct` or `model-only` tool activates it (unless `defaultActive: false`); other
+  exposures never activate on registration. Resuming a session or navigating with
+  `/tree` restores the active set the transcript declares (tools that register later,
+  such as MCP tools, activate when they do), so a resumed session no longer
+  re-activates every registered tool. An extension registering a tool name it already
+  registered replaces its tool (across extensions the first registration still wins).
 - ext-mcp / ext-mcp-http (P24a, pi 0.99.2): MCP tools are named
   `mcp__<server>__<tool>` (was `<server>_<tool>`); characters outside
   `[A-Za-z0-9_]` become `_`, and tools whose names sanitize alike or exceed 64
@@ -201,6 +208,14 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P24b, pi 0.99.0–1.2.0): tool `exposure` (`direct` / `model-only` /
+  `codemode` / `deferred` / `hidden`), `namespace` (with `aliases`), `outputSchema` and
+  `ToolResult.structuredContent` (a `tool_result` handler that replaces `content`
+  without returning `structuredContent` drops it), `reachesTools`, `defaultActive`,
+  `prepareLoadout` (rewrite declared descriptions, hide declarations from requests
+  while keeping the tools callable and recorded), `promptSnippet`/`promptGuidelines`.
+  `getAllTools()` reports exposure and namespace; new `Agent.getCallableTools()` and
+  `Agent.getDeclaredTools()`.
 - CLI (P23e): `--tools/-t <list>` (names pick built-ins, `*` all, `+name`/`-name`)
   and `--no-tools`; `/tree <id> --no-summary` in the REPL and a no-summary
   fallback in the TUI when a branch summary fails; REPL `/compact` and `/tree`

@@ -25,7 +25,6 @@ import {
 	type QueuedInputDisposition,
 	type ReadonlySessionManager,
 	type ThinkingLevel,
-	type ToolInfo,
 	type TreePreparation,
 	type UiCapability,
 } from "./extensions.ts";
@@ -76,10 +75,15 @@ import {
 	assertToolSchema,
 	errorResult,
 	hasToolSchema,
+	isActivatedOnRegistration,
 	type Tool,
 	type ToolExecutionMode,
+	type ToolInfo,
+	type ToolLoadout,
 	type ToolResult,
 	type ToolUpdateStream,
+	toolExposure,
+	toToolInfo,
 } from "./tools.ts";
 import { uuidv7 } from "./uuid.ts";
 
@@ -352,8 +356,16 @@ export class Agent {
 	private readonly isProjectTrusted: (() => boolean) | undefined;
 	/** Runs tool batches: preflight (hooks, validation, policy, approval), execution, result hooks. */
 	private readonly toolRunner: ToolBatchRunner;
-	/** Registered tools switched off by setActiveTools (the rest, including later registrations, are active). */
-	private inactiveTools = new Set<string>();
+	/** The active tools by name: declared to the model (pi agent.state.tools). */
+	private activeNames = new Set<string>();
+	/** Each registered tool as last seen, to activate new registrations (pi _refreshToolRegistry). */
+	private seenTools = new Map<string, Tool>();
+	/** Active tools restored from the transcript that are not registered yet (pi _pendingToolNames). */
+	private pendingTools = new Set<string>();
+	/** Set once a host or extension chose the active tools; the initial transcript restore then yields to it. */
+	private toolsChosen = false;
+	/** Declared tools that prepareLoadout hooks leave out of requests (pi _hiddenDeclarations). */
+	private hiddenDeclarations: ReadonlySet<string> = new Set();
 	/**
 	 * True only while the LLM turn loop is in flight — pi's isStreaming. Hooks
 	 * that fire before the loop (input, before_agent_start) see false, so their
@@ -377,7 +389,10 @@ export class Agent {
 		this.projection = Object.freeze(seed);
 		if (options.session) {
 			this.session = options.session;
-			this.enqueueBackground(() => this.refresh());
+			this.enqueueBackground(async () => {
+				await this.refresh();
+				this.restoreToolsFromTranscript({ initial: true });
+			});
 		} else {
 			const store = new InMemorySessionStore(
 				{ id: uuidv7(this.platform.randomBytes), cwd: "/", timestamp: new Date().toISOString() },
@@ -388,6 +403,7 @@ export class Agent {
 				this.enqueueBackground(async () => {
 					for (const message of seed) await this.session.recordMessage(message);
 					await this.refresh();
+					this.restoreToolsFromTranscript({ initial: true });
 				});
 			}
 		}
@@ -522,37 +538,172 @@ export class Agent {
 		return tools;
 	}
 
-	/** The active tools: declared to the model and callable. A tool registered later is active (pi "direct"). */
-	private activeTools(): Map<string, Tool> {
+	/**
+	 * Take new registrations into the active set (pi _refreshToolRegistry): a tool
+	 * restored from the transcript becomes active once registered; a new tool that is
+	 * activated on registration joins; a re-registered tool keeps its state unless it
+	 * newly became activated on registration (e.g. from `hidden` back to `direct`).
+	 */
+	private syncRegistrations(): Map<string, Tool> {
 		const tools = this.currentTools();
-		for (const name of this.inactiveTools) tools.delete(name);
+		for (const [name, tool] of tools) {
+			const previous = this.seenTools.get(name);
+			if (previous === tool) continue;
+			this.seenTools.set(name, tool);
+			if (this.pendingTools.has(name) && toolExposure(tool) !== "hidden") {
+				this.pendingTools.delete(name);
+				this.activeNames.add(name);
+			} else if (isActivatedOnRegistration(tool) && !(previous && isActivatedOnRegistration(previous))) {
+				this.activeNames.add(name);
+			}
+		}
+		for (const name of this.seenTools.keys()) {
+			if (!tools.has(name)) {
+				this.seenTools.delete(name);
+				this.activeNames.delete(name);
+			}
+		}
 		return tools;
 	}
 
-	/** Names of the active tools (pi getActiveTools). */
+	/** The active tools (declared to the model, in registration order); `hidden` tools never are (pi). */
+	private activeTools(): Map<string, Tool> {
+		const active = new Map<string, Tool>();
+		for (const [name, tool] of this.syncRegistrations()) {
+			if (this.activeNames.has(name) && toolExposure(tool) !== "hidden") active.set(name, tool);
+		}
+		return active;
+	}
+
+	/** Names of the active tools, the ones declared to the model (pi getActiveTools). */
 	getActiveTools(): string[] {
 		return [...this.activeTools().keys()];
 	}
 
-	/** Every registered tool, active or not (pi getAllTools, the ToolInfo subset tau has). */
+	private toolInfo(tool: Tool): ToolInfo {
+		return toToolInfo(tool, this.extensions?.tools.get(tool.name) === tool ? "extension" : "builtin");
+	}
+
+	/** Every registered tool, active or not (pi getAllTools). */
 	getAllTools(): ToolInfo[] {
-		const extensionTools = this.extensions?.tools;
-		return [...this.currentTools().values()].map((tool) => ({
-			name: tool.name,
-			description: tool.description,
-			parameters: tool.parameters,
-			source: extensionTools?.get(tool.name) === tool ? "extension" : "builtin",
-		}));
+		return [...this.syncRegistrations().values()].map((tool) => this.toolInfo(tool));
 	}
 
 	/**
-	 * Set the active tools by name (pi setActiveTools): unknown names are ignored,
-	 * and the change applies from the next request. Only registered tools can be
-	 * activated, so a permission mode that never registered a tool keeps it out (D20).
+	 * Tools callable through `ctx.executeTool()` (pi _getCallableTools): the active
+	 * `direct` tools and every registered `codemode` or `deferred` tool.
+	 */
+	private callableTools(active: ReadonlySet<string> = new Set(this.activeTools().keys())): Map<string, Tool> {
+		const callable = new Map<string, Tool>();
+		for (const [name, tool] of this.syncRegistrations()) {
+			const exposure = toolExposure(tool);
+			if (exposure === "codemode" || exposure === "deferred" || (exposure === "direct" && active.has(name))) {
+				callable.set(name, tool);
+			}
+		}
+		return callable;
+	}
+
+	/** Tools callable through `ctx.executeTool()`, without `execute`. */
+	getCallableTools(): ToolInfo[] {
+		return [...this.callableTools().values()].map((tool) => this.toolInfo(tool));
+	}
+
+	/**
+	 * Set the active tools by name (pi setActiveTools): unknown and `hidden` tools are
+	 * ignored, and the change applies from the next request. Only registered tools can
+	 * be activated, so a permission mode that never registered a tool keeps it out
+	 * (D20). Deactivating any tool drops the names still pending from the transcript;
+	 * a change that only adds tools (tool_search loading some) keeps them (pi).
 	 */
 	setActiveTools(toolNames: readonly string[]): void {
+		this.toolsChosen = true;
+		const previous = this.getActiveTools();
+		this.applyActiveTools(toolNames);
+		const active = new Set(this.getActiveTools());
+		if (previous.some((name) => !active.has(name))) this.pendingTools.clear();
+	}
+
+	private applyActiveTools(toolNames: readonly string[]): void {
+		const tools = this.syncRegistrations();
 		const wanted = new Set(toolNames);
-		this.inactiveTools = new Set([...this.currentTools().keys()].filter((name) => !wanted.has(name)));
+		this.activeNames = new Set(
+			[...tools.values()]
+				.filter((tool) => wanted.has(tool.name) && toolExposure(tool) !== "hidden")
+				.map((tool) => tool.name),
+		);
+		for (const name of this.activeNames) this.pendingTools.delete(name);
+	}
+
+	/**
+	 * Restore the active tools the transcript declares, if it declares any (pi
+	 * _restoreToolsFromTranscript). Names not registered yet stay pending until their
+	 * tool registers (MCP servers still connecting) or the next run starts.
+	 */
+	private restoreToolsFromTranscript(options: { initial?: boolean } = {}): void {
+		// A host that chose the tools before the log loaded (CLI --tools) keeps its choice.
+		if (options.initial && this.toolsChosen) return;
+		this.pendingTools.clear();
+		const current = getCurrentSystemMessage(this.messages);
+		if (!current) return;
+		const names = (current.toolsAdded ?? []).map((tool) => tool.name);
+		this.pendingTools = new Set(names);
+		this.applyActiveTools(names);
+	}
+
+	/**
+	 * The declarations a request carries (pi _applyToolLoadout): the active tools with
+	 * the descriptions their prepareLoadout hooks set, and the names whose declarations
+	 * requests leave out. Hooks run in registration order; one that throws is reported
+	 * and skipped.
+	 */
+	private computeLoadout(): { declared: Tool[]; hidden: Set<string> } {
+		const active = this.activeTools();
+		const tools = [...active.values()];
+		const hooks = tools.filter((tool) => tool.prepareLoadout);
+		const hidden = new Set<string>();
+		if (hooks.length === 0) return { declared: tools, hidden };
+		const registered = this.syncRegistrations();
+		const loadout: ToolLoadout = {
+			declared: tools.map((tool) => this.toolInfo(tool)),
+			callable: [...this.callableTools(new Set(active.keys())).values()].map((tool) => this.toolInfo(tool)),
+			registered: [...registered.values()].map((tool) => this.toolInfo(tool)),
+			getExposure: (name) => {
+				const tool = registered.get(name);
+				return tool ? toolExposure(tool) : "direct";
+			},
+			getNamespace: (name) => registered.get(name)?.namespace,
+			getPromptGuidelines: (name) => registered.get(name)?.promptGuidelines ?? [],
+		};
+		const descriptions = new Map<string, string>();
+		for (const tool of hooks) {
+			try {
+				const changes = tool.prepareLoadout?.(loadout);
+				for (const [name, description] of Object.entries(changes?.descriptions ?? {})) {
+					descriptions.set(name, description);
+				}
+				for (const name of changes?.hiddenDeclarations ?? []) hidden.add(name);
+			} catch (error) {
+				this.extensions?.reportError(
+					"prepare_loadout",
+					`prepareLoadout of tool "${tool.name}" failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		const declared = tools.map((tool) => {
+			const description = descriptions.get(tool.name);
+			return description === undefined ? tool : { ...tool, description };
+		});
+		return { declared, hidden };
+	}
+
+	/**
+	 * The tools the model sees in the next request: active, with loadout descriptions,
+	 * without hidden declarations. Hosts build their system prompt's tool list from it.
+	 */
+	getDeclaredTools(): ToolInfo[] {
+		const { declared, hidden } = this.computeLoadout();
+		return declared.filter((tool) => !hidden.has(tool.name)).map((tool) => this.toolInfo(tool));
 	}
 
 	/** The model-visible conversation: the session log's projection (read-only; P22). */
@@ -639,11 +790,13 @@ export class Agent {
 		await this.flushWrites();
 		const current = getCurrentSystemMessage(this.messages);
 		const sections = diffSystemPromptSections(current?.sections ?? {}, promptText === "" ? {} : { prompt: promptText });
+		const loadout = this.computeLoadout();
+		this.hiddenDeclarations = loadout.hidden;
 		const tools = getToolStateChanges(
 			getCurrentTools(this.messages),
 			// A schemaless tool that slipped past registration cannot be declared; the
 			// preflight guard still answers a call to it with a paired error result (HF-8).
-			[...this.activeTools().values()]
+			loadout.declared
 				.filter(hasToolSchema)
 				.map(toToolDeclaration),
 		);
@@ -1346,6 +1499,7 @@ export class Agent {
 					: undefined,
 			);
 			await this.refresh();
+			this.restoreToolsFromTranscript();
 			return entry;
 		});
 		const newLeafId = await store.getLeafId();
@@ -1387,11 +1541,15 @@ export class Agent {
 	 */
 	private async applyBeforeAgentStart(promptText: string, ctx: ExtensionContext): Promise<string> {
 		const base = this.systemPrompt ?? "";
+		// The run records the loadout in the transcript; restored tools that did not
+		// register by now are dropped, so a tool that never registers does not stay pending (pi).
 		if (!this.extensions) {
+			this.pendingTools.clear();
 			await this.declareLoadout(base);
 			return base;
 		}
 		const beforeStart = await this.extensions.runBeforeAgentStart(promptText, base, ctx);
+		this.pendingTools.clear();
 		// The rewritten prompt is logged like any other (D27, deviation from pi's
 		// unrecorded forced prompt): the model must only ever see what the log holds.
 		await this.declareLoadout(beforeStart.systemPrompt);
@@ -1594,6 +1752,7 @@ export class Agent {
 				if (this.extensions) {
 					request = await this.extensions.runContext(request, ctx);
 				}
+				request = withoutHiddenDeclarations(request, this.hiddenDeclarations);
 
 				const partial: AssistantMessage = {
 					role: "assistant",
@@ -1980,4 +2139,25 @@ function rewrittenInput(
 	if (result.text === originalText && images === originalImages) return original;
 	if (images.length === 0) return result.text;
 	return [{ type: "text", text: result.text }, ...images];
+}
+
+/**
+ * Leave the declarations prepareLoadout hooks hide out of a request (pi
+ * _installHiddenDeclarationsProjection). The whole transcript is filtered with the
+ * current set, so the declarations stay consistent across requests and only change
+ * when the loadout does. The log keeps them: the active set survives /tree and resume.
+ */
+function withoutHiddenDeclarations(messages: AgentMessage[], hidden: ReadonlySet<string>): AgentMessage[] {
+	if (hidden.size === 0) return messages;
+	return messages.map((message) => {
+		if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return message;
+		const { toolsAdded, toolsRemoved, ...rest } = message;
+		const added = toolsAdded?.filter((tool) => !hidden.has(tool.name)) ?? [];
+		const removed = toolsRemoved?.filter((tool) => !hidden.has(tool.name)) ?? [];
+		return {
+			...rest,
+			...(added.length > 0 ? { toolsAdded: added } : {}),
+			...(removed.length > 0 ? { toolsRemoved: removed } : {}),
+		};
+	});
 }

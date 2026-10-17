@@ -48,7 +48,7 @@
 | `model_select` | 0.80 | ✅ P8 | before 可改写/取消，after 记录 |
 | `thinking_level_select` | 0.80 | ✅ P8 | |
 | `tool_call` | 0.80 | ✅ P2 | block/改参；`terminate` 随 block 生效（P23b），全批 finalized 结果都 terminate 才不再请求；策略/审批拒绝不产生 terminate（D20）。工具按请求快照分派，快照外调用返回 `Unknown tool` |
-| `tool_result` | 0.80 | ✅ P2 | P23b 起照抄 pi 形状：事件带 `content`/`details`/`usage`，结果按字段覆盖；`structuredContent` 📍P24。工具结果自带的 terminate 穿过处理器链保留 |
+| `tool_result` | 0.80 | ✅ P2 | P23b 起照抄 pi 形状：事件带 `content`/`details`/`usage`，结果按字段覆盖；`structuredContent`（P24b）：只换 `content` 不带它即丢弃（pi）。工具结果自带的 terminate 穿过处理器链保留 |
 | `user_bash` | 0.80 | ✅ P8 | TUI `!`/`!!`；事件补 `cwd`、失败即关闭（P23c，pi 0.86.0）。⚠ 偏离：tau 形状与改写链，见 D28 |
 | `input` | 0.80 | ✅ P2 | 三态拦截；事件带 `images`/`source`/`streamingBehavior`，transform 可带 images（P23b）。轮中 `steer()`/`followUp()` 与运行中的 `sendUserMessage` 也经过它（pi 0.86.0），返回 `QueuedInputDisposition`（pi 0.99.0）。⚠ 偏离：InputSource 无 `rpc`（tau 无 RPC 模式） |
 
@@ -56,7 +56,7 @@
 
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
-| `registerTool` | 0.80 | ✅ P2 | 无对象 `parameters` schema 即判该扩展加载失败（P21-HF-8）。同名先注册者胜，后来者记 warning（P23c） |
+| `registerTool` | 0.80 | ✅ P2 | 无对象 `parameters` schema 即判该扩展加载失败（P21-HF-8）。跨扩展同名先注册者胜，后来者记 warning（P23c）；同一扩展再注册同名 = 替换（P24b，pi 按扩展存工具），重新注册为 hidden 即撤回。P24b 起 Tool 带 pi 的 `outputSchema`/`exposure`/`namespace`/`reachesTools`/`defaultActive`/`prepareLoadout`/`promptSnippet`/`promptGuidelines`；`ToolLoadout` 的元素是不含 `execute` 的 ToolInfo（偏离：pi 给 AgentTool），`annotations` 不进内核类型（作者自报、未经校验，D20） |
 | `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；重名时每个都加 `:N`（P23c，pi） |
 | `registerShortcut` | 0.80 | ✅ P8 | TUI 空闲快捷键，`/help` 显示 |
 | `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
@@ -72,10 +72,10 @@
 | `getSessionName` | 0.80 | ✅ P23c | |
 | `setLabel` | 0.80 | ✅ P22 | 写 `label` 条目，undefined 清除；目标不存在时同步抛 `not_found`（pi 同样拒绝）。标签不进上下文 |
 | `exec` | 0.80 | ⚠D4 | 经 `ctx.capabilities.shell` 能力门面执行（裸引擎可能没有 shell，能力缺失即不可用，D10/D15） |
-| `getActiveTools` | 0.80 | ✅ P23b | 内核 active 集；新注册工具缺省 active（pi direct 档） |
-| `getAllTools` | 0.80 | ✅ P23b | ToolInfo 子集 `{name, description, parameters, source}`；exposure/namespace/annotations 📍P24 |
+| `getActiveTools` | 0.80 | ✅ P23b | P24b 起照抄 pi 的显式 active 集：direct/model-only 注册即激活（`defaultActive:false` 除外），其余档永不随注册激活，hidden 永不激活；resume 与 `/tree` 后取自转录的当前工具声明，未注册的名字挂起、注册时激活、run 开始时清空；宿主在日志加载前显式选择（CLI `--tools`）时以宿主为准 |
+| `getAllTools` | 0.80 | ✅ P24b | ToolInfo `{name, description, parameters, outputSchema?, exposure, namespace?, promptSnippet?, promptGuidelines?, reachesTools?, source}`。偏离：多 `outputSchema`（codemode 渲染声明要用，tau 不给 AgentTool）；无 `annotations`、`sourceInfo` 简化为 `source` |
 | `getSettings` | 1.2 | ❌D9 | 返回 pi 产品层 Settings。tau 没有 settings 层：配置是宿主装配的 AgentOptions、flag 与工厂 options（D8） |
-| `setActiveTools` | 0.80 | ✅ P23b | 未知名忽略、下一次请求生效；只能激活已注册工具，权限档没注册的工具激活不到（D20） |
+| `setActiveTools` | 0.80 | ✅ P23b | 未知名与 hidden 忽略、下一次请求生效；只能激活已注册工具，权限档没注册的工具激活不到（D20）；移出任何工具即清空挂起名，只增不减（tool_search 加载）则保留（P24b，pi） |
 | `getCommands` | 0.80 | ✅ P23c | `{ name, description, source }`，name 为调用名（含 `:N`） |
 | `setModel` | 0.80 | ✅ P23d | 跑 model_select，被取消返回 false。⚠ 偏离：参数是模型 id（无模型库，D21） |
 | `getThinkingLevel` | 0.80 | ✅ P23d | undefined 表示端点缺省；tau 的 `none` 即 pi 的 `off`（会话条目写 `off`） |
