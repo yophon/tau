@@ -65,6 +65,8 @@ export interface PickerItem {
 	label: string;
 	hint?: string;
 	value: string;
+	/** A single key that picks this item directly (y/n on a confirm). */
+	key?: string;
 }
 
 export interface PickerView {
@@ -181,7 +183,13 @@ export type UiAction =
 	| { type: "armed"; exit?: boolean; reject?: boolean }
 	| { type: "status"; status: Partial<StatusInfo> }
 	| { type: "widgets"; above: StyledLine[][]; below: StyledLine[][] }
-	| { type: "clear" };
+	| { type: "clear" }
+	/** Another session: drop everything shown and start a new screen. */
+	| { type: "reset" }
+	/** Finished blocks rebuilt from a restored conversation. */
+	| { type: "replay"; blocks: ReplayBlock[] };
+
+export type ReplayBlock = DistributiveOmit<Block, "id">;
 
 type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
@@ -379,6 +387,18 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		case "clear":
 			// Live blocks carry over so a running turn keeps drawing.
 			return { ...state, committed: [], epoch: state.epoch + 1 };
+		case "reset":
+			return { ...state, committed: [], live: [], epoch: state.epoch + 1 };
+		case "replay": {
+			let next = state;
+			const blocks: Block[] = [];
+			for (const block of action.blocks) {
+				const [id, withId] = nextId(next);
+				next = withId;
+				blocks.push({ ...block, id } as Block);
+			}
+			return commitReady({ ...next, live: [...next.live, ...blocks] });
+		}
 		default:
 			return state;
 	}

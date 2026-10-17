@@ -53,6 +53,7 @@ export type KeyCommand =
 	| { type: "picker-down" }
 	| { type: "picker-confirm" }
 	| { type: "picker-cancel" }
+	| { type: "picker-key"; key: string }
 	| { type: "menu-up" }
 	| { type: "menu-down" }
 	| { type: "menu-accept" }
@@ -102,6 +103,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.downArrow) return { type: "picker-down" };
 		if (key.return) return { type: "picker-confirm" };
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
+		if (ch.length === 1 && ch.trim() !== "" && !key.ctrl && !key.meta) return { type: "picker-key", key: ch };
 		return undefined;
 	}
 
@@ -168,4 +170,60 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 
 	if (ch !== "" && !key.ctrl && !key.meta && !key.tab) return { type: "insert", text: ch };
 	return undefined;
+}
+
+/** Keys the TUI binds itself; an extension shortcut on one of them is ignored. */
+export const BUILTIN_KEYS: ReadonlySet<string> = new Set([
+	"enter",
+	"escape",
+	"tab",
+	"shift+tab",
+	"up",
+	"down",
+	"left",
+	"right",
+	"backspace",
+	"delete",
+	"alt+enter",
+	"alt+b",
+	"alt+f",
+	"alt+left",
+	"alt+right",
+	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "o", "t", "u", "w"].map((letter) => `ctrl+${letter}`),
+]);
+
+/** A key as an extension shortcut id (`ctrl+x`, `alt+k`, `shift+tab`, `f`); undefined for text. */
+export function keyId(ch: string, key: KeyLike): string | undefined {
+	const named = key.return
+		? "enter"
+		: key.escape
+			? "escape"
+			: key.tab
+				? "tab"
+				: key.upArrow
+					? "up"
+					: key.downArrow
+						? "down"
+						: key.leftArrow
+							? "left"
+							: key.rightArrow
+								? "right"
+								: key.backspace
+									? "backspace"
+									: key.delete
+										? "delete"
+										: ch === "\r"
+											? "enter"
+											: ch.length === 1
+												? ch.toLowerCase()
+												: undefined;
+	if (named === undefined) return undefined;
+	// Ink delivers Alt+Enter as a bare "\r" without key.return.
+	const meta = key.meta || (ch === "\r" && !key.return);
+	const modifiers = [key.ctrl ? "ctrl" : "", meta ? "alt" : "", key.shift && named.length > 1 ? "shift" : ""].filter(
+		(part) => part !== "",
+	);
+	// A plain printable key is text, not a shortcut.
+	if (modifiers.length === 0 && named.length === 1) return undefined;
+	return [...modifiers, named].join("+");
 }

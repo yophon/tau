@@ -9,11 +9,16 @@ import { join } from "node:path";
 import {
 	type Agent,
 	type AgentEvent,
+	type AgentMessage,
 	type ApprovalRequest,
+	type CustomMessage,
 	type ExtensionRegistry,
-	type SessionRecorder,
+	restoreSession,
+	type SessionMetadata,
+	SessionRecorder,
 	type SessionStore,
 	TauError,
+	type ThinkingLevel,
 	type UiCapability,
 	type UserContent,
 	userContentText,
@@ -26,9 +31,10 @@ import { InputDecoder } from "./input/decoder.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
 import { expandPastes, foldPaste, newPasteStore } from "./input/paste.ts";
-import { type KeyCommand, type KeyLike, routeKey } from "./keymap.ts";
+import { BUILTIN_KEYS, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
 import { APPROVAL_OPTIONS, type ApprovalView, initialState, type PickerItem, type TaskKind } from "./model.ts";
-import { span } from "./render/spans.ts";
+import { type StyledLine, span } from "./render/spans.ts";
+import { messagesToBlocks } from "./replay.ts";
 import { TuiStore } from "./store.ts";
 import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "./types.ts";
 
@@ -36,13 +42,20 @@ const ARM_WINDOW_MS = 3000;
 
 export class TuiController {
 	readonly store: TuiStore;
+	readonly options: RunTuiOptions;
 	agent: Agent;
 	extensions: ExtensionRegistry;
 	sessionStore: SessionStore | undefined;
 	recorder: SessionRecorder | undefined;
 	model: string;
 	modelChoices: string[];
+	thinkingLevel: ThinkingLevel | undefined;
+	/** session_start reason of the active registry (/diagnostics). */
+	lastSessionStart: "startup" | "resume" | "reload";
+	/** Extension shortcuts shadowed by a built-in key (/diagnostics). */
+	shortcutConflicts: string[] = [];
 
+	private readonly deps: TuiDeps;
 	private readonly decoder = new InputDecoder();
 	private readonly pastes = newPasteStore();
 	private readonly history: PersistentHistory;
@@ -52,6 +65,7 @@ export class TuiController {
 	private menuCache:
 		| { text: string; cursor: number; files: unknown; suppressed: unknown; result: Completion | undefined }
 		| undefined;
+	private lastToken: string | undefined;
 	private controller: AbortController | undefined;
 	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
 	private readonly pendingStarts: (UserContent | null)[] = [];
@@ -61,15 +75,13 @@ export class TuiController {
 	private readonly prompts = new Map<number, (value: string | undefined) => void>();
 	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
 	private tellFor: ApprovalView | undefined;
+	private readonly toolOutput = new Map<string, string>();
 	private exitTimer: ReturnType<typeof setTimeout> | undefined;
 	private rejectTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private resolveDone: (() => void) | undefined;
 	readonly done: Promise<void>;
 	readonly ui: UiCapability;
-
-	readonly options: RunTuiOptions;
-	private readonly deps: TuiDeps;
 
 	constructor(options: RunTuiOptions, deps: TuiDeps = {}) {
 		this.options = options;
@@ -80,6 +92,8 @@ export class TuiController {
 		this.recorder = options.recorder;
 		this.model = options.model;
 		this.modelChoices = unique([options.model, ...(options.modelChoices ?? [])]);
+		this.thinkingLevel = options.thinkingLevel;
+		this.lastSessionStart = options.sessionReason;
 		this.history = PersistentHistory.load(deps.historyFile, options.cwd);
 		this.historyIndex = this.history.list().length;
 		this.done = new Promise((resolve) => {
@@ -102,8 +116,8 @@ export class TuiController {
 		this.ui = {
 			confirm: async (title, message) =>
 				(await this.pick(message ? `${title} — ${message}` : title, [
-					{ label: "Yes", value: "yes" },
-					{ label: "No", value: "no" },
+					{ label: "Yes", value: "yes", key: "y" },
+					{ label: "No", value: "no", key: "n" },
 				])) === "yes",
 			input: (title, placeholder) => this.ask("input", title, placeholder),
 			select: (title, values) =>
@@ -136,6 +150,10 @@ export class TuiController {
 		this.dispatch({ type: "notice", tone, text });
 	}
 
+	lines(lines: StyledLine[]): void {
+		this.dispatch({ type: "lines", lines });
+	}
+
 	// ── lifecycle ────────────────────────────────────────────────────────────
 
 	async start(): Promise<void> {
@@ -151,9 +169,14 @@ export class TuiController {
 				],
 			],
 		});
+		// A resumed session shows its history before anything new.
+		if (this.agent.messages.some((message) => message.role !== "system")) {
+			this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
+		}
+		this.checkShortcuts();
 		// session_start after the host actions are in place (P23e, pi bindExtensions order).
 		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
-		await this.refreshStatus();
+		await this.refreshSurfaces();
 	}
 
 	async stop(): Promise<void> {
@@ -200,6 +223,25 @@ export class TuiController {
 		});
 	}
 
+	/** Extension shortcuts on a key the TUI already uses lose; note them for /diagnostics. */
+	private checkShortcuts(): void {
+		this.shortcutConflicts = [...this.extensions.shortcuts.values()]
+			.filter((shortcut) => BUILTIN_KEYS.has(shortcut.key.toLowerCase()))
+			.map((shortcut) => `${shortcut.name} (${shortcut.key})`);
+		if (this.shortcutConflicts.length > 0) {
+			this.notice(
+				"warn",
+				`Extension shortcut${this.shortcutConflicts.length === 1 ? "" : "s"} on a built-in key ignored: ${this.shortcutConflicts.join(", ")}`,
+			);
+		}
+	}
+
+	/** Status line, extension header/footer items and widgets. */
+	async refreshSurfaces(): Promise<void> {
+		await this.refreshStatus();
+		await this.refreshWidgets();
+	}
+
 	async refreshStatus(): Promise<void> {
 		const usage = this.agent.getContextUsage();
 		const session = this.agent.getSessionUsage();
@@ -210,7 +252,7 @@ export class TuiController {
 			sessionName = undefined;
 		}
 		const items: string[] = [];
-		for (const item of this.extensions.footerItems.values()) {
+		for (const item of [...this.extensions.headerItems.values(), ...this.extensions.footerItems.values()]) {
 			try {
 				const result = await item.handler(this.agent.extensionContext());
 				if (result) items.push(result);
@@ -222,16 +264,32 @@ export class TuiController {
 			type: "status",
 			status: {
 				model: this.model,
+				...(this.thinkingLevel !== undefined ? { thinking: this.thinkingLevel } : { thinking: undefined }),
 				contextTokens: usage.tokens,
 				...(usage.contextWindow !== undefined ? { contextWindow: usage.contextWindow } : {}),
 				inputTokens: session.input + session.cacheRead + session.cacheWrite,
 				outputTokens: session.output,
 				costUsd: session.cost.total,
 				branch: (this.deps.readBranch ?? readGitBranch)(this.options.cwd),
-				...(sessionName !== undefined ? { sessionName } : {}),
+				sessionName,
 				items,
 			},
 		});
+	}
+
+	private async refreshWidgets(): Promise<void> {
+		const above: StyledLine[][] = [];
+		const below: StyledLine[][] = [];
+		for (const widget of this.extensions.widgets.values()) {
+			const target = widget.placement === "below-editor" ? below : above;
+			try {
+				const lines = renderResultLines(await widget.handler(this.agent.extensionContext()), this.columns() - 2);
+				if (lines) target.push(lines);
+			} catch (error) {
+				target.push([[span(`Widget ${widget.name} failed: ${errorText(error)}`, { color: "red" })]]);
+			}
+		}
+		this.dispatch({ type: "widgets", above, below });
 	}
 
 	// ── input ────────────────────────────────────────────────────────────────
@@ -241,9 +299,12 @@ export class TuiController {
 			if (event.kind === "paste") {
 				this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(event.text))));
 			} else if (event.kind === "text") {
-				this.execute({ type: "insert", text: event.text });
+				// Merged chunks still go through the panels: "1\r" chooses, it does not type.
+				if (this.state.approval || this.state.picker) for (const ch of event.text) this.handleKey(ch, {});
+				else this.execute({ type: "insert", text: event.text });
 			} else if (event.kind === "enter") {
-				this.execute({ type: "submit" });
+				if (this.state.approval || this.state.picker) this.handleKey("\r", { return: true });
+				else this.execute({ type: "submit" });
 			} else {
 				this.handleKey(event.ch, event.key);
 			}
@@ -252,6 +313,19 @@ export class TuiController {
 
 	private handleKey(ch: string, key: KeyLike): void {
 		const state = this.state;
+		const idle =
+			state.task === undefined && !state.approval && !state.picker && !state.prompt && state.editor.text === "";
+		if (idle && this.extensions.shortcuts.size > 0) {
+			const id = keyId(ch, key);
+			if (id !== undefined && !BUILTIN_KEYS.has(id)) {
+				for (const shortcut of this.extensions.shortcuts.values()) {
+					if (shortcut.key.toLowerCase() === id) {
+						void this.runShortcut(shortcut.name);
+						return;
+					}
+				}
+			}
+		}
 		const menu = this.completion();
 		const command = routeKey(ch, key, {
 			approvalOpen: state.approval !== undefined,
@@ -273,9 +347,14 @@ export class TuiController {
 		this.syncMenu();
 	}
 
+	setInput(text: string): void {
+		this.setEditor(ed.fromText(text));
+	}
+
 	/** Completion for the current input (cached per text/cursor/files/suppression). */
 	completion(): Completion | undefined {
 		const { editor, menu } = this.state;
+		if (this.state.approval || this.state.picker) return undefined;
 		const cache = this.menuCache;
 		if (
 			cache &&
@@ -301,8 +380,6 @@ export class TuiController {
 		return result;
 	}
 
-	private lastToken: string | undefined;
-
 	/** A new token resets the selection and lifts a suppression; `@` loads the file list once. */
 	private syncMenu(): void {
 		const completion = computeCompletion(this.state.editor.text, this.state.editor.cursor, {
@@ -313,8 +390,7 @@ export class TuiController {
 		if (token !== this.lastToken) {
 			this.lastToken = token;
 			this.dispatch({ type: "menu-select", index: 0 });
-			if (token !== undefined && token !== this.state.menu.suppressedToken)
-				this.dispatch({ type: "menu-suppress", token: undefined });
+			if (token !== this.state.menu.suppressedToken) this.dispatch({ type: "menu-suppress", token: undefined });
 		}
 		if (completion?.kind === "file" && this.files === undefined && !this.filesLoading) {
 			this.filesLoading = true;
@@ -370,6 +446,14 @@ export class TuiController {
 				if (!picker) return;
 				this.dispatch({ type: "picker-close", id: picker.id });
 				this.settlePicker(picker.id, picker.items[picker.selected]?.value);
+				return;
+			}
+			case "picker-key": {
+				const picker = state.picker;
+				const item = picker?.items.find((candidate) => candidate.key === command.key.toLowerCase());
+				if (!picker || !item) return;
+				this.dispatch({ type: "picker-close", id: picker.id });
+				this.settlePicker(picker.id, item.value);
 				return;
 			}
 			case "picker-cancel":
@@ -519,11 +603,15 @@ export class TuiController {
 		if (text === "") return;
 		this.history.push(text);
 		this.historyIndex = this.history.list().length;
+		const task = this.state.task;
+		if (task === undefined && (text === "exit" || text === "quit")) {
+			void this.stop();
+			return;
+		}
 		if (text.startsWith("/")) {
 			void this.runSlash(text);
 			return;
 		}
-		const task = this.state.task;
 		if (task === "turn") {
 			this.sendQueued("steer", text);
 			return;
@@ -531,6 +619,11 @@ export class TuiController {
 		if (task !== undefined) {
 			this.setEditor(ed.fromText(text));
 			this.notice("dim", `A ${task} task is running. Press Esc to interrupt it; your input stays in the editor.`);
+			return;
+		}
+		const bash = parseUserBash(text);
+		if (bash) {
+			void this.runUserBash(bash.command, bash.record);
 			return;
 		}
 		void this.runPrompt(text);
@@ -544,7 +637,7 @@ export class TuiController {
 		this.sendQueued("followUp", text);
 	}
 
-	private sendQueued(kind: "steer" | "followUp", text: string): void {
+	sendQueued(kind: "steer" | "followUp", text: string): void {
 		// Extension commands cannot be queued as model input (pi _throwIfExtensionCommand).
 		const name = text.startsWith("/") ? text.slice(1).split(/\s/, 1)[0] : undefined;
 		if (name !== undefined && this.extensions.commands.has(name)) {
@@ -598,7 +691,7 @@ export class TuiController {
 			this.controller = undefined;
 			this.settleOpenApprovals();
 			this.dispatch({ type: "task-end" });
-			await this.refreshStatus().catch(() => undefined);
+			await this.refreshSurfaces().catch(() => undefined);
 			this.startPending();
 		}
 	}
@@ -631,7 +724,8 @@ export class TuiController {
 			// instead of replaying it into the next prompt (pi restoreQueuedMessagesToEditor).
 			this.restoreQueuedInput();
 		});
-		if (interrupted) {
+		const last = this.agent.messages.findLast((message) => message.role === "assistant");
+		if (interrupted || (last?.role === "assistant" && last.stopReason === "aborted")) {
 			this.notice("warn", "⏹ Interrupted");
 			return;
 		}
@@ -658,18 +752,21 @@ export class TuiController {
 			}
 			case "user_message": {
 				if (event.message.role === "custom") {
-					const message = event.message;
-					const lines = await this.renderMessage(message);
-					if (lines) this.dispatch({ type: "lines", lines });
-					else if (message.display) this.notice("dim", userContentText(message.content));
+					await this.showMessage(event.message);
 					return;
 				}
 				this.dispatch({ type: "agent-event", event, at });
 				return;
 			}
-			case "tool_start":
-			case "tool_update":
 			case "tool_result": {
+				// The result rendering lands before the block finishes: a finished block is committed and final.
+				const lines = await this.renderTool(event);
+				if (lines) this.dispatch({ type: "tool-rendered", callId: event.toolCall.id, lines });
+				this.dispatch({ type: "agent-event", event, at });
+				return;
+			}
+			case "tool_start":
+			case "tool_update": {
 				this.dispatch({ type: "agent-event", event, at });
 				const lines = await this.renderTool(event);
 				if (lines) this.dispatch({ type: "tool-rendered", callId: event.toolCall.id, lines });
@@ -680,7 +777,22 @@ export class TuiController {
 		}
 	}
 
-	private async renderMessage(message: Parameters<typeof messageRendererMatches>[1]) {
+	/** A custom message: an extension renderer's output, else its text when it is meant for display. */
+	private async showMessage(message: CustomMessage | AgentMessage): Promise<void> {
+		const lines = await this.renderMessage(message);
+		if (lines) this.lines(lines);
+		else if (message.role === "custom" && message.display) this.notice("dim", userContentText(message.content));
+	}
+
+	/** Messages an extension command or shortcut appended outside a run (sendMessage while idle). */
+	async renderNewMessages(start: number): Promise<void> {
+		await this.agent.flush();
+		for (const message of this.agent.messages.slice(start)) {
+			if (message.role === "custom") await this.showMessage(message);
+		}
+	}
+
+	private async renderMessage(message: AgentMessage): Promise<StyledLine[] | undefined> {
 		for (const renderer of this.extensions.messageRenderers.values()) {
 			if (!messageRendererMatches(renderer, message)) continue;
 			try {
@@ -697,9 +809,9 @@ export class TuiController {
 		return undefined;
 	}
 
-	private toolOutput = new Map<string, string>();
-
-	private async renderTool(event: AgentEvent & { type: "tool_start" | "tool_update" | "tool_result" }) {
+	private async renderTool(
+		event: AgentEvent & { type: "tool_start" | "tool_update" | "tool_result" },
+	): Promise<StyledLine[] | undefined> {
 		if (this.extensions.toolRenderers.size === 0) return undefined;
 		const id = event.toolCall.id;
 		if (event.type === "tool_update") this.toolOutput.set(id, (this.toolOutput.get(id) ?? "") + event.partialOutput);
@@ -737,6 +849,290 @@ export class TuiController {
 			}
 		}
 		return undefined;
+	}
+
+	async runShortcut(name: string): Promise<void> {
+		const shortcut = this.extensions.shortcuts.get(name);
+		if (!shortcut) return;
+		try {
+			await this.agent.flush();
+			const start = this.agent.messages.length;
+			const output = await shortcut.handler(this.agent.extensionContext());
+			await this.renderNewMessages(start);
+			await this.refreshSurfaces();
+			if (typeof output === "string") this.notice("info", output);
+			else if (output?.action === "prompt") await this.runPrompt(output.text);
+		} catch (error) {
+			this.notice("error", `Shortcut ${name} failed: ${errorText(error)}`);
+		}
+	}
+
+	/** `!cmd` runs and records the output in context; `!!cmd` only shows it. */
+	async runUserBash(command: string, record: boolean): Promise<void> {
+		if (command === "") {
+			this.notice("error", record ? "Usage: !<command>" : "Usage: !!<command>");
+			return;
+		}
+		const decision = await this.extensions.runUserBash(
+			{ command, recordInContext: record, cwd: this.options.cwd },
+			this.agent.extensionContext(),
+		);
+		if (decision.cancel) {
+			this.notice("dim", `Command cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
+			return;
+		}
+		const effective = decision.command.trim();
+		if (effective === "") {
+			this.notice("dim", "Command cancelled: empty command.");
+			return;
+		}
+		const callId = `user-bash-${this.nextDialogId++}`;
+		const call = { type: "toolCall" as const, id: callId, name: "bash", arguments: { command: effective } };
+		await this.runTask("bash", "Running command", async (signal) => {
+			this.dispatch({ type: "agent-event", event: { type: "tool_start", toolCall: call }, at: this.now() });
+			try {
+				const result = await this.options.shell.exec(effective, {
+					signal,
+					onStdout: (chunk) =>
+						this.dispatch({
+							type: "agent-event",
+							event: { type: "tool_update", toolCall: call, partialOutput: chunk, stream: "stdout" },
+							at: this.now(),
+						}),
+					onStderr: (chunk) =>
+						this.dispatch({
+							type: "agent-event",
+							event: { type: "tool_update", toolCall: call, partialOutput: chunk, stream: "stderr" },
+							at: this.now(),
+						}),
+				});
+				const output = formatShellOutput(result);
+				this.dispatch({
+					type: "agent-event",
+					event: {
+						type: "tool_result",
+						toolCall: call,
+						result: {
+							content: [{ type: "text", text: output }],
+							isError: result.exitCode !== 0,
+							structuredContent: { exit_code: result.exitCode },
+						} as never,
+					},
+					at: this.now(),
+				});
+				if (decision.recordInContext) {
+					await this.agent.appendMessage({
+						role: "custom",
+						customType: "user_bash",
+						content: [`$ ${effective}`, output].join("\n\n"),
+						display: true,
+						details: { command: effective, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
+						timestamp: Date.now(),
+					});
+					this.notice("dim", "Output added to the context.");
+				}
+			} catch (error) {
+				if (!isAbortError(error)) this.notice("error", `Command failed: ${errorText(error)}`);
+			}
+		});
+	}
+
+	async runCompact(instructions: string | undefined): Promise<void> {
+		const startedAt = this.now();
+		const messagesBefore = conversationLength(this.agent.messages);
+		const tokensBefore = this.agent.getContextUsage().tokens;
+		await this.runTask("compaction", `Compacting ${messagesBefore} messages`, async (signal) => {
+			try {
+				const result = await this.agent.compact(instructions, "manual", signal);
+				if (!result) {
+					this.notice("dim", "Nothing to compact.");
+					return;
+				}
+				const tokensAfter = this.agent.getContextUsage().tokens;
+				const kept = this.agent.messages.filter(
+					(message) => message.role !== "system" && message.role !== "compactionSummary",
+				).length;
+				this.notice(
+					"info",
+					`Compacted ~${fmtInt(Math.max(result.tokensBefore, tokensBefore))} → ~${fmtInt(tokensAfter)} tokens · ${kept}/${messagesBefore} messages kept · ${fmtElapsed(this.now() - startedAt)}`,
+				);
+			} catch (error) {
+				this.notice(
+					isAbortError(error) || (error instanceof TauError && error.code === "cancelled") ? "dim" : "error",
+					isAbortError(error)
+						? "Compaction interrupted."
+						: error instanceof TauError && error.code === "cancelled"
+							? "Compaction cancelled."
+							: `Compaction failed: ${errorText(error)}`,
+				);
+			}
+		});
+	}
+
+	/**
+	 * Move to another entry of the session tree with the task slot held (Esc
+	 * cancels the branch summary). A failed summary offers moving without one (P23e).
+	 */
+	async navigate(entryId: string): Promise<void> {
+		await this.runTask("navigate", "Summarizing the branch", async (signal) => {
+			try {
+				let result: { cancelled: boolean };
+				try {
+					result = await this.agent.navigateTo(entryId, { signal });
+				} catch (error) {
+					if (!(error instanceof TauError && error.code === "compaction_failed")) throw error;
+					const without = await this.ui.confirm("Branch summary failed. Navigate without a summary?", error.message);
+					if (!without) {
+						this.notice("dim", "Navigation cancelled.");
+						return;
+					}
+					result = await this.agent.navigateTo(entryId, { summarize: false, signal });
+				}
+				if (result.cancelled) {
+					this.notice("dim", "Navigation cancelled.");
+					return;
+				}
+				this.showSession(`Moved to ${entryId} (${conversationLength(this.agent.messages)} messages in context).`);
+			} catch (error) {
+				this.notice(
+					isAbortError(error) ? "dim" : "error",
+					isAbortError(error) ? "Navigation cancelled." : `/tree failed: ${errorText(error)}`,
+				);
+			}
+		});
+	}
+
+	/** Clear the visible screen and the scrollback; <Static> then starts over. */
+	clearScreen(): void {
+		if (this.deps.clearScreen) this.deps.clearScreen();
+		else process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+	}
+
+	/** A fresh screen with the current conversation, then a note. */
+	private showSession(note: string): void {
+		this.clearScreen();
+		this.dispatch({ type: "reset" });
+		this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
+		this.notice("dim", note);
+	}
+
+	/** Switch to another session store; extensions may veto it (session_before_switch). */
+	async switchSession(
+		store: SessionStore,
+		reason: "resume" | "fork" | "new",
+	): Promise<{ cancelled: true } | { cancelled: false; metadata: SessionMetadata; messageCount: number }> {
+		const target = await store.getMetadata();
+		const decision = await this.extensions.runSessionBeforeSwitch(
+			{
+				reason: reason === "new" ? "new" : "resume",
+				...(target.filePath !== undefined ? { targetSessionFile: target.filePath } : {}),
+			},
+			this.agent.extensionContext(),
+		);
+		if (decision.cancelled) return { cancelled: true };
+		const restored = await restoreSession(store);
+		this.sessionStore = store;
+		this.recorder = await SessionRecorder.open(store);
+		this.agent = this.options.buildAgent(restored.messages, this.recorder, this.extensions);
+		this.agent.setUi(this.ui);
+		await this.extensions.notifySessionStart(reason === "new" ? "startup" : "resume", this.agent.extensionContext());
+		this.lastSessionStart = reason === "new" ? "startup" : "resume";
+		const metadata = await store.getMetadata();
+		const messageCount = conversationLength(restored.messages);
+		this.showSession(
+			reason === "new"
+				? "New session."
+				: `${reason === "fork" ? "Forked to" : "Resumed"} ${metadata.name ? `"${metadata.name}" ` : ""}${metadata.filePath ?? metadata.id} (${messageCount} messages).`,
+		);
+		await this.refreshSurfaces();
+		return { cancelled: false, metadata, messageCount };
+	}
+
+	async reloadExtensions(): Promise<void> {
+		if (this.state.task !== undefined) {
+			this.notice("dim", "Reload is unavailable while a task is running.");
+			return;
+		}
+		const previousExtensions = this.extensions;
+		const previousAgent = this.agent;
+		let previousShutdown = false;
+		await this.runTask("reload", "Reloading extensions", async () => {
+			try {
+				await previousExtensions.notifySessionShutdown("quit", previousAgent.extensionContext());
+				previousShutdown = true;
+				const nextExtensions = await this.options.reloadExtensions(this.ui);
+				const nextAgent = this.options.buildAgent([...previousAgent.messages], this.recorder, nextExtensions);
+				nextAgent.setUi(this.ui);
+				// Host actions first, then session_start: a handler that submits a prompt there must
+				// find the new agent (P23e, pi bindExtensions order).
+				this.extensions = nextExtensions;
+				this.agent = nextAgent;
+				this.attachHostActions(nextExtensions);
+				await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
+				// Only now that the new registry took over: an api/ctx captured from the old one
+				// throws instead of reaching the new agent (pi runtime invalidate).
+				previousExtensions.invalidate();
+				this.lastSessionStart = "reload";
+				this.menuCache = undefined;
+				this.checkShortcuts();
+				this.notice("info", "Extensions reloaded.");
+			} catch (error) {
+				this.extensions = previousExtensions;
+				this.agent = previousAgent;
+				this.agent.setUi(this.ui);
+				this.attachHostActions(previousExtensions);
+				if (previousShutdown) {
+					await previousExtensions
+						.notifySessionStart("resume", previousAgent.extensionContext())
+						.catch(() => undefined);
+				}
+				this.notice("error", `Reload failed: ${errorText(error)}`);
+			}
+		});
+	}
+
+	async switchModel(requested: string): Promise<void> {
+		const previous = this.model;
+		const decision = await this.extensions.runModelSelectBefore(
+			{ currentModel: previous, requestedModel: requested },
+			this.agent.extensionContext(),
+		);
+		if (decision.cancel) {
+			this.notice("dim", `Model switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
+			return;
+		}
+		this.model = decision.model;
+		this.modelChoices = unique([decision.model, ...this.modelChoices]);
+		this.options.setModel(decision.model);
+		// The agent sends the model with each request and logs a model_change entry (P23d).
+		this.agent.setModel(decision.model);
+		await this.extensions.notifyModelSelected(
+			{ previousModel: previous, requestedModel: requested, selectedModel: decision.model },
+			this.agent.extensionContext(),
+		);
+		await this.refreshStatus();
+		this.notice("dim", `Model set to ${decision.model}.`);
+	}
+
+	async switchThinking(requested: ThinkingLevel | undefined): Promise<void> {
+		const previous = this.thinkingLevel;
+		const decision = await this.extensions.runThinkingLevelSelectBefore(
+			{ currentLevel: previous, requestedLevel: requested },
+			this.agent.extensionContext(),
+		);
+		if (decision.cancel) {
+			this.notice("dim", `Thinking level switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
+			return;
+		}
+		this.thinkingLevel = decision.level;
+		this.options.setThinkingLevel(decision.level);
+		this.agent.setThinkingLevel(decision.level);
+		await this.extensions.notifyThinkingLevelSelected(
+			{ previousLevel: previous, requestedLevel: requested, selectedLevel: decision.level },
+			this.agent.extensionContext(),
+		);
+		await this.refreshStatus();
+		this.notice("dim", `Thinking level set to ${decision.level ?? "default"}.`);
 	}
 
 	// ── dialogs ──────────────────────────────────────────────────────────────
@@ -887,6 +1283,28 @@ export function applyEditorCommand(current: ed.EditorState, command: KeyCommand)
 		default:
 			return undefined;
 	}
+}
+
+/** Conversation messages for user-facing counts (system messages are prompt state, P22). */
+export function conversationLength(messages: readonly { role: string }[]): number {
+	return messages.filter((message) => message.role !== "system").length;
+}
+
+/** `!cmd` records the output in context, `!!cmd` does not. */
+export function parseUserBash(input: string): { command: string; record: boolean } | undefined {
+	if (input.startsWith("!!")) return { command: input.slice(2).trim(), record: false };
+	if (input.startsWith("!")) return { command: input.slice(1).trim(), record: true };
+	return undefined;
+}
+
+function formatShellOutput(result: { stdout: string; stderr: string; exitCode: number }): string {
+	const parts: string[] = [];
+	if (result.stdout !== "") parts.push(result.stdout.trimEnd());
+	if (result.stderr !== "") parts.push(result.stderr.trimEnd());
+	let output = parts.filter((part) => part !== "").join("\n");
+	if (output === "") output = "(no output)";
+	if (result.exitCode !== 0) output += `\nExit code ${result.exitCode}`;
+	return output;
 }
 
 function unique(values: string[]): string[] {

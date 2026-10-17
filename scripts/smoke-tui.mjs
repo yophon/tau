@@ -18,20 +18,25 @@ async function main() {
 	await requireTmux();
 	const root = await realpath(await mkdtemp(join(tmpdir(), "tau-tui-smoke-")));
 	const mock = await startMockOpenAI();
+	const only = process.env.SMOKE_ONLY;
+	const run = async (name, scenario) => {
+		if (only === undefined || name.includes(only)) await scenario(root, mock.baseUrl);
+	};
 	try {
-		await runStartupConfirmSmoke(root, mock.baseUrl);
-		await runPromptToolAbortSmoke(root, mock.baseUrl);
-		await runExtensionAndReloadSmoke(root, mock.baseUrl);
-		await runSelectorSmoke(root, mock.baseUrl);
-		await runExtensionAbortSmoke(root, mock.baseUrl);
-		await runParallelToolsSmoke(root, mock.baseUrl);
-		await runPricingFooterSmoke(root, mock.baseUrl);
-		await runApprovalSmoke(root, mock.baseUrl);
-		await runTrustDigestSmoke(root, mock.baseUrl);
+		await run("startup", runStartupConfirmSmoke);
+		await run("prompt", runPromptToolAbortSmoke);
+		await run("reload", runExtensionAndReloadSmoke);
+		await run("selector", runSelectorSmoke);
+		await run("abort", runExtensionAbortSmoke);
+		await run("parallel", runParallelToolsSmoke);
+		await run("pricing", runPricingFooterSmoke);
+		await run("approval", runApprovalSmoke);
+		await run("trust", runTrustDigestSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
-		await rm(root, { recursive: true, force: true });
+		// A TUI still shutting down may be writing its log; do not mask the real failure.
+		await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined);
 	}
 }
 
@@ -43,7 +48,8 @@ async function runStartupConfirmSmoke(root, baseUrl) {
 		await session.waitFor("Trust this directory", 10_000);
 		await session.send("y", "Enter");
 		await session.waitFor("SMOKE_HEADER", 10_000);
-		await session.waitFor("Loaded diagnostics", 10_000);
+		const startup = await session.capture();
+		if (startup.includes("Loaded diagnostics")) throw new Error(`Startup dumped diagnostics:\n${startup}`);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok startup confirm");
@@ -73,7 +79,7 @@ async function runPromptToolAbortSmoke(root, baseUrl) {
 		await session.send("hang smoke", "Enter");
 		await session.waitFor("SMOKE_ABORT_STREAM", 10_000);
 		await session.send("C-c");
-		await session.waitFor("Turn aborted.", 10_000);
+		await session.waitFor("⏹ Interrupted", 10_000);
 
 		await session.send("exit", "Enter");
 		await session.waitForExit();
@@ -89,7 +95,7 @@ async function runExtensionAndReloadSmoke(root, baseUrl) {
 	const session = await startTui("extension-reload", dirs, baseUrl, ["--no-session"]);
 	try {
 		await session.waitFor("SMOKE_FOOTER", 10_000);
-		await session.send("C-g");
+		await session.send("C-x");
 		await session.waitFor("SMOKE_SHORTCUT_OK", 10_000);
 
 		await session.send("/smoke-ui", "Enter");
@@ -121,7 +127,7 @@ async function runSelectorSmoke(root, baseUrl) {
 	await writeSmokeExtension(dirs.cwd);
 	const session = await startTui("selector", dirs, baseUrl, []);
 	try {
-		await session.waitFor("Loaded diagnostics", 10_000);
+		await session.waitFor("tau ·", 10_000);
 		await session.send("selector first", "Enter");
 		await session.waitFor("SMOKE_SELECTOR_FIRST", 10_000);
 		await session.send("/smoke-render", "Enter");
@@ -152,7 +158,7 @@ async function runExtensionAbortSmoke(root, baseUrl) {
 		await session.waitFor("SMOKE_WIDGET", 10_000);
 		await session.send("ext abort smoke", "Enter");
 		await session.waitFor("EXT_ABORT_TRIGGER", 10_000);
-		await session.waitFor("Turn aborted.", 10_000);
+		await session.waitFor("⏹ Interrupted", 10_000);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok extension ctx.abort");
@@ -204,7 +210,7 @@ export default async function smoke(api) {
 		},
 	});
 	api.registerShortcut("smoke-shortcut", {
-		key: "ctrl+g",
+		key: "ctrl+x",
 		description: "Exercise extension shortcut dispatch.",
 		handler: () => "SMOKE_SHORTCUT_OK",
 	});
@@ -260,6 +266,8 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		// Pre-P15 behavior for scenarios that are not about permissions; the
 		// approval scenario overrides with an explicit --permission-mode flag.
 		"TAU_PERMISSION_MODE=autonomous",
+		"TAU_TUI=next",
+		"TAU_HISTORY=",
 		...extraEnv.map(shellQuote),
 		shellQuote(process.execPath),
 		"--disable-warning=ExperimentalWarning",
@@ -285,6 +293,11 @@ class TmuxSession {
 	}
 
 	async waitFor(needle, timeoutMs = 10_000) {
+		// The first screen of a session may wait on a cold module load (slow on WSL /mnt drives).
+		if (!this.started) {
+			this.started = true;
+			timeoutMs += 30_000;
+		}
 		const started = Date.now();
 		let screen = "";
 		while (Date.now() - started < timeoutMs) {
@@ -347,10 +360,10 @@ async function runPricingFooterSmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "pricing-footer", false);
 	const session = await startTui("pricing-footer", dirs, baseUrl, ["--no-session"], ["TAU_PRICING=in=0.5,out=2"]);
 	try {
-		await session.waitFor("cost unknown", 10_000);
+		await session.waitFor("tau ·", 10_000);
 		await session.send("pricing smoke", "Enter");
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
-		await session.waitFor("cost $3.0000", 10_000);
+		await session.waitFor("$3.00", 10_000);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok pricing footer");
@@ -365,11 +378,12 @@ async function runApprovalSmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "approval", false);
 	const session = await startTui("approval", dirs, baseUrl, ["--no-session", "--permission-mode", "supervised"]);
 	try {
-		await session.waitFor("mode supervised", 10_000);
+		await session.waitFor("· supervised", 10_000);
 
 		// Allow once: the command runs, the model sees its output.
 		await session.send("approval smoke", "Enter");
-		await session.waitFor("Allow bash? (high risk)", 10_000);
+		await session.waitFor("bash wants to run", 10_000);
+		await session.waitFor("high risk", 10_000);
 		await session.waitFor("Always allow", 10_000);
 		await session.send("1", "Enter");
 		await session.waitFor("SMOKE_APPROVAL_DONE_1", 15_000);
@@ -403,7 +417,7 @@ async function runApprovalSmoke(root, baseUrl) {
 	// A fresh TUI process against the same HOME honors the persisted rule.
 	const second = await startTui("approval-2", dirs, baseUrl, ["--no-session", "--permission-mode", "supervised"]);
 	try {
-		await second.waitFor("mode supervised", 10_000);
+		await second.waitFor("· supervised", 10_000);
 		await second.send("approval smoke", "Enter");
 		await second.waitFor("SMOKE_APPROVAL_DONE_4", 15_000);
 		await second.send("exit", "Enter");

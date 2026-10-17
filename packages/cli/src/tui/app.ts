@@ -55,10 +55,16 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	const historyFile =
 		deps.historyFile ?? (envHistory !== undefined ? envHistory || undefined : join(homedir(), ".tau", "history.jsonl"));
 	const controller = new TuiController(options, { ...deps, ...(historyFile !== undefined ? { historyFile } : {}) });
+	const { captureConsole, defaultLogFile } = await import("./console-capture.ts");
+	// Nothing but the TUI draws on the terminal while it runs (SDK loggers included).
+	const restoreConsole = captureConsole({
+		logFile: defaultLogFile(homedir()),
+		onProblem: (tone, text) => controller.notice(tone, text),
+	});
 	// Bracketed paste: pasted newlines arrive inside 200~/201~ markers instead of submitting.
 	process.stdout.write("\x1b[?2004h");
 	// Ctrl+C belongs to the TUI (interrupt, or press twice to exit).
-	const instance = render(h(App, { controller }), { exitOnCtrlC: false });
+	const instance = render(h(App, { controller }), { exitOnCtrlC: false, patchConsole: false });
 	try {
 		await controller.start();
 		await controller.done;
@@ -67,5 +73,6 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 		instance.unmount();
 		await instance.waitUntilExit().catch(() => undefined);
 		process.stdout.write("\x1b[?2004l");
+		restoreConsole();
 	}
 }

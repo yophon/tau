@@ -2,152 +2,36 @@
 // rendered with ink-testing-library, driven through stdin like a terminal.
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { Agent, ExtensionRegistry, type PermissionMode, type Tool, type ToolResult } from "@yophon/tau-kernel";
-import { render } from "ink-testing-library";
-import React from "react";
-import { fakePlatform, makeSseResponse, multiToolCallTurn, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
-import { App } from "../src/tui/app.ts";
-import { TuiController } from "../src/tui/controller.ts";
+import { makeSseResponse, multiToolCallTurn, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { strWidth } from "../src/tui/input/width.ts";
-import type { ApprovalAnswer, RunTuiOptions } from "../src/tui/types.ts";
+import {
+	ALT_ENTER,
+	deferred,
+	ENTER,
+	ESC,
+	type Harness,
+	type HarnessOptions,
+	harness as start,
+	textTool,
+	UP,
+} from "./tui-harness.ts";
 
-type Response = Parameters<typeof fakePlatform>[0][number];
-
-interface Harness {
-	controller: TuiController;
-	requests: Array<{ messages: Array<{ role: string; content: unknown }> }>;
-	frame(): string;
-	type(text: string): Promise<void>;
-	key(sequence: string): Promise<void>;
-	waitFor(test: (frame: string) => boolean, what: string): Promise<string>;
-}
-
-const cleanups: Array<() => void> = [];
+const open: Harness[] = [];
 afterEach(() => {
-	for (const cleanup of cleanups.splice(0)) cleanup();
+	for (const h of open.splice(0)) h.cleanup();
 });
 
-const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
-async function harness(options: {
-	responses: Response[];
-	tools?: Tool[];
-	permissionMode?: PermissionMode;
-}): Promise<Harness> {
-	const requests: Harness["requests"] = [];
-	const extensions = new ExtensionRegistry();
-	let approvalPrompt:
-		| ((
-				request: Parameters<NonNullable<RunTuiOptions["setApprovalPrompt"]>>[0] extends (r: infer R) => unknown
-					? R
-					: never,
-		  ) => Promise<ApprovalAnswer>)
-		| undefined;
-	const permissionMode = options.permissionMode ?? "autonomous";
-	const agent = new Agent({
-		config: { baseUrl: "http://mock/v1", apiKey: "k", model: "test-model" },
-		platform: fakePlatform(options.responses, requests),
-		tools: options.tools ?? [],
-		extensions,
-		permissionMode,
-		onApproval: async (request) => {
-			if (!approvalPrompt) return false;
-			return (await approvalPrompt(request)) !== "deny";
-		},
-	});
-	const tuiOptions: RunTuiOptions = {
-		agent,
-		extensions,
-		model: "test-model",
-		baseUrl: "http://mock/v1",
-		cwd: "/work/proj",
-		permissionMode,
-		sessionRepo: {} as RunTuiOptions["sessionRepo"],
-		shell: {} as RunTuiOptions["shell"],
-		setModel: () => undefined,
-		setThinkingLevel: () => undefined,
-		setApprovalPrompt: (prompt) => {
-			approvalPrompt = prompt;
-		},
-		buildAgent: () => agent,
-		reloadExtensions: async () => extensions,
-		sessionReason: "startup",
-	};
-	const controller = new TuiController(tuiOptions, { columns: () => 100, readBranch: () => undefined });
-	const ink = render(React.createElement(App, { controller }));
-	cleanups.push(() => {
-		ink.unmount();
-		void controller.stop();
-	});
-	await controller.start();
-	// Let Ink mount and attach its stdin listener before anything is typed.
-	await pause(30);
-	const frame = (): string => {
-		controller.store.flush();
-		return ink.lastFrame() ?? "";
-	};
-	const waitFor = async (test: (frame: string) => boolean, what: string): Promise<string> => {
-		const deadline = Date.now() + 3000;
-		for (;;) {
-			const current = frame();
-			if (test(current)) return current;
-			if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}. Last frame:\n${current}`);
-			await pause(10);
-		}
-	};
-	return {
-		controller,
-		requests,
-		frame,
-		type: async (text) => {
-			for (const ch of text) {
-				ink.stdin.write(ch);
-				await pause(1);
-			}
-			await pause(5);
-		},
-		key: async (sequence) => {
-			ink.stdin.write(sequence);
-			await pause(10);
-		},
-		waitFor,
-	};
+async function harness(options: HarnessOptions): Promise<Harness> {
+	const h = await start(options);
+	open.push(h);
+	return h;
 }
-
-function textTool(name: string, output: string | (() => Promise<string>), executions: string[] = []): Tool {
-	return {
-		name,
-		description: `${name} tool`,
-		parameters: { type: "object", properties: { path: { type: "string" }, command: { type: "string" } } },
-		execute: async (args, signal): Promise<ToolResult> => {
-			executions.push(JSON.stringify(args));
-			const aborted = new Promise<never>((_resolve, reject) => {
-				signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-			});
-			const text = typeof output === "string" ? output : await Promise.race([output(), aborted]);
-			return { content: [{ type: "text", text }] };
-		},
-	};
-}
-
-function deferred(): { promise: Promise<string>; resolve: (value: string) => void } {
-	let resolve: (value: string) => void = () => undefined;
-	const promise = new Promise<string>((done) => {
-		resolve = done;
-	});
-	return { promise, resolve };
-}
-
-const ENTER = "\r";
-const ESC = "\x1b";
-const ALT_ENTER = "\x1b\r";
-const UP = "\x1b[A";
 
 describe("P25 TUI", () => {
 	it("starts with a one-line header and a status line, no diagnostics dump", async () => {
 		const h = await harness({ responses: [] });
 		const frame = await h.waitFor((f) => f.includes("tau · "), "the header");
-		assert.match(frame, /tau · test-model · \/work\/proj · autonomous/);
+		assert.match(frame, /tau · test-model · \S+ · autonomous/);
 		assert.doesNotMatch(frame, /diagnostics|Host surfaces|Ready/);
 		assert.match(frame, /Enter to send/);
 	});

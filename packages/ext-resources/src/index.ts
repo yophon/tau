@@ -109,6 +109,11 @@ async function safeListDir(fs: FileSystem, path: string, diagnostics: ResourceDi
 	try {
 		return await fs.listDir(path);
 	} catch (error) {
+		// A conventional resource directory that does not exist is normal, not a problem (pi skips it too).
+		const message = error instanceof Error ? error.message : String(error);
+		if ((error as { code?: unknown } | null)?.code === "ENOENT" || /ENOENT|no such file or directory/i.test(message)) {
+			return [];
+		}
 		diagnostics.push({
 			type: "warning",
 			code: "list_failed",

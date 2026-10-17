@@ -50,6 +50,8 @@ export interface TuiDeps {
 	fileLister?: (cwd: string) => Promise<string[]>;
 	columns?: () => number;
 	now?: () => number;
+	/** Clear the screen and scrollback (/clear, session switches). */
+	clearScreen?: () => void;
 	/** Git branch for the status line. */
 	readBranch?: (cwd: string) => string | undefined;
 }

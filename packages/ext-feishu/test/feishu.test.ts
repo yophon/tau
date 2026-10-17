@@ -428,9 +428,14 @@ test("FeishuClient wires injected SDK seams and rewrites card frame headers", as
 	await client.connect();
 
 	assert.equal(client.getStatus(), "connected");
-	assert.deepEqual(dispatcherParams, { encryptKey: "", verificationToken: "" });
+	assert.equal(dispatcherParams?.encryptKey, "");
+	assert.equal(dispatcherParams?.verificationToken, "");
 	assert.equal(wsParams?.domain, "feishu-domain");
 	assert.equal(wsParams?.autoReconnect, true);
+	// SDK logs stay off the console below warn level (they drew over the TUI, P25).
+	assert.equal(wsParams?.loggerLevel, 2);
+	assert.equal(dispatcherParams?.loggerLevel, 2);
+	assert.equal(typeof (wsParams?.logger as { info?: unknown } | undefined)?.info, "function");
 	assert.equal(typeof registered?.["im.message.receive_v1"], "function");
 	await (registered?.["im.message.receive_v1"] as (data: unknown) => void)({
 		sender: { sender_type: "user" },

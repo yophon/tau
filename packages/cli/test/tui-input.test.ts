@@ -310,7 +310,8 @@ describe("keymap", () => {
 		const picking = { ...idle, pickerOpen: true };
 		assert.deepEqual(routeKey("", { upArrow: true }, picking), { type: "picker-up" });
 		assert.deepEqual(routeKey("", { escape: true }, picking), { type: "picker-cancel" });
-		assert.equal(routeKey("x", {}, picking), undefined);
+		assert.deepEqual(routeKey("y", {}, picking), { type: "picker-key", key: "y" });
+		assert.equal(routeKey("x", { ctrl: true }, picking), undefined);
 		const menu = { ...idle, menuOpen: true };
 		assert.deepEqual(routeKey("", { tab: true }, menu), { type: "menu-accept" });
 		assert.deepEqual(routeKey("x", {}, menu), { type: "insert", text: "x" });

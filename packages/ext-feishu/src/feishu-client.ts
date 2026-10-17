@@ -366,6 +366,7 @@ export class FeishuClient {
 					appSecret: config.appSecret,
 					appType,
 					domain,
+					...sdkLogging(sdk),
 				}),
 			);
 		}
@@ -393,6 +394,7 @@ export class FeishuClient {
 			const dispatcherParams: Record<string, unknown> = {
 				encryptKey: this.config.encryptKey ?? "",
 				verificationToken: this.config.verificationToken ?? "",
+				...sdkLogging(sdk),
 			};
 			const dispatcherValue =
 				this.options.eventDispatcher !== undefined
@@ -421,12 +423,11 @@ export class FeishuClient {
 				this.config.domain === "lark"
 					? (sdk.Domain?.Lark ?? Lark.Domain.Lark)
 					: (sdk.Domain?.Feishu ?? Lark.Domain.Feishu);
-			const loggerLevel = sdk.LoggerLevel?.info ?? Lark.LoggerLevel.info;
 			const wsParams: Record<string, unknown> = {
 				appId: this.config.appId,
 				appSecret: this.config.appSecret,
 				domain,
-				loggerLevel,
+				...sdkLogging(sdk),
 				autoReconnect: true,
 				handshakeTimeoutMs: 15_000,
 				wsConfig: { pingTimeout: 30 },
@@ -1027,6 +1028,27 @@ function log(...args: unknown[]): void {
 
 function warn(...args: unknown[]): void {
 	console.warn("[FeishuClient]", ...args);
+}
+
+/**
+ * The SDK logs every connection step at info level straight to the console,
+ * which draws over a TUI. Only warnings and errors are kept, through this
+ * module's own warn(); the rest goes to log(), which is silent unless DEBUG.
+ */
+export function sdkLogging(sdk: FeishuSdkLike): {
+	loggerLevel: unknown;
+	logger: Record<string, (...msg: unknown[]) => void>;
+} {
+	return {
+		loggerLevel: sdk.LoggerLevel?.warn ?? Lark.LoggerLevel.warn,
+		logger: {
+			error: (...msg) => warn("[sdk]", ...msg),
+			warn: (...msg) => warn("[sdk]", ...msg),
+			info: (...msg) => log("[sdk]", ...msg),
+			debug: (...msg) => log("[sdk]", ...msg),
+			trace: (...msg) => log("[sdk]", ...msg),
+		},
+	};
 }
 
 export default FeishuClient;

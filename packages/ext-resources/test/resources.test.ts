@@ -59,6 +59,16 @@ test("skills load from SKILL.md and format the pi system prompt block", async ()
 	});
 });
 
+test("missing resource directories are skipped without a diagnostic", async () => {
+	await withTempDir(async (dir) => {
+		const fs = new NodeFileSystem(dir);
+		const skills = await loadSkills(fs, [join(dir, "no-such-skills")]);
+		const prompts = await loadPromptTemplates(fs, [join(dir, "no-such-prompts")]);
+		assert.deepEqual(skills, { skills: [], diagnostics: [] });
+		assert.deepEqual(prompts.diagnostics, []);
+	});
+});
+
 test("prompt templates load direct md files only", async () => {
 	await withTempDir(async (dir) => {
 		await mkdir(join(dir, "prompts", "nested"), { recursive: true });

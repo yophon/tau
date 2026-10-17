@@ -1022,7 +1022,9 @@ async function main(): Promise<void> {
 	// so extensions take their no-UI degradation path instead of hanging.
 	const ui =
 		options.tui && options.print === undefined
-			? createStartupTuiUi()
+			? process.env.TAU_TUI === "next"
+				? (await import("./tui/startup.ts")).createStartupUi()
+				: createStartupTuiUi()
 			: readline && process.stdin.isTTY
 				? createUi(readline)
 				: undefined;

@@ -107,7 +107,7 @@ export interface FeishuSdkLike {
 	EventDispatcher?: unknown;
 	Domain?: { Feishu?: unknown; Lark?: unknown };
 	AppType?: { SelfBuild?: unknown };
-	LoggerLevel?: { info?: unknown };
+	LoggerLevel?: { info?: unknown; warn?: unknown };
 }
 
 /** Options for constructing a concrete FeishuClient. */
