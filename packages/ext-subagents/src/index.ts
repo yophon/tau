@@ -225,6 +225,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 								step: Step,
 								prefix: string,
 								stepSignal: TauAbortSignal | undefined,
+								detached = false,
 							): Promise<AgentRunResult> => {
 								const agent = byName.get(step.agent) as AgentDefinition;
 								const toolNames = (agent.tools ?? parentTools).filter((name) => name !== toolName);
@@ -234,6 +235,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 										appendSystemPrompt: agent.systemPrompt,
 										toolNames,
 										label: agent.name,
+										...(detached ? { detached: true } : {}),
 										...(agent.model !== undefined ? { model: agent.model } : {}),
 										...(agent.mode !== undefined ? { permissionMode: agent.mode } : {}),
 										...(options.maxTurnsPerPrompt !== undefined
@@ -268,7 +270,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 									const controller = new AbortController();
 									controllers.add(controller);
 									started.push(`${id} (${step.agent})`);
-									void runStep(step, "", controller.signal as unknown as TauAbortSignal)
+									void runStep(step, "", controller.signal as unknown as TauAbortSignal, true)
 										.then(
 											(result) => {
 												record.status = "done";

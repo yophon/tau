@@ -78,6 +78,12 @@ export interface AgentSpawnOptions {
 	permissionMode?: PermissionMode;
 	/** Names the child in approval requests (ApprovalRequest.subagent). */
 	label?: string;
+	/**
+	 * The child outlives the parent's current run (a background subagent): its
+	 * approval requests say so (ApprovalRequest.detached), so a host does not
+	 * close them when the parent's turn ends.
+	 */
+	detached?: boolean;
 	/** Every event the child emits, for progress display. */
 	onEvent?: (event: AgentEvent) => void;
 }

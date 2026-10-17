@@ -69,7 +69,10 @@ export function approvalBody(request: ApprovalRequest): StyledLine[] {
 		}
 	}
 	if (request.reason) lines.push(plainLine(request.reason, { dim: true }));
-	if (request.subagent !== undefined) lines.push(plainLine(`called by subagent ${request.subagent}`, { dim: true }));
-	else if (request.parentToolCallId !== undefined) lines.push(plainLine("called by another tool", { dim: true }));
+	if (request.subagent !== undefined) {
+		lines.push(
+			plainLine(`called by ${request.detached ? "background " : ""}subagent ${request.subagent}`, { dim: true }),
+		);
+	} else if (request.parentToolCallId !== undefined) lines.push(plainLine("called by another tool", { dim: true }));
 	return lines;
 }

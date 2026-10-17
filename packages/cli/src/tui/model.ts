@@ -295,6 +295,10 @@ export function reduce(state: UiState, action: UiAction): UiState {
 				}
 				return block;
 			});
+			// A background subagent's approvals outlive the turn; the turn's own are void now.
+			const kept = [state.approval, ...state.approvalQueue].filter(
+				(view): view is ApprovalView => view !== undefined && view.request.detached === true,
+			);
 			return commitReady({
 				...state,
 				live,
@@ -302,8 +306,8 @@ export function reduce(state: UiState, action: UiAction): UiState {
 				activity: "",
 				taskStartedAt: undefined,
 				queued: [],
-				approval: undefined,
-				approvalQueue: [],
+				approval: kept[0],
+				approvalQueue: kept.slice(1),
 				prompt: state.prompt?.kind === "tell" ? undefined : state.prompt,
 			});
 		}

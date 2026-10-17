@@ -32,6 +32,7 @@ async function main() {
 		await run("pricing", runPricingFooterSmoke);
 		await run("approval", runApprovalSmoke);
 		await run("trust", runTrustDigestSmoke);
+		await run("subagent", runSubagentSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -473,6 +474,28 @@ async function runTrustDigestSmoke(root, baseUrl) {
 	}
 }
 
+// P26b: parallel subagents through the built-in subagent tool, with live progress.
+async function runSubagentSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "subagent", true);
+	const session = await startTui("subagent", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("subagent smoke", "Enter");
+		await session.waitFor("subagent(2 in parallel: scout, worker)", 10_000);
+		await session.waitFor("SMOKE_SUBAGENT_DONE", 15_000);
+		const screen = await session.capture();
+		if (!screen.includes("RESULT_SCOUT") || !screen.includes("RESULT_WORKER")) {
+			throw new Error(`subagent answers missing:
+${screen}`);
+		}
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok subagent");
+	} finally {
+		await session.kill();
+	}
+}
+
 async function startMockOpenAI() {
 	const requests = [];
 	const server = createServer((req, res) => {
@@ -515,6 +538,9 @@ function responseFor(request) {
 		return textTurn("SMOKE_PARALLEL_DONE");
 	}
 	const lastMessage = messages.at(-1);
+	if (lastMessage?.role === "tool" && String(lastMessage.content ?? "").includes("RESULT_SCOUT")) {
+		return textTurn("SMOKE_SUBAGENT_DONE");
+	}
 	if (lastMessage?.role === "tool") {
 		const content = String(lastMessage.content ?? "");
 		if (content.includes("BASH_SMOKE_LINE_3")) return textTurn("SMOKE_BASH_DONE");
@@ -525,6 +551,11 @@ function responseFor(request) {
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("stream smoke")) return textTurn("SMOKE_STREAM_OK", 40);
+	if (content === "SCOUT_TASK") return textTurn("RESULT_SCOUT", 40);
+	if (content === "WORKER_TASK") return textTurn("RESULT_WORKER", 40);
+	if (content.includes("subagent smoke")) {
+		return toolCallTurn("subagent", { tasks: [{ agent: "scout", task: "SCOUT_TASK" }, { task: "WORKER_TASK" }] });
+	}
 	if (content.includes("approval smoke")) {
 		// rm -rf hits the kernel's dangerous-command rules (high risk) but only
 		// touches a scratch path inside the sandbox; the echo only prints when

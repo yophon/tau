@@ -73,7 +73,13 @@ export class TuiController {
 	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
 	private readonly pendingStarts: (UserContent | null)[] = [];
 	private nextDialogId = 1;
-	private readonly approvals = new Map<number, (answer: ApprovalAnswer) => void>();
+	private readonly approvals = new Map<number, { resolve: (answer: ApprovalAnswer) => void; detached: boolean }>();
+	/**
+	 * Custom messages already drawn (by content key). One that arrives between runs
+	 * (a background subagent's result) is drawn before the next run; counting
+	 * messages instead races with a result landing while a turn wraps up.
+	 */
+	private readonly shownCustom = new Set<string>();
 	private readonly pickers = new Map<number, (value: string | undefined) => void>();
 	private readonly prompts = new Map<number, (value: string | undefined) => void>();
 	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
@@ -176,6 +182,7 @@ export class TuiController {
 		if (this.agent.messages.some((message) => message.role !== "system")) {
 			this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
 		}
+		this.markCustomShown();
 		this.checkShortcuts();
 		// session_start after the host actions are in place (P23e, pi bindExtensions order).
 		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
@@ -765,6 +772,8 @@ export class TuiController {
 		const before = this.agent.getSessionUsage();
 		const startedAt = this.now();
 		let interrupted = false;
+		// Messages that arrived since the last run (a background subagent's result) show first.
+		await this.renderUnshownMessages();
 		if (input !== null) {
 			const images = typeof input === "string" ? 0 : input.filter((part) => part.type === "image").length;
 			this.dispatch({ type: "user", text: userContentText(input), images });
@@ -840,6 +849,7 @@ export class TuiController {
 
 	/** A custom message: an extension renderer's output, else its text when it is meant for display. */
 	private async showMessage(message: CustomMessage | AgentMessage): Promise<void> {
+		if (message.role === "custom") this.shownCustom.add(customKey(message));
 		const lines = await this.renderMessage(message);
 		if (lines) this.lines(lines);
 		else if (message.role === "custom" && message.display) this.notice("dim", userContentText(message.content));
@@ -849,7 +859,22 @@ export class TuiController {
 	async renderNewMessages(start: number): Promise<void> {
 		await this.agent.flush();
 		for (const message of this.agent.messages.slice(start)) {
-			if (message.role === "custom") await this.showMessage(message);
+			if (message.role === "custom" && !this.shownCustom.has(customKey(message))) await this.showMessage(message);
+		}
+	}
+
+	/** Custom messages in the context that were never drawn. */
+	private async renderUnshownMessages(): Promise<void> {
+		await this.agent.flush();
+		for (const message of this.agent.messages) {
+			if (message.role === "custom" && !this.shownCustom.has(customKey(message))) await this.showMessage(message);
+		}
+	}
+
+	/** Everything in the context counts as shown (a session's history is replayed, not re-announced). */
+	private markCustomShown(): void {
+		for (const message of this.agent.messages) {
+			if (message.role === "custom") this.shownCustom.add(customKey(message));
 		}
 	}
 
@@ -1074,6 +1099,7 @@ export class TuiController {
 		this.clearScreen();
 		this.dispatch({ type: "reset" });
 		this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
+		this.markCustomShown();
 		this.notice("dim", note);
 	}
 
@@ -1201,7 +1227,7 @@ export class TuiController {
 	requestApproval(request: ApprovalRequest): Promise<ApprovalAnswer> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
-			this.approvals.set(id, resolve);
+			this.approvals.set(id, { resolve, detached: request.detached === true });
 			this.dispatch({ type: "approval-open", id, request });
 			this.store.flush();
 		});
@@ -1245,16 +1271,21 @@ export class TuiController {
 	}
 
 	private settleApproval(id: number, answer: ApprovalAnswer): void {
-		const resolve = this.approvals.get(id);
+		const pending = this.approvals.get(id);
 		this.approvals.delete(id);
-		resolve?.(answer);
+		pending?.resolve(answer);
 	}
 
-	/** A task ended (or was aborted) with approvals still open: they count as denied. */
+	/**
+	 * A task ended (or was aborted) with approvals still open: they count as denied.
+	 * A background subagent's approvals are not the task's and stay open.
+	 */
 	private settleOpenApprovals(): void {
-		for (const [id, resolve] of this.approvals) {
+		for (const [id, pending] of this.approvals) {
+			if (pending.detached) continue;
 			this.approvals.delete(id);
-			resolve("deny");
+			pending.resolve("deny");
+			this.dispatch({ type: "approval-close", id });
 		}
 		if (this.tellFor && this.state.prompt?.kind === "tell") {
 			const promptId = this.state.prompt.id;
@@ -1304,6 +1335,10 @@ export class TuiController {
 		this.prompts.delete(id);
 		resolve?.(value);
 	}
+}
+
+function customKey(message: CustomMessage): string {
+	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
 }
 
 /** Pure editor commands → the next editor state; undefined for everything else. */

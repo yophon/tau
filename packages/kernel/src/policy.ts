@@ -52,6 +52,8 @@ export interface ApprovalRequest {
 	parentToolCallId?: string;
 	/** The subagent that made the call (AgentSpawnOptions.label, P26b). */
 	subagent?: string;
+	/** Made by a child that outlives the parent's run (AgentSpawnOptions.detached). */
+	detached?: boolean;
 }
 
 /** Modes from strictest to most permissive. */

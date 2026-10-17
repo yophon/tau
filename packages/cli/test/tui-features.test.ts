@@ -398,3 +398,24 @@ describe("ink environment", () => {
 		}
 	});
 });
+
+describe("P26b background subagents in the TUI", () => {
+	it("shows the background result when it arrives and runs a turn for it", async () => {
+		const { createSubagentsExtension } = await import("@yophon/tau-ext-subagents");
+		const h = await harness({
+			responses: [
+				makeSseResponse(toolCallTurn("subagent", { task: "bg job", background: true })),
+				makeSseResponse(textTurn("first")),
+				makeSseResponse(textTurn("second")),
+				makeSseResponse(textTurn("AFTER_THE_RESULT")),
+			],
+			extensions: [createSubagentsExtension({ directories: { user: [], project: [] } })],
+		});
+		await h.submit("go");
+		const frame = await h.waitFor(
+			(f) => f.includes("Background subagent sub-1 (worker)") && f.includes("AFTER_THE_RESULT"),
+			"the background result and the turn after it",
+		);
+		assert.ok(frame.indexOf("Background subagent sub-1") < frame.indexOf("AFTER_THE_RESULT"));
+	});
+});

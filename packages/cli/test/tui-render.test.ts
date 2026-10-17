@@ -503,3 +503,18 @@ describe("P26b subagent view", () => {
 		assert.equal(approval.at(-1), "called by subagent scout");
 	});
 });
+
+describe("P26b background approvals", () => {
+	it("task end keeps a background subagent's approval and drops the turn's own", () => {
+		const own = { toolCallId: "1", toolName: "bash", args: {}, risk: "high" as const };
+		const background = { ...own, toolCallId: "2", subagent: "reviewer", detached: true };
+		const state = run([
+			{ type: "task-start", task: "turn", activity: "Thinking", at: 0 },
+			{ type: "approval-open", id: 1, request: own },
+			{ type: "approval-open", id: 2, request: background },
+			{ type: "task-end" },
+		]);
+		assert.equal(state.approval?.id, 2);
+		assert.deepEqual(state.approvalQueue, []);
+	});
+});

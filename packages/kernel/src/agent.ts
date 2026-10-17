@@ -1046,6 +1046,10 @@ export class Agent {
 				: [basePrompt, options.appendSystemPrompt].filter((part) => part !== undefined && part !== "").join("\n\n");
 		const parentApproval = this.onApproval;
 		const label = options.label;
+		const marks = {
+			...(label !== undefined ? { subagent: label } : {}),
+			...(options.detached ? { detached: true } : {}),
+		};
 		const child = new Agent({
 			extensions: guards,
 			retry: this.retrySettings,
@@ -1067,8 +1071,8 @@ export class Agent {
 			permissionMode: stricterMode(this.permissionMode, options.permissionMode),
 			policy: this.policy,
 			onApproval:
-				parentApproval && label !== undefined
-					? (request) => parentApproval({ ...request, subagent: label })
+				parentApproval && Object.keys(marks).length > 0
+					? (request) => parentApproval({ ...request, ...marks })
 					: parentApproval,
 			// The child's calls are billed like the parent's (D19).
 			pricing: this.pricing,
