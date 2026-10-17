@@ -61,6 +61,7 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-ext-mcp-http` | Pure-ES MCP client and extension core (Streamable HTTP) written entirely on the `Platform` seam — zero dependencies, runs on bare engines | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`: BM25 search over deferred tools (e.g. MCP tools), loading the matches for the next request | No — pure ES |
+| `@yophon/tau-ext-codemode` | `codemode`: the model writes JavaScript that calls tools, run in pi's QuickJS sandbox (`./node`) | Yes — worker threads + wasm (Node entry) |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 | `@yophon/tau-ext-feishu` | Feishu/Lark WebSocket bridge with media, reactions, progress cards, and outbound tools | Yes — Feishu SDK and Node filesystem |
 

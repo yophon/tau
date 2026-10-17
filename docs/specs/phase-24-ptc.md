@@ -1,6 +1,6 @@
 # Phase 24：PTC 与 codemode 规格书
 
-> 状态：已确认（2026-10-16）。五个开放问题按建议裁定，见「风险与开放问题」；偏离记为 D29、D30。
+> 状态：已完成（2026-10-16）。五个开放问题按建议裁定，见「风险与开放问题」；偏离记为 D29、D30。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 24
 > 输入：P21 附录 A 中阶段为 P24 的 28 条，以及别的条目拆到 P24 的部分（附录 A 第二张表）。P21 开放问题 5 已裁定纳入 tool_search；ToolResult 收敛已随 P23b 完成，本阶段直接在 `{content, details}` 上加 `structuredContent`。
 
@@ -244,28 +244,28 @@ export function createNodeCodemodeExtension(options?: Omit<CodemodeExtensionOpti
 
 先写复现测试再修的（bugfix 纪律）：
 
-- [ ] MCP 撞名：同一服务器 `a-b` 与 `a_b` 两个工具得到不同的带哈希名；服务器 `a_b` + 工具 `c` 与服务器 `a` + 工具 `b_c` 不再撞名；超 64 字符的名截断加哈希。
-- [ ] 同一扩展重复注册同名工具 → 替换；重新注册为 hidden → 不在请求声明、`executeTool` 返回 Unknown tool。
+- [x] MCP 撞名：同一服务器 `a-b` 与 `a_b` 两个工具得到不同的带哈希名；服务器 `a_b` + 工具 `c` 与服务器 `a` + 工具 `b_c` 不再撞名；超 64 字符的名截断加哈希。
+- [x] 同一扩展重复注册同名工具 → 替换；重新注册为 hidden → 不在请求声明、`executeTool` 返回 Unknown tool。
 
 功能验收：
 
-- [ ] 24a：`@modelcontextprotocol/sdk` 从依赖树消失；ext-mcp 的 stdio 测试服务器（Windows 上经 `.cmd` 启动）、ext-mcp-http 现有测试全部通过；关闭时在途连接被中止、stdio 子进程退出。
-- [ ] exposure：direct 注册即声明；model-only 声明但 `executeTool` 拒绝；codemode/deferred 不声明、可被 `executeTool` 调用；hidden 不可激活、不可调用；`defaultActive:false` 的 direct 工具注册后不声明，`setActiveTools` 后声明。
-- [ ] `prepareLoadout`：改写的描述出现在请求和转录 `toolsAdded` 里；`hiddenDeclarations` 的工具不在请求里但仍可被模型调用；loadout 不变时连续两次请求不追加 system 消息。
-- [ ] 转录复原：tool_search 激活的工具，resume 与 `/tree` 回到该分支后仍声明；切到激活之前的分支则不声明；挂起名在工具注册后激活，run 开始时未注册的挂起名被丢弃。
-- [ ] `tool_result` 处理器只换 `content` → `structuredContent` 被丢弃；同时返回则保留。
-- [ ] 嵌套调用：supervised 下脚本里的 write/bash 弹审批（read-only 下这些工具根本不可调用）；`tool_call` 处理器拦下嵌套调用 → 脚本收到 reject；嵌套事件带 `parentToolCallId`，id 形如 `<parent>/1`；嵌套调用不进转录，调用方 `ToolResultMessage.nestedCalls` 有记录，`usage` 含嵌套用量。
-- [ ] 审批串行：脚本 `Promise.all` 发出三个需审批的调用 → 审批处理器被依次调用，没有并发的两个 confirm；两个并行 `task` 子 agent 各自需要审批时同样依次弹出（今天会互相顶掉）。
-- [ ] 记录上限：第 257 次嵌套调用照常执行、不进记录、`complete:false`；9 KiB 参数的 write 只记 `argumentsBytes` 和 `path`（D29）；压缩摘要的 `<modified-files>` 含脚本写过的文件。
-- [ ] bash `structuredContent`：非零退出码含 `exit_code`；超 1 MiB 输出首尾保留、`truncated:true`；模型侧文本与 P23 一致。
-- [ ] tool_search：在 3 个 deferred MCP 工具中检索 "issue" 命中并激活，下一次请求声明它们；无命中返回 "No matching tools found."；空 query 报错。BM25 用例照抄 pi 测试的排序断言。QuickJS smoke 加载 ext-tool-search 跑一次检索。
-- [ ] MCP 暴露：`exposure:"deferred"` 的服务器工具不声明、`mcp_servers` 段列出该服务器；`toolExposure` 精确名覆盖 `*` 模式；结构化结果在脚本里拿到 `structuredContent`；mock 服务器发 `tools/list_changed` 撤回一个工具后，它变为不可达。
-- [ ] MCP 生命周期：一个 3 s 才响应的 direct 服务器，首个 prompt 等到它的工具；一个永不响应的服务器 10 s 后放弃、CLI 照常对话；HTTP 503 两次后成功的调用得到结果。
-- [ ] codemode：脚本 `Promise.all([tools.read({path:"a"}), tools.read({path:"b"})])` 返回两段内容，输出带 `==> text 1/2 <==`；`console.log` 汇入 `<console_output>`；`tools.Bash` 抛错并提示 `tools.bash`；`// @options:` 不在首行时运行前失败；`store("k", 1)` 后下一次脚本 `load("k")` 为 1，`/tree` 回到之前的分支为 undefined，失败的脚本不写入；`Array.prototype.toJSON = ...` 的脚本不挂起宿主；坏 base64 图片得到 TypeError、不进会话；10 万次 `text()` 在 2 s 内完成格式化；`only` 模式下 read/write/edit/bash 的声明不在请求里、系统提示不点名它们。
-- [ ] CLI：`tau --tools +codemode -p "..."` 能跑一次脚本；未加 `+codemode` 时请求里没有 codemode 工具；TUI 与 REPL 不为嵌套调用单独打印行；ext-feishu 进度卡不出现嵌套调用。
-- [ ] smoke：QuickJS 三项（`smoke-quickjs-mcp.mjs` 期望工具名改为 `mcp__…`）、weapp bundle、Flutter bundle 重建；真实 DeepSeek：codemode 脚本并行读两个文件并汇总、tool_search 加载一个 deferred 的 mock MCP 工具后调用它、`--continue` 后 store 值仍在。
-- [ ] pi-parity：`getAllTools`、`tool_result`、「codemode、嵌套工具调用、tool_search」行改为 ✅ 或写明偏离；新增 `registerTool` 新字段、`ExtensionToolContext`、`ToolLoadout` 等行；`node scripts/check-pi-parity.mjs` 通过。decisions.md 新增 D29（嵌套记录保留 path）、D30（扩展层运行时依赖 pi 包：pi-codemode，钉版随 D23 重锚，pi-tui 先例）。
-- [ ] DoD 通用项（见 development.md）。
+- [x] 24a：`@modelcontextprotocol/sdk` 从依赖树消失；ext-mcp 的 stdio 测试服务器（Windows 上经 `.cmd` 启动）、ext-mcp-http 现有测试全部通过；关闭时在途连接被中止、stdio 子进程退出。（SDK 只作为根 devDependency 留给 Flutter 示例服务器这个测试夹具，任何发布包都不再依赖它）
+- [x] exposure：direct 注册即声明；model-only 声明但 `executeTool` 拒绝；codemode/deferred 不声明、可被 `executeTool` 调用；hidden 不可激活、不可调用；`defaultActive:false` 的 direct 工具注册后不声明，`setActiveTools` 后声明。
+- [x] `prepareLoadout`：改写的描述出现在请求和转录 `toolsAdded` 里；`hiddenDeclarations` 的工具不在请求里但仍可被模型调用；loadout 不变时连续两次请求不追加 system 消息。
+- [x] 转录复原：tool_search 激活的工具，resume 与 `/tree` 回到该分支后仍声明；切到激活之前的分支则不声明；挂起名在工具注册后激活，run 开始时未注册的挂起名被丢弃。
+- [x] `tool_result` 处理器只换 `content` → `structuredContent` 被丢弃；同时返回则保留。
+- [x] 嵌套调用：supervised 下脚本里的 write/bash 弹审批（read-only 下这些工具根本不可调用）；`tool_call` 处理器拦下嵌套调用 → 脚本收到 reject；嵌套事件带 `parentToolCallId`，id 形如 `<parent>/1`；嵌套调用不进转录，调用方 `ToolResultMessage.nestedCalls` 有记录，`usage` 含嵌套用量。
+- [x] 审批串行：脚本 `Promise.all` 发出三个需审批的调用 → 审批处理器被依次调用，没有并发的两个 confirm；两个并行 `task` 子 agent 各自需要审批时同样依次弹出（今天会互相顶掉）。
+- [x] 记录上限：第 257 次嵌套调用照常执行、不进记录、`complete:false`；9 KiB 参数的 write 只记 `argumentsBytes` 和 `path`（D29）；压缩摘要的 `<modified-files>` 含脚本写过的文件。
+- [x] bash `structuredContent`：非零退出码含 `exit_code`；超 1 MiB 输出首尾保留、`truncated:true`；模型侧文本与 P23 一致。
+- [x] tool_search：在 3 个 deferred MCP 工具中检索 "issue" 命中并激活，下一次请求声明它们；无命中返回 "No matching tools found."；空 query 报错。BM25 用例照抄 pi 测试的排序断言。QuickJS smoke 加载 ext-tool-search 跑一次检索。
+- [x] MCP 暴露：`exposure:"deferred"` 的服务器工具不声明、`mcp_servers` 段列出该服务器；`toolExposure` 精确名覆盖 `*` 模式；结构化结果在脚本里拿到 `structuredContent`；mock 服务器发 `tools/list_changed` 撤回一个工具后，它变为不可达。
+- [x] MCP 生命周期：一个 3 s 才响应的 direct 服务器，首个 prompt 等到它的工具；一个永不响应的服务器 10 s 后放弃、CLI 照常对话；HTTP 503 两次后成功的调用得到结果。（「永不响应」用 `startupWaitMs: 200` 测，10 s 缺省值未实跑）
+- [x] codemode：脚本 `Promise.all([tools.read({path:"a"}), tools.read({path:"b"})])` 返回两段内容，输出带 `==> text 1/2 <==`；`console.log` 汇入 `<console_output>`；`tools.Bash` 抛错并提示 `tools.bash`；`// @options:` 不在首行时运行前失败；`store("k", 1)` 后下一次脚本 `load("k")` 为 1，`/tree` 回到之前的分支为 undefined，失败的脚本不写入；`Array.prototype.toJSON = ...` 的脚本不挂起宿主；坏 base64 图片得到 TypeError、不进会话；10 万次 `text()` 在 2 s 内完成格式化；`only` 模式下 read/write/edit/bash 的声明不在请求里、系统提示不点名它们。
+- [x] CLI：`tau --tools +codemode -p "..."` 能跑一次脚本；未加 `+codemode` 时请求里没有 codemode 工具；TUI 与 REPL 不为嵌套调用单独打印行；ext-feishu 进度卡不出现嵌套调用。（TUI、REPL 不为嵌套调用打印行：嵌套调用不进 AgentEvent 流；ext-feishu 进度卡的过滤靠代码审查）
+- [x] smoke：QuickJS 三项（`smoke-quickjs-mcp.mjs` 期望工具名改为 `mcp__…`）、weapp bundle、Flutter bundle 重建；真实 DeepSeek：codemode 脚本并行读两个文件并汇总、tool_search 加载一个 deferred 的 mock MCP 工具后调用它、`--continue` 后 store 值仍在。（真实 DeepSeek 三项通过；pack smoke 另加了从打包产物安装后跑 codemode 脚本）
+- [x] pi-parity：`getAllTools`、`tool_result`、「codemode、嵌套工具调用、tool_search」行改为 ✅ 或写明偏离；新增 `registerTool` 新字段、`ExtensionToolContext`、`ToolLoadout` 等行；`node scripts/check-pi-parity.mjs` 通过。decisions.md 新增 D29（嵌套记录保留 path）、D30（扩展层运行时依赖 pi 包：pi-codemode，钉版随 D23 重锚，pi-tui 先例）。
+- [x] DoD 通用项（见 development.md）。
 
 ## 风险与开放问题
 
@@ -346,3 +346,17 @@ P21 附录 A 中阶段为 P24 的 28 条：
 | `sdk-codemode-mcp-factories-0.99.0` | P23 | 24e | 宿主时序已随 P23e；codemode/tool_search 工厂与 CLI 装配 |
 | `coding-agent-unreleased-codemode-worker-admission` | 以后 | 以后 | 无可钉版本；本阶段每次调用一个沙箱、结束即关闭 |
 | `codemode-image-temp-file-1.0.3` | 以后 | 以后 | 维持 |
+
+## 实施记录
+
+五步各一次提交：24a faacbb5、24b bade033、24c 4e64adf、24d bb19675、24e 535c0f0，收尾提交含真实冒烟里发现的一处修复。全量测试 399 个，396 通过、3 跳过（Windows 上的 SIGINT、kill -9、0600 权限测试，CI Linux 跑）；check、纯度门禁（新增 ext-tool-search 与 ext-codemode 的纯入口）、QuickJS 三项、weapp bundle、pack smoke 通过，Flutter bundle 已重建。
+
+与规格书不同、或规格书没写到的地方：
+
+- **24a**：协议版本仍提供 `2025-06-18`，后续请求头改用服务端协商的版本；initialize 结果不强求 `serverInfo`（pi 要求，小服务器常省略）；`tools/call` 仍无缺省超时（SDK 原为 60 s）。
+- **24b**：宿主在日志加载前显式选过工具（CLI `--tools`）时，初次的转录复原让位于宿主（`toolsChosen`），否则后台复原会覆盖 `--tools`。ToolInfo 的 `sourceInfo` 简化为 `source`。
+- **24c**：嵌套调用只发扩展事件（带 `parentToolCallId`），不进 AgentEvent 流，所以 TUI/REPL 不需要过滤；脚本进度由 codemode 的 onUpdate 给。未知工具在 tool_call 钩子之前失败、只有真正执行的调用才发 `tool_execution_start`，沿用 tau 既有 preflight 语义（pi 对嵌套调用总先发 start）。审批提示只标「called by another tool」，不带父工具名。纯度门禁新禁 `eval`/`new Function`。
+- **24d**：不可用的服务器经 `ctx.ui.notify` 报告，无 UI 时 ext-mcp 写 stderr，不再让 `session_start` 抛错（后台连接下没有可抛的时机）。HTTP 的 GET 通知流在 ext-mcp 默认开、ext-mcp-http 经 `serverNotifications` 开。连接重试只对 url 服务器。`mcp_servers` 段追加在提示末尾。**真实冒烟发现的问题**：codemode/tool_search 原来要等服务器连上才激活，deferred 服务器慢于首个请求时模型看不到 tool_search；改为 `session_start` 时按配置激活（exposure 在连接前就已知），补了回归测试。
+- **24e**：TUI 没有为 codemode 写专门的渲染器：运行中经 onUpdate 显示每个嵌套调用一行，结束后显示结果，`details.calls` 留在消息里。内置扩展排在用户扩展之前，同名工具先注册者胜，所以用户扩展替换不了内置的 codemode/tool_search（pi 的 replaceable 未做）。`--tools` 只保留已激活的扩展工具，未激活的内置工具要写 `+name`。默认提示的工具行每次 run 按声明集重建，并附上声明工具的 promptGuidelines。`image()` 的图片原样进结果内容，不落临时文件。pack smoke 新增「从打包产物安装 kernel + ext-tool-search + ext-codemode 并跑一个脚本」，验证安装布局下 pi-codemode 的 worker 与 wasm 能找到。
+
+真实 DeepSeek（deepseek-flash）：`--tools +codemode -p` 用一个脚本并行读两个文件并答对；挂一个 deferred 的 mock MCP 服务器，tool_search 检索到 `mcp__mock__echo`、下一轮调用得到 `mcp:ZEBRA-9`（headless supervised 下该调用按 D20 被拒，autonomous 下通过）；`store("color","teal")` 后 `--continue` 的脚本 `load("color")` 得到 teal。

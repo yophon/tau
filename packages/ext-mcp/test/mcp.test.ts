@@ -325,3 +325,28 @@ test("a tool that reaches a connecting server waits for it (reachesTools)", asyn
 	}
 	assert.equal(echoed, "mcp:late");
 });
+
+test("tool_search is active for a deferred server before it finished connecting", async () => {
+	const toolSearch: Extension = (api) => {
+		api.registerTool({
+			name: "tool_search",
+			description: "search",
+			parameters: { type: "object", properties: {} },
+			exposure: "model-only",
+			defaultActive: false,
+			execute: async () => textResult("searched"),
+		});
+	};
+	const s = await session(
+		[mock("slow", { exposure: "deferred", env: { MOCK_INITIALIZE_DELAY_MS: "500" } })],
+		[makeSseResponse(textTurn("ok"))],
+		{ extensions: [toolSearch] },
+	);
+	try {
+		assert.ok(s.agent.getActiveTools().includes("tool_search"));
+		await drain(s.agent.prompt("go"));
+	} finally {
+		await s.end();
+	}
+	assert.ok(wireTools(s.requests[0]).includes("tool_search"));
+});

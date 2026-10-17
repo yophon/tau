@@ -6585,6 +6585,7 @@ ${block.resource.text}`);
       extensionApi.on("session_start", (_event, ctx) => {
         sessionCtx = ctx;
         waitedForStartup = false;
+        for (const state of states) if (!state.conflict) activateReachingTools(extensionApi, state);
         void connect2();
       });
       extensionApi.on("before_agent_start", async (event, ctx) => {

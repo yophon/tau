@@ -214,6 +214,21 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- New package `@yophon/tau-ext-codemode` (P24e, pi 0.99.0–1.2.0): the `codemode`
+  tool. The model writes JavaScript that calls tools (`tools.<name>()`, resolving to
+  structured results where declared), finds unlisted ones with `searchTools()` /
+  `describeTool()` / `describeNamespace()`, and keeps JSON values with
+  `store()`/`load()` (per branch). Every nested call passes hooks, policy and
+  approval. The pure entry takes an injected sandbox; `@yophon/tau-ext-codemode/node`
+  runs scripts in `@earendil-works/pi-codemode`'s worker-thread QuickJS sandbox
+  (pinned 1.2.0).
+- CLI (P24e): `tool_search` and `codemode` ship as built-in extensions, inactive
+  until `--tools +codemode` / `--tools +tool_search` (or an MCP server with
+  codemode/deferred exposure); `codemode.mode` (`on`/`only`) and
+  `codemode.inlineBudget` are read from `~/.tau/settings.json` and a trusted
+  project's `.tau/settings.json`. The default system prompt's tool line follows the
+  tools the request declares (`--tools`, loaded tools, codemode `only`) and lists
+  their guidelines.
 - New package `@yophon/tau-ext-tool-search` (P24d, pi 0.99.0–1.2.0): the
   `tool_search` tool (registered inactive) ranks `codemode`/`deferred` tools with
   BM25 and activates the matches for the next request; the activation is recorded

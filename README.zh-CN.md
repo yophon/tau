@@ -53,6 +53,7 @@ MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的�
 | `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的纯 ES MCP client 与扩展核心（Streamable HTTP）——零依赖，裸引擎可跑 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | 完全构建在 `Platform` 缝隙上的 Anthropic Messages `ChatTransport`——thinking 原生流式、prompt 缓存、工具结果携带图片 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`：在未声明的工具（如 MCP 工具）里用 BM25 检索，命中的下一次请求起可用 | 否——纯 ES |
+| `@yophon/tau-ext-codemode` | `codemode`：模型写 JavaScript 调用工具，跑在 pi 的 QuickJS 沙箱里（`./node`） | 是——worker 线程与 wasm（Node 入口） |
 | `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
 | `@yophon/tau-ext-feishu` | 飞书/Lark WebSocket 桥接，支持媒体、Reaction、进度卡片和主动发送工具 | 是——飞书 SDK 与 Node 文件系统 |
 

@@ -404,6 +404,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		extensionApi.on("session_start", (_event, ctx) => {
 			sessionCtx = ctx;
 			waitedForStartup = false;
+			// Exposure is known from the config: the tool that reaches indirect servers is
+			// active before the first request, not only once a slow server has connected.
+			for (const state of states) if (!state.conflict) activateReachingTools(extensionApi, state);
 			void connect();
 		});
 
