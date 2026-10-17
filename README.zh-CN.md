@@ -24,7 +24,7 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   （`/tree`）、分叉（`/fork`）、自动上下文压缩（算法与 prompt 逐字照抄 pi）。
 - **扩展**——镜像 pi 的扩展 API：25+ 生命周期事件、工具、slash 命令、flags、
   渲染器、widgets、快捷键。标准扩展包：子 agent（`task` 工具）、MCP client
-  桥（基于官方 SDK，以及一个零依赖、纯 `Platform` 的 HTTP client 供裸引擎用）、
+  桥（零依赖、纯 `Platform` 的 MCP 核心，Node 上另加 stdio 传输）、
   skills 与 prompt templates（与 pi 文件格式兼容）。
 - **宿主**——终端（REPL / 产品级 TUI / 单次 `-p`）、浏览器（OPFS）、微信小
   程序、React Native（Expo）、手机（Flutter 经 `flutter_js`，内核跑在 QuickJS
@@ -49,8 +49,8 @@ MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的�
 | `@yophon/tau-host-rn` | React Native（Expo）`Platform` 适配器，基于 `expo/fetch` | 是 |
 | `@yophon/tau-cli` | 终端前端：REPL、TUI、单次模式 | 是 |
 | `@yophon/tau-ext-subagents` | 注册 `task` 工具、以子 Agent 完成委派的扩展包 | 不直接碰运行时 API |
-| `@yophon/tau-ext-mcp` | 用官方 SDK（stdio/HTTP）把 MCP server 工具桥接为 tau 工具 | 是——MCP SDK transport |
-| `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的 Streamable HTTP MCP client——零依赖，能进 SDK 进不了的裸引擎 | **否**——纯 `Platform` |
+| `@yophon/tau-ext-mcp` | Node 上的 MCP 扩展：ext-mcp-http 的核心加本地服务器的 stdio 传输（不依赖 MCP SDK） | 是——子进程 |
+| `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的纯 ES MCP client 与扩展核心（Streamable HTTP）——零依赖，裸引擎可跑 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | 完全构建在 `Platform` 缝隙上的 Anthropic Messages `ChatTransport`——thinking 原生流式、prompt 缓存、工具结果携带图片 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
 | `@yophon/tau-ext-feishu` | 飞书/Lark WebSocket 桥接，支持媒体、Reaction、进度卡片和主动发送工具 | 是——飞书 SDK 与 Node 文件系统 |

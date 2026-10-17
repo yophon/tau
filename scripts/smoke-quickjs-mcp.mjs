@@ -65,7 +65,7 @@ const llmServer = createServer(async (req, res) => {
 								{
 									index: 0,
 									id: "call_1",
-									function: { name: "computer_read_file", arguments: JSON.stringify({ path: "hello.txt" }) },
+									function: { name: "mcp__computer__read_file", arguments: JSON.stringify({ path: "hello.txt" }) },
 								},
 							],
 						},
@@ -173,7 +173,12 @@ llmServer.close();
 
 if (typeof raw !== "string" || raw.startsWith("ERROR")) fail(String(raw));
 const result = JSON.parse(raw);
-const expectedTools = ["computer_read_file", "computer_write_file", "computer_list_dir", "computer_run_command"];
+const expectedTools = [
+	"mcp__computer__read_file",
+	"mcp__computer__write_file",
+	"mcp__computer__list_dir",
+	"mcp__computer__run_command",
+];
 const secondRequest = JSON.stringify(llmRequests[1] ?? {});
 const expectations = [
 	[

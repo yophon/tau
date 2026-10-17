@@ -4,7 +4,7 @@
   var __defNormalProp = (obj, key, value) => key in obj ? __defProp(obj, key, { enumerable: true, configurable: true, writable: true, value }) : obj[key] = value;
   var __publicField = (obj, key, value) => __defNormalProp(obj, typeof key !== "symbol" ? key + "" : key, value);
 
-  // test-fixtures/quickjs/polyfills.ts
+  // ../../../test-fixtures/quickjs/polyfills.ts
   function define(target, name, value) {
     if (!(name in target)) {
       Object.defineProperty(target, name, { value, writable: true, configurable: true });
@@ -42,7 +42,7 @@
     return this.split(search).join(replacement);
   });
 
-  // packages/kernel/src/abort.ts
+  // ../../../packages/kernel/src/abort.ts
   var AbortHandle = class {
     constructor() {
       __publicField(this, "signal");
@@ -87,7 +87,7 @@
     }
   };
 
-  // packages/kernel/src/errors.ts
+  // ../../../packages/kernel/src/errors.ts
   var TauError = class extends Error {
     constructor(code, message, cause) {
       super(message, cause === void 0 ? void 0 : { cause });
@@ -131,7 +131,7 @@
     return detail === "" || outer.message.includes(detail) ? outer.message : `${outer.message} (${detail})`;
   }
 
-  // packages/kernel/src/messages.ts
+  // ../../../packages/kernel/src/messages.ts
   function computeUsageCost(usage, pricing) {
     const input = usage.input / 1e6 * pricing.inputPerMTok;
     const output = usage.output / 1e6 * pricing.outputPerMTok;
@@ -183,7 +183,7 @@
     return message.content.filter((block) => block.type === "toolCall");
   }
 
-  // packages/kernel/src/projection.ts
+  // ../../../packages/kernel/src/projection.ts
   function isSystemMessage(message) {
     return message.role === "system";
   }
@@ -390,7 +390,7 @@ ${value}`
     return total;
   }
 
-  // packages/kernel/src/retry.ts
+  // ../../../packages/kernel/src/retry.ts
   function buildProviderErrorPattern(patterns) {
     return new RegExp(patterns.join("|"), "i");
   }
@@ -544,7 +544,7 @@ ${value}`
     return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
   }
 
-  // packages/kernel/src/compaction.ts
+  // ../../../packages/kernel/src/compaction.ts
   var DEFAULT_COMPACTION_SETTINGS = {
     enabled: true,
     reserveTokens: 16384,
@@ -1130,7 +1130,7 @@ ${turnPrefix.text}`;
     };
   }
 
-  // packages/kernel/src/branch.ts
+  // ../../../packages/kernel/src/branch.ts
   var BRANCH_SUMMARY_MAX_TOKENS = 4096;
   async function collectEntriesForBranchSummary(store, oldLeafId, targetId) {
     if (!oldLeafId) {
@@ -1295,7 +1295,7 @@ ${instructions}`;
     return { summary: summary || "No summary generated", readFiles, modifiedFiles, usage: generated.usage };
   }
 
-  // packages/kernel/src/tools.ts
+  // ../../../packages/kernel/src/tools.ts
   function utf8Length(codePoint) {
     return codePoint < 128 ? 1 : codePoint < 2048 ? 2 : codePoint < 65536 ? 3 : 4;
   }
@@ -1412,7 +1412,7 @@ ${where(text)}`;
     return problems;
   }
 
-  // packages/kernel/src/extensions.ts
+  // ../../../packages/kernel/src/extensions.ts
   function isValidUserBashResult(value) {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
     const result = value;
@@ -2102,7 +2102,7 @@ ${where(text)}`;
     }
   };
 
-  // packages/kernel/src/json.ts
+  // ../../../packages/kernel/src/json.ts
   var VALID_JSON_ESCAPES = /* @__PURE__ */ new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
   function isControlCharacter(char) {
     const codePoint = char.codePointAt(0);
@@ -2175,7 +2175,7 @@ ${where(text)}`;
     }
   }
 
-  // packages/kernel/src/sse.ts
+  // ../../../packages/kernel/src/sse.ts
   var DEFAULT_MAX_BUFFER_LENGTH = 4 * 1024 * 1024;
   var SseParser = class {
     constructor(options) {
@@ -2235,7 +2235,7 @@ ${where(text)}`;
     }
   };
 
-  // packages/kernel/src/transform.ts
+  // ../../../packages/kernel/src/transform.ts
   var NON_VISION_USER_IMAGE_PLACEHOLDER = "(image omitted: model does not support images)";
   var NON_VISION_TOOL_IMAGE_PLACEHOLDER = "(tool image omitted: model does not support images)";
   function replaceImagesWithPlaceholder(content, placeholder) {
@@ -2333,7 +2333,7 @@ ${where(text)}`;
     return msg.api === target.api && msg.provider === target.provider && msg.model === target.model;
   }
 
-  // packages/kernel/src/uuid.ts
+  // ../../../packages/kernel/src/uuid.ts
   var lastTimestamp = -Infinity;
   var sequence = 0;
   function uuidv7(randomBytes) {
@@ -2372,7 +2372,7 @@ ${where(text)}`;
     return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10, 16).join("")}`;
   }
 
-  // packages/kernel/src/openai.ts
+  // ../../../packages/kernel/src/openai.ts
   var COMPACTION_SUMMARY_PREFIX = `The conversation history before this point was compacted into the following summary:
 
 <summary>
@@ -2803,7 +2803,7 @@ ${where(text)}`;
     return transport;
   }
 
-  // packages/kernel/src/platform.ts
+  // ../../../packages/kernel/src/platform.ts
   function defaultPlatform() {
     const g = globalThis;
     const globalFetch = g.fetch;
@@ -2872,7 +2872,7 @@ ${where(text)}`;
     };
   }
 
-  // packages/kernel/src/policy.ts
+  // ../../../packages/kernel/src/policy.ts
   function resolvePolicyAction(mode, risk) {
     switch (mode) {
       case "bypass":
@@ -2997,7 +2997,7 @@ ${where(text)}`;
     };
   }
 
-  // packages/kernel/src/session.ts
+  // ../../../packages/kernel/src/session.ts
   function generateEntryId(randomBytes, has) {
     for (let i = 0; i < 100; i++) {
       const id = [...randomBytes(4)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -3179,7 +3179,7 @@ ${where(text)}`;
     }
   };
 
-  // packages/kernel/src/tool-batch.ts
+  // ../../../packages/kernel/src/tool-batch.ts
   var ToolBatchRunner = class {
     constructor(host2) {
       __publicField(this, "host");
@@ -3509,7 +3509,7 @@ ${detail}` : detail
     };
   }
 
-  // packages/kernel/src/agent.ts
+  // ../../../packages/kernel/src/agent.ts
   var PendingMessageQueue = class {
     constructor(mode) {
       __publicField(this, "items", []);
@@ -4969,7 +4969,7 @@ ${detail}` : detail
     return [{ type: "text", text: result.text }, ...images];
   }
 
-  // packages/kernel/src/utf8.ts
+  // ../../../packages/kernel/src/utf8.ts
   var REPLACEMENT = "\uFFFD";
   var MIN_CODE_POINT = [0, 0, 128, 2048, 65536];
   function createIncrementalUtf8Decoder() {
@@ -5047,281 +5047,897 @@ ${detail}` : detail
     };
   }
 
-  // packages/ext-mcp-http/src/index.ts
-  var MCP_OUTPUT_MAX_BYTES = 20 * 1024;
-  var MCP_PROTOCOL_VERSION = "2025-06-18";
-  var CLIENT_INFO = { name: "tau-ext-mcp-http", version: "0.1.0" };
-  var DEFAULT_HANDSHAKE_TIMEOUT_MS = 1e4;
-  var HttpStatusError = class extends Error {
+  // ../../../packages/ext-mcp-http/src/jsonrpc.ts
+  var JSON_RPC_ERROR_CODES = {
+    parseError: -32700,
+    invalidRequest: -32600,
+    methodNotFound: -32601,
+    invalidParams: -32602,
+    internalError: -32603
+  };
+  var McpError = class extends Error {
+    constructor(code, message, data) {
+      super(message);
+      __publicField(this, "code");
+      __publicField(this, "data");
+      this.name = "McpError";
+      this.code = code;
+      this.data = data;
+    }
+  };
+  var McpConnectionClosedError = class extends Error {
+    constructor(message = "MCP connection closed") {
+      super(message);
+      this.name = "McpConnectionClosedError";
+    }
+  };
+  var McpTimeoutError = class extends Error {
+    constructor(timeoutMs) {
+      super(`MCP request timed out after ${timeoutMs}ms`);
+      __publicField(this, "timeoutMs");
+      this.name = "McpTimeoutError";
+      this.timeoutMs = timeoutMs;
+    }
+  };
+  var McpAbortError = class extends Error {
+    constructor(message = "MCP request aborted") {
+      super(message);
+      this.name = "AbortError";
+    }
+  };
+  function isObject(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function toError2(value) {
+    return value instanceof Error ? value : new Error(String(value));
+  }
+  function isJsonRpcId(value) {
+    return typeof value === "string" || typeof value === "number" && Number.isFinite(value);
+  }
+  function isJsonRpcRequest(message) {
+    return isObject(message) && message.jsonrpc === "2.0" && isJsonRpcId(message.id) && typeof message.method === "string";
+  }
+  function isJsonRpcNotification(message) {
+    return isObject(message) && message.jsonrpc === "2.0" && !("id" in message) && typeof message.method === "string";
+  }
+  function isJsonRpcResponse(message) {
+    if (!isObject(message) || message.jsonrpc !== "2.0" || !isJsonRpcId(message.id)) return false;
+    if ("result" in message) return !("error" in message);
+    if (!("error" in message) || !isObject(message.error)) return false;
+    return typeof message.error.code === "number" && typeof message.error.message === "string";
+  }
+  function parseJsonRpcMessage(value) {
+    if (isJsonRpcRequest(value) || isJsonRpcNotification(value) || isJsonRpcResponse(value)) return value;
+    throw new McpError(JSON_RPC_ERROR_CODES.invalidRequest, "Invalid JSON-RPC message");
+  }
+
+  // ../../../packages/ext-mcp-http/src/transport.ts
+  var TransportEvents = class {
+    constructor() {
+      __publicField(this, "messageListeners", /* @__PURE__ */ new Set());
+      __publicField(this, "errorListeners", /* @__PURE__ */ new Set());
+      __publicField(this, "closeListeners", /* @__PURE__ */ new Set());
+      __publicField(this, "closeEmitted", false);
+    }
+    onMessage(listener) {
+      this.messageListeners.add(listener);
+      return () => this.messageListeners.delete(listener);
+    }
+    onError(listener) {
+      this.errorListeners.add(listener);
+      return () => this.errorListeners.delete(listener);
+    }
+    onClose(listener) {
+      this.closeListeners.add(listener);
+      return () => this.closeListeners.delete(listener);
+    }
+    emitMessage(message) {
+      for (const listener of this.messageListeners) listener(message);
+    }
+    emitError(error) {
+      const normalized = toError2(error);
+      for (const listener of this.errorListeners) listener(normalized);
+    }
+    emitClose() {
+      if (this.closeEmitted) return;
+      this.closeEmitted = true;
+      for (const listener of this.closeListeners) listener();
+    }
+  };
+
+  // ../../../packages/ext-mcp-http/src/http.ts
+  var McpHttpError = class extends Error {
     constructor(status, message) {
       super(message);
       __publicField(this, "status");
+      this.name = "McpHttpError";
       this.status = status;
     }
   };
-  function sanitizeToolPart(value) {
-    const sanitized = value.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
-    return sanitized === "" ? "mcp" : sanitized;
+  var McpSessionExpiredError = class extends McpHttpError {
+    constructor() {
+      super(404, "MCP session expired");
+      this.name = "McpSessionExpiredError";
+    }
+  };
+  function contentType(response) {
+    return response.headers?.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   }
-  function tauToolName(server, mcpToolName) {
-    return `${sanitizeToolPart(server)}_${sanitizeToolPart(mcpToolName)}`;
+  var StreamableHttpTransport = class extends TransportEvents {
+    constructor(options) {
+      super();
+      __publicField(this, "options");
+      __publicField(this, "lifetime", new AbortHandle());
+      __publicField(this, "started", false);
+      __publicField(this, "closed", false);
+      __publicField(this, "sessionIdValue");
+      __publicField(this, "protocolVersion");
+      this.options = Object.freeze({ ...options, headers: options.headers ? { ...options.headers } : void 0 });
+    }
+    get sessionId() {
+      return this.sessionIdValue;
+    }
+    async start() {
+      if (this.started) throw new Error("MCP Streamable HTTP transport already started");
+      if (this.closed) throw new McpConnectionClosedError();
+      this.started = true;
+    }
+    setProtocolVersion(version) {
+      this.protocolVersion = version;
+    }
+    async send(message, { signal } = {}) {
+      if (!this.started || this.closed) throw new McpConnectionClosedError();
+      if (signal?.aborted) return;
+      const isInitialize = isJsonRpcRequest(message) && message.method === "initialize";
+      const headers = {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        ...this.options.headers
+      };
+      if (!isInitialize) {
+        if (this.protocolVersion !== void 0) headers["mcp-protocol-version"] = this.protocolVersion;
+        if (this.sessionIdValue !== void 0) headers["mcp-session-id"] = this.sessionIdValue;
+      }
+      const request = new AbortHandle();
+      request.follow(signal);
+      request.follow(this.lifetime.signal);
+      let response;
+      try {
+        response = await this.options.platform.fetch(this.options.url, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(message),
+          signal: request.signal
+        });
+      } catch (error) {
+        request.abort("settled");
+        throw error;
+      }
+      if (!response.ok) {
+        request.abort("settled");
+        if (response.status === 404 && this.sessionIdValue !== void 0 && !isInitialize) {
+          throw new McpSessionExpiredError();
+        }
+        throw new McpHttpError(response.status, `MCP server responded HTTP ${response.status}`);
+      }
+      const sessionId = response.headers?.get("mcp-session-id");
+      if (sessionId) this.sessionIdValue = sessionId;
+      if (!isJsonRpcRequest(message)) {
+        request.abort("settled");
+        return;
+      }
+      const type = contentType(response);
+      if (type === "text/event-stream") {
+        void this.consumeSse(response, message.id, request);
+        return;
+      }
+      try {
+        const text = await response.text();
+        if (type === "application/json" || !this.emitSse(text)) this.emitJson(text);
+      } finally {
+        request.abort("settled");
+      }
+    }
+    async close() {
+      if (this.closed) return;
+      this.closed = true;
+      this.lifetime.abort("closed");
+      this.emitClose();
+    }
+    /** Emit every JSON-RPC message of a JSON body (one message or a batch). */
+    emitJson(text) {
+      const body = JSON.parse(text);
+      for (const item of Array.isArray(body) ? body : [body]) this.emitMessage(parseJsonRpcMessage(item));
+    }
+    /**
+     * A body without a content type (adapters without response headers): JSON first,
+     * then SSE framing. Returns false when the text is JSON, so the caller parses it.
+     */
+    emitSse(text) {
+      try {
+        JSON.parse(text);
+        return false;
+      } catch {
+      }
+      const parser = new SseParser();
+      for (const event of [...parser.push(text), ...parser.flush()]) this.emitEventData(event.data);
+      return true;
+    }
+    emitEventData(data) {
+      if (!data.trim()) return false;
+      let message;
+      try {
+        message = parseJsonRpcMessage(JSON.parse(data));
+      } catch (error) {
+        this.emitError(error);
+        return false;
+      }
+      this.emitMessage(message);
+      return true;
+    }
+    /** Read the SSE reply to one request; a stream that ends unanswered fails only that request. */
+    async consumeSse(response, requestId, request) {
+      let answered = false;
+      let stoppedEarly = false;
+      let failure;
+      const reader = response.body?.getReader();
+      try {
+        if (!reader) throw new Error("MCP SSE response had no readable body");
+        const decoder = this.options.platform.createUtf8Decoder();
+        const parser = new SseParser();
+        while (!answered) {
+          if (request.signal.aborted) {
+            stoppedEarly = true;
+            break;
+          }
+          const { done, value } = await reader.read();
+          const events = done ? parser.flush() : value ? parser.push(decoder.decode(value)) : [];
+          for (const event of events) {
+            if (!this.emitEventData(event.data)) continue;
+            if (answersRequest(event.data, requestId)) answered = true;
+          }
+          if (done) break;
+        }
+      } catch (error) {
+        if (request.signal.aborted) stoppedEarly = true;
+        else failure = error;
+      } finally {
+        try {
+          reader?.cancel("done");
+        } catch {
+        }
+        request.abort("settled");
+      }
+      if (answered || stoppedEarly || this.closed) return;
+      const reason = failure === void 0 ? "stream ended without a response" : toError2(failure).message;
+      this.emitMessage({
+        jsonrpc: "2.0",
+        id: requestId,
+        error: { code: JSON_RPC_ERROR_CODES.internalError, message: `MCP response stream failed: ${reason}` }
+      });
+    }
+  };
+  function answersRequest(data, requestId) {
+    try {
+      const message = JSON.parse(data);
+      return message.id === requestId && message.method === void 0;
+    } catch {
+      return false;
+    }
   }
+
+  // ../../../packages/ext-mcp-http/src/client.ts
+  var MCP_PROTOCOL_VERSION = "2025-06-18";
+  var MAX_LIST_PAGES = 1e3;
+  function invalid(message) {
+    return new McpError(JSON_RPC_ERROR_CODES.invalidRequest, message);
+  }
+  function validateInitializeResult(value) {
+    if (!isObject(value) || typeof value.protocolVersion !== "string") throw invalid("Invalid MCP initialize result");
+    return {
+      protocolVersion: value.protocolVersion,
+      capabilities: isObject(value.capabilities) ? value.capabilities : {},
+      ...isObject(value.serverInfo) && typeof value.serverInfo.name === "string" ? { serverInfo: value.serverInfo } : {},
+      ...typeof value.instructions === "string" ? { instructions: value.instructions } : {}
+    };
+  }
+  function validateCallToolResult(value) {
+    if (!isObject(value) || value.content !== void 0 && !Array.isArray(value.content)) {
+      throw invalid("Invalid MCP tools/call result");
+    }
+    return value.content === void 0 ? { ...value, content: [] } : value;
+  }
+  var McpClient = class {
+    constructor(options) {
+      __publicField(this, "options");
+      __publicField(this, "state", "idle");
+      __publicField(this, "transport");
+      __publicField(this, "nextRequestId", 1);
+      __publicField(this, "instructionsValue");
+      __publicField(this, "protocolVersionValue");
+      __publicField(this, "pending", /* @__PURE__ */ new Map());
+      __publicField(this, "requestHandlers", /* @__PURE__ */ new Map());
+      __publicField(this, "notificationListeners", /* @__PURE__ */ new Map());
+      __publicField(this, "errorListeners", /* @__PURE__ */ new Set());
+      __publicField(this, "closeListeners", /* @__PURE__ */ new Set());
+      __publicField(this, "disposers", []);
+      this.options = Object.freeze({ ...options });
+      this.requestHandlers.set("ping", () => ({}));
+    }
+    get connectionState() {
+      return this.state;
+    }
+    /** Server instructions from `initialize`, describing its tools as a group. */
+    get instructions() {
+      return this.instructionsValue;
+    }
+    get protocolVersion() {
+      return this.protocolVersionValue;
+    }
+    async connect(transport, options = {}) {
+      if (this.state !== "idle") throw new Error(`Cannot connect MCP client in ${this.state} state`);
+      this.state = "connecting";
+      this.transport = transport;
+      this.disposers = [
+        transport.onMessage((message) => this.handleMessage(message)),
+        // Transport errors are reported only; pending requests fail when the transport closes.
+        transport.onError((error) => this.emitError(error)),
+        transport.onClose(() => this.markClosed(new McpConnectionClosedError()))
+      ];
+      try {
+        await transport.start();
+        const result = validateInitializeResult(
+          await this.requestInternal(
+            "initialize",
+            {
+              protocolVersion: MCP_PROTOCOL_VERSION,
+              capabilities: {},
+              clientInfo: { name: this.options.name, version: this.options.version }
+            },
+            options,
+            true
+          )
+        );
+        this.protocolVersionValue = result.protocolVersion;
+        this.instructionsValue = result.instructions?.trim() || void 0;
+        transport.setProtocolVersion?.(result.protocolVersion);
+        await this.notifyInternal("notifications/initialized", void 0, true);
+        this.state = "connected";
+        return result;
+      } catch (error) {
+        await this.close().catch(() => {
+        });
+        throw error;
+      }
+    }
+    request(method, params, options = {}) {
+      return this.requestInternal(method, params, options, false);
+    }
+    notify(method, params) {
+      return this.notifyInternal(method, params, false);
+    }
+    onNotification(method, listener) {
+      const listeners = this.notificationListeners.get(method) ?? /* @__PURE__ */ new Set();
+      this.notificationListeners.set(method, listeners);
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) this.notificationListeners.delete(method);
+      };
+    }
+    onError(listener) {
+      this.errorListeners.add(listener);
+      return () => this.errorListeners.delete(listener);
+    }
+    /** Called once when the connection closes, whether the transport dropped or `close()` was called. */
+    onClose(listener) {
+      this.closeListeners.add(listener);
+      return () => this.closeListeners.delete(listener);
+    }
+    /** Every tool, following `nextCursor` through all pages. */
+    async listTools(options = {}) {
+      const tools = [];
+      const cursors = /* @__PURE__ */ new Set();
+      let cursor;
+      for (let page = 0; page < MAX_LIST_PAGES; page++) {
+        const value = await this.request("tools/list", cursor === void 0 ? void 0 : { cursor }, options);
+        const items = isObject(value) ? value.tools : void 0;
+        if (!isObject(value) || !Array.isArray(items)) throw invalid("Invalid MCP tools/list result");
+        for (const item of items) {
+          if (!isObject(item) || typeof item.name !== "string") throw invalid("Invalid entry in MCP tools/list result");
+          tools.push({
+            ...item,
+            inputSchema: isObject(item.inputSchema) ? item.inputSchema : { type: "object", properties: {} }
+          });
+        }
+        const next = value.nextCursor === null || value.nextCursor === "" ? void 0 : value.nextCursor;
+        if (next === void 0) return tools;
+        if (typeof next !== "string") throw invalid("Invalid MCP tools/list cursor");
+        if (cursors.has(next)) throw new Error(`MCP tools/list returned duplicate cursor: ${next}`);
+        cursors.add(next);
+        cursor = next;
+      }
+      throw new Error(`MCP tools/list exceeded ${MAX_LIST_PAGES} pages`);
+    }
+    async callTool(name, args, options = {}) {
+      return validateCallToolResult(
+        await this.request("tools/call", { name, ...args === void 0 ? {} : { arguments: args } }, options)
+      );
+    }
+    async close() {
+      const transport = this.transport;
+      this.transport = void 0;
+      for (const dispose of this.disposers.splice(0)) dispose();
+      this.markClosed(new McpConnectionClosedError());
+      await transport?.close();
+    }
+    requestInternal(method, params, options, allowConnecting) {
+      let transport;
+      try {
+        transport = this.requireTransport(allowConnecting);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (options.signal?.aborted) return Promise.reject(new McpAbortError());
+      const id = this.nextRequestId++;
+      const message = { jsonrpc: "2.0", id, method, ...params === void 0 ? {} : { params } };
+      return new Promise((resolve, reject) => {
+        const entry = {
+          resolve,
+          reject,
+          signal: options.signal,
+          onAbort: () => this.failPending(id, new McpAbortError()),
+          settle: new AbortHandle()
+        };
+        this.pending.set(id, entry);
+        options.signal?.addEventListener("abort", entry.onAbort);
+        const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs;
+        const sleep = this.options.platform?.sleep;
+        if (timeoutMs !== void 0 && Number.isFinite(timeoutMs) && timeoutMs > 0 && sleep) {
+          sleep(timeoutMs, entry.settle.signal).then(
+            () => this.failPending(id, new McpTimeoutError(timeoutMs)),
+            () => {
+            }
+          );
+        }
+        transport.send(message, { signal: entry.settle.signal }).catch((error) => this.failPending(id, error));
+      });
+    }
+    async notifyInternal(method, params, allowConnecting) {
+      await this.requireTransport(allowConnecting).send({
+        jsonrpc: "2.0",
+        method,
+        ...params === void 0 ? {} : { params }
+      });
+    }
+    requireTransport(allowConnecting) {
+      if (this.transport && (this.state === "connected" || allowConnecting && this.state === "connecting")) {
+        return this.transport;
+      }
+      throw new McpConnectionClosedError(`MCP client is ${this.state}`);
+    }
+    handleMessage(message) {
+      if (isJsonRpcResponse(message)) this.handleResponse(message);
+      else if (isJsonRpcRequest(message)) void this.handleRequest(message);
+      else if (isJsonRpcNotification(message)) this.handleNotification(message.method, message.params);
+      else this.emitError(invalid("Received invalid JSON-RPC message"));
+    }
+    handleResponse(message) {
+      const entry = this.pending.get(message.id);
+      if (!entry) {
+        this.emitError(new Error(`Received response for unknown MCP request ${String(message.id)}`));
+        return;
+      }
+      this.removePending(message.id, entry);
+      if ("error" in message) entry.reject(new McpError(message.error.code, message.error.message, message.error.data));
+      else entry.resolve(message.result);
+    }
+    /** Answer a server request: `ping`, or method-not-found so the server never waits forever. */
+    async handleRequest(message) {
+      const transport = this.transport;
+      if (!transport) return;
+      const handler = this.requestHandlers.get(message.method);
+      let reply;
+      if (!handler) {
+        reply = {
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: JSON_RPC_ERROR_CODES.methodNotFound, message: `Method not found: ${message.method}` }
+        };
+      } else {
+        try {
+          reply = { jsonrpc: "2.0", id: message.id, result: await handler(message.params) ?? {} };
+        } catch (error) {
+          reply = {
+            jsonrpc: "2.0",
+            id: message.id,
+            error: { code: JSON_RPC_ERROR_CODES.internalError, message: toError2(error).message }
+          };
+        }
+      }
+      await transport.send(reply).catch((error) => this.emitError(error));
+    }
+    handleNotification(method, params) {
+      for (const listener of this.notificationListeners.get(method) ?? []) {
+        try {
+          listener(params);
+        } catch (error) {
+          this.emitError(error);
+        }
+      }
+    }
+    failPending(id, error) {
+      const entry = this.pending.get(id);
+      if (!entry) return;
+      this.removePending(id, entry);
+      entry.reject(error);
+    }
+    removePending(id, entry) {
+      this.pending.delete(id);
+      entry.signal?.removeEventListener("abort", entry.onAbort);
+      entry.settle.abort("settled");
+    }
+    /** Idempotent: rejects in-flight requests and flips the state. */
+    markClosed(error) {
+      const wasClosed = this.state === "closed";
+      this.state = "closed";
+      for (const [id, entry] of this.pending) {
+        this.removePending(id, entry);
+        entry.reject(error);
+      }
+      if (wasClosed) return;
+      for (const listener of [...this.closeListeners]) {
+        try {
+          listener();
+        } catch (listenerError) {
+          this.emitError(listenerError);
+        }
+      }
+    }
+    emitError(error) {
+      const normalized = toError2(error);
+      for (const listener of this.errorListeners) listener(normalized);
+    }
+  };
+
+  // ../../../packages/ext-mcp-http/src/naming.ts
+  var MAX_TOOL_NAME_LENGTH = 64;
+  function mcpNamespace(server) {
+    return `mcp__${server.replace(/-/g, "_")}`;
+  }
+  function createMcpToolName(server, tool, isTaken = () => false) {
+    const name = `mcp__${server}__${tool}`.replace(/[^A-Za-z0-9_]/g, "_");
+    if (name.length <= MAX_TOOL_NAME_LENGTH && !isTaken(name)) return name;
+    const hash = sha256Hex(`${server}\0${tool}`).slice(0, 8);
+    return `${name.slice(0, MAX_TOOL_NAME_LENGTH - hash.length - 1)}_${hash}`;
+  }
+  function utf8Bytes(text) {
+    const bytes = [];
+    for (const char of text) {
+      const code = char.codePointAt(0) ?? 0;
+      if (code < 128) bytes.push(code);
+      else if (code < 2048) bytes.push(192 | code >> 6, 128 | code & 63);
+      else if (code < 65536) bytes.push(224 | code >> 12, 128 | code >> 6 & 63, 128 | code & 63);
+      else
+        bytes.push(
+          240 | code >> 18,
+          128 | code >> 12 & 63,
+          128 | code >> 6 & 63,
+          128 | code & 63
+        );
+    }
+    return bytes;
+  }
+  var K = [
+    1116352408,
+    1899447441,
+    3049323471,
+    3921009573,
+    961987163,
+    1508970993,
+    2453635748,
+    2870763221,
+    3624381080,
+    310598401,
+    607225278,
+    1426881987,
+    1925078388,
+    2162078206,
+    2614888103,
+    3248222580,
+    3835390401,
+    4022224774,
+    264347078,
+    604807628,
+    770255983,
+    1249150122,
+    1555081692,
+    1996064986,
+    2554220882,
+    2821834349,
+    2952996808,
+    3210313671,
+    3336571891,
+    3584528711,
+    113926993,
+    338241895,
+    666307205,
+    773529912,
+    1294757372,
+    1396182291,
+    1695183700,
+    1986661051,
+    2177026350,
+    2456956037,
+    2730485921,
+    2820302411,
+    3259730800,
+    3345764771,
+    3516065817,
+    3600352804,
+    4094571909,
+    275423344,
+    430227734,
+    506948616,
+    659060556,
+    883997877,
+    958139571,
+    1322822218,
+    1537002063,
+    1747873779,
+    1955562222,
+    2024104815,
+    2227730452,
+    2361852424,
+    2428436474,
+    2756734187,
+    3204031479,
+    3329325298
+  ];
+  function sha256Hex(text) {
+    const bytes = utf8Bytes(text);
+    const bitLength = bytes.length * 8;
+    bytes.push(128);
+    while (bytes.length % 64 !== 56) bytes.push(0);
+    bytes.push(0, 0, 0, 0, bitLength >>> 24 & 255, bitLength >>> 16 & 255, bitLength >>> 8 & 255, bitLength & 255);
+    const h = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225];
+    const w = new Array(64);
+    const rotr = (x, n) => x >>> n | x << 32 - n;
+    for (let offset = 0; offset < bytes.length; offset += 64) {
+      for (let i = 0; i < 16; i++) {
+        const j = offset + i * 4;
+        w[i] = (bytes[j] << 24 | bytes[j + 1] << 16 | bytes[j + 2] << 8 | bytes[j + 3]) >>> 0;
+      }
+      for (let i = 16; i < 64; i++) {
+        const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ w[i - 15] >>> 3;
+        const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ w[i - 2] >>> 10;
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1 >>> 0;
+      }
+      let [a, b, c, d, e, f, g, hh] = h;
+      for (let i = 0; i < 64; i++) {
+        const t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + (e & f ^ ~e & g) + K[i] + w[i] >>> 0;
+        const t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + (a & b ^ a & c ^ b & c) >>> 0;
+        hh = g;
+        g = f;
+        f = e;
+        e = d + t1 >>> 0;
+        d = c;
+        c = b;
+        b = a;
+        a = t1 + t2 >>> 0;
+      }
+      h[0] = h[0] + a >>> 0;
+      h[1] = h[1] + b >>> 0;
+      h[2] = h[2] + c >>> 0;
+      h[3] = h[3] + d >>> 0;
+      h[4] = h[4] + e >>> 0;
+      h[5] = h[5] + f >>> 0;
+      h[6] = h[6] + g >>> 0;
+      h[7] = h[7] + hh >>> 0;
+    }
+    return h.map((word) => word.toString(16).padStart(8, "0")).join("");
+  }
+
+  // ../../../packages/ext-mcp-http/src/result.ts
+  var MCP_OUTPUT_MAX_BYTES = 20 * 1024;
   function toolOutput(result) {
     const parts = [];
-    for (const block of result.content ?? []) {
+    for (const block of result.content) {
       if (block.type === "text" && block.text !== void 0) {
         parts.push(block.text);
-      } else if (block.type === "image") {
-        parts.push(`[image ${block.mimeType ?? "unknown"}]`);
       } else if (block.type === "resource" && block.resource?.text !== void 0) {
         parts.push(`[resource ${block.resource.uri ?? ""}]
 ${block.resource.text}`);
       } else if (block.type === "resource_link") {
         parts.push(`[resource link ${block.uri ?? ""}${block.name ? ` ${block.name}` : ""}]`);
+      } else if (block.type === "image" || block.type === "audio" || block.resource?.blob !== void 0) {
+        parts.push(binaryPlaceholder(block));
       } else {
         parts.push(JSON.stringify(block));
       }
     }
-    if (result.structuredContent && parts.length === 0) parts.push(JSON.stringify(result.structuredContent));
+    if (result.structuredContent !== void 0 && parts.length === 0) parts.push(JSON.stringify(result.structuredContent));
     return parts.join("\n").trim() || "(empty MCP tool result)";
   }
+  function binaryPlaceholder(block) {
+    const data = block.data ?? block.resource?.blob ?? "";
+    const mimeType = block.mimeType ?? block.resource?.mimeType ?? "application/octet-stream";
+    const kib = Math.max(1, Math.round(data.length * 3 / 4 / 1024));
+    const uri = block.resource?.uri ? ` ${block.resource.uri}` : "";
+    return `[${block.type === "resource" ? "binary resource" : block.type}${uri} ${mimeType}, ~${kib} KiB omitted]`;
+  }
+
+  // ../../../packages/ext-mcp-http/src/servers.ts
+  var DEFAULT_HANDSHAKE_TIMEOUT_MS = 1e4;
   function messageOf(cause) {
     return cause instanceof Error ? cause.message : String(cause);
   }
-  function abortError() {
-    return new Error("MCP request aborted");
-  }
-  async function postMessage(platform2, state, message, options) {
-    const handle = new AbortHandle();
-    handle.follow(options.signal);
-    let timedOut = false;
-    if (options.timeoutMs !== void 0 && platform2.sleep) {
-      platform2.sleep(options.timeoutMs, handle.signal).then(
-        () => {
-          timedOut = true;
-          handle.abort("timeout");
-        },
-        () => {
-        }
-      );
+  function createMcpServers(options) {
+    const states = [];
+    for (const config of options.servers) {
+      const clash = states.find((state) => mcpNamespace(state.config.name) === mcpNamespace(config.name));
+      states.push(clash ? { config, conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : { config });
     }
-    const headers = {
-      "content-type": "application/json",
-      accept: "application/json, text/event-stream",
-      ...state.config.headers
+    const toolOwners = /* @__PURE__ */ new Map();
+    const clients = /* @__PURE__ */ new Set();
+    let generation = 0;
+    let api;
+    const report = (status) => {
+      options.onStatus?.(status);
+      return status;
     };
-    if (!options.isInitialize) {
-      headers["mcp-protocol-version"] = MCP_PROTOCOL_VERSION;
-      if (state.sessionId !== void 0) headers["mcp-session-id"] = state.sessionId;
-    }
-    try {
-      const response = await platform2.fetch(state.config.url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(message),
-        signal: handle.signal
+    const openClient = async (state, list) => {
+      const client = new McpClient({ ...options.clientInfo, platform: options.platform });
+      clients.add(client);
+      client.onClose(() => {
+        clients.delete(client);
+        if (state.client === client) state.client = void 0;
       });
-      if (!response.ok) {
-        throw new HttpStatusError(response.status, `MCP server responded HTTP ${response.status}`);
-      }
-      const sessionId = response.headers?.get("mcp-session-id") ?? void 0;
-      if (options.expectId === void 0) return { sessionId };
-      const result = await readRpcResult(platform2, response, options.expectId, handle.signal);
-      return { result, sessionId };
-    } catch (cause) {
-      if (timedOut) throw new Error(`MCP request timed out after ${options.timeoutMs}ms`);
-      if (options.signal?.aborted) throw abortError();
-      throw cause;
-    } finally {
-      handle.abort("settled");
-    }
-  }
-  function extractResponse(message, expectId) {
-    if (message.id !== expectId) return void 0;
-    if (message.error) throw new Error(`MCP error ${message.error.code}: ${message.error.message}`);
-    return { result: message.result };
-  }
-  async function readRpcResult(platform2, response, expectId, signal) {
-    const contentType = response.headers?.get("content-type");
-    if (contentType?.includes("text/event-stream")) {
-      return readSseResult(platform2, response, expectId, signal);
-    }
-    if (contentType?.includes("application/json")) {
-      const found = extractResponse(JSON.parse(await response.text()), expectId);
-      if (!found) throw new Error("MCP JSON response did not answer the request");
-      return found.result;
-    }
-    const text = await response.text();
-    try {
-      const found = extractResponse(JSON.parse(text), expectId);
-      if (found) return found.result;
-    } catch {
-    }
-    const parser = new SseParser();
-    for (const event of [...parser.push(text), ...parser.flush()]) {
-      const found = tryExtractFromSseData(event.data, expectId);
-      if (found) return found.result;
-    }
-    throw new Error("MCP response contained no answer for the request");
-  }
-  function tryExtractFromSseData(data, expectId) {
-    let message;
-    try {
-      message = JSON.parse(data);
-    } catch {
-      return void 0;
-    }
-    return extractResponse(message, expectId);
-  }
-  async function readSseResult(platform2, response, expectId, signal) {
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error("MCP SSE response had no readable body");
-    const decoder = platform2.createUtf8Decoder();
-    const parser = new SseParser();
-    try {
-      while (true) {
-        if (signal.aborted) throw abortError();
-        const { done, value } = await reader.read();
-        const events = done ? parser.flush() : value ? parser.push(decoder.decode(value)) : [];
-        for (const event of events) {
-          const found = tryExtractFromSseData(event.data, expectId);
-          if (found) return found.result;
-        }
-        if (done) throw new Error("MCP SSE stream ended without answering the request");
-      }
-    } finally {
       try {
-        reader.cancel("done");
-      } catch {
+        const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
+        await client.connect(options.createTransport(state.config), { timeoutMs });
+        const tools = list ? await client.listTools({ timeoutMs }) : [];
+        return { client, tools };
+      } catch (error) {
+        await client.close().catch(() => {
+        });
+        throw error;
       }
-    }
-  }
-  async function rpcRequest(platform2, state, method, params, options = {}) {
-    const id = state.nextRequestId++;
-    return postMessage(platform2, state, { jsonrpc: "2.0", id, method, params }, { ...options, expectId: id });
-  }
-  async function initializeServer(platform2, state, signal) {
-    state.sessionId = void 0;
-    const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
-    const { sessionId } = await rpcRequest(
-      platform2,
-      state,
-      "initialize",
-      // The negotiated (possibly older) protocolVersion in the result is accepted as-is.
-      { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO },
-      { signal, timeoutMs, isInitialize: true }
-    );
-    state.sessionId = sessionId;
-    await postMessage(platform2, state, { jsonrpc: "2.0", method: "notifications/initialized" }, { signal, timeoutMs });
-  }
-  async function listAllTools(platform2, state, signal) {
-    const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
-    const tools = [];
-    let cursor;
-    do {
-      const { result } = await rpcRequest(platform2, state, "tools/list", cursor ? { cursor } : {}, {
-        signal,
-        timeoutMs
-      });
-      const page = result;
-      tools.push(...page.tools ?? []);
-      cursor = page.nextCursor;
-    } while (cursor);
-    return tools;
-  }
-  async function callTool(platform2, state, mcpToolName, args, signal) {
-    const params = { name: mcpToolName, arguments: args };
-    try {
-      const { result } = await rpcRequest(platform2, state, "tools/call", params, { signal });
-      return result;
-    } catch (cause) {
-      if (cause instanceof HttpStatusError && cause.status === 404 && state.sessionId !== void 0) {
-        await initializeServer(platform2, state, signal);
-        const { result } = await rpcRequest(platform2, state, "tools/call", params, { signal });
-        return result;
+    };
+    const clientFor = async (state) => {
+      if (state.client?.connectionState === "connected") return state.client;
+      const { client } = await openClient(state, false);
+      state.client = client;
+      return client;
+    };
+    const registerTools = (target, state, tools) => {
+      const server = state.config.name;
+      const current = /* @__PURE__ */ new Set();
+      const plain = [...new Set(tools.map((tool) => tool.name))].map((tool) => createMcpToolName(server, tool));
+      for (const info of tools) {
+        const owner = `${server}\0${info.name}`;
+        const name = createMcpToolName(server, info.name, (candidate) => {
+          const existing = toolOwners.get(candidate);
+          return existing !== void 0 && existing !== owner || current.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate);
+        });
+        current.add(name);
+        if (toolOwners.get(name) === owner) continue;
+        toolOwners.set(name, owner);
+        const destructive = state.config.riskFromAnnotations === true && info.annotations?.destructiveHint === true;
+        target.registerTool(createTauTool(state, name, info), destructive ? { risk: "high" } : void 0);
       }
-      throw cause;
-    }
-  }
-  function createTauTool(platform2, state, info) {
-    return {
-      name: tauToolName(state.config.name, info.name),
+    };
+    const createTauTool = (state, name, info) => ({
+      name,
       description: info.description ?? `MCP tool ${info.name} from ${state.config.name}`,
-      parameters: info.inputSchema ?? { type: "object", properties: {} },
+      parameters: info.inputSchema,
       execute: async (args, signal) => {
         if (signal?.aborted) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
         try {
-          const result = await callTool(platform2, state, info.name, args, signal);
+          let result;
+          try {
+            result = await (await clientFor(state)).callTool(info.name, args, { signal });
+          } catch (cause) {
+            if (!(cause instanceof McpSessionExpiredError)) throw cause;
+            await state.client?.close();
+            result = await (await clientFor(state)).callTool(info.name, args, { signal });
+          }
           const text = limitToolText(
             toolOutput(result),
             MCP_OUTPUT_MAX_BYTES,
-            () => "[Full output not saved: this MCP client has no file access]"
+            options.saveFullOutput ?? (() => "[Full output not saved: this MCP client has no file access]")
           );
           return { content: [{ type: "text", text }], isError: result.isError === true };
         } catch (cause) {
-          return { content: [{ type: "text", text: messageOf(cause) }], isError: true };
+          const text = cause instanceof McpAbortError ? "MCP tool call aborted" : messageOf(cause);
+          return { content: [{ type: "text", text }], isError: true };
         }
       }
+    });
+    const connectOne = (state) => {
+      const server = state.config.name;
+      if (state.conflict) return Promise.resolve(report({ server, state: "offline", error: state.conflict }));
+      if (state.client?.connectionState === "connected") {
+        return Promise.resolve({ server, state: "connected" });
+      }
+      if (state.connecting) return state.connecting;
+      const startedIn = generation;
+      report({ server, state: "connecting" });
+      const attempt = (async () => {
+        try {
+          const { client, tools } = await openClient(state, true);
+          if (startedIn !== generation) {
+            await client.close();
+            return { server, state: "offline", error: "shut down while connecting" };
+          }
+          state.client = client;
+          if (api) registerTools(api, state, tools);
+          return report({ server, state: "connected", toolCount: tools.length });
+        } catch (cause) {
+          return report({ server, state: "offline", error: messageOf(cause) });
+        }
+      })().finally(() => {
+        state.connecting = void 0;
+      });
+      state.connecting = attempt;
+      return attempt;
     };
-  }
-  function createHttpMcpExtension(options) {
-    const { platform: platform2 } = options;
-    const states = options.servers.map((config) => ({
-      config,
-      connected: false,
-      nextRequestId: 1
-    }));
-    let api;
-    let connecting;
-    const connectAll = async () => {
-      const target = api;
-      if (!target) {
+    const connect2 = async () => {
+      if (!api) {
         throw new Error(
           "connect() called before the extension was loaded \u2014 pass it through ExtensionRegistry.load first"
         );
       }
-      for (const state of states) {
-        if (state.connected) continue;
-        options.onStatus?.({ server: state.config.name, state: "connecting" });
-        try {
-          await initializeServer(platform2, state);
-          const tools = await listAllTools(platform2, state);
-          for (const info of tools) {
-            const destructive = state.config.riskFromAnnotations === true && info.annotations?.destructiveHint === true;
-            target.registerTool(createTauTool(platform2, state, info), destructive ? { risk: "high" } : void 0);
-          }
-          state.connected = true;
-          options.onStatus?.({ server: state.config.name, state: "connected", toolCount: tools.length });
-        } catch (cause) {
-          state.sessionId = void 0;
-          options.onStatus?.({ server: state.config.name, state: "offline", error: messageOf(cause) });
-        }
-      }
+      return Promise.all(states.map(connectOne));
     };
-    const connect2 = () => {
-      if (!connecting) {
-        connecting = connectAll().finally(() => {
-          connecting = void 0;
-        });
-      }
-      return connecting;
+    const close = async () => {
+      generation++;
+      const closing = [...clients];
+      clients.clear();
+      for (const state of states) state.client = void 0;
+      await Promise.allSettled(closing.map((client) => client.close()));
     };
     const extension = (extensionApi) => {
       api = extensionApi;
       extensionApi.on("session_start", async () => {
-        await connect2();
-      });
-      extensionApi.on("session_shutdown", () => {
-        for (const state of states) {
-          state.connected = false;
-          state.sessionId = void 0;
+        const statuses = await connect2();
+        const failures = statuses.filter((status) => status.state === "offline");
+        if (options.failOnUnavailable && failures.length > 0) {
+          throw new Error(
+            `MCP server(s) unavailable \u2014 ${failures.map((status) => `${status.server}: ${status.error}`).join("; ")}`
+          );
         }
       });
+      extensionApi.on("session_shutdown", async () => {
+        await close();
+      });
     };
-    return { extension, connect: connect2 };
+    return { extension, connect: connect2, close };
   }
 
-  // examples/flutter/app/js/tau-entry.ts
+  // ../../../packages/ext-mcp-http/src/index.ts
+  var CLIENT_INFO = { name: "tau-ext-mcp-http", version: "0.4.0" };
+  function createHttpMcpExtension(options) {
+    const { platform: platform2 } = options;
+    const handle = createMcpServers({
+      servers: options.servers,
+      platform: platform2,
+      clientInfo: CLIENT_INFO,
+      onStatus: options.onStatus,
+      createTransport: (config) => {
+        if (!config.url) throw new Error(`MCP server "${config.name}" must define url`);
+        return new StreamableHttpTransport({ url: config.url, platform: platform2, headers: config.headers });
+      }
+    });
+    return {
+      extension: handle.extension,
+      connect: async () => {
+        await handle.connect();
+      }
+    };
+  }
+
+  // js/tau-entry.ts
   var host = globalThis.sendMessage;
   function emit(channel, payload) {
     if (host) host(channel, JSON.stringify(payload));

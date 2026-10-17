@@ -1,21 +1,24 @@
+// MCP extension for Node hosts: the pure-ES core of @yophon/tau-ext-mcp-http plus
+// a stdio transport (P24a; the official SDK is retired). Servers with `command`
+// run as child processes, servers with `url` use Streamable HTTP.
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import {
-	type Extension,
-	type JsonSchema,
-	limitToolText,
-	type TauAbortSignal,
-	type Tool,
-	type ToolResult,
-} from "@yophon/tau-kernel";
+	createMcpServers,
+	type McpServerConfig,
+	type McpServerStatus,
+	StreamableHttpTransport,
+} from "@yophon/tau-ext-mcp-http";
+import { defaultPlatform, type Extension } from "@yophon/tau-kernel";
+import { StdioTransport } from "./stdio.ts";
 
-/** Model-facing text of an MCP result beyond this is cut in the middle (pi MCP_OUTPUT_MAX_BYTES). */
-export const MCP_OUTPUT_MAX_BYTES = 20 * 1024;
+export { MCP_OUTPUT_MAX_BYTES } from "@yophon/tau-ext-mcp-http";
+export { StdioTransport, type StdioTransportOptions } from "./stdio.ts";
+export type { McpServerConfig, McpServerStatus };
+
+const CLIENT_INFO = { name: "tau-ext-mcp", version: "0.4.0" };
 
 /** Save a truncated result's full text where the model can read it: a new 0600 temp file (pi 1.0.3 output files). */
 function saveFullOutput(text: string): string {
@@ -29,224 +32,33 @@ function saveFullOutput(text: string): string {
 	}
 }
 
-export interface McpServerConfig {
-	name: string;
-	command?: string;
-	args?: string[];
-	url?: string;
-	headers?: Record<string, string>;
-	toolPrefix?: string;
-	cwd?: string;
-	env?: Record<string, string>;
-	/**
-	 * Let this server's tool annotations raise risk: `destructiveHint: true` makes a
-	 * tool high risk. Hints are the server's own claims, so they never lower risk
-	 * (D20); off by default — opt in per server you trust to label its tools.
-	 */
-	riskFromAnnotations?: boolean;
-}
-
 export interface McpExtensionOptions {
 	servers: McpServerConfig[];
+	onStatus?: (status: McpServerStatus) => void;
 }
 
-type McpClient = Client;
-
-interface ConnectedServer {
-	config: McpServerConfig;
-	client: McpClient;
-	toolsByTauName: Map<string, string>;
-}
-
-interface McpToolContent {
-	type: string;
-	text?: string;
-	data?: string;
-	mimeType?: string;
-	resource?: { uri?: string; text?: string; blob?: string; mimeType?: string };
-	uri?: string;
-	name?: string;
-}
-
-interface McpCallResult {
-	content?: McpToolContent[];
-	structuredContent?: Record<string, unknown>;
-	toolResult?: unknown;
-	isError?: boolean;
-}
-
-function sanitizeToolPart(value: string): string {
-	const sanitized = value.replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
-	return sanitized === "" ? "mcp" : sanitized;
-}
-
-function tauToolName(server: McpServerConfig, mcpToolName: string): string {
-	return `${sanitizeToolPart(server.toolPrefix ?? server.name)}_${sanitizeToolPart(mcpToolName)}`;
-}
-
-function toolOutput(result: McpCallResult): string {
-	if (result.toolResult !== undefined) return JSON.stringify(result.toolResult);
-	const parts: string[] = [];
-	for (const block of result.content ?? []) {
-		if (block.type === "text" && block.text !== undefined) {
-			parts.push(block.text);
-		} else if (block.type === "resource" && block.resource?.text !== undefined) {
-			parts.push(`[resource ${block.resource.uri ?? ""}]\n${block.resource.text}`);
-		} else if (block.type === "resource_link") {
-			parts.push(`[resource link ${block.uri ?? ""}${block.name ? ` ${block.name}` : ""}]`);
-		} else if (block.type === "image" || block.type === "audio" || block.resource?.blob !== undefined) {
-			// Tool results are text-only: dumping base64 into the transcript bloats every
-			// later request, so binary content becomes a short placeholder (HF-15).
-			parts.push(binaryPlaceholder(block));
-		} else {
-			parts.push(JSON.stringify(block));
-		}
-	}
-	// Servers send structuredContent with a text rendering of it (MCP spec): only fall
-	// back to the JSON when there is nothing else, instead of sending it twice.
-	if (result.structuredContent && parts.length === 0) parts.push(JSON.stringify(result.structuredContent));
-	return parts.join("\n").trim() || "(empty MCP tool result)";
-}
-
-function binaryPlaceholder(block: McpToolContent): string {
-	const data = block.data ?? block.resource?.blob ?? "";
-	const mimeType = block.mimeType ?? block.resource?.mimeType ?? "application/octet-stream";
-	const kib = Math.max(1, Math.round((data.length * 3) / 4 / 1024));
-	const uri = block.resource?.uri ? ` ${block.resource.uri}` : "";
-	return `[${block.type === "resource" ? "binary resource" : block.type}${uri} ${mimeType}, ~${kib} KiB omitted]`;
-}
-
-async function connectServer(config: McpServerConfig, client: McpClient): Promise<ConnectedServer> {
-	if (config.command) {
-		await client.connect(
-			new StdioClientTransport({
-				command: config.command,
-				args: config.args,
-				cwd: config.cwd,
-				env: config.env,
-				stderr: "pipe",
-			}),
-		);
-	} else if (config.url) {
-		await client.connect(
-			new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers: config.headers } }),
-		);
-	} else {
-		throw new Error(`MCP server "${config.name}" must define command or url`);
-	}
-	return { config, client, toolsByTauName: new Map() };
-}
-
+/**
+ * Connects the servers at session_start, in parallel; one unreachable server does
+ * not cost the others their tools, and session_start then fails with every
+ * failure listed so the host can report it (HF-12).
+ */
 export function createMcpExtension(options: McpExtensionOptions): Extension {
-	return (api) => {
-		const servers = new Map<string, ConnectedServer>();
-		// Every client created this generation, connected or still connecting, so
-		// shutdown can close (and thereby abort) in-flight connections too (HF-12).
-		const clients = new Set<McpClient>();
-		let generation = 0;
-		let initialized: Promise<void> | undefined;
-
-		const connectOne = async (config: McpServerConfig, startedIn: number): Promise<void> => {
-			const client = new Client({ name: "tau-ext-mcp", version: "0.0.1" });
-			clients.add(client);
-			const connected = await connectServer(config, client);
-			const listed = await connected.client.listTools();
-			if (startedIn !== generation) return; // shut down while connecting
-			servers.set(config.name, connected);
-			for (const tool of listed.tools) {
-				const name = tauToolName(config, tool.name);
-				connected.toolsByTauName.set(name, tool.name);
-				const destructive =
-					config.riskFromAnnotations === true &&
-					(tool as { annotations?: { destructiveHint?: boolean } }).annotations?.destructiveHint === true;
-				api.registerTool(
-					createTauTool(connected, name, tool.name, tool.description, tool.inputSchema),
-					destructive ? { risk: "high" } : undefined,
-				);
+	const platform = defaultPlatform();
+	return createMcpServers({
+		servers: options.servers,
+		platform,
+		clientInfo: CLIENT_INFO,
+		onStatus: options.onStatus,
+		saveFullOutput,
+		failOnUnavailable: true,
+		createTransport: (config) => {
+			if (config.command) {
+				return new StdioTransport({ command: config.command, args: config.args, cwd: config.cwd, env: config.env });
 			}
-		};
-
-		const initialize = async (): Promise<void> => {
-			if (initialized) return initialized;
-			const startedIn = generation;
-			initialized = (async () => {
-				// One unreachable server must not cost the others their tools: connect in
-				// parallel, keep the successes, then report the failures together (HF-12).
-				const outcomes = await Promise.allSettled(options.servers.map((config) => connectOne(config, startedIn)));
-				const failures = outcomes.flatMap((outcome, i) =>
-					outcome.status === "rejected"
-						? [
-								`${options.servers[i].name}: ${outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)}`,
-							]
-						: [],
-				);
-				if (failures.length > 0 && startedIn === generation) {
-					throw new Error(`MCP server(s) unavailable — ${failures.join("; ")}`);
-				}
-			})();
-			return initialized;
-		};
-
-		api.on("session_start", async () => {
-			await initialize();
-		});
-
-		api.on("session_shutdown", async () => {
-			generation++;
-			const closing = [...clients];
-			clients.clear();
-			servers.clear();
-			initialized = undefined;
-			await Promise.allSettled(closing.map((client) => client.close()));
-		});
-	};
-}
-
-function createTauTool(
-	server: ConnectedServer,
-	name: string,
-	mcpToolName: string,
-	description: string | undefined,
-	parameters: JsonSchema,
-): Tool {
-	return {
-		name,
-		description: description ?? `MCP tool ${mcpToolName} from ${server.config.name}`,
-		parameters,
-		execute: async (args, signal): Promise<ToolResult> => {
-			if (isAborted(signal)) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
-			try {
-				const abortSignal = toAbortSignal(signal);
-				const result = (await server.client.callTool(
-					{ name: mcpToolName, arguments: args },
-					undefined,
-					abortSignal ? { signal: abortSignal } : undefined,
-				)) as McpCallResult;
-				const text = limitToolText(toolOutput(result), MCP_OUTPUT_MAX_BYTES, saveFullOutput);
-				return { content: [{ type: "text", text }], isError: result.isError === true };
-			} catch (cause) {
-				return {
-					content: [{ type: "text", text: cause instanceof Error ? cause.message : String(cause) }],
-					isError: true,
-				};
-			}
+			if (config.url) return new StreamableHttpTransport({ url: config.url, platform, headers: config.headers });
+			throw new Error(`MCP server "${config.name}" must define command or url`);
 		},
-	};
-}
-
-function isAborted(signal: TauAbortSignal | undefined): boolean {
-	return signal?.aborted === true;
-}
-
-function toAbortSignal(signal: TauAbortSignal | undefined): AbortSignal | undefined {
-	if (!signal) return undefined;
-	const controller = new AbortController();
-	if (signal.aborted) {
-		controller.abort(signal.reason);
-		return controller.signal;
-	}
-	signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
-	return controller.signal;
+	}).extension;
 }
 
 export default createMcpExtension({ servers: [] });

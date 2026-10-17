@@ -5,6 +5,16 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- ext-mcp / ext-mcp-http (P24a, pi 0.99.2): MCP tools are named
+  `mcp__<server>__<tool>` (was `<server>_<tool>`); characters outside
+  `[A-Za-z0-9_]` become `_`, and tools whose names sanitize alike or exceed 64
+  characters get an 8-hex sha256 suffix. `toolPrefix` is gone. Server names that
+  differ only in `-`/`_` clash and the second is reported unavailable.
+  "Always allow" entries recorded under the old names fall back to asking.
+- ext-mcp (P24a): no longer depends on `@modelcontextprotocol/sdk`. It is the
+  pure-ES client of ext-mcp-http plus a stdio transport ported from pi-mcp
+  (`cross-spawn` for Windows `.cmd` shims); `tools/call` has no default timeout
+  (the SDK's was 60 s).
 - CLI (P23e, pi print mode): `tau -p` exits 1 when the final reply errored, was
   aborted or hit the output limit (it used to exit 0), and errors go to stderr.
   Integer flags are strict (`-w 128k` is an error; env values like

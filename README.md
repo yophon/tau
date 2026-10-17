@@ -57,8 +57,8 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
 | `@yophon/tau-cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
 | `@yophon/tau-ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
-| `@yophon/tau-ext-mcp` | Extension package that bridges MCP server tools into tau tools via the official SDK (stdio/HTTP) | Yes — MCP SDK transports |
-| `@yophon/tau-ext-mcp-http` | Streamable HTTP MCP client written entirely on the `Platform` seam — zero dependencies, runs on bare engines where the SDK cannot | **No** — pure `Platform` |
+| `@yophon/tau-ext-mcp` | MCP extension for Node: the ext-mcp-http core plus a stdio transport for local servers (no MCP SDK) | Yes — child processes |
+| `@yophon/tau-ext-mcp-http` | Pure-ES MCP client and extension core (Streamable HTTP) written entirely on the `Platform` seam — zero dependencies, runs on bare engines | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 | `@yophon/tau-ext-feishu` | Feishu/Lark WebSocket bridge with media, reactions, progress cards, and outbound tools | Yes — Feishu SDK and Node filesystem |

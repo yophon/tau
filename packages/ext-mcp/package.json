@@ -20,7 +20,8 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@modelcontextprotocol/sdk": "1.29.0",
-		"@yophon/tau-kernel": "^0.2.0"
+		"@yophon/tau-ext-mcp-http": "^0.2.0",
+		"@yophon/tau-kernel": "^0.2.0",
+		"cross-spawn": "7.0.6"
 	}
 }

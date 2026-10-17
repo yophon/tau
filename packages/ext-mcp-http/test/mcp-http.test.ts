@@ -158,8 +158,8 @@ test("connect performs the MCP handshake and registers listed tools", async () =
 	assert.equal(list.headers["mcp-session-id"], "sess-1");
 	assert.equal(list.headers["mcp-protocol-version"], MCP_PROTOCOL_VERSION);
 
-	const tool = registry.tools.get("srv_echo");
-	assert.ok(tool, "tool registered under <server>_<tool>");
+	const tool = registry.tools.get("mcp__srv__echo");
+	assert.ok(tool, "tool registered under mcp__<server>__<tool>");
 	assert.equal(tool.description, "echoes");
 	assert.deepEqual(
 		statuses.map((s) => s.state),
@@ -183,7 +183,7 @@ test("tools/call flattens a JSON response and passes isError through", async () 
 	);
 	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await handle.connect();
-	const tool = registry.tools.get("srv_echo");
+	const tool = registry.tools.get("mcp__srv__echo");
 	assert.ok(tool);
 
 	const okResult = await tool.execute({ text: "hi" });
@@ -209,7 +209,7 @@ test("tools/call parses an SSE response split across chunks", async () => {
 	);
 	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await handle.connect();
-	const tool = registry.tools.get("srv_echo");
+	const tool = registry.tools.get("mcp__srv__echo");
 	assert.ok(tool);
 
 	const result = await tool.execute({ text: "x" });
@@ -227,7 +227,7 @@ test("a JSON-RPC error becomes an isError tool result", async () => {
 	);
 	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await handle.connect();
-	const tool = registry.tools.get("srv_echo");
+	const tool = registry.tools.get("mcp__srv__echo");
 	assert.ok(tool);
 
 	const result = await tool.execute({});
@@ -251,13 +251,13 @@ test("an unreachable server degrades silently and reconnects on the next connect
 	});
 
 	await handle.connect(); // must not reject
-	assert.equal(registry.tools.get("srv_echo"), undefined);
+	assert.equal(registry.tools.get("mcp__srv__echo"), undefined);
 	assert.equal(statuses.at(-1)?.state, "offline");
 	assert.match(statuses.at(-1)?.error ?? "", /ECONNREFUSED/);
 
 	reachable = true;
 	await handle.connect();
-	assert.ok(registry.tools.get("srv_echo"));
+	assert.ok(registry.tools.get("mcp__srv__echo"));
 	assert.equal(statuses.at(-1)?.state, "connected");
 });
 
@@ -266,7 +266,7 @@ test("session_start triggers connect when the host emits it", async () => {
 	const platform = fakePlatform(scriptedHandler({ requests, tools: [ECHO_TOOL] }));
 	const { registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await registry.notifySessionStart("startup", ctx);
-	assert.ok(registry.tools.get("srv_echo"));
+	assert.ok(registry.tools.get("mcp__srv__echo"));
 });
 
 test("a 404 on tools/call re-handshakes once and replays the call", async () => {
@@ -289,7 +289,7 @@ test("a 404 on tools/call re-handshakes once and replays the call", async () => 
 	);
 	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await handle.connect();
-	const tool = registry.tools.get("srv_echo");
+	const tool = registry.tools.get("mcp__srv__echo");
 	assert.ok(tool);
 
 	const result = await tool.execute({});
@@ -314,7 +314,8 @@ test("abort settles an in-flight tools/call as an isError result", async () => {
 	const pending = fakePlatform(async (_url, init) => {
 		const message = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
 		const id = message.id as number;
-		if (message.method === "initialize") return jsonResponse({ jsonrpc: "2.0", id, result: {} });
+		if (message.method === "initialize")
+			return jsonResponse({ jsonrpc: "2.0", id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {} } });
 		if (message.method === "notifications/initialized") return acceptedResponse();
 		if (message.method === "tools/list") return jsonResponse({ jsonrpc: "2.0", id, result: { tools: [ECHO_TOOL] } });
 		return new Promise((_resolve, reject) => {
@@ -326,7 +327,7 @@ test("abort settles an in-flight tools/call as an isError result", async () => {
 		platform: pending,
 	});
 	await handle.connect();
-	const tool = registry.tools.get("srv_echo");
+	const tool = registry.tools.get("mcp__srv__echo");
 	assert.ok(tool);
 
 	const abort = new AbortHandle();
@@ -382,7 +383,7 @@ test("degrades without response headers: sniffs JSON and SSE bodies", async () =
 	const platform = fakePlatform(async (url, init) => stripHeaders(await scripted(url, init)));
 	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await handle.connect();
-	const tool = registry.tools.get("srv_echo");
+	const tool = registry.tools.get("mcp__srv__echo");
 	assert.ok(tool, "JSON handshake still parses without a content-type header");
 
 	const result = await tool.execute({});
@@ -400,7 +401,7 @@ test("a result over 20KB is cut in the middle, pi's format, no file in this clie
 	);
 	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await handle.connect();
-	const result = await registry.tools.get("srv_echo")?.execute({ text: "x" });
+	const result = await registry.tools.get("mcp__srv__echo")?.execute({ text: "x" });
 	const text = result ? toolResultText(result) : "";
 	assert.match(text, /^Warning: truncated output/);
 	assert.match(text, /A+…\d+ chars truncated…B+/);

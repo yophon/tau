@@ -150,7 +150,7 @@
 | codemode、嵌套工具调用 `ctx.executeTool`、tool_search | 📍P24 | |
 | 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3） |
 | 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18） |
-| 纯 Platform MCP client | ✅ P13 | ext-mcp-http；SDK 版 ext-mcp 服务 Node stdio，并行连接、单个失败不拖垮其他（P21-HF-12） |
+| 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；progress/cancelled/GET 通知流随 MCP 协议升级另立 |
 
 ## pi-feishu 扩展移植（P20）
 
