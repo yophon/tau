@@ -1,6 +1,6 @@
 # Phase 25：TUI 重写 规格书
 
-> 状态：已完成（2026-10-17），Windows Terminal 亲手验收待用户执行。五个开放问题按建议裁定（Ink、`tau` 默认进 TUI、yo-agent 键位、Shift+Tab 切档位、扩展组件只渲染），见「风险与开放问题」；决策记 D31。实施偏差见文末「实施记录」。
+> 状态：已完成（2026-10-17），用户已在 Windows Terminal 亲手验收通过。五个开放问题按建议裁定（Ink、`tau` 默认进 TUI、yo-agent 键位、Shift+Tab 切档位、扩展组件只渲染），见「风险与开放问题」；决策记 D31。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 25
 > 输入：用户反馈（2026-10-17：现在的 TUI 难看、有错位，需要重构，参考 yo-agent）；yo-agent 的 TUI（`packages/surface-cli/src/tui/`，Phase 4.6 重设计、4.7 架构收敛，用户在 Windows 上真机用过）；tau P8 TUI（`packages/cli/src/tui.ts`，pi-tui 0.80.3）；技术债 #15。
 
@@ -261,7 +261,7 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
   - `/clone` 的新会话内容与当前位置一致。
   - `/export` 写出合法 JSONL；`/session` 显示 id 和条目数；`/copy` 在 Windows 上写进剪贴板（本机手测）。
   - Shift+Tab 后状态栏档位变化，并且下一个工具调用按新档位审批。
-- [x] **25d**（Windows Terminal 亲手验收一项待用户）：
+- [x] **25d**（Windows Terminal 亲手验收：用户 2026-10-17 确认「没毛病」）：
   - 真实 DeepSeek 在新 TUI 里完成一次真实改动：读、改、跑命令、审批、中止、`--continue` 恢复，过程中界面无错位。
   - 用户在 Windows Terminal 亲手验收：中文输入、粘贴、Alt+Enter、窗口缩放，以及加载 ext-feishu 时启动和收发消息画面不乱。结果记入实施记录。
 - [x] DoD 通用项（见 development.md；CI 随推送复核）：check、全量测试、纯度门禁、smoke 全家桶、pack smoke（安装布局下 Ink 能运行）、CI 通过；CHANGELOG、README、architecture、pi-parity 更新。
@@ -320,4 +320,4 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
 - **CI 环境变量**：Ink 只要看到 `CI` 变量（is-in-ci，首次 import 时读一次）就只输出最终帧，CI 的 smoke 第一屏一片空白；导出了 CI 的开发者 shell 也会如此。main.ts 在导入 Ink 前置 `CI=false`、导入后恢复（工具子进程看到原值），WSL 下带 `CI=true` 跑 smoke 全过，推送后 CI 三个 job 全绿。
 - **WSL 下首屏慢**：/mnt 盘上加载 Ink 约 6.7 s（es-toolkit 四千多个文件），Windows 本机 235 ms；smoke 的每个会话首屏等待加了 30 s 余量，CI 不受影响。
 - **`registerMarkdownTransformer`** 没做（规格书没列，pi-parity 维持 📍Backlog）。
-- **Windows Terminal 亲手验收**（中文输入、粘贴、Alt+Enter、窗口缩放、加载 ext-feishu 时的画面、`/copy`）待用户执行，结果补记于此。
+- **Windows Terminal 亲手验收**：用户 2026-10-17 试用后确认「没毛病」。
