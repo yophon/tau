@@ -317,6 +317,7 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
 - **合并的输入块**：快速输入时按键和回车可能在一个 chunk 里到达（`y\r`、`1\r`）；启动对话框和 TUI 的面板层都按逐字符路由处理，不当作文本插入（smoke 发现）。
 - **ext-resources**：不存在的约定资源目录不再报 `list_failed`。旧 TUI 吞掉了所有 notify（债 #15），这些告警从没人看到；修好通知后它们每次启动刷屏。
 - **pack smoke 没装 CLI 包本身**：CLI 的 shrinkwrap 把内部包钉到 registry 地址，发版前装不了（和原来 pi-tui 时一样），改为在安装布局里加载渲染构建出的 `tui/` 模块。
+- **CI 环境变量**：Ink 只要看到 `CI` 变量（is-in-ci，首次 import 时读一次）就只输出最终帧，CI 的 smoke 第一屏一片空白；导出了 CI 的开发者 shell 也会如此。main.ts 在导入 Ink 前置 `CI=false`、导入后恢复（工具子进程看到原值），WSL 下带 `CI=true` 跑 smoke 全过，推送后 CI 三个 job 全绿。
 - **WSL 下首屏慢**：/mnt 盘上加载 Ink 约 6.7 s（es-toolkit 四千多个文件），Windows 本机 235 ms；smoke 的每个会话首屏等待加了 30 s 余量，CI 不受影响。
 - **`registerMarkdownTransformer`** 没做（规格书没列，pi-parity 维持 📍Backlog）。
 - **Windows Terminal 亲手验收**（中文输入、粘贴、Alt+Enter、窗口缩放、加载 ext-feishu 时的画面、`/copy`）待用户执行，结果补记于此。
