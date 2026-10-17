@@ -3130,6 +3130,11 @@ ${where(text)}`;
   }
 
   // ../../../packages/kernel/src/policy.ts
+  var MODE_ORDER = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
+  function stricterMode(a, b) {
+    if (b === void 0) return a;
+    return MODE_ORDER.indexOf(b) < MODE_ORDER.indexOf(a) ? b : a;
+  }
   function resolvePolicyAction(mode, risk) {
     switch (mode) {
       case "bypass":
@@ -3137,6 +3142,7 @@ ${where(text)}`;
       case "read-only":
         return risk === "low" ? "allow" : "deny";
       case "supervised":
+      case "accept-edits":
         return risk === "low" ? "allow" : "ask";
       case "autonomous":
         return risk === "high" ? "ask" : "allow";
@@ -3186,8 +3192,31 @@ ${where(text)}`;
   ];
   var PATH_PROBE_KEYS = ["path", "file_path", "file", "filename", "dest", "target"];
   var COMMAND_PROBE_KEYS = ["command", "cmd", "script"];
-  var READ_TOOLS = /* @__PURE__ */ new Set(["read", "listDir"]);
+  var READ_TOOLS = /* @__PURE__ */ new Set(["read", "listDir", "grep", "find", "ls"]);
   var WRITE_TOOLS = /* @__PURE__ */ new Set(["write", "edit"]);
+  var ACCEPT_EDITS_TOOLS = /* @__PURE__ */ new Set(["write", "edit", "memory_write"]);
+  function normalizePath(path) {
+    return path.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_match, drive) => `${drive.toLowerCase()}:`).replace(/\/+$/, "");
+  }
+  function isInsideCwd(path, cwd) {
+    const target = normalizePath(path);
+    const absolute = target.startsWith("/") || /^[a-z]:/.test(target);
+    if (!absolute) {
+      let depth = 0;
+      for (const segment of target.split("/")) {
+        if (segment === "..") depth--;
+        else if (segment !== "" && segment !== ".") depth++;
+        if (depth < 0) return false;
+      }
+      return true;
+    }
+    if (!cwd) return false;
+    const base = normalizePath(cwd);
+    const caseFold = /^[a-z]:/.test(base);
+    const a = caseFold ? target.toLowerCase() : target;
+    const b = caseFold ? base.toLowerCase() : base;
+    return a === b || a.startsWith(`${b}/`);
+  }
   var BASH_TOOLS = /* @__PURE__ */ new Set(["bash"]);
   function pathSegments(path) {
     return path.replace(/\\/g, "/").toLowerCase().split("/").filter((segment) => segment !== "" && segment !== "." && segment !== "~");
@@ -3249,6 +3278,13 @@ ${where(text)}`;
     return {
       assess(call, mode) {
         const { risk, reason } = classify(call);
+        if (mode === "accept-edits" && risk !== "high" && ACCEPT_EDITS_TOOLS.has(call.toolName)) {
+          const targets = probeStrings(call.args, PATH_PROBE_KEYS);
+          if (targets.every((target) => isInsideCwd(target, call.cwd))) {
+            return { risk, action: "allow", reason };
+          }
+          return { risk, action: "ask", reason: reason ?? "edit outside the working directory" };
+        }
         return { risk, action: resolvePolicyAction(mode, risk), reason };
       }
     };
@@ -3634,7 +3670,12 @@ ${where(text)}`;
         };
       }
       const policyDecision = this.host.policy.assess(
-        { toolName: toolCall.name, args, declaredRisk: tool.risk },
+        {
+          toolName: toolCall.name,
+          args,
+          declaredRisk: tool.risk,
+          ...this.host.cwd !== void 0 ? { cwd: this.host.cwd } : {}
+        },
         this.host.permissionMode
       );
       const riskText = policyDecision.reason ?? `${policyDecision.risk}-risk tool call in ${this.host.permissionMode} mode`;
@@ -3994,6 +4035,7 @@ ${detail}` : detail
         get permissionMode() {
           return currentPermissionMode();
         },
+        ...options.capabilities?.fs?.cwd !== void 0 ? { cwd: options.capabilities.fs.cwd } : {},
         onApproval: this.onApproval,
         ui: () => this.ui,
         preflightLock: this.preflightLock,
@@ -4496,6 +4538,16 @@ ${detail}` : detail
           api.on("tool_result", (event, ctx) => parent.runToolResult(event, ctx));
         }
       ]) : void 0;
+      const registered = this.currentTools();
+      const tools = options.tools ?? (options.toolNames ? options.toolNames.map((name) => registered.get(name)).filter((tool) => tool !== void 0) : this.baseTools);
+      const basePrompt = options.systemPrompt ?? this.systemPrompt;
+      const systemPrompt = options.appendSystemPrompt === void 0 ? basePrompt : [basePrompt, options.appendSystemPrompt].filter((part) => part !== void 0 && part !== "").join("\n\n");
+      const parentApproval = this.onApproval;
+      const label = options.label;
+      const marks = {
+        ...label !== void 0 ? { subagent: label } : {},
+        ...options.detached ? { detached: true } : {}
+      };
       const child = new _Agent({
         extensions: guards,
         retry: this.retrySettings,
@@ -4503,8 +4555,8 @@ ${detail}` : detail
         config: this.config,
         transport: this.transport,
         platform: this.platform,
-        systemPrompt: options.systemPrompt ?? this.systemPrompt,
-        tools: options.tools ?? this.baseTools,
+        systemPrompt,
+        tools,
         ui: this.ui,
         capabilities: this.capabilities,
         initialMessages: options.initialMessages,
@@ -4513,19 +4565,21 @@ ${detail}` : detail
         followUpMode: this.followUpQueue.mode,
         compaction: this.compactionSettings,
         // Subagents inherit the permission stance — spawning a child must not
-        // be a policy escape hatch.
-        permissionMode: this.permissionMode,
+        // be a policy escape hatch; a spawn may only make it stricter (P26b).
+        permissionMode: stricterMode(this.permissionMode, options.permissionMode),
         policy: this.policy,
-        onApproval: this.onApproval,
+        onApproval: parentApproval && Object.keys(marks).length > 0 ? (request) => parentApproval({ ...request, ...marks }) : parentApproval,
         // The child's calls are billed like the parent's (D19).
         pricing: this.pricing,
-        thinkingLevel: this.currentThinkingLevel,
+        thinkingLevel: options.thinkingLevel ?? this.currentThinkingLevel,
         toolExecution: this.toolExecution,
         preflightLock: this.preflightLock
       });
+      if (options.model !== void 0) child.setModel(options.model);
       let text = "";
       let lastAssistantText = "";
       for await (const event of child.prompt(prompt, signal)) {
+        options.onEvent?.(event);
         if (event.type === "text_delta") text += event.delta;
         if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
       }
@@ -5481,8 +5535,13 @@ ${detail}` : detail
     });
   }
 
+  // ../../../packages/kernel/src/search-tools.ts
+  var MAX_OUTPUT_CHARS = 50 * 1024;
+  var GREP_MAX_FILE_BYTES = 1024 * 1024;
+
   // ../../../packages/kernel/src/coding-tools.ts
   var BASH_STRUCTURED_OUTPUT_MAX_BYTES = 1024 * 1024;
+  var MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
   // ../../../packages/ext-mcp-http/src/jsonrpc.ts
   var JSON_RPC_ERROR_CODES = {

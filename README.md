@@ -24,13 +24,23 @@ inject a small adapter instead of polyfilling globals.
   (`ChatTransport`): `--provider anthropic` speaks the Anthropic Messages API
   natively — thinking streams with signatures, prompt caching
   (`cache_control`), images in tool results, true cacheRead/cacheWrite usage.
+- **Coding tools** — read (text and images), write, edit (several exact
+  replacements in one call), bash, and grep / find / ls in pure ES over the
+  host filesystem (they honor `.gitignore` and work on every host, OPFS
+  included). The CLI adds `todo_write` (a checklist in the TUI), long-term
+  project memory (`memory_write`, `#fact` in the TUI) and five permission modes
+  (read-only, supervised, accept-edits, autonomous, bypass).
+- **Subagents** — the `subagent` tool delegates to child agents with their
+  own context: one, several in parallel, a chain, or in the background (the
+  result comes back as a follow-up). Agents are Markdown definitions (pi's
+  format): scout, planner, reviewer and worker ship built in.
 - **Sessions** — pi v3 JSONL format on disk: resume (`--continue`), in-place
   tree navigation (`/tree`), forking (`/fork`), automatic context compaction
   with pi's exact algorithm and prompts.
 - **Extensions** — pi-mirrored API: 25+ lifecycle events, tools, slash
-  commands, flags, renderers, widgets, shortcuts. Standard packs: subagents
-  (`task` tool), MCP client bridges (SDK-based, and a zero-dependency pure-
-  `Platform` HTTP client for bare engines), skills & prompt templates
+  commands, flags, renderers, widgets, shortcuts. Standard packs: subagents,
+  MCP client bridges (a zero-dependency pure-`Platform` MCP core, plus a stdio
+  transport on Node), tool_search and codemode, skills & prompt templates
   (pi-file-compatible).
 - **Hosts** — terminal (REPL / product-grade TUI / one-shot `-p`), browser
   (OPFS), WeChat mini-program, React Native (Expo), a phone (Flutter via
@@ -56,7 +66,7 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-host-weapp` | WeChat mini-program `Platform` adapter: `wx.request` chunked streaming → `PlatformFetch` | Yes |
 | `@yophon/tau-host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
 | `@yophon/tau-cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
-| `@yophon/tau-ext-subagents` | Extension package that registers a `task` tool backed by child Agents | No direct runtime API |
+| `@yophon/tau-ext-subagents` | The `subagent` tool: single, parallel, chain and background subagents over Markdown agent definitions | No direct runtime API |
 | `@yophon/tau-ext-mcp` | MCP extension for Node: the ext-mcp-http core plus a stdio transport for local servers (no MCP SDK) | Yes — child processes |
 | `@yophon/tau-ext-mcp-http` | Pure-ES MCP client and extension core (Streamable HTTP) written entirely on the `Platform` seam — zero dependencies, runs on bare engines | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |

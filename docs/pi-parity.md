@@ -152,7 +152,12 @@
 | tool_search（`builtin:tool-search`） | ✅ P24d | `@yophon/tau-ext-tool-search`，照抄 pi 1.2.0（BM25、静态描述、注册即 inactive、激活走 active 集并记进转录）。CLI 静态装配见 P24e |
 | MCP exposure / namespace / `mcp_servers` 段 / 生命周期 | ✅ P24d | 照抄 pi 0.99.2–1.2.0：`exposure`/`toolExposure`、codemode 档注册为 deferred、namespace + aliases + instructions、`CallToolResult` 输出 schema 与 structuredContent、`mcp_servers` 段（4096 字符）、后台连接与首 prompt 等 direct 服务器、`reachesTools` 等待、HTTP 连接重试两次、`tools/list_changed` 撤回为 hidden。偏离：缺省 exposure 为 direct（pi 为 codemode，用户裁定）；`mcp_servers` 段经 before_agent_start 追加进提示，变化时由 P22 的 section diff 记一条新 system 消息；HTTP 的 GET 通知流在 ext-mcp-http 为可选（移动端不留空闲连接）；无 `mcp.json`、`/mcp`、resources 工具 |
 | codemode（`builtin:codemode`） | ✅ P24e | `@yophon/tau-ext-codemode`：照抄 pi 1.2.0 的工具契约、脚本全局、输出约定、`on`/`only` 呈现与 `inlineBudget`、`store()`/`load()`（`codemode-store` 条目）；沙箱精确钉版消费 `@earendil-works/pi-codemode`（D30），纯 ES 入口注入沙箱，`./node` 接 worker 沙箱。CLI 作为 inactive 内置扩展装配，`--tools +codemode` 激活，`codemode.mode`/`inlineBudget` 读 settings.json。偏离：无 `models` 全局（D21）、无约束采样语法（D25）、`image()` 不落临时文件、预算用 `estimateStringTokens`（D19-1）、进度经 onUpdate 文本、内置不可被用户扩展替换 |
-| 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3） |
+| 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3）；P26d 加 accept-edits 档（yo-agent / Claude Code） |
+| 内置工具 grep、find、ls | ✅ P26a | 参数、输出、上限提示照抄 pi 1.2.0。偏离：纯 ES 走 FileSystem，不调 rg/fd、不自动下载（D32）；单文件超过 1 MB 跳过 |
+| edit 的 `edits[]`、read 读图片 | ✅ P26a | 照抄 pi 1.x 的多段替换与 promptGuidelines；保留单对 oldText/newText。read 图片偏离：不缩放，超过 5 MB 拒读，需宿主的 `readBinaryFile` |
+| 子代理（pi 为示例扩展 `examples/extensions/subagent`） | ✅ P26b | 照抄工具形状（单个、并行、串联）与 agent 定义格式，内置 pi 的四个示例 agent。偏离：进程内运行（`ctx.runSubagent`）而非独立 pi 进程；加 yo-agent 的后台模式、只收紧、禁止递归、`/tasks`；agent 定义多一个可选 `mode`（D32） |
+| 待办（pi 为示例扩展 `todo.ts`） | ✅ P26c | 采用 yo-agent / Claude Code 的 `todo_write` 整表替换，不用 pi 示例的增删勾（D32） |
+| 长期记忆 | ✅ P26c | pi 无对应物；照 yo-agent 的 memory_write 与 `#remember`，存用户目录（D32） |
 | 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18） |
 | 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；progress/cancelled/GET 通知流随 MCP 协议升级另立 |
 

@@ -1,6 +1,6 @@
 # Phase 26：补齐 yo-agent 能力 规格书
 
-> 状态：已确认（2026-10-17）。五个开放问题按建议裁定（纯 ES 检索、pi 示例形状加 yo-agent 后台与只收紧、todo_write、记忆放用户目录、加 accept-edits）。
+> 状态：已完成（2026-10-17）。五个开放问题按建议裁定（纯 ES 检索、pi 示例形状加 yo-agent 后台与只收紧、todo_write、记忆放用户目录、加 accept-edits），决策记 D32。实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 26
 > 输入：用户要求（2026-10-17：让 tau 具备 yo-agent 的各项能力，比如工具、子代理）；yo-agent 的 `packages/tools`（builtins、subagent-tool、memory-tool、parallel-tool）与 `packages/kernel`（subagent、recipes、policy、loop-breaker、context-files）；pi v1.2.0 的内置工具（`core/tools/{grep,find,ls,edit,read}.ts`）与示例扩展（`examples/extensions/subagent`、`todo.ts`、`git-checkpoint.ts`）；tau 现状（四个编码工具、P7 的 `task` 子代理工具）。
 
@@ -163,26 +163,26 @@ type PermissionMode = "read-only" | "supervised" | "accept-edits" | "autonomous"
 
 ## 验收清单
 
-- [ ] **26a**：
+- [x] **26a**（36f028e）：
   - grep、find、ls 单测：正则与字面量、忽略大小写、上下文行、limit 截断、二进制跳过、`.gitignore`（通配、锚定、目录、取反）、Windows 路径。
   - edit：多段全部成功才写盘，有一段不唯一或找不到时整体不写；旧写法照旧可用。
   - read：png 返回 ImageContent；宿主没有 `readBinaryFile` 时报清楚的错误。
   - host-browser 的 OPFS 文件系统上跑通 grep、find、ls（浏览器宿主测试）。
   - TUI 三个新视图的渲染测试。
-- [ ] **26b**：
+- [x] **26b**（4b053bc，后台修复 7247cfc）：
   - 单个、并行（4 个同时跑的并发上限用计数断言）、串联（`{previous}` 替换）、后台（结果作为 follow-up 回注并触发新一轮）。
   - agent 定义：用户级优先于内置，项目级未信任时不加载，`tools` 白名单生效，`mode` 只收紧（定义写 autonomous、父会话是 supervised 时，子代理按 supervised 跑）。
   - 子代理工具集里没有 `subagent`。
   - 子代理的审批出现在父会话面板并注明来源。
   - 旧会话里的 `task` 调用照常回放。
   - TUI：进度行与 `/tasks`。
-- [ ] **26c**：
+- [x] **26c**（f5c0ae3）：
   - todo_write 的校验（最多一项 in_progress）、存储与 `--continue`/`/tree` 后恢复、TUI 清单与 widget。
   - memory_write 去重、`#` 快捷记忆、下一次启动时出现在系统提示里。
-- [ ] **26d**：
+- [x] **26d**（0e0711d）：
   - accept-edits 矩阵单测：cwd 内 write 放行、保护路径 write 审批、bash 审批。
   - Shift+Tab 四档循环。
-- [ ] **26e**：真实 DeepSeek 在 WSL tmux 里完成验收场景；smoke-tui 增加一个子代理场景；全量测试、check、纯度门禁、smoke 全家桶、pack smoke、CI 通过；文档更新。
+- [x] **26e**（CI 随推送复核）：真实 DeepSeek 在 WSL tmux 里完成验收场景；smoke-tui 增加一个子代理场景；全量测试、check、纯度门禁、smoke 全家桶、pack smoke、CI 通过；文档更新。
 
 ## 风险与开放问题
 
@@ -214,3 +214,26 @@ type PermissionMode = "read-only" | "supervised" | "accept-edits" | "autonomous"
 5. **accept-edits 档位**：
    - 建议：做，并加入 Shift+Tab 循环。
    - 另一种：不做，维持四档。
+
+## 实施记录
+
+五步提交：26a 36f028e、26b 4b053bc、26c f5c0ae3、26d 0e0711d，后台子代理修复 7247cfc，26e 为文档与收尾。全量测试 531 个，528 通过、3 跳过（Windows 上本来就跳过的三项）；check、纯度门禁、QuickJS 三项、weapp、pack smoke 通过，Flutter bundle 已重建；smoke-tui 十个场景（新增子代理场景）在 WSL tmux 里带 `CI=true` 跑通。
+
+**真实 DeepSeek**（deepseek-flash，WSL tmux，`--permission-mode accept-edits`）：
+- 先用 todo_write 列四项清单，再用 find、grep 定位，一次 edit 调用带两段修好 `add`、`multiply` 两处 bug，边做边勾，四项全部完成；编辑在 accept-edits 下没有审批。
+- 并行两个 scout，分别总结 `src/math.ts` 与 `README.md`，进度逐行可见，结果合并返回。
+- 后台 reviewer：父会话立即答复「已开始」，子代理完成后结果作为 follow-up 回注并触发新一轮，模型读文件核实后报告审查结论。
+- `#The user wants every answer to end with the word OK` 写入 `~/.tau/projects/<项目>/MEMORY.md`；重启后问 2+2，答「4. OK」。
+
+**检索耗时**（tau 仓库，Windows，NodeFileSystem）：grep 276 ms，find 34 ms。
+
+与规格书不同、或规格书没写到的地方：
+
+- **缺省 agent 叫 worker**：规格书写的 `general`。pi 示例的 worker 就是「全部工具的通用子代理」，直接用它当缺省，免得两个同义定义。
+- **没有注册 `task` 别名**：别名注册成 hidden 档对模型不可见，也不会被执行；旧会话里的 `task` 调用只作为历史回放，不需要别名。CHANGELOG 写进 Breaking。
+- **派生 risk low**：规格书没写派生本身的风险。定为 low，理由见 D32：子代理的每次调用都过同一道闸门，档位只会更严。
+- **后台子代理的审批带 `detached`**：真机验收时发现，后台子代理在父会话这一轮里发起的审批，会在这一轮结束时被 TUI 一并按拒绝结清（这本是给中止的轮次准备的兜底）。内核 `AgentSpawnOptions.detached` 给这类请求打标记，TUI 不再结清，面板注明「background subagent」。
+- **回注消息的显示**：后台结果在两轮之间到达，TUI 原先按消息条数判断「已显示」，与这一轮收尾时的写入有竞争；改为按内容记录已显示的 custom 消息，下一轮开始前补画。
+- **待办的恢复**：`session_start` 时会话日志还在后台加载，读不到分支上的 `todos` 条目；widget 改为每次从当前分支读，本进程刚写的清单优先。
+- **memory_write 在 read-only 下也声明**：它会被策略拒绝，没有像写类编码工具那样在注册时过滤（扩展注册时不知道档位）。
+- **read 图片不缩放**：内核没有图像编解码；超过 5 MB 拒读。

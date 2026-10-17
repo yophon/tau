@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；**当前工作 = P26 补齐 yo-agent 能力（规格书已确认）**；0.4.0（含 P22–P25）待发布；网关草案待定）
+> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；**当前工作 = 发 0.4.0（含 P22–P26）**；网关草案待定）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -247,9 +247,11 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 487 个测试，484 通过、3 跳过；新 TUI 测试 86 个（ink-testing-library 驱动真实 Agent，本机可跑）；smoke-tui 九个场景在 tmux（WSL）里以默认入口跑通；pack smoke 加了 TUI 安装布局渲染。25a 骨架（e89dc94）：Ink 5、纯 reducer、keymap、按工具视图、审批面板、队列与中止、字素簇编辑器；25b 功能对齐（656c443）：旧 TUI 全部命令与扩展 UI 接口、会话切换重放、console 捕获、债 #15、ext-feishu SDK 日志与 ext-resources 缺目录告警；25c 切换（3ac148c）：终端下 `tau` 默认进 TUI、`--repl`、删除 tui.ts 与 pi-tui、`/new` `/clone` `/session` `/copy` `/export` `/trust`、Shift+Tab（内核 `Agent.setPermissionMode`）、Ctrl+G；25d：D31、文档、真终端修复（布局字形、悬挂缩进、Static 宽度）。真实 DeepSeek 在真终端里完成读、改、跑命令、审批、中止、`--continue` 重放。用户已在 Windows Terminal 亲手验收通过。偏差见规格书「实施记录」。
 
-## Phase 26 ⬜ 补齐 yo-agent 能力
+## Phase 26 ✅ 补齐 yo-agent 能力（2026-10-17）
 
 规格书：[specs/phase-26-yoagent-capabilities.md](specs/phase-26-yoagent-capabilities.md)（2026-10-17 确认，五步 26a–26e）。编码工具对齐 pi 1.2.0（grep、find、ls 纯 ES 实现，edit 多段，read 读图片）；子代理重写（pi 示例的单个、并行、串联与 agent 定义，加 yo-agent 的后台模式、只收紧、`/tasks`）；todo_write 与 TUI 清单；长期记忆（memory_write、`#` 快捷记忆）；accept-edits 档位。
+
+**完成记录**：全量 531 个测试，528 通过、3 跳过；smoke-tui 十个场景（新增子代理）通过。26a（36f028e）grep、find、ls 纯 ES 实现（照 `.gitignore`），edit 多段，read 读图片；26b（4b053bc、7247cfc）subagent 重写：单个、并行、串联、后台，Markdown agent 定义，只收紧、禁止递归、`/tasks`，后台审批不随父会话一轮结束结清；26c（f5c0ae3）todo_write 与 TUI 清单、长期记忆；26d（0e0711d）accept-edits 档位；决策 D32。真实 DeepSeek 在真终端里完成待办、检索、一次改两处、并行与后台子代理、记忆跨会话生效。偏差见规格书「实施记录」。
 
 ## 产品层 ⬜ 待定
 

@@ -5,6 +5,16 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- ext-subagents (P26b): the tool is `subagent` (was `task`) with pi's
+  parameters — `{agent, task}`, `{tasks: [...]}` or `{chain: [...]}`, plus
+  `background` — instead of `{description, prompt}`. The CLI now loads it by
+  default. Old sessions keep their `task` calls as history.
+- Kernel (P26a): `createCodingTools` also registers grep, find and ls (read-only
+  mode keeps them), and edit's schema is pi's `edits: [{oldText, newText}]`
+  (the single oldText/newText pair is still accepted). Hosts or tests that
+  expected exactly read/write/edit/bash see the new tools.
+- Kernel (P26d): `PermissionMode` gains `accept-edits`; exhaustive switches over
+  it need the new case.
 - CLI (P25): a new TUI, now the interactive default. On a terminal, `tau` without
   `-p` starts it; `--repl` keeps the line-based REPL, and piped stdio still gets the
   REPL. `--tui` still works (and still refuses non-TTY stdio). The TUI is rebuilt on
@@ -231,6 +241,38 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P26a, pi 1.2.0): grep, find and ls tools with pi's parameters, output
+  and limit notices, implemented in pure ES over the injected FileSystem (no
+  rg/fd), so they work on every host; they skip `.git` and `node_modules` and
+  honor `.gitignore`. edit applies several replacements per call (each must
+  match once in the original, no overlaps, all or nothing). read returns
+  png/jpg/gif/webp files as image blocks through the new optional
+  `FileSystem.readBinaryFile` (host-node, OPFS and memory filesystems implement
+  it). Coding tools carry pi's prompt snippets and guidelines. Exports:
+  `createGrepTool`, `createFindTool`, `createLsTool`, `globToRegExp`,
+  `globMatcher`, `parseGitignore`, `applyEdits`, `encodeBase64`.
+- Subagents (P26b, after pi's subagent example and yo-agent): parallel runs (at
+  most 8, 4 at a time), chains with `{previous}`, background runs whose result
+  comes back as a follow-up message that starts a turn, and `/tasks` to list
+  them. Agents are Markdown definitions (`name`, `description`, `tools`,
+  `model`, optional `mode`): pi's worker, scout, planner and reviewer are built
+  in, `~/.pi/agent/agents` and `~/.tau/agents` override them, and a trusted
+  project's `.pi/agents` and `.tau/agents` override those. A subagent never gets
+  the subagent tool and never runs in a more permissive mode than its parent;
+  its approvals name it. Kernel `AgentSpawnOptions` gains `appendSystemPrompt`,
+  `toolNames`, `model`, `thinkingLevel`, `permissionMode`, `label`, `detached`
+  and `onEvent`; `ApprovalRequest` gains `subagent` and `detached`;
+  `stricterMode` is exported.
+- CLI (P26c): `todo_write` keeps a checklist for multi-step work (the whole
+  list each call, one item in progress), restored with the session; the TUI
+  draws it and shows the item in progress above the input box. Long-term
+  memory: `memory_write`, `/remember` and `#fact` in the TUI append to
+  `~/.tau/projects/<project>/MEMORY.md`, which is added to the system prompt
+  as notes (last 200 lines).
+- Permissions (P26d): `accept-edits` mode — file edits inside the working
+  directory (and memory writes) run without asking, commands still ask;
+  `--permission-mode accept-edits`, and Shift+Tab cycles supervised →
+  accept-edits → autonomous → read-only. `isInsideCwd` is exported.
 - CLI TUI (P25): approvals show what the call will do (the whole bash command, a
   diff for edit) and offer "Deny and tell the agent what to do instead", which sends
   your text with the denial; pickers, approvals and `ctx.ui` dialogs replace the input

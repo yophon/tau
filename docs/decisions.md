@@ -159,6 +159,16 @@ P8 的 TUI 基于 pi-tui，消息与工具输出是手拼的 ANSI 字符串，`t
 - **交互式终端默认进 TUI**，`--repl` 保留逐行 REPL，非 TTY 仍走 REPL。
 - 内核为 Shift+Tab 新增 `Agent.setPermissionMode()`，**不写进会话**：恢复的会话由宿主重新给档位，不会比宿主启动时更宽松（偏离规格书草拟时「写进会话以便恢复」的设想）。
 
+## D32：补齐 yo-agent 能力的取舍（2026-10-17，P26，用户确认）
+
+yo-agent 不再开新阶段，它的能力收进 tau。五处取舍：
+
+- **grep、find、ls 纯 ES 实现**：参数、输出和上限提示照抄 pi 1.2.0，但不调 rg、fd。编码工具在内核里，只能用注入的 `FileSystem`；纯 ES 遍历加匹配让浏览器 OPFS、小程序、手机宿主都有检索。照 `.gitignore` 过滤（常见写法），跳过 `.git`、`node_modules`、超过 1 MB 的文件。代价是大仓库比 rg 慢；tau 仓库上 grep 约 0.3 s。edit 采用 pi 1.x 的 `edits[]`，保留 0.2 已发布的单对写法；read 读图片经可选的 `FileSystem.readBinaryFile`，不缩放（内核没有图像编解码），超过 5 MB 拒读。
+- **子代理照抄 pi 示例的形状，在进程内运行**：单个、并行（最多 8 个、同时 4 个）、串联与 Markdown agent 定义照抄 pi 的 subagent 示例；pi 示例为每个子代理起一个 pi 进程，tau 用 `ctx.runSubagent`，所有宿主可用，审批走父会话的同一个面板。加上 yo-agent 的后台模式（结果作为 follow-up 回注并触发新一轮，审批带 `detached`，父会话一轮结束时不被结清）、只收紧（`stricterMode`）、禁止递归。派生本身 risk low：子代理的每次调用都过同一道闸门。
+- **待办采用 todo_write 整表替换**（yo-agent、Claude Code 的形状），不用 pi 示例的增删勾：少调用、模型更熟悉。
+- **记忆放在用户目录** `~/.tau/projects/<项目>/MEMORY.md`：不进仓库、不会被误提交、不受项目信任门影响。记忆以「笔记，不是指令」的说明进系统提示，只载入最后 200 行；模型写入走审批（medium），accept-edits 及以上自动放行。
+- **新增 accept-edits 档位**，位于 supervised 与 autonomous 之间：cwd 内、非保护路径的 write、edit、memory_write 放行，其余照 supervised。**不做循环熔断**：用户在 yo-agent 4.10 真机反馈里说熔断「反而是个阻碍」。
+
 ## D23：pi 参照系重锚到 v1.2.0（2026-10-15，P21，用户确认）
 
 版本号推翻 D11，机制保留。

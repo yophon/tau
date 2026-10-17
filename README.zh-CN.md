@@ -20,11 +20,19 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   （`ChatTransport`）：`--provider anthropic` 原生说 Anthropic Messages 协议——
   thinking 原生流式（带 signature）、prompt 缓存（`cache_control`）、工具结果
   携带图片、cacheRead/cacheWrite 真实用量。
+- **编码工具**——read（文本与图片）、write、edit（一次调用做多处精确替换）、
+  bash，以及纯 ES 实现、走宿主文件系统的 grep / find / ls（照 `.gitignore`
+  过滤，所有宿主可用，包括 OPFS）。CLI 另带 `todo_write`（TUI 里显示清单）、
+  按项目的长期记忆（`memory_write`，TUI 里输入 `#事实`）和五档权限
+  （read-only、supervised、accept-edits、autonomous、bypass）。
+- **子代理**——`subagent` 工具把任务交给拥有独立上下文的子代理：单个、多个
+  并行、串联，或放到后台（做完后结果作为 follow-up 送回）。子代理用 Markdown
+  定义（pi 的格式），内置 scout、planner、reviewer、worker。
 - **会话**——磁盘上就是 pi v3 JSONL 格式：恢复（`--continue`）、原地树导航
   （`/tree`）、分叉（`/fork`）、自动上下文压缩（算法与 prompt 逐字照抄 pi）。
 - **扩展**——镜像 pi 的扩展 API：25+ 生命周期事件、工具、slash 命令、flags、
-  渲染器、widgets、快捷键。标准扩展包：子 agent（`task` 工具）、MCP client
-  桥（零依赖、纯 `Platform` 的 MCP 核心，Node 上另加 stdio 传输）、
+  渲染器、widgets、快捷键。标准扩展包：子代理、MCP client 桥（零依赖、纯
+  `Platform` 的 MCP 核心，Node 上另加 stdio 传输）、tool_search 与 codemode、
   skills 与 prompt templates（与 pi 文件格式兼容）。
 - **宿主**——终端（REPL / 产品级 TUI / 单次 `-p`）、浏览器（OPFS）、微信小
   程序、React Native（Expo）、手机（Flutter 经 `flutter_js`，内核跑在 QuickJS
@@ -48,7 +56,7 @@ MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的�
 | `@yophon/tau-host-weapp` | 微信小程序 `Platform` 适配器：`wx.request` chunked 流式 → `PlatformFetch` | 是 |
 | `@yophon/tau-host-rn` | React Native（Expo）`Platform` 适配器，基于 `expo/fetch` | 是 |
 | `@yophon/tau-cli` | 终端前端：REPL、TUI、单次模式 | 是 |
-| `@yophon/tau-ext-subagents` | 注册 `task` 工具、以子 Agent 完成委派的扩展包 | 不直接碰运行时 API |
+| `@yophon/tau-ext-subagents` | `subagent` 工具：单个、并行、串联与后台子代理，基于 Markdown agent 定义 | 不直接碰运行时 API |
 | `@yophon/tau-ext-mcp` | Node 上的 MCP 扩展：ext-mcp-http 的核心加本地服务器的 stdio 传输（不依赖 MCP SDK） | 是——子进程 |
 | `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的纯 ES MCP client 与扩展核心（Streamable HTTP）——零依赖，裸引擎可跑 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | 完全构建在 `Platform` 缝隙上的 Anthropic Messages `ChatTransport`——thinking 原生流式、prompt 缓存、工具结果携带图片 | **否**——纯 `Platform` |
