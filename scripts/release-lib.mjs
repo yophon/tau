@@ -14,6 +14,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-subagents",
 	"ext-mcp-http",
 	"ext-mcp",
+	"ext-tool-search",
 	"ext-provider-anthropic",
 	"ext-resources",
 	"ext-feishu",

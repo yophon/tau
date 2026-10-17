@@ -20,6 +20,19 @@ export {
 	type McpToolInfo,
 } from "./client.ts";
 export {
+	configuredExposures,
+	createMcpResultSchema,
+	getMcpToolExposure,
+	MAX_SERVERS_SECTION_CHARS,
+	MCP_SERVERS_SECTION,
+	type McpExposure,
+	type McpExposureConfig,
+	type McpServerListing,
+	reachesServer,
+	renderServersSection,
+	toToolExposure,
+} from "./exposure.ts";
+export {
 	McpHttpError,
 	McpSessionExpiredError,
 	StreamableHttpTransport,
@@ -62,7 +75,10 @@ export {
 const CLIENT_INFO = { name: "tau-ext-mcp-http", version: "0.4.0" };
 
 export interface HttpMcpServerConfig
-	extends Pick<McpServerConfig, "name" | "headers" | "timeoutMs" | "riskFromAnnotations"> {
+	extends Pick<
+		McpServerConfig,
+		"name" | "headers" | "timeoutMs" | "riskFromAnnotations" | "exposure" | "toolExposure" | "description"
+	> {
 	/** Streamable HTTP endpoint URL. */
 	url: string;
 }
@@ -78,6 +94,11 @@ export interface HttpMcpOptions {
 	 */
 	platform: Platform;
 	onStatus?: (status: HttpMcpStatus) => void;
+	/**
+	 * Keep a GET stream open per server for notifications (tools/list_changed).
+	 * Off by default: mobile hosts keep no idle connection; tools are listed at connect.
+	 */
+	serverNotifications?: boolean;
 }
 
 export interface HttpMcpHandle {
@@ -100,7 +121,12 @@ export function createHttpMcpExtension(options: HttpMcpOptions): HttpMcpHandle {
 		onStatus: options.onStatus,
 		createTransport: (config) => {
 			if (!config.url) throw new Error(`MCP server "${config.name}" must define url`);
-			return new StreamableHttpTransport({ url: config.url, platform, headers: config.headers });
+			return new StreamableHttpTransport({
+				url: config.url,
+				platform,
+				headers: config.headers,
+				openGetStream: options.serverNotifications === true,
+			});
 		},
 	});
 	return {

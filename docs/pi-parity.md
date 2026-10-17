@@ -149,7 +149,9 @@
 | Themes | ❌ | 2026-07-20 用户否决 |
 | 嵌套工具调用 `ctx.executeTool`（ExtensionToolContext） | ✅ P24c | 照抄 pi：只给工具 execute 的 ctx，嵌套 id `<parent>/<n>`，tool_call/tool_result/tool_execution_* 带 `parentToolCallId`，不进转录，调用方结果记 `nestedCalls`（NESTED_CALL_LIMITS）并累加 usage，sequential 时排他执行，失败一律 isError 不 reject。偏离：`ctx.tools` 是不含 execute 的 ToolInfo；成员可选（D10）；嵌套调用不进 AgentEvent 流（宿主看不到逐个嵌套行，脚本进度由调用方工具的 onUpdate 给）；未知工具在 tool_call 钩子前失败、只有真正执行的调用才发 tool_execution_start（tau 既有 preflight 语义，pi 对嵌套调用总先发 start）；一棵 Agent 树共用 preflight 锁（审批恒串行，D22-2）；参数省略时 read/write/edit 保留 path（D29） |
 | bash 结构化结果（`outputSchema` + `structuredContent`） | ✅ P24c | `{output, truncated, exit_code, wall_time_seconds}`，1 MiB 首尾截断，非零退出码也给；`full_output_path` 不给（内核无临时文件能力）。模型侧文本不变 |
-| codemode、tool_search | 📍P24 | |
+| tool_search（`builtin:tool-search`） | ✅ P24d | `@yophon/tau-ext-tool-search`，照抄 pi 1.2.0（BM25、静态描述、注册即 inactive、激活走 active 集并记进转录）。CLI 静态装配见 P24e |
+| MCP exposure / namespace / `mcp_servers` 段 / 生命周期 | ✅ P24d | 照抄 pi 0.99.2–1.2.0：`exposure`/`toolExposure`、codemode 档注册为 deferred、namespace + aliases + instructions、`CallToolResult` 输出 schema 与 structuredContent、`mcp_servers` 段（4096 字符）、后台连接与首 prompt 等 direct 服务器、`reachesTools` 等待、HTTP 连接重试两次、`tools/list_changed` 撤回为 hidden。偏离：缺省 exposure 为 direct（pi 为 codemode，用户裁定）；`mcp_servers` 段经 before_agent_start 追加进提示，变化时由 P22 的 section diff 记一条新 system 消息；HTTP 的 GET 通知流在 ext-mcp-http 为可选（移动端不留空闲连接）；无 `mcp.json`、`/mcp`、resources 工具 |
+| codemode | 📍P24 | |
 | 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3） |
 | 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18） |
 | 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；progress/cancelled/GET 通知流随 MCP 协议升级另立 |

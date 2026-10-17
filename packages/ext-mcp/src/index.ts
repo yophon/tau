@@ -35,12 +35,14 @@ function saveFullOutput(text: string): string {
 export interface McpExtensionOptions {
 	servers: McpServerConfig[];
 	onStatus?: (status: McpServerStatus) => void;
+	/** How long the first prompt waits for servers with direct tools, ms (default 10000). */
+	startupWaitMs?: number;
 }
 
 /**
- * Connects the servers at session_start, in parallel; one unreachable server does
- * not cost the others their tools, and session_start then fails with every
- * failure listed so the host can report it (HF-12).
+ * Connects the servers in the background at session_start, in parallel; the first
+ * prompt waits for servers with direct tools. One unreachable server does not cost
+ * the others their tools; it is reported through the UI, or stderr without one.
  */
 export function createMcpExtension(options: McpExtensionOptions): Extension {
 	const platform = defaultPlatform();
@@ -49,13 +51,17 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		platform,
 		clientInfo: CLIENT_INFO,
 		onStatus: options.onStatus,
+		startupWaitMs: options.startupWaitMs,
 		saveFullOutput,
-		failOnUnavailable: true,
+		// Without a UI (tau -p, pipes) an unavailable server still gets reported.
+		reportUnavailable: (message) => process.stderr.write(`${message}\n`),
 		createTransport: (config) => {
 			if (config.command) {
 				return new StdioTransport({ command: config.command, args: config.args, cwd: config.cwd, env: config.env });
 			}
-			if (config.url) return new StreamableHttpTransport({ url: config.url, platform, headers: config.headers });
+			if (config.url) {
+				return new StreamableHttpTransport({ url: config.url, platform, headers: config.headers, openGetStream: true });
+			}
 			throw new Error(`MCP server "${config.name}" must define command or url`);
 		},
 	}).extension;

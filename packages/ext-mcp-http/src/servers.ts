@@ -1,30 +1,49 @@
 // The MCP extension core shared by @yophon/tau-ext-mcp-http (Streamable HTTP)
 // and @yophon/tau-ext-mcp (adds stdio on Node): connects servers through an
 // injected transport factory, names their tools `mcp__<server>__<tool>`, and
-// registers them as tau tools (pi extensions/mcp).
+// registers them as tau tools with the configured exposure (pi extensions/mcp).
 //
-// Connection lifecycle (P13, mobile-first): an unreachable server is a normal
-// state. connect() is idempotent and reentrant, a failure leaves that server
-// with zero tools (reported through onStatus), and calling connect() again retries.
+// Lifecycle (pi 0.99.2): servers connect in the background at session_start; the
+// first prompt waits for servers with direct tools (10 s at most); a tool that
+// reaches a server still connecting (an MCP tool of it, or a codemode script or
+// tool_search naming it) waits for that server. An unreachable server is a normal
+// state (P13, mobile-first): it has no tools, is reported, and the next call or
+// connect() retries. tools/list_changed re-registers the server's tools; tools it
+// dropped are re-registered as hidden (no unregister in the API).
 import {
 	type Extension,
 	type ExtensionAPI,
+	type ExtensionContext,
 	type JsonSchema,
+	type JsonValue,
 	limitToolText,
 	type Platform,
 	type Tool,
+	type ToolNamespace,
 	type ToolResult,
 } from "@yophon/tau-kernel";
-import { McpClient, type McpToolInfo } from "./client.ts";
-import { McpSessionExpiredError } from "./http.ts";
-import { McpAbortError } from "./jsonrpc.ts";
+import { type CallToolResult, McpClient, type McpToolInfo } from "./client.ts";
+import {
+	configuredExposures,
+	createMcpResultSchema,
+	getMcpToolExposure,
+	type McpExposureConfig,
+	reachesServer,
+	renderServersSection,
+	toToolExposure,
+} from "./exposure.ts";
+import { McpHttpError, McpSessionExpiredError } from "./http.ts";
+import { McpAbortError, McpConnectionClosedError, McpError, McpTimeoutError } from "./jsonrpc.ts";
 import { createMcpToolName, mcpNamespace } from "./naming.ts";
 import { MCP_OUTPUT_MAX_BYTES, toolOutput } from "./result.ts";
 import type { McpTransport } from "./transport.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+const DEFAULT_STARTUP_WAIT_MS = 10_000;
+/** Retries of a failed HTTP connect (pi CONNECT_RETRY_DELAYS_MS). */
+const CONNECT_RETRY_DELAYS_MS = [250, 1_000];
 
-export interface McpServerConfig {
+export interface McpServerConfig extends McpExposureConfig {
 	/** Server name: tools register as `mcp__<name>__<tool>`. Names differing only in `-`/`_` clash. */
 	name: string;
 	/** Streamable HTTP endpoint. */
@@ -36,6 +55,8 @@ export interface McpServerConfig {
 	args?: string[];
 	cwd?: string;
 	env?: Record<string, string>;
+	/** One-line summary for the namespace and the `mcp_servers` section; default: the server's instructions. */
+	description?: string;
 	/**
 	 * Timeout for initialize/tools/list (default 10s; requires Platform.sleep,
 	 * disabled without it). tools/call has no default timeout: long-running tools
@@ -61,7 +82,7 @@ export interface McpServerStatus {
 
 export interface McpServersOptions {
 	servers: McpServerConfig[];
-	/** Timers for request timeouts (Platform.sleep). */
+	/** Timers for request timeouts, connect retries and the startup wait (Platform.sleep). */
 	platform: Pick<Platform, "sleep">;
 	/** A fresh transport for one connection attempt; throwing marks the server offline. */
 	createTransport(config: McpServerConfig): McpTransport;
@@ -72,8 +93,10 @@ export interface McpServersOptions {
 	 * not saved. Default: not saved — a pure-Platform client has no file access.
 	 */
 	saveFullOutput?: (text: string) => string;
-	/** Make session_start fail when a server is unavailable (the CLI reports it); default: report through onStatus only. */
-	failOnUnavailable?: boolean;
+	/** Where an unavailable server is reported when the session has no UI to notify. Default: nowhere (onStatus only). */
+	reportUnavailable?: (message: string) => void;
+	/** How long the first prompt waits for servers with direct tools, ms (default 10000; needs Platform.sleep). */
+	startupWaitMs?: number;
 }
 
 export interface McpServersHandle {
@@ -90,10 +113,36 @@ interface ServerState {
 	conflict?: string;
 	client?: McpClient;
 	connecting?: Promise<McpServerStatus>;
+	/** Server instructions from initialize. */
+	instructions?: string;
+	/** Tool names the server currently offers. */
+	tools: Set<string>;
 }
 
 function messageOf(cause: unknown): string {
 	return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Network failures and overloaded or restarting servers, worth another connect
+ * attempt (pi isTransientError). Errors the Platform's fetch throws count as
+ * network failures; protocol, session, timeout and abort errors do not.
+ */
+function isTransientError(error: unknown): boolean {
+	if (error instanceof McpHttpError) {
+		return error.status === 408 || error.status === 429 || (error.status >= 500 && error.status !== 501);
+	}
+	return !(
+		error instanceof McpError ||
+		error instanceof McpTimeoutError ||
+		error instanceof McpAbortError ||
+		error instanceof McpConnectionClosedError
+	);
+}
+
+/** A promise that settles when `signal` aborts (never, without one). */
+function aborted(signal: ExtensionContext["signal"]): Promise<void> {
+	return new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
 }
 
 export function createMcpServers(options: McpServersOptions): McpServersHandle {
@@ -101,27 +150,48 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 	for (const config of options.servers) {
 		// Names that differ only in `-` and `_` would share a namespace (pi config.ts).
 		const clash = states.find((state) => mcpNamespace(state.config.name) === mcpNamespace(config.name));
-		states.push(
-			clash ? { config, conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : { config },
-		);
+		states.push({
+			config,
+			tools: new Set(),
+			...(clash ? { conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : {}),
+		});
 	}
 	/** Owner (`<server>\0<tool>`) of every tool name this extension registered. */
 	const toolOwners = new Map<string, string>();
+	/** Last definition registered under each tool name, to re-register withdrawn tools as hidden. */
+	const definitions = new Map<string, Tool>();
 	/** Clients of this generation, connected or still connecting, so shutdown closes them all. */
 	const clients = new Set<McpClient>();
 	let generation = 0;
 	let api: ExtensionAPI | undefined;
+	/** The session_start context, to notify about unavailable servers. */
+	let sessionCtx: ExtensionContext | undefined;
+	let waitedForStartup = false;
 
 	const report = (status: McpServerStatus): McpServerStatus => {
 		options.onStatus?.(status);
 		return status;
 	};
 
-	/** Open a connection to the server (and list its tools); the client is tracked until closed. */
-	const openClient = async (
-		state: ServerState,
-		list: boolean,
-	): Promise<{ client: McpClient; tools: McpToolInfo[] }> => {
+	const reportUnavailable = (server: string, error: string): void => {
+		const message = `MCP server "${server}" unavailable: ${error}`;
+		if (sessionCtx?.ui) sessionCtx.ui.notify(message, "warning");
+		else options.reportUnavailable?.(message);
+	};
+
+	const namespaceOf = (state: ServerState): ToolNamespace => {
+		const description = state.config.description?.trim();
+		return {
+			name: mcpNamespace(state.config.name),
+			// describeNamespace("docs") finds mcp__docs.
+			aliases: [state.config.name],
+			...(description ? { description } : {}),
+			...(state.instructions ? { instructions: state.instructions } : {}),
+		};
+	};
+
+	/** Open one connection (and list its tools); the client is tracked until closed. */
+	const openOnce = async (state: ServerState, list: boolean): Promise<{ client: McpClient; tools: McpToolInfo[] }> => {
 		const client = new McpClient({ ...options.clientInfo, platform: options.platform });
 		clients.add(client);
 		client.onClose(() => {
@@ -131,11 +201,33 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		try {
 			const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
 			await client.connect(options.createTransport(state.config), { timeoutMs });
+			client.onNotification("notifications/tools/list_changed", () => {
+				void refreshTools(state, client);
+			});
+			state.instructions = client.instructions;
 			const tools = list ? await client.listTools({ timeoutMs }) : [];
 			return { client, tools };
 		} catch (error) {
 			await client.close().catch(() => {});
 			throw error;
+		}
+	};
+
+	/** Open a connection; HTTP servers get two more tries on network or server errors (pi). */
+	const openClient = async (
+		state: ServerState,
+		list: boolean,
+	): Promise<{ client: McpClient; tools: McpToolInfo[] }> => {
+		const retries = state.config.url && options.platform.sleep ? CONNECT_RETRY_DELAYS_MS : [];
+		const startedIn = generation;
+		for (let attempt = 0; ; attempt++) {
+			try {
+				return await openOnce(state, list);
+			} catch (error) {
+				const delay = retries[attempt];
+				if (delay === undefined || startedIn !== generation || !isTransientError(error)) throw error;
+				await options.platform.sleep?.(delay);
+			}
 		}
 	};
 
@@ -147,8 +239,35 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		return client;
 	};
 
+	const refreshTools = async (state: ServerState, client: McpClient): Promise<void> => {
+		// A notification can arrive before the connect that opened this client finished.
+		await state.connecting;
+		if (state.client !== client || !api) return;
+		try {
+			const tools = await client.listTools({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS });
+			if (state.client === client) registerTools(api, state, tools);
+		} catch {
+			// A failed refresh keeps the tools registered so far.
+		}
+	};
+
+	/** Activate the tool that reaches indirect MCP tools: codemode, or tool_search for deferred ones (pi). */
+	const activateReachingTools = (target: ExtensionAPI, state: ServerState): void => {
+		const exposures = configuredExposures(state.config);
+		if (!exposures.has("codemode") && !exposures.has("deferred")) return;
+		const registered = new Set(target.getAllTools().map((tool) => tool.name));
+		const active = target.getActiveTools();
+		const wanted = [
+			...(exposures.has("codemode") && registered.has("codemode") ? ["codemode"] : []),
+			...(exposures.has("deferred") && registered.has("tool_search") ? ["tool_search"] : []),
+		].filter((name) => !active.includes(name));
+		if (wanted.length > 0) target.setActiveTools([...active, ...wanted]);
+	};
+
 	const registerTools = (target: ExtensionAPI, state: ServerState, tools: McpToolInfo[]): void => {
 		const server = state.config.name;
+		const namespace = namespaceOf(state);
+		const previous = state.tools;
 		const current = new Set<string>();
 		// Like Codex, all tools whose names sanitize to the same name get the hash suffix, so
 		// which one would keep the plain name does not depend on the order of the list (pi).
@@ -164,22 +283,39 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				);
 			});
 			current.add(name);
-			// A reconnect lists the same tools again; their definitions resolve the live client per call.
-			if (toolOwners.get(name) === owner) continue;
 			toolOwners.set(name, owner);
+			const definition = createTauTool(state, name, info, namespace);
+			definitions.set(name, definition);
 			const destructive = state.config.riskFromAnnotations === true && info.annotations?.destructiveHint === true;
-			target.registerTool(createTauTool(state, name, info), destructive ? { risk: "high" } : undefined);
+			target.registerTool(definition, destructive ? { risk: "high" } : undefined);
 		}
+		state.tools = current;
+		// Tools cannot be unregistered: tools the server dropped become hidden. Offered again,
+		// they are registered with their configured exposure above (pi).
+		for (const name of previous) {
+			const definition = definitions.get(name);
+			if (!current.has(name) && definition) target.registerTool({ ...definition, exposure: "hidden" });
+		}
+		activateReachingTools(target, state);
 	};
 
-	const createTauTool = (state: ServerState, name: string, info: McpToolInfo): Tool => ({
+	const createTauTool = (state: ServerState, name: string, info: McpToolInfo, namespace: ToolNamespace): Tool => ({
 		name,
 		description: info.description ?? `MCP tool ${info.name} from ${state.config.name}`,
 		parameters: info.inputSchema as JsonSchema,
+		outputSchema: createMcpResultSchema(info.outputSchema),
+		exposure: toToolExposure(getMcpToolExposure(state.config, info.name)),
+		namespace,
 		execute: async (args, signal): Promise<ToolResult> => {
 			if (signal?.aborted) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
+			if (!state.tools.has(name)) {
+				return {
+					content: [{ type: "text", text: `MCP tool "${state.config.name}/${info.name}" is no longer available.` }],
+					isError: true,
+				};
+			}
 			try {
-				let result: Awaited<ReturnType<McpClient["callTool"]>>;
+				let result: CallToolResult;
 				try {
 					result = await (await clientFor(state)).callTool(info.name, args, { signal });
 				} catch (cause) {
@@ -193,7 +329,13 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 					MCP_OUTPUT_MAX_BYTES,
 					options.saveFullOutput ?? (() => "[Full output not saved: this MCP client has no file access]"),
 				);
-				return { content: [{ type: "text", text }], isError: result.isError === true };
+				// Scripts get the whole CallToolResult (pi 1.2.0), never truncated; `_meta` is dropped.
+				const { _meta: _ignored, ...scriptResult } = result as CallToolResult & { _meta?: unknown };
+				return {
+					content: [{ type: "text", text }],
+					structuredContent: scriptResult as unknown as JsonValue,
+					isError: result.isError === true,
+				};
 			} catch (cause) {
 				const text = cause instanceof McpAbortError ? "MCP tool call aborted" : messageOf(cause);
 				return { content: [{ type: "text", text }], isError: true };
@@ -205,7 +347,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		const server = state.config.name;
 		if (state.conflict) return Promise.resolve(report({ server, state: "offline", error: state.conflict }));
 		if (state.client?.connectionState === "connected") {
-			return Promise.resolve({ server, state: "connected" });
+			return Promise.resolve({ server, state: "connected", toolCount: state.tools.size });
 		}
 		if (state.connecting) return state.connecting;
 		const startedIn = generation;
@@ -222,7 +364,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				if (api) registerTools(api, state, tools);
 				return report({ server, state: "connected", toolCount: tools.length });
 			} catch (cause) {
-				return report({ server, state: "offline", error: messageOf(cause) });
+				const status = report({ server, state: "offline", error: messageOf(cause) });
+				if (startedIn === generation) reportUnavailable(server, status.error ?? "");
+				return status;
 			}
 		})().finally(() => {
 			state.connecting = undefined;
@@ -249,20 +393,69 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		await Promise.allSettled(closing.map((client) => client.close()));
 	};
 
+	/** Wait for these servers' connections in flight, until `signal` aborts. */
+	const waitFor = async (waiting: readonly ServerState[], signal: ExtensionContext["signal"]): Promise<void> => {
+		const pending = waiting.flatMap((state) => (state.connecting ? [state.connecting] : []));
+		if (pending.length > 0) await Promise.race([Promise.all(pending), aborted(signal)]);
+	};
+
 	const extension: Extension = (extensionApi) => {
 		api = extensionApi;
-		extensionApi.on("session_start", async () => {
-			const statuses = await connect();
-			const failures = statuses.filter((status) => status.state === "offline");
-			if (options.failOnUnavailable && failures.length > 0) {
-				throw new Error(
-					`MCP server(s) unavailable — ${failures.map((status) => `${status.server}: ${status.error}`).join("; ")}`,
-				);
-			}
+		extensionApi.on("session_start", (_event, ctx) => {
+			sessionCtx = ctx;
+			waitedForStartup = false;
+			void connect();
 		});
+
+		// The first prompt waits for servers whose tools are declared to the model, so they are
+		// declared in its first request, but not indefinitely (pi waitForDirectServers). Every
+		// prompt lists the indirect servers in the mcp_servers section as they are when it starts.
+		extensionApi.on("before_agent_start", async (event, ctx) => {
+			if (!waitedForStartup) {
+				waitedForStartup = true;
+				const direct = states.filter((state) => state.connecting && configuredExposures(state.config).has("direct"));
+				const sleep = options.platform.sleep;
+				if (direct.length > 0 && sleep) {
+					const finished = await Promise.race([
+						Promise.all(direct.map((state) => state.connecting)).then(() => true),
+						sleep(options.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS).then(
+							() => false,
+							() => false,
+						),
+					]);
+					if (!finished) {
+						ctx.ui?.notify("MCP servers are still connecting; their tools become available once connected.", "info");
+					}
+				}
+			}
+			const section = renderServersSection(
+				states
+					.filter((state) => !state.conflict)
+					.map((state) => ({ name: state.config.name, config: state.config, instructions: state.instructions })),
+			);
+			return section ? { systemPrompt: `${event.systemPrompt}\n\n${section}` } : undefined;
+		});
+
+		// A tool that reaches other tools waits for the servers it may reach: a codemode script
+		// for the servers it names (or all, when it searches), tool_search for every server.
+		// A direct MCP call waits only for its own server (pi).
+		extensionApi.on("tool_call", async (event, ctx) => {
+			const tool = extensionApi.getAllTools().find((candidate) => candidate.name === event.toolName);
+			if (!tool) return undefined;
+			const reach = tool.reachesTools?.(event.input);
+			const owner = toolOwners.get(event.toolName)?.split("\0", 1)[0];
+			const waiting =
+				reach !== undefined
+					? states.filter((state) => reachesServer(reach, state.config.name))
+					: states.filter((state) => state.config.name === owner);
+			await waitFor(waiting, ctx.signal);
+			return undefined;
+		});
+
 		extensionApi.on("session_shutdown", async () => {
 			// Registered tools stay (they resolve the live client per call); a later
-			// connect() reconnects without registering them again.
+			// connect() reconnects and registers them again.
+			sessionCtx = undefined;
 			await close();
 		});
 	};

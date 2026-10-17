@@ -1,0 +1,25 @@
+{
+	"name": "@yophon/tau-ext-tool-search",
+	"version": "0.2.0",
+	"description": "tool_search for tau: BM25 search over deferred tools, loading the matches (pure ES, pi 0.99.0)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-tool-search"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}

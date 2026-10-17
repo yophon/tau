@@ -16,6 +16,7 @@ const PURE_PACKAGES = [
 	{ dir: "kernel", external: [] },
 	{ dir: "ext-mcp-http", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-provider-anthropic", external: ["@yophon/tau-kernel"] },
+	{ dir: "ext-tool-search", external: ["@yophon/tau-kernel"] },
 ];
 
 const BANNED_PATTERNS = [

@@ -2223,8 +2223,8 @@ ${where(text)}`;
       for (const handler of [...this.handlers.before_provider_headers]) await handler(event, ctx);
       return event.headers;
     }
-    async notifyAgentSettled(aborted, ctx) {
-      await this.dispatch(this.handlers.agent_settled, { type: "agent_settled", aborted }, ctx);
+    async notifyAgentSettled(aborted2, ctx) {
+      await this.dispatch(this.handlers.agent_settled, { type: "agent_settled", aborted: aborted2 }, ctx);
     }
   };
 
@@ -4745,13 +4745,13 @@ ${detail}` : detail
         return { kind: "done", result };
       } catch (cause) {
         const error = toError(cause);
-        const aborted = signal?.aborted === true || cancelledByExtension;
-        const errorMessage = aborted ? void 0 : `${reason === "manual" ? "Compaction" : "Auto-compaction"} failed: ${error.message}`;
+        const aborted2 = signal?.aborted === true || cancelledByExtension;
+        const errorMessage = aborted2 ? void 0 : `${reason === "manual" ? "Compaction" : "Auto-compaction"} failed: ${error.message}`;
         await this.extensions?.notifySessionCompactFailed(
-          { reason, errorMessage, aborted, willRetry: false, fromExtension },
+          { reason, errorMessage, aborted: aborted2, willRetry: false, fromExtension },
           ctx
         );
-        return { kind: "failed", errorMessage, aborted, cancelledByExtension, error };
+        return { kind: "failed", errorMessage, aborted: aborted2, cancelledByExtension, error };
       }
     }
     /**
@@ -4831,16 +4831,16 @@ ${detail}` : detail
       if (this.runEntered) yield* this.settle(handle.signal.aborted);
     }
     /** agent_settled once the agent is idle; runs started from its handlers go to the host afterwards. */
-    async *settle(aborted) {
-      await this.notifySettled(aborted);
-      yield { type: "agent_settled", aborted };
+    async *settle(aborted2) {
+      await this.notifySettled(aborted2);
+      yield { type: "agent_settled", aborted: aborted2 };
       for (const start of this.deferredStarts.splice(0)) start();
     }
-    async notifySettled(aborted) {
+    async notifySettled(aborted2) {
       this.runEntered = false;
       this.settling = true;
       try {
-        await this.extensions?.notifyAgentSettled(aborted, this.extensionContext());
+        await this.extensions?.notifyAgentSettled(aborted2, this.extensionContext());
       } finally {
         this.settling = false;
       }
@@ -5580,6 +5580,7 @@ ${detail}` : detail
       this.name = "McpSessionExpiredError";
     }
   };
+  var GET_STREAM_RETRY_DELAYS_MS = [1e3, 2e3, 4e3];
   function contentType(response) {
     return response.headers?.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   }
@@ -5644,6 +5645,9 @@ ${detail}` : detail
       if (sessionId) this.sessionIdValue = sessionId;
       if (!isJsonRpcRequest(message)) {
         request.abort("settled");
+        if ("method" in message && message.method === "notifications/initialized" && this.options.openGetStream) {
+          void this.runGetStream();
+        }
         return;
       }
       const type = contentType(response);
@@ -5656,6 +5660,44 @@ ${detail}` : detail
         if (type === "application/json" || !this.emitSse(text)) this.emitJson(text);
       } finally {
         request.abort("settled");
+      }
+    }
+    /** Keep the GET stream open, reopening it with backoff when it drops (pi runGetStream). */
+    async runGetStream() {
+      for (let attempt = 0; !this.closed; attempt++) {
+        let delivered = false;
+        try {
+          const headers = { accept: "text/event-stream", ...this.options.headers };
+          if (this.protocolVersion !== void 0) headers["mcp-protocol-version"] = this.protocolVersion;
+          if (this.sessionIdValue !== void 0) headers["mcp-session-id"] = this.sessionIdValue;
+          const response = await this.options.platform.fetch(this.options.url, {
+            method: "GET",
+            headers,
+            signal: this.lifetime.signal
+          });
+          if (response.status === 405 || !response.ok || contentType(response) !== "text/event-stream") return;
+          const reader = response.body?.getReader();
+          if (!reader) return;
+          const decoder = this.options.platform.createUtf8Decoder();
+          const parser = new SseParser();
+          while (!this.closed) {
+            const { done, value } = await reader.read();
+            const events = done ? parser.flush() : value ? parser.push(decoder.decode(value)) : [];
+            for (const event of events) if (this.emitEventData(event.data)) delivered = true;
+            if (done) break;
+          }
+        } catch {
+        }
+        if (this.closed) return;
+        if (delivered) attempt = 0;
+        const delay = GET_STREAM_RETRY_DELAYS_MS[attempt];
+        const sleep = this.options.platform.sleep;
+        if (delay === void 0 || !sleep) return;
+        try {
+          await sleep(delay, this.lifetime.signal);
+        } catch {
+          return;
+        }
       }
     }
     async close() {
@@ -6162,6 +6204,123 @@ ${detail}` : detail
     return h.map((word) => word.toString(16).padStart(8, "0")).join("");
   }
 
+  // ../../../packages/ext-mcp-http/src/exposure.ts
+  function toolPatternRegExp(pattern) {
+    const source = pattern.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&")).join(".*");
+    return new RegExp(`^${source}$`);
+  }
+  function getMcpToolExposure(config, toolName) {
+    const overrides = config.toolExposure ?? {};
+    const exact = overrides[toolName];
+    if (exact !== void 0) return exact;
+    for (const [pattern, exposure] of Object.entries(overrides)) {
+      if (pattern.includes("*") && toolPatternRegExp(pattern).test(toolName)) return exposure;
+    }
+    return config.exposure ?? "direct";
+  }
+  function toToolExposure(exposure) {
+    return exposure === "codemode" ? "deferred" : exposure;
+  }
+  function configuredExposures(config) {
+    return /* @__PURE__ */ new Set([config.exposure ?? "direct", ...Object.values(config.toolExposure ?? {})]);
+  }
+  var CONTENT_BLOCK_SCHEMA = {
+    type: "object",
+    properties: {
+      type: { enum: ["text", "image", "audio", "resource_link", "resource"] },
+      text: { type: "string" },
+      data: { type: "string" },
+      mimeType: { type: "string" }
+    },
+    required: ["type"],
+    additionalProperties: true
+  };
+  var SCHEMA_DATA_KEYWORDS = /* @__PURE__ */ new Set(["const", "enum", "default", "examples"]);
+  var SCHEMA_MAP_KEYWORDS = /* @__PURE__ */ new Set([
+    "properties",
+    "patternProperties",
+    "dependentSchemas",
+    "dependencies",
+    "$defs",
+    "definitions"
+  ]);
+  function relocateSchema(schema, pointer) {
+    if (Array.isArray(schema)) return schema.map((item) => relocateSchema(item, pointer));
+    if (typeof schema !== "object" || schema === null) return schema;
+    const relocated = {};
+    for (const [key, value] of Object.entries(schema)) {
+      if (key === "$ref" && typeof value === "string" && (value === "#" || value.startsWith("#/"))) {
+        relocated[key] = `${pointer}${value.slice(1)}`;
+      } else if (SCHEMA_DATA_KEYWORDS.has(key)) {
+        relocated[key] = value;
+      } else if (SCHEMA_MAP_KEYWORDS.has(key) && typeof value === "object" && value !== null && !Array.isArray(value)) {
+        relocated[key] = Object.fromEntries(
+          Object.entries(value).map(([name, subschema]) => [name, relocateSchema(subschema, pointer)])
+        );
+      } else {
+        relocated[key] = relocateSchema(value, pointer);
+      }
+    }
+    return relocated;
+  }
+  function createMcpResultSchema(structuredContentSchema) {
+    return {
+      type: "object",
+      properties: {
+        content: { type: "array", items: CONTENT_BLOCK_SCHEMA },
+        structuredContent: structuredContentSchema ? relocateSchema(structuredContentSchema, "#/properties/structuredContent") : {},
+        isError: { type: "boolean" }
+      },
+      required: ["content"],
+      // Fields newer protocol versions add.
+      additionalProperties: true
+    };
+  }
+  var MAX_SERVER_DESCRIPTION_CHARS = 250;
+  var MAX_SERVERS_SECTION_CHARS = 4096;
+  function hasIndirectTools(config) {
+    const exposures = configuredExposures(config);
+    return exposures.has("codemode") || exposures.has("deferred");
+  }
+  function serversSectionIntro(reaches) {
+    let intro = "MCP servers whose tools are not declared to you.";
+    if (reaches.has("codemode")) intro += " Call the tools of `codemode` servers from codemode scripts.";
+    if (reaches.has("tool_search")) intro += " Load the tools of `tool_search` servers with `tool_search`.";
+    return intro;
+  }
+  function truncate(text, max) {
+    if (text.length <= max) return text;
+    return max <= 1 ? "" : `${text.slice(0, max - 1).trimEnd()}\u2026`;
+  }
+  function serverSummary(server) {
+    const text = server.config.description?.trim() || server.instructions || "";
+    return (text.split("\n", 1)[0] ?? "").trim();
+  }
+  function renderServersSection(servers) {
+    const listed = servers.filter((server) => hasIndirectTools(server.config)).sort((a, b) => a.name.localeCompare(b.name));
+    if (listed.length === 0) return void 0;
+    const reaches = listed.map(
+      (server) => configuredExposures(server.config).has("codemode") ? "codemode" : "tool_search"
+    );
+    const intro = serversSectionIntro(new Set(reaches));
+    const heads = listed.map((server, index) => `- ${mcpNamespace(server.name)} (${reaches[index]})`);
+    const omitted = (count) => count > 0 ? [`- \u2026 ${count} more server${count === 1 ? "" : "s"}; find their tools with searchTools()`] : [];
+    const size = (kept2) => [intro, ...heads.slice(0, kept2), ...omitted(listed.length - kept2)].join("\n").length;
+    let kept = listed.length;
+    while (kept > 0 && size(kept) > MAX_SERVERS_SECTION_CHARS) kept--;
+    const perServer = kept === 0 ? 0 : Math.min(MAX_SERVER_DESCRIPTION_CHARS, Math.floor((MAX_SERVERS_SECTION_CHARS - size(kept)) / kept) - 2);
+    const lines = listed.slice(0, kept).map((server, index) => {
+      const summary = perServer > 0 ? truncate(serverSummary(server), perServer) : "";
+      return summary ? `${heads[index]}: ${summary}` : heads[index];
+    });
+    return [intro, ...lines, ...omitted(listed.length - kept)].join("\n");
+  }
+  function reachesServer(reach, server) {
+    if (reach === "all") return true;
+    const namespace = mcpNamespace(server);
+    return reach.some((word) => word.includes(namespace));
+  }
+
   // ../../../packages/ext-mcp-http/src/result.ts
   var MCP_OUTPUT_MAX_BYTES = 20 * 1024;
   function toolOutput(result) {
@@ -6194,26 +6353,57 @@ ${block.resource.text}`);
 
   // ../../../packages/ext-mcp-http/src/servers.ts
   var DEFAULT_HANDSHAKE_TIMEOUT_MS = 1e4;
+  var DEFAULT_STARTUP_WAIT_MS = 1e4;
+  var CONNECT_RETRY_DELAYS_MS = [250, 1e3];
   function messageOf(cause) {
     return cause instanceof Error ? cause.message : String(cause);
+  }
+  function isTransientError(error) {
+    if (error instanceof McpHttpError) {
+      return error.status === 408 || error.status === 429 || error.status >= 500 && error.status !== 501;
+    }
+    return !(error instanceof McpError || error instanceof McpTimeoutError || error instanceof McpAbortError || error instanceof McpConnectionClosedError);
+  }
+  function aborted(signal) {
+    return new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
   }
   function createMcpServers(options) {
     const states = [];
     for (const config of options.servers) {
       const clash = states.find((state) => mcpNamespace(state.config.name) === mcpNamespace(config.name));
-      states.push(
-        clash ? { config, conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : { config }
-      );
+      states.push({
+        config,
+        tools: /* @__PURE__ */ new Set(),
+        ...clash ? { conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : {}
+      });
     }
     const toolOwners = /* @__PURE__ */ new Map();
+    const definitions = /* @__PURE__ */ new Map();
     const clients = /* @__PURE__ */ new Set();
     let generation = 0;
     let api;
+    let sessionCtx;
+    let waitedForStartup = false;
     const report = (status) => {
       options.onStatus?.(status);
       return status;
     };
-    const openClient = async (state, list) => {
+    const reportUnavailable = (server, error) => {
+      const message = `MCP server "${server}" unavailable: ${error}`;
+      if (sessionCtx?.ui) sessionCtx.ui.notify(message, "warning");
+      else options.reportUnavailable?.(message);
+    };
+    const namespaceOf = (state) => {
+      const description = state.config.description?.trim();
+      return {
+        name: mcpNamespace(state.config.name),
+        // describeNamespace("docs") finds mcp__docs.
+        aliases: [state.config.name],
+        ...description ? { description } : {},
+        ...state.instructions ? { instructions: state.instructions } : {}
+      };
+    };
+    const openOnce = async (state, list) => {
       const client = new McpClient({ ...options.clientInfo, platform: options.platform });
       clients.add(client);
       client.onClose(() => {
@@ -6223,6 +6413,10 @@ ${block.resource.text}`);
       try {
         const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
         await client.connect(options.createTransport(state.config), { timeoutMs });
+        client.onNotification("notifications/tools/list_changed", () => {
+          void refreshTools(state, client);
+        });
+        state.instructions = client.instructions;
         const tools = list ? await client.listTools({ timeoutMs }) : [];
         return { client, tools };
       } catch (error) {
@@ -6231,14 +6425,49 @@ ${block.resource.text}`);
         throw error;
       }
     };
+    const openClient = async (state, list) => {
+      const retries = state.config.url && options.platform.sleep ? CONNECT_RETRY_DELAYS_MS : [];
+      const startedIn = generation;
+      for (let attempt = 0; ; attempt++) {
+        try {
+          return await openOnce(state, list);
+        } catch (error) {
+          const delay = retries[attempt];
+          if (delay === void 0 || startedIn !== generation || !isTransientError(error)) throw error;
+          await options.platform.sleep?.(delay);
+        }
+      }
+    };
     const clientFor = async (state) => {
       if (state.client?.connectionState === "connected") return state.client;
       const { client } = await openClient(state, false);
       state.client = client;
       return client;
     };
+    const refreshTools = async (state, client) => {
+      await state.connecting;
+      if (state.client !== client || !api) return;
+      try {
+        const tools = await client.listTools({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS });
+        if (state.client === client) registerTools(api, state, tools);
+      } catch {
+      }
+    };
+    const activateReachingTools = (target, state) => {
+      const exposures = configuredExposures(state.config);
+      if (!exposures.has("codemode") && !exposures.has("deferred")) return;
+      const registered = new Set(target.getAllTools().map((tool) => tool.name));
+      const active = target.getActiveTools();
+      const wanted = [
+        ...exposures.has("codemode") && registered.has("codemode") ? ["codemode"] : [],
+        ...exposures.has("deferred") && registered.has("tool_search") ? ["tool_search"] : []
+      ].filter((name) => !active.includes(name));
+      if (wanted.length > 0) target.setActiveTools([...active, ...wanted]);
+    };
     const registerTools = (target, state, tools) => {
       const server = state.config.name;
+      const namespace = namespaceOf(state);
+      const previous = state.tools;
       const current = /* @__PURE__ */ new Set();
       const plain = [...new Set(tools.map((tool) => tool.name))].map((tool) => createMcpToolName(server, tool));
       for (const info of tools) {
@@ -6248,18 +6477,34 @@ ${block.resource.text}`);
           return existing !== void 0 && existing !== owner || current.has(candidate) || plain.indexOf(candidate) !== plain.lastIndexOf(candidate);
         });
         current.add(name);
-        if (toolOwners.get(name) === owner) continue;
         toolOwners.set(name, owner);
+        const definition = createTauTool(state, name, info, namespace);
+        definitions.set(name, definition);
         const destructive = state.config.riskFromAnnotations === true && info.annotations?.destructiveHint === true;
-        target.registerTool(createTauTool(state, name, info), destructive ? { risk: "high" } : void 0);
+        target.registerTool(definition, destructive ? { risk: "high" } : void 0);
       }
+      state.tools = current;
+      for (const name of previous) {
+        const definition = definitions.get(name);
+        if (!current.has(name) && definition) target.registerTool({ ...definition, exposure: "hidden" });
+      }
+      activateReachingTools(target, state);
     };
-    const createTauTool = (state, name, info) => ({
+    const createTauTool = (state, name, info, namespace) => ({
       name,
       description: info.description ?? `MCP tool ${info.name} from ${state.config.name}`,
       parameters: info.inputSchema,
+      outputSchema: createMcpResultSchema(info.outputSchema),
+      exposure: toToolExposure(getMcpToolExposure(state.config, info.name)),
+      namespace,
       execute: async (args, signal) => {
         if (signal?.aborted) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
+        if (!state.tools.has(name)) {
+          return {
+            content: [{ type: "text", text: `MCP tool "${state.config.name}/${info.name}" is no longer available.` }],
+            isError: true
+          };
+        }
         try {
           let result;
           try {
@@ -6274,7 +6519,12 @@ ${block.resource.text}`);
             MCP_OUTPUT_MAX_BYTES,
             options.saveFullOutput ?? (() => "[Full output not saved: this MCP client has no file access]")
           );
-          return { content: [{ type: "text", text }], isError: result.isError === true };
+          const { _meta: _ignored, ...scriptResult } = result;
+          return {
+            content: [{ type: "text", text }],
+            structuredContent: scriptResult,
+            isError: result.isError === true
+          };
         } catch (cause) {
           const text = cause instanceof McpAbortError ? "MCP tool call aborted" : messageOf(cause);
           return { content: [{ type: "text", text }], isError: true };
@@ -6285,7 +6535,7 @@ ${block.resource.text}`);
       const server = state.config.name;
       if (state.conflict) return Promise.resolve(report({ server, state: "offline", error: state.conflict }));
       if (state.client?.connectionState === "connected") {
-        return Promise.resolve({ server, state: "connected" });
+        return Promise.resolve({ server, state: "connected", toolCount: state.tools.size });
       }
       if (state.connecting) return state.connecting;
       const startedIn = generation;
@@ -6301,7 +6551,9 @@ ${block.resource.text}`);
           if (api) registerTools(api, state, tools);
           return report({ server, state: "connected", toolCount: tools.length });
         } catch (cause) {
-          return report({ server, state: "offline", error: messageOf(cause) });
+          const status = report({ server, state: "offline", error: messageOf(cause) });
+          if (startedIn === generation) reportUnavailable(server, status.error ?? "");
+          return status;
         }
       })().finally(() => {
         state.connecting = void 0;
@@ -6324,18 +6576,53 @@ ${block.resource.text}`);
       for (const state of states) state.client = void 0;
       await Promise.allSettled(closing.map((client) => client.close()));
     };
+    const waitFor = async (waiting, signal) => {
+      const pending = waiting.flatMap((state) => state.connecting ? [state.connecting] : []);
+      if (pending.length > 0) await Promise.race([Promise.all(pending), aborted(signal)]);
+    };
     const extension = (extensionApi) => {
       api = extensionApi;
-      extensionApi.on("session_start", async () => {
-        const statuses = await connect2();
-        const failures = statuses.filter((status) => status.state === "offline");
-        if (options.failOnUnavailable && failures.length > 0) {
-          throw new Error(
-            `MCP server(s) unavailable \u2014 ${failures.map((status) => `${status.server}: ${status.error}`).join("; ")}`
-          );
+      extensionApi.on("session_start", (_event, ctx) => {
+        sessionCtx = ctx;
+        waitedForStartup = false;
+        void connect2();
+      });
+      extensionApi.on("before_agent_start", async (event, ctx) => {
+        if (!waitedForStartup) {
+          waitedForStartup = true;
+          const direct = states.filter((state) => state.connecting && configuredExposures(state.config).has("direct"));
+          const sleep = options.platform.sleep;
+          if (direct.length > 0 && sleep) {
+            const finished = await Promise.race([
+              Promise.all(direct.map((state) => state.connecting)).then(() => true),
+              sleep(options.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS).then(
+                () => false,
+                () => false
+              )
+            ]);
+            if (!finished) {
+              ctx.ui?.notify("MCP servers are still connecting; their tools become available once connected.", "info");
+            }
+          }
         }
+        const section = renderServersSection(
+          states.filter((state) => !state.conflict).map((state) => ({ name: state.config.name, config: state.config, instructions: state.instructions }))
+        );
+        return section ? { systemPrompt: `${event.systemPrompt}
+
+${section}` } : void 0;
+      });
+      extensionApi.on("tool_call", async (event, ctx) => {
+        const tool = extensionApi.getAllTools().find((candidate) => candidate.name === event.toolName);
+        if (!tool) return void 0;
+        const reach = tool.reachesTools?.(event.input);
+        const owner = toolOwners.get(event.toolName)?.split("\0", 1)[0];
+        const waiting = reach !== void 0 ? states.filter((state) => reachesServer(reach, state.config.name)) : states.filter((state) => state.config.name === owner);
+        await waitFor(waiting, ctx.signal);
+        return void 0;
       });
       extensionApi.on("session_shutdown", async () => {
+        sessionCtx = void 0;
         await close();
       });
     };
@@ -6353,7 +6640,12 @@ ${block.resource.text}`);
       onStatus: options.onStatus,
       createTransport: (config) => {
         if (!config.url) throw new Error(`MCP server "${config.name}" must define url`);
-        return new StreamableHttpTransport({ url: config.url, platform: platform2, headers: config.headers });
+        return new StreamableHttpTransport({
+          url: config.url,
+          platform: platform2,
+          headers: config.headers,
+          openGetStream: options.serverNotifications === true
+        });
       }
     });
     return {

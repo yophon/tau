@@ -5,6 +5,12 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- ext-mcp / ext-mcp-http (P24d, pi 0.99.2): servers connect in the background at
+  `session_start` instead of blocking it; the first prompt waits up to 10 s for
+  servers with direct tools. An unavailable server is reported through
+  `ctx.ui.notify` (ext-mcp writes to stderr without a UI) instead of failing
+  `session_start`. Hosts that read tools right after `session_start` should await
+  `connect()` (ext-mcp-http) or the first prompt.
 - Kernel (P24b, pi 0.99.0): the active tool set is explicit, as in pi. Registering a
   `direct` or `model-only` tool activates it (unless `defaultActive: false`); other
   exposures never activate on registration. Resuming a session or navigating with
@@ -208,6 +214,21 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- New package `@yophon/tau-ext-tool-search` (P24d, pi 0.99.0–1.2.0): the
+  `tool_search` tool (registered inactive) ranks `codemode`/`deferred` tools with
+  BM25 and activates the matches for the next request; the activation is recorded
+  in the transcript. `Bm25Ranker`, `tokenize` and `createToolSearchDocument` are
+  exported for codemode's `searchTools()`.
+- ext-mcp / ext-mcp-http (P24d, pi 0.99.2–1.2.0): per-server `exposure` and
+  per-tool `toolExposure` (`direct` default, `codemode`, `deferred`, `hidden`),
+  `description`; tools carry a namespace (`mcp__<server>`, server instructions) and a
+  `CallToolResult` output schema, and return the whole result as
+  `structuredContent`. Servers with indirect tools are listed in an `mcp_servers`
+  system prompt section, and codemode/tool_search are activated for them. HTTP
+  connects retry twice on network errors and 408/429/5xx; `tools/list_changed`
+  re-registers a server's tools and withdraws dropped ones as hidden (over HTTP via
+  a GET stream: on in ext-mcp, `serverNotifications: true` in ext-mcp-http); a tool
+  that reaches a server still connecting waits for it.
 - Kernel (P24c, pi 0.99.0): tools can call tools. A tool's `execute` context has
   `executeTool(name, args, options?)` and `tools` (the callable set): the nested call
   runs through the same tool_call hooks, validation, policy and approval as a model

@@ -2,8 +2,9 @@
 // transports/streamable-http.ts, the subset tau uses). Each request is a POST;
 // the reply comes back as JSON or as an SSE stream on the same response.
 //
-// Deviations from pi, written down (D7): no server-to-client GET stream (no
-// consumer until tools/list_changed, P24d), no SSE resumption with
+// The server-to-client GET stream (server notifications such as
+// tools/list_changed) is opt-in (`openGetStream`): mobile hosts keep no idle
+// connection open. Deviations from pi, written down (D7): no SSE resumption with
 // Last-Event-ID, no DELETE on close (the server expires the session), no auth
 // provider (headers only, D24). Adapters without response headers (some
 // mini-program request APIs) are handled by sniffing the body.
@@ -42,7 +43,14 @@ export interface StreamableHttpTransportOptions {
 	platform: Platform;
 	/** Extra request headers, e.g. `{ Authorization: "Bearer <token>" }`. */
 	headers?: Record<string, string>;
+	/**
+	 * Keep a GET stream open for server notifications (tools/list_changed) once the
+	 * session is initialized; reopened up to 3 times when it drops (needs Platform.sleep).
+	 */
+	openGetStream?: boolean;
 }
+
+const GET_STREAM_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 
 function contentType(response: PlatformResponse): string | undefined {
 	return response.headers?.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
@@ -117,6 +125,10 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		// Notifications and responses are acknowledged (202) and carry no reply.
 		if (!isJsonRpcRequest(message)) {
 			request.abort("settled");
+			// The server-to-client stream may only open once the session is initialized (pi).
+			if ("method" in message && message.method === "notifications/initialized" && this.options.openGetStream) {
+				void this.runGetStream();
+			}
 			return;
 		}
 		const type = contentType(response);
@@ -130,6 +142,47 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			if (type === "application/json" || !this.emitSse(text)) this.emitJson(text);
 		} finally {
 			request.abort("settled");
+		}
+	}
+
+	/** Keep the GET stream open, reopening it with backoff when it drops (pi runGetStream). */
+	private async runGetStream(): Promise<void> {
+		for (let attempt = 0; !this.closed; attempt++) {
+			let delivered = false;
+			try {
+				const headers: Record<string, string> = { accept: "text/event-stream", ...this.options.headers };
+				if (this.protocolVersion !== undefined) headers["mcp-protocol-version"] = this.protocolVersion;
+				if (this.sessionIdValue !== undefined) headers["mcp-session-id"] = this.sessionIdValue;
+				const response = await this.options.platform.fetch(this.options.url, {
+					method: "GET",
+					headers,
+					signal: this.lifetime.signal,
+				});
+				// 405: the server offers no GET stream.
+				if (response.status === 405 || !response.ok || contentType(response) !== "text/event-stream") return;
+				const reader = response.body?.getReader();
+				if (!reader) return;
+				const decoder = this.options.platform.createUtf8Decoder();
+				const parser = new SseParser();
+				while (!this.closed) {
+					const { done, value } = await reader.read();
+					const events = done ? parser.flush() : value ? parser.push(decoder.decode(value)) : [];
+					for (const event of events) if (this.emitEventData(event.data)) delivered = true;
+					if (done) break;
+				}
+			} catch {
+				// A dropped stream is retried below; a closed transport ends the loop.
+			}
+			if (this.closed) return;
+			if (delivered) attempt = 0;
+			const delay = GET_STREAM_RETRY_DELAYS_MS[attempt];
+			const sleep = this.options.platform.sleep;
+			if (delay === undefined || !sleep) return;
+			try {
+				await sleep(delay, this.lifetime.signal);
+			} catch {
+				return;
+			}
 		}
 	}
 

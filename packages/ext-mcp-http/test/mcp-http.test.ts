@@ -21,12 +21,18 @@ interface RecordedRequest {
 
 type FetchHandler = (url: string, init: PlatformRequestInit | undefined) => Promise<PlatformResponse>;
 
+/** What the model sees of a tool result (scripts also get structuredContent, the CallToolResult). */
+function modelView(result: { content: unknown; isError?: boolean }): { content: unknown; isError?: boolean } {
+	return { content: result.content, isError: result.isError };
+}
+
 function fakePlatform(handler: FetchHandler): Platform {
 	return {
 		fetch: handler,
 		createUtf8Decoder: createIncrementalUtf8Decoder,
 		randomBytes: (length) => new Uint8Array(length),
-		sleep: () => new Promise(() => {}), // never fires unless a test overrides it
+		// Connect retry delays (≤ 1 s) elapse at once; request timeouts never fire unless a test overrides sleep.
+		sleep: (ms) => (ms <= 1_000 ? Promise.resolve() : new Promise(() => {})),
 	};
 }
 
@@ -187,9 +193,9 @@ test("tools/call flattens a JSON response and passes isError through", async () 
 	assert.ok(tool);
 
 	const okResult = await tool.execute({ text: "hi" });
-	assert.deepEqual(okResult, { content: [{ type: "text", text: "echo:hi" }], isError: false });
+	assert.deepEqual(modelView(okResult), { content: [{ type: "text", text: "echo:hi" }], isError: false });
 	const errResult = await tool.execute({ text: "boom", fail: true });
-	assert.deepEqual(errResult, { content: [{ type: "text", text: "echo:boom" }], isError: true });
+	assert.deepEqual(modelView(errResult), { content: [{ type: "text", text: "echo:boom" }], isError: true });
 });
 
 test("tools/call parses an SSE response split across chunks", async () => {
@@ -213,7 +219,7 @@ test("tools/call parses an SSE response split across chunks", async () => {
 	assert.ok(tool);
 
 	const result = await tool.execute({ text: "x" });
-	assert.deepEqual(result, { content: [{ type: "text", text: "streamed 中文" }], isError: false });
+	assert.deepEqual(modelView(result), { content: [{ type: "text", text: "streamed 中文" }], isError: false });
 });
 
 test("a JSON-RPC error becomes an isError tool result", async () => {
@@ -264,8 +270,10 @@ test("an unreachable server degrades silently and reconnects on the next connect
 test("session_start triggers connect when the host emits it", async () => {
 	const requests: RecordedRequest[] = [];
 	const platform = fakePlatform(scriptedHandler({ requests, tools: [ECHO_TOOL] }));
-	const { registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
+	const { handle, registry } = await loadExtension({ servers: [{ name: "srv", url: "http://mcp.test" }], platform });
 	await registry.notifySessionStart("startup", ctx);
+	// session_start connects in the background (P24d); connect() joins the attempt in flight.
+	await handle.connect();
 	assert.ok(registry.tools.get("mcp__srv__echo"));
 });
 
@@ -293,7 +301,7 @@ test("a 404 on tools/call re-handshakes once and replays the call", async () => 
 	assert.ok(tool);
 
 	const result = await tool.execute({});
-	assert.deepEqual(result, { content: [{ type: "text", text: "replayed" }], isError: false });
+	assert.deepEqual(modelView(result), { content: [{ type: "text", text: "replayed" }], isError: false });
 	assert.deepEqual(
 		requests.map((r) => r.message.method),
 		[
@@ -340,7 +348,7 @@ test("abort settles an in-flight tools/call as an isError result", async () => {
 	const preAborted = new AbortHandle();
 	preAborted.abort("early");
 	const early = await tool.execute({}, preAborted.signal);
-	assert.deepEqual(early, { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true });
+	assert.deepEqual(modelView(early), { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true });
 });
 
 test("handshake timeout via Platform.sleep reports offline with a timeout error", async () => {
@@ -387,7 +395,7 @@ test("degrades without response headers: sniffs JSON and SSE bodies", async () =
 	assert.ok(tool, "JSON handshake still parses without a content-type header");
 
 	const result = await tool.execute({});
-	assert.deepEqual(result, { content: [{ type: "text", text: "sniffed" }], isError: false });
+	assert.deepEqual(modelView(result), { content: [{ type: "text", text: "sniffed" }], isError: false });
 });
 
 test("a result over 20KB is cut in the middle, pi's format, no file in this client (P23e)", async () => {
@@ -407,4 +415,72 @@ test("a result over 20KB is cut in the middle, pi's format, no file in this clie
 	assert.match(text, /A+…\d+ chars truncated…B+/);
 	assert.ok(text.endsWith("[Full output not saved: this MCP client has no file access]"));
 	assert.ok(text.length < 21_000);
+});
+
+test("a connect that fails with HTTP 503 is retried twice (pi CONNECT_RETRY_DELAYS_MS)", async () => {
+	const requests: RecordedRequest[] = [];
+	const scripted = scriptedHandler({ requests, tools: [ECHO_TOOL] });
+	let failures = 2;
+	const platform = fakePlatform(async (url, init) => {
+		const message = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
+		if (message.method === "initialize" && failures > 0) {
+			failures--;
+			return statusResponse(503);
+		}
+		return scripted(url, init);
+	});
+	const statuses: HttpMcpStatus[] = [];
+	const { handle, registry } = await loadExtension({
+		servers: [{ name: "srv", url: "http://mcp.test" }],
+		platform,
+		onStatus: (status) => statuses.push(status),
+	});
+	await handle.connect();
+	assert.equal(failures, 0);
+	assert.equal(statuses.at(-1)?.state, "connected");
+	assert.ok(registry.tools.get("mcp__srv__echo"));
+});
+
+test("with serverNotifications, tools/list_changed on the GET stream withdraws a dropped tool", async () => {
+	const requests: RecordedRequest[] = [];
+	let tools = [ECHO_TOOL, { ...ECHO_TOOL, name: "extra" }];
+	const scripted = scriptedHandler({ requests, sessionId: "s", tools: [] });
+	let streams = 0;
+	let markListed: () => void = () => {};
+	const listed = new Promise<void>((resolve) => {
+		markListed = resolve;
+	});
+	const platform = fakePlatform(async (url, init) => {
+		if (init?.method === "GET") {
+			streams++;
+			if (streams > 1) return statusResponse(405);
+			// The stream opens right after initialized; announce the change once the tools were listed.
+			await listed;
+			tools = [ECHO_TOOL];
+			return sseResponse([
+				`data: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/list_changed" })}\n\n`,
+			]);
+		}
+		const message = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
+		if (message.method === "tools/list") {
+			const response = jsonResponse({ jsonrpc: "2.0", id: message.id, result: { tools } });
+			markListed();
+			return response;
+		}
+		return scripted(url, init);
+	});
+	const { handle, registry } = await loadExtension({
+		servers: [{ name: "srv", url: "http://mcp.test" }],
+		platform,
+		serverNotifications: true,
+	});
+	await handle.connect();
+	for (let i = 0; i < 50 && registry.tools.get("mcp__srv__extra")?.exposure !== "hidden"; i++) {
+		await new Promise((resolve) => setTimeout(resolve, 10));
+	}
+	assert.equal(registry.tools.get("mcp__srv__extra")?.exposure, "hidden");
+	assert.equal(registry.tools.get("mcp__srv__echo")?.exposure, "direct");
+	const withdrawn = await registry.tools.get("mcp__srv__extra")?.execute({ text: "x" });
+	assert.equal(withdrawn?.isError, true);
+	assert.match(toolResultText(withdrawn ?? { content: [] }), /no longer available/);
 });

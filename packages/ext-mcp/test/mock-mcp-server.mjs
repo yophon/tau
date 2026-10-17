@@ -10,7 +10,15 @@ const tools = [
 	{ name: "snapshot", description: "Return an image", inputSchema: { type: "object", properties: {} } },
 	{ name: "a-b", description: "Dash name", inputSchema: { type: "object", properties: {} } },
 	{ name: "a_b", description: "Underscore name", inputSchema: { type: "object", properties: {} } },
+	{
+		name: "stats",
+		description: "Structured result",
+		inputSchema: { type: "object", properties: {} },
+		outputSchema: { type: "object", properties: { count: { type: "number" } }, required: ["count"] },
+	},
+	{ name: "drop", description: "Withdraw the snapshot tool", inputSchema: { type: "object", properties: {} } },
 ];
+const initializeDelayMs = Number(process.env.MOCK_INITIALIZE_DELAY_MS ?? 0);
 
 function send(message) {
 	process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -26,6 +34,15 @@ function callTool(name, args) {
 			],
 		};
 	}
+	if (name === "stats") return { content: [{ type: "text", text: "{\"count\":3}" }], structuredContent: { count: 3 } };
+	if (name === "drop") {
+		tools.splice(
+			tools.findIndex((tool) => tool.name === "snapshot"),
+			1,
+		);
+		send({ jsonrpc: "2.0", method: "notifications/tools/list_changed" });
+		return { content: [{ type: "text", text: "dropped" }] };
+	}
 	return { content: [{ type: "text", text: name }] };
 }
 
@@ -35,7 +52,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	if (message.id === undefined) return; // notifications
 	switch (message.method) {
 		case "initialize":
-			send({
+			setTimeout(() => send({
 				jsonrpc: "2.0",
 				id: message.id,
 				result: {
@@ -44,7 +61,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 					serverInfo: { name: "tau-mock-mcp", version: "0.0.1" },
 					instructions: "Mock tools for tests.",
 				},
-			});
+			}), initializeDelayMs);
 			break;
 		case "tools/list":
 			send({ jsonrpc: "2.0", id: message.id, result: { tools } });
