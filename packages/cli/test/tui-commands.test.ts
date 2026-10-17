@@ -182,7 +182,7 @@ describe("P27 built-in commands", () => {
 		await h.submit(`/import ${sourcePath}`);
 		await h.waitFor((f) => f.includes("Replace the current session with"), "the confirmation");
 		await h.key("y");
-		await h.waitFor((f) => f.includes("Imported "), "the import");
+		await h.waitFor((f) => f.includes("Imported"), "the import");
 		assert.ok(h.frame().includes("IMPORTED_QUESTION"));
 		const meta = await h.controller.sessionStore?.getMetadata();
 		assert.equal(meta?.id, (await source.getMetadata()).id);
