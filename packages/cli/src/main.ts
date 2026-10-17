@@ -712,6 +712,7 @@ let hostTask: "compact" | "tree" | undefined;
 let hostTaskController: AbortController | undefined;
 /** Approval prompts say when the call came from another tool (a codemode script, P24c). */
 function nestedNote(request: ApprovalRequest): string {
+	if (request.subagent !== undefined) return `, called by subagent ${request.subagent}`;
 	return request.parentToolCallId === undefined ? "" : ", called by another tool";
 }
 

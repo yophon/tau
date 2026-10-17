@@ -286,8 +286,8 @@ test("--tools narrows the declared built-in tools (P23e)", async () => {
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "ls"],
-				"nope is not a tool; read and ls survive",
+				["read", "ls", "subagent"],
+				"nope is not a tool; read and ls survive; --tools narrows built-in coding tools only",
 			);
 		} finally {
 			await mock.close();
@@ -342,19 +342,10 @@ test("untrusted project settings and skills are ignored headless; a broken exten
 	});
 });
 
-test("project extension package can register the subagent task tool", async () => {
+test("the built-in subagent tool delegates to a child agent (P26b)", async () => {
 	await withSandbox(async ({ cwd, home }) => {
-		await mkdir(join(cwd, ".tau", "extensions"), { recursive: true });
-		const subagentsUrl = new URL("../../ext-subagents/src/index.ts", import.meta.url).href;
-		await writeFile(
-			join(cwd, ".tau", "extensions", "subagents.ts"),
-			`export { default } from ${JSON.stringify(subagentsUrl)};\n`,
-		);
-		await mkdir(join(home, ".tau"), { recursive: true });
-		await writeFile(join(home, ".tau", "trust.json"), JSON.stringify({ trusted: { [cwd]: true } }));
-
 		const mock = await startMockOpenAI([
-			() => mockToolCallTurn("task", { description: "delegate", prompt: "child prompt" }),
+			() => mockToolCallTurn("subagent", { task: "child prompt" }),
 			() => mockTextTurn("child result"),
 			(request) => {
 				const messages = request.messages as { role: string; content: string | null }[];
@@ -826,7 +817,7 @@ test("read-only mode keeps write/edit/bash off the request wire entirely", async
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "grep", "find", "ls"],
+				["read", "grep", "find", "ls", "subagent"],
 			);
 		} finally {
 			await mock.close();

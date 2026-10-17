@@ -248,6 +248,7 @@ export {
 	type PolicyDecision,
 	type RiskLevel,
 	resolvePolicyAction,
+	stricterMode,
 	type ToolPolicy,
 	type ToolPolicyCall,
 } from "./policy.ts";

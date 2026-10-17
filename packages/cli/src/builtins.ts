@@ -1,11 +1,13 @@
 // Extensions the CLI loads before any user or project extension (P24e), as pi
 // loads its built-in extensions: tool_search and codemode, both registered
 // inactive (`--tools +codemode`, `--tools +tool_search`, or an MCP server with
-// codemode/deferred exposure activates them), and the system prompt's tool line.
+// codemode/deferred exposure activates them), the system prompt's tool line, and
+// (P26b) the subagent tool.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
+import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import type { Agent, Extension, ToolInfo } from "@yophon/tau-kernel";
 
@@ -105,5 +107,7 @@ export function builtinExtensions(): Extension[] {
 			getMode: () => state.codemode.mode,
 			getInlineBudget: () => state.codemode.inlineBudget,
 		}),
+		// P26b: subagents (single, parallel, chain, background) over agent definitions; active by default.
+		createSubagentsExtension(),
 	];
 }

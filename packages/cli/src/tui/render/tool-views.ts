@@ -188,6 +188,37 @@ const RENDERERS: Record<string, Renderer> = {
 		return { head: `codemode(${codeLines} line${codeLines === 1 ? "" : "s"} of JavaScript)`, body };
 	},
 
+	subagent: (tool, verbose) => {
+		const list = (field: string): Array<{ agent: string; task: string }> =>
+			Array.isArray(tool.args[field])
+				? (tool.args[field] as unknown[]).map((item) => {
+						const step = (item ?? {}) as Record<string, unknown>;
+						return {
+							agent: typeof step.agent === "string" && step.agent !== "" ? step.agent : "worker",
+							task: typeof step.task === "string" ? step.task : "",
+						};
+					})
+				: [];
+		const tasks = list("tasks");
+		const chain = list("chain");
+		const agent = str(tool.args, "agent") || "worker";
+		const what =
+			tasks.length > 0
+				? `${tasks.length} in parallel: ${tasks.map((step) => step.agent).join(", ")}`
+				: chain.length > 0
+					? `chain: ${chain.map((step) => step.agent).join(" → ")}`
+					: `${agent}: ${firstLine(str(tool.args, "task"), 60)}`;
+		const head = `subagent(${what})${tool.args.background === true ? " · background" : ""}`;
+		if (tool.status === "error") return { head, body: errorBody(tool, verbose) };
+		// While running: the children's tool calls, one line each; then the answer's first lines.
+		if (tool.result === undefined) return { head, body: tail(outputLines(tool), verbose ? 30 : 6) };
+		const answer = (tool.result ?? "").trim().split("\n");
+		const shown = answer.slice(0, verbose ? 60 : 8).map((line) => plainLine(line, { dim: true }));
+		if (answer.length > shown.length)
+			shown.push(plainLine(`… ${answer.length - shown.length} more lines`, { dim: true }));
+		return { head, body: shown };
+	},
+
 	tool_search: (tool, verbose) => ({
 		head: `tool_search(${firstLine(str(tool.args, "query"), 60)})`,
 		body: tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? 30 : 3),

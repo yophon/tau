@@ -1,3 +1,4 @@
+import type { AgentEvent } from "./agent.ts";
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { CompactionPreparation, CompactionResult, ContextUsageEstimate } from "./compaction.ts";
 import { TauError, toError } from "./errors.ts";
@@ -15,7 +16,7 @@ import type {
 import type { ExecuteToolOptions, ToolCallOutcome } from "./nested-calls.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
-import type { RiskLevel } from "./policy.ts";
+import type { PermissionMode, RiskLevel } from "./policy.ts";
 import { getCurrentSystemMessage, type SessionProjection } from "./projection.ts";
 import type { SessionEntry } from "./session.ts";
 import { assertToolSchema, type Tool, type ToolInfo, type ToolResult } from "./tools.ts";
@@ -60,9 +61,25 @@ export interface ExtensionCapabilities {
 
 export interface AgentSpawnOptions {
 	systemPrompt?: string;
+	/** Appended to the child's system prompt (the parent's unless systemPrompt replaces it), after a blank line. */
+	appendSystemPrompt?: string;
 	tools?: Tool[];
+	/**
+	 * Pick the child's tools by name from every tool the parent has registered (base,
+	 * extension and MCP tools), in this order; unknown names are skipped. `tools` wins.
+	 */
+	toolNames?: string[];
 	initialMessages?: AgentMessage[];
 	maxTurnsPerPrompt?: number;
+	/** Another model for the child (P26b). */
+	model?: string;
+	thinkingLevel?: ThinkingLevel;
+	/** The child runs in the stricter of this and the parent's mode: a child can never be more permissive. */
+	permissionMode?: PermissionMode;
+	/** Names the child in approval requests (ApprovalRequest.subagent). */
+	label?: string;
+	/** Every event the child emits, for progress display. */
+	onEvent?: (event: AgentEvent) => void;
 }
 
 export interface AgentRunResult {

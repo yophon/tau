@@ -48,6 +48,17 @@ export interface ApprovalRequest {
 	reason?: string;
 	/** Set for a call another tool made (ctx.executeTool), e.g. from a codemode script. */
 	parentToolCallId?: string;
+	/** The subagent that made the call (AgentSpawnOptions.label, P26b). */
+	subagent?: string;
+}
+
+/** Modes from strictest to most permissive. */
+const MODE_ORDER: readonly PermissionMode[] = ["read-only", "supervised", "autonomous", "bypass"];
+
+/** The stricter of two permission modes (a subagent never outranks its parent). */
+export function stricterMode(a: PermissionMode, b: PermissionMode | undefined): PermissionMode {
+	if (b === undefined) return a;
+	return MODE_ORDER.indexOf(b) < MODE_ORDER.indexOf(a) ? b : a;
 }
 
 /**

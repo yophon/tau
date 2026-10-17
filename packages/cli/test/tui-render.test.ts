@@ -458,3 +458,48 @@ describe("P26a tool views", () => {
 		assert.ok(approval.includes("···") && approval.includes("+ e"));
 	});
 });
+
+describe("P26b subagent view", () => {
+	it("names the agents and shows progress while running, the answer when done", () => {
+		const running = toolView(
+			tool({
+				name: "subagent",
+				status: "running",
+				args: { tasks: [{ agent: "scout", task: "a" }, { task: "b" }] },
+				output: "[1/2 scout] ● grep(auth)\n[2/2 worker] ● read(src/a.ts)\n",
+			}),
+			false,
+		);
+		assert.equal(running.head, "subagent(2 in parallel: scout, worker)");
+		assert.deepEqual(texts(running.body), ["[1/2 scout] ● grep(auth)", "[2/2 worker] ● read(src/a.ts)"]);
+		const done = toolView(
+			tool({
+				name: "subagent",
+				args: { agent: "reviewer", task: "review the diff", background: true },
+				result: "## Summary\nLooks good",
+			}),
+			false,
+		);
+		assert.equal(done.head, "subagent(reviewer: review the diff) · background");
+		assert.deepEqual(texts(done.body), ["## Summary", "Looks good"]);
+		assert.equal(
+			toolView(
+				tool({
+					name: "subagent",
+					args: {
+						chain: [
+							{ agent: "scout", task: "x" },
+							{ agent: "planner", task: "y" },
+						],
+					},
+				}),
+				false,
+			).head,
+			"subagent(chain: scout → planner)",
+		);
+		const approval = texts(
+			approvalBody({ toolCallId: "1", toolName: "bash", args: { command: "ls" }, risk: "medium", subagent: "scout" }),
+		);
+		assert.equal(approval.at(-1), "called by subagent scout");
+	});
+});

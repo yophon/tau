@@ -57,7 +57,13 @@ import {
 	type OpenAICompatConfig,
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
-import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
+import {
+	type ApprovalRequest,
+	createDefaultPolicy,
+	type PermissionMode,
+	stricterMode,
+	type ToolPolicy,
+} from "./policy.ts";
 import {
 	buildContextEntries,
 	buildSessionProjection,
@@ -1026,6 +1032,19 @@ export class Agent {
 					},
 				])
 			: undefined;
+		const registered = this.currentTools();
+		const tools =
+			options.tools ??
+			(options.toolNames
+				? options.toolNames.map((name) => registered.get(name)).filter((tool): tool is Tool => tool !== undefined)
+				: this.baseTools);
+		const basePrompt = options.systemPrompt ?? this.systemPrompt;
+		const systemPrompt =
+			options.appendSystemPrompt === undefined
+				? basePrompt
+				: [basePrompt, options.appendSystemPrompt].filter((part) => part !== undefined && part !== "").join("\n\n");
+		const parentApproval = this.onApproval;
+		const label = options.label;
 		const child = new Agent({
 			extensions: guards,
 			retry: this.retrySettings,
@@ -1033,8 +1052,8 @@ export class Agent {
 			config: this.config,
 			transport: this.transport,
 			platform: this.platform,
-			systemPrompt: options.systemPrompt ?? this.systemPrompt,
-			tools: options.tools ?? this.baseTools,
+			systemPrompt,
+			tools,
 			ui: this.ui,
 			capabilities: this.capabilities,
 			initialMessages: options.initialMessages,
@@ -1043,19 +1062,24 @@ export class Agent {
 			followUpMode: this.followUpQueue.mode,
 			compaction: this.compactionSettings,
 			// Subagents inherit the permission stance — spawning a child must not
-			// be a policy escape hatch.
-			permissionMode: this.permissionMode,
+			// be a policy escape hatch; a spawn may only make it stricter (P26b).
+			permissionMode: stricterMode(this.permissionMode, options.permissionMode),
 			policy: this.policy,
-			onApproval: this.onApproval,
+			onApproval:
+				parentApproval && label !== undefined
+					? (request) => parentApproval({ ...request, subagent: label })
+					: parentApproval,
 			// The child's calls are billed like the parent's (D19).
 			pricing: this.pricing,
-			thinkingLevel: this.currentThinkingLevel,
+			thinkingLevel: options.thinkingLevel ?? this.currentThinkingLevel,
 			toolExecution: this.toolExecution,
 			preflightLock: this.preflightLock,
 		});
+		if (options.model !== undefined) child.setModel(options.model);
 		let text = "";
 		let lastAssistantText = "";
 		for await (const event of child.prompt(prompt, signal)) {
+			options.onEvent?.(event);
 			if (event.type === "text_delta") text += event.delta;
 			if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
 		}
