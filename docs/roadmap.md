@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-16（P23 完成；**当前工作 = 发 0.4.0，然后 P24**）
+> 最后更新：2026-10-16（P23 完成；P24 规格书确认；**当前工作 = P24 实施**；0.4.0 暂缓发布，P24 后与 P22–P24 一起发）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -234,6 +234,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 **完成记录**：全量 357 个测试，354 通过、3 跳过（Windows 上本来就跳过的 SIGINT，加上新增的 kill -9 与 0600 权限测试，CI Linux 跑）；新增 run-slot、loop-steps、registry、wire-strict 四个测试文件与若干 e2e。23a 运行槽与取消（2eaea0e）；23b 循环按 pi runLoop 重排、续跑与 settle 边界（dd3004b）、ToolResult 收敛与出入口（d14e11f）、工具批拆到 tool-batch.ts（b3a08a2）；23c 扩展注册 fail-closed 与信任门（363ae06）；23d 严格 Chat Completions 与 transport 缝（e9db42b）；23e 宿主与扩展包收尾。真实 DeepSeek：smoke:dialects（含摘要请求）PASS，CLI `-p` 工具调用与 `--continue` 正常。偏差见规格书「实施记录」，主要两条：`agent-loop.ts` 未拆（循环留在 agent.ts、按 pi 步骤组织）；轮中输入命中扩展命令时拒绝排队（照抄 pi）。债 #11、#12、#14、#16 已销账，#13 解除阻断。
 
 ## Phase 24 ⬜ PTC 与 codemode
+
+规格书：[specs/phase-24-ptc.md](specs/phase-24-ptc.md)（2026-10-16 确认，五步 24a–24e）。
 
 输入：附录 A 中阶段为 P24 的 28 条。第 0 步把两个 MCP 扩展收敛到一个纯 ES 核心并退役官方 SDK；内核只加 `ctx.executeTool` 嵌套调用门面、`Tool.outputSchema` 与 `structuredContent`、exposure/namespace 数据字段；QuickJS 沙箱留在扩展包，精确钉版 `@earendil-works/pi-codemode`；纳入 tool_search；MCP 工具名 `mcp__<server>__<tool>`。之后的第一个宿主维护阶段升级 pi-tui（D23 解耦）。
 
