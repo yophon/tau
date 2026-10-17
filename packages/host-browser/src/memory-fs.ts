@@ -90,6 +90,11 @@ export class BrowserMemoryFileSystem implements FileSystem {
 		return node.content;
 	}
 
+	/** The memory FS stores text, so binary reads return its UTF-8 bytes. */
+	async readBinaryFile(path: string): Promise<Uint8Array> {
+		return new TextEncoder().encode(await this.readTextFile(path));
+	}
+
 	async writeTextFile(path: string, content: string): Promise<void> {
 		const resolved = this.resolvePath(path);
 		if (resolved === "/") throw new FileError("is_directory", "Cannot write root as a file", resolved);

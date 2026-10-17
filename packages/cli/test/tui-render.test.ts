@@ -408,3 +408,53 @@ describe("layout glyphs", () => {
 		}
 	});
 });
+
+describe("P26a tool views", () => {
+	it("grep shows the match count and the first lines; find the file count; ls the entry count", () => {
+		const grep = toolView(
+			tool({
+				name: "grep",
+				args: { pattern: "alpha" },
+				result:
+					"a.ts:1: alpha\nb.ts:2: alpha\nc.ts:3: alpha\nd.ts:4: alpha\n\n[4 matches limit reached. Use limit=8 for more, or refine pattern]",
+			}),
+			false,
+		);
+		assert.equal(grep.head, 'grep("alpha")');
+		assert.deepEqual(texts(grep.body), [
+			"4 matches",
+			"a.ts:1: alpha",
+			"b.ts:2: alpha",
+			"c.ts:3: alpha",
+			"… 1 more lines",
+		]);
+		assert.deepEqual(
+			texts(toolView(tool({ name: "grep", args: { pattern: "x" }, result: "No matches found" }), false).body),
+			["no matches"],
+		);
+		const find = toolView(tool({ name: "find", args: { pattern: "*.ts", path: "src" }, result: "a.ts\nb.ts" }), false);
+		assert.equal(find.head, "find(*.ts, src)");
+		assert.deepEqual(texts(find.body), ["2 files", "a.ts", "b.ts"]);
+		assert.deepEqual(texts(toolView(tool({ name: "ls", args: {}, result: "a/\nb.txt" }), false).body), ["2 entries"]);
+	});
+
+	it("edit with edits[] sums the stats and shows every diff when expanded", () => {
+		const block = tool({
+			name: "edit",
+			args: {
+				path: "a.ts",
+				edits: [
+					{ oldText: "a", newText: "b" },
+					{ oldText: "c\nd", newText: "e" },
+				],
+			},
+		});
+		assert.deepEqual(texts(toolView(block, false).body), ["+2 -3 in 2 places"]);
+		const expanded = texts(toolView(block, true).body);
+		assert.ok(
+			expanded.includes("- a") && expanded.includes("+ b") && expanded.includes("···") && expanded.includes("+ e"),
+		);
+		const approval = texts(approvalBody({ toolCallId: "1", toolName: "edit", args: block.args, risk: "medium" }));
+		assert.ok(approval.includes("···") && approval.includes("+ e"));
+	});
+});

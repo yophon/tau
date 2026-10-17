@@ -5,9 +5,8 @@
  * argument cannot push the options off the screen. Pure.
  */
 import type { ApprovalRequest } from "@yophon/tau-kernel";
-import { renderDiff } from "./diff.ts";
 import { plainLine, type StyledLine, span } from "./spans.ts";
-import { displayToolName } from "./tool-views.ts";
+import { displayToolName, editDiff, editPairs } from "./tool-views.ts";
 
 const MAX_LINES = 20;
 
@@ -40,7 +39,7 @@ export function approvalBody(request: ApprovalRequest): StyledLine[] {
 			break;
 		case "edit":
 			lines.push(plainLine(str(args, "path"), { underline: true }));
-			lines.push(...cap(renderDiff(str(args, "oldText"), str(args, "newText"))));
+			lines.push(...cap(editDiff(editPairs(args))));
 			break;
 		case "write": {
 			const content = str(args, "content");

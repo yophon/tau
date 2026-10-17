@@ -1,5 +1,6 @@
 export { AbortHandle } from "./abort.ts";
 export { Agent, type AgentEvent, type AgentOperation, type AgentOptions, type QueueMode } from "./agent.ts";
+export { encodeBase64 } from "./base64.ts";
 export {
 	BRANCH_SUMMARY_MAX_TOKENS,
 	BRANCH_SUMMARY_PREAMBLE,
@@ -14,6 +15,7 @@ export {
 } from "./branch.ts";
 export type { FileInfo, FileKind, FileSystem, Shell, ShellExecResult } from "./capabilities.ts";
 export {
+	applyEdits,
 	BASH_STRUCTURED_OUTPUT_MAX_BYTES,
 	createCodingTools,
 	limitOutputBytes,
@@ -279,6 +281,14 @@ export {
 	retryAssistantCall,
 	retryDelayMs,
 } from "./retry.ts";
+export {
+	createFindTool,
+	createGrepTool,
+	createLsTool,
+	globMatcher,
+	globToRegExp,
+	parseGitignore,
+} from "./search-tools.ts";
 export {
 	type ContextEditableContent,
 	type ForkOptions,

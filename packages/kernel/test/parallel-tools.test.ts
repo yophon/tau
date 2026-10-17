@@ -259,7 +259,7 @@ test("write tool serializes same-file mutations and interleaves different files"
 		stat: async (path) => ({ path, name: path, kind: "file" as const, size: 0, mtimeMs: 0 }),
 		remove: async () => undefined,
 	};
-	const [_read, write] = createCodingTools({ fs });
+	const write = createCodingTools({ fs }).find((tool) => tool.name === "write") as Tool;
 	const first = write.execute({ path: "same.txt", content: "one" });
 	const second = write.execute({ path: "same.txt", content: "two" });
 	const other = write.execute({ path: "other.txt", content: "three" });

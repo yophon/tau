@@ -141,7 +141,7 @@ test("read-only: mutating tools are denied by the matrix even when registered", 
 	assert.match(toolResultOutputs(events)[0], /^Denied by policy: /);
 });
 
-test("createCodingTools read-only mode registers only the read tool", () => {
+test("createCodingTools read-only mode registers only the reading tools", () => {
 	const fs = {
 		cwd: "/",
 		readTextFile: async () => "",
@@ -156,11 +156,11 @@ test("createCodingTools read-only mode registers only the read tool", () => {
 	const caps = { fs: fs as any, shell: shell as any };
 	assert.deepEqual(
 		createCodingTools(caps, { mode: "read-only" }).map((tool) => tool.name),
-		["read"],
+		["read", "grep", "find", "ls"],
 	);
 	assert.deepEqual(
 		createCodingTools(caps).map((tool) => tool.name),
-		["read", "write", "edit", "bash"],
+		["read", "grep", "find", "ls", "write", "edit", "bash"],
 	);
 });
 

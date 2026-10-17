@@ -127,7 +127,7 @@ const PATH_PROBE_KEYS = ["path", "file_path", "file", "filename", "dest", "targe
 /** Argument keys probed for the command text on bash-shaped calls. */
 const COMMAND_PROBE_KEYS = ["command", "cmd", "script"] as const;
 
-const READ_TOOLS = new Set(["read", "listDir"]);
+const READ_TOOLS = new Set(["read", "listDir", "grep", "find", "ls"]);
 const WRITE_TOOLS = new Set(["write", "edit"]);
 const BASH_TOOLS = new Set(["bash"]);
 

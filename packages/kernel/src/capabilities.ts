@@ -19,6 +19,8 @@ export interface FileInfo {
 export interface FileSystem {
 	readonly cwd: string;
 	readTextFile(path: string): Promise<string>;
+	/** Raw bytes (P26a: read returns images). Optional; hosts without it cannot read images. */
+	readBinaryFile?(path: string): Promise<Uint8Array>;
 	writeTextFile(path: string, content: string): Promise<void>;
 	appendFile(path: string, content: string): Promise<void>;
 	listDir(path: string): Promise<FileInfo[]>;

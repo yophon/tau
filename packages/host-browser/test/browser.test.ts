@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Agent, createCodingTools, messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import {
+	Agent,
+	createCodingTools,
+	messageText,
+	restoreSession,
+	SessionRecorder,
+	toolResultText,
+} from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, seededRandomBytes, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import {
 	BrowserMemoryFileSystem,
@@ -55,7 +62,7 @@ test("browser host fs tools run an agent loop without registering bash", async (
 	const tools = createCodingTools({ fs });
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
-		["read", "write", "edit"],
+		["read", "grep", "find", "ls", "write", "edit"],
 	);
 
 	const platform = fakePlatform([
@@ -116,12 +123,19 @@ class MockFileHandle {
 		this.content = content;
 	}
 
-	async getFile(): Promise<{ size: number; lastModified: number; text(): Promise<string> }> {
+	async getFile(): Promise<{
+		size: number;
+		lastModified: number;
+		text(): Promise<string>;
+		arrayBuffer(): Promise<ArrayBuffer>;
+	}> {
 		const content = this.content;
+		const bytes = new TextEncoder().encode(content);
 		return {
-			size: new TextEncoder().encode(content).byteLength,
+			size: bytes.byteLength,
 			lastModified: 1,
 			text: async () => content,
+			arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer,
 		};
 	}
 
@@ -172,3 +186,17 @@ class MockDirectoryHandle {
 		yield* this.entries.values();
 	}
 }
+
+test("grep, find and ls run on the browser memory filesystem (P26a)", async () => {
+	const fs = new BrowserMemoryFileSystem("/app");
+	await fs.writeTextFile("src/a.ts", "export const alpha = 1;\n");
+	await fs.writeTextFile("src/b.ts", "// beta\n");
+	await fs.writeTextFile(".gitignore", "build/\n");
+	await fs.writeTextFile("build/out.ts", "alpha\n");
+	const tools = new Map(createCodingTools({ fs }).map((tool) => [tool.name, tool]));
+	const run = async (name: string, args: Record<string, unknown>) =>
+		toolResultText(await tools.get(name)!.execute(args));
+	assert.equal(await run("grep", { pattern: "alpha" }), "src/a.ts:1: export const alpha = 1;");
+	assert.equal(await run("find", { pattern: "*.ts" }), "src/a.ts\nsrc/b.ts");
+	assert.equal(await run("ls", {}), ".gitignore\nbuild/\nsrc/");
+});

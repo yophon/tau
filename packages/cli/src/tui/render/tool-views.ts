@@ -52,6 +52,42 @@ function errorBody(tool: ToolBlock, verbose: boolean): StyledLine[] {
 
 type Renderer = (tool: ToolBlock, verbose: boolean) => ToolView;
 
+export interface EditPair {
+	oldText: string;
+	newText: string;
+}
+
+/** An edit call's replacements: `edits[]` (pi 1.x) or the single oldText/newText pair. */
+export function editPairs(args: Record<string, unknown>): EditPair[] {
+	if (Array.isArray(args.edits)) {
+		return args.edits.map((item) => {
+			const edit = (item ?? {}) as Record<string, unknown>;
+			return {
+				oldText: typeof edit.oldText === "string" ? edit.oldText : "",
+				newText: typeof edit.newText === "string" ? edit.newText : "",
+			};
+		});
+	}
+	return [{ oldText: str(args, "oldText"), newText: str(args, "newText") }];
+}
+
+/** The diffs of all replacements, separated by a dim marker. */
+export function editDiff(edits: readonly EditPair[]): StyledLine[] {
+	const lines: StyledLine[] = [];
+	edits.forEach((edit, index) => {
+		if (index > 0) lines.push(plainLine("···", { dim: true, color: "cyan" }));
+		lines.push(...renderDiff(edit.oldText, edit.newText));
+	});
+	return lines;
+}
+
+/** Result lines without the trailing "[limit reached ...]" notice. */
+function resultLines(tool: ToolBlock): string[] {
+	const lines = outputLines(tool);
+	while (lines.length > 0 && (/^\[.*\]$/.test(lines.at(-1) ?? "") || lines.at(-1) === "")) lines.pop();
+	return lines;
+}
+
 const RENDERERS: Record<string, Renderer> = {
 	read: (tool, verbose) => {
 		const range =
@@ -81,13 +117,55 @@ const RENDERERS: Record<string, Renderer> = {
 	},
 
 	edit: (tool, verbose) => {
-		const oldText = str(tool.args, "oldText");
-		const newText = str(tool.args, "newText");
+		const edits = editPairs(tool.args);
 		const view = { head: `edit(${str(tool.args, "path")})`, body: [] as StyledLine[] };
 		if (tool.status === "error") return { ...view, body: errorBody(tool, verbose) };
-		if (verbose) return { ...view, body: renderDiff(oldText, newText) };
-		const { add, del } = diffStat(diffStrings(oldText, newText));
-		return { ...view, body: [[span(`+${add} `, { color: "green" }), span(`-${del}`, { color: "red" })]] };
+		if (verbose) return { ...view, body: editDiff(edits) };
+		let add = 0;
+		let del = 0;
+		for (const edit of edits) {
+			const stat = diffStat(diffStrings(edit.oldText, edit.newText));
+			add += stat.add;
+			del += stat.del;
+		}
+		const where = edits.length > 1 ? [span(` in ${edits.length} places`, { dim: true })] : [];
+		return { ...view, body: [[span(`+${add} `, { color: "green" }), span(`-${del}`, { color: "red" }), ...where]] };
+	},
+
+	grep: (tool, verbose) => {
+		const title = `grep("${firstLine(str(tool.args, "pattern"), 50)}"${tool.args.path ? `, ${str(tool.args, "path")}` : ""})`;
+		if (tool.status === "error") return { head: title, body: errorBody(tool, verbose) };
+		if (tool.status !== "ok") return { head: title, body: [] };
+		const lines = resultLines(tool);
+		const matches = lines.filter((line) => /^.+:\d+: /.test(line)).length;
+		if (matches === 0) return { head: title, body: [plainLine("no matches", { dim: true })] };
+		return {
+			head: title,
+			body: [
+				plainLine(`${matches} match${matches === 1 ? "" : "es"}`, { dim: true }),
+				...head(lines, verbose ? 50 : 3),
+			],
+		};
+	},
+
+	find: (tool, verbose) => {
+		const view = `find(${str(tool.args, "pattern")}${tool.args.path ? `, ${str(tool.args, "path")}` : ""})`;
+		if (tool.status === "error") return { head: view, body: errorBody(tool, verbose) };
+		if (tool.status !== "ok") return { head: view, body: [] };
+		const lines = resultLines(tool).filter((line) => line !== "No files found matching pattern");
+		const body = [plainLine(`${lines.length} file${lines.length === 1 ? "" : "s"}`, { dim: true })];
+		if (lines.length > 0) body.push(...head(lines, verbose ? 50 : 3));
+		return { head: view, body };
+	},
+
+	ls: (tool, verbose) => {
+		const view = `ls(${str(tool.args, "path") || "."})`;
+		if (tool.status === "error") return { head: view, body: errorBody(tool, verbose) };
+		if (tool.status !== "ok") return { head: view, body: [] };
+		const lines = resultLines(tool).filter((line) => line !== "(empty directory)");
+		const body = [plainLine(`${lines.length} entr${lines.length === 1 ? "y" : "ies"}`, { dim: true })];
+		if (verbose) body.push(...head(lines, 50));
+		return { head: view, body };
 	},
 
 	bash: (tool, verbose) => {

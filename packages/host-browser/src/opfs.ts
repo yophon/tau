@@ -5,6 +5,7 @@ interface BrowserFileLike {
 	readonly size: number;
 	readonly lastModified: number;
 	text(): Promise<string>;
+	arrayBuffer(): Promise<ArrayBuffer>;
 }
 
 interface BrowserWritableFileStreamLike {
@@ -109,6 +110,16 @@ export class OpfsFileSystem implements FileSystem {
 		const file = await this.fileFor(resolved, false);
 		try {
 			return await (await file.getFile()).text();
+		} catch (error) {
+			throw toFileError(error, resolved);
+		}
+	}
+
+	async readBinaryFile(path: string): Promise<Uint8Array> {
+		const resolved = this.resolvePath(path);
+		const file = await this.fileFor(resolved, false);
+		try {
+			return new Uint8Array(await (await file.getFile()).arrayBuffer());
 		} catch (error) {
 			throw toFileError(error, resolved);
 		}

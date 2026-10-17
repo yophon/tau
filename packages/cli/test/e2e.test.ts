@@ -277,13 +277,17 @@ test("--tools narrows the declared built-in tools (P23e)", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
 		try {
-			const cli = startCli(["--tools", "read,ls", "-p", "go", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			const cli = startCli(["--tools", "read,ls,nope", "-p", "go", "--no-session"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+			});
 			assert.equal(await cli.waitForExit(), 0, cli.output());
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read"],
-				"ls is not a built-in tool here; only read survives",
+				["read", "ls"],
+				"nope is not a tool; read and ls survive",
 			);
 		} finally {
 			await mock.close();
@@ -822,7 +826,7 @@ test("read-only mode keeps write/edit/bash off the request wire entirely", async
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read"],
+				["read", "grep", "find", "ls"],
 			);
 		} finally {
 			await mock.close();

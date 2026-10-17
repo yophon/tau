@@ -78,6 +78,16 @@ export class NodeFileSystem implements FileSystem {
 		}
 	}
 
+	async readBinaryFile(path: string): Promise<Uint8Array> {
+		const resolved = this.resolvePath(path);
+		try {
+			const buffer = await readFile(resolved);
+			return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+		} catch (error) {
+			throw toFileError(error, resolved);
+		}
+	}
+
 	async writeTextFile(path: string, content: string): Promise<void> {
 		const resolved = this.resolvePath(path);
 		try {
