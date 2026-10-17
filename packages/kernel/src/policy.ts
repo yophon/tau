@@ -10,7 +10,7 @@
  */
 
 /** How much the host trusts the agent. Kernel default: autonomous; interactive hosts should pick supervised. */
-export type PermissionMode = "read-only" | "supervised" | "autonomous" | "bypass";
+export type PermissionMode = "read-only" | "supervised" | "accept-edits" | "autonomous" | "bypass";
 
 export type RiskLevel = "low" | "medium" | "high";
 
@@ -33,6 +33,8 @@ export interface ToolPolicyCall {
 	 * lower the built-in classification.
 	 */
 	declaredRisk?: RiskLevel;
+	/** The working directory edits are relative to (accept-edits allows edits inside it, P26d). */
+	cwd?: string;
 }
 
 export interface ToolPolicy {
@@ -53,7 +55,7 @@ export interface ApprovalRequest {
 }
 
 /** Modes from strictest to most permissive. */
-const MODE_ORDER: readonly PermissionMode[] = ["read-only", "supervised", "autonomous", "bypass"];
+const MODE_ORDER: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
 
 /** The stricter of two permission modes (a subagent never outranks its parent). */
 export function stricterMode(a: PermissionMode, b: PermissionMode | undefined): PermissionMode {
@@ -64,6 +66,8 @@ export function stricterMode(a: PermissionMode, b: PermissionMode | undefined): 
 /**
  * mode × risk → action. read-only denies everything non-read, supervised asks
  * for medium and high, autonomous asks only for high, bypass allows all.
+ * accept-edits is supervised here; the default policy additionally allows file
+ * edits inside the working directory in it (P26d, yo-agent / Claude Code).
  */
 export function resolvePolicyAction(mode: PermissionMode, risk: RiskLevel): PolicyAction {
 	switch (mode) {
@@ -72,6 +76,7 @@ export function resolvePolicyAction(mode: PermissionMode, risk: RiskLevel): Poli
 		case "read-only":
 			return risk === "low" ? "allow" : "deny";
 		case "supervised":
+		case "accept-edits":
 			return risk === "low" ? "allow" : "ask";
 		case "autonomous":
 			return risk === "high" ? "ask" : "allow";
@@ -140,6 +145,36 @@ const COMMAND_PROBE_KEYS = ["command", "cmd", "script"] as const;
 
 const READ_TOOLS = new Set(["read", "listDir", "grep", "find", "ls"]);
 const WRITE_TOOLS = new Set(["write", "edit"]);
+/** Tools accept-edits allows without asking (inside the working directory, off protected paths). */
+const ACCEPT_EDITS_TOOLS = new Set(["write", "edit", "memory_write"]);
+
+function normalizePath(path: string): string {
+	return path
+		.replace(/\\/g, "/")
+		.replace(/^([A-Za-z]):/, (_match, drive: string) => `${drive.toLowerCase()}:`)
+		.replace(/\/+$/, "");
+}
+
+/** Whether a target path stays inside `cwd`: relative without escaping, or absolute under it. */
+export function isInsideCwd(path: string, cwd: string | undefined): boolean {
+	const target = normalizePath(path);
+	const absolute = target.startsWith("/") || /^[a-z]:/.test(target);
+	if (!absolute) {
+		let depth = 0;
+		for (const segment of target.split("/")) {
+			if (segment === "..") depth--;
+			else if (segment !== "" && segment !== ".") depth++;
+			if (depth < 0) return false;
+		}
+		return true;
+	}
+	if (!cwd) return false;
+	const base = normalizePath(cwd);
+	const caseFold = /^[a-z]:/.test(base);
+	const a = caseFold ? target.toLowerCase() : target;
+	const b = caseFold ? base.toLowerCase() : base;
+	return a === b || a.startsWith(`${b}/`);
+}
 const BASH_TOOLS = new Set(["bash"]);
 
 function pathSegments(path: string): string[] {
@@ -218,6 +253,13 @@ export function createDefaultPolicy(options?: { protectedPaths?: string[]; dange
 	return {
 		assess(call, mode) {
 			const { risk, reason } = classify(call);
+			if (mode === "accept-edits" && risk !== "high" && ACCEPT_EDITS_TOOLS.has(call.toolName)) {
+				const targets = probeStrings(call.args, PATH_PROBE_KEYS);
+				if (targets.every((target) => isInsideCwd(target, call.cwd))) {
+					return { risk, action: "allow", reason };
+				}
+				return { risk, action: "ask", reason: reason ?? "edit outside the working directory" };
+			}
 			return { risk, action: resolvePolicyAction(mode, risk), reason };
 		},
 	};

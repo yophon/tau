@@ -25,7 +25,7 @@ export interface AgentDefinition {
 	filePath?: string;
 }
 
-const MODES: readonly PermissionMode[] = ["read-only", "supervised", "autonomous", "bypass"];
+const MODES: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
 
 /** Minimal frontmatter: `key: value` lines between `---` fences; `[a, b]` lists; quotes stripped. */
 export function parseFrontmatter(text: string): { data: Record<string, string | string[]>; body: string } {

@@ -455,6 +455,7 @@ export class Agent {
 			get permissionMode() {
 				return currentPermissionMode();
 			},
+			...(options.capabilities?.fs?.cwd !== undefined ? { cwd: options.capabilities.fs.cwd } : {}),
 			onApproval: this.onApproval,
 			ui: () => this.ui,
 			preflightLock: this.preflightLock,

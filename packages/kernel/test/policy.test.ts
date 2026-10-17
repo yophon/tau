@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	createDefaultPolicy,
+	isInsideCwd,
 	type PermissionMode,
 	type PolicyAction,
 	type RiskLevel,
 	resolvePolicyAction,
+	stricterMode,
 } from "../src/policy.ts";
 
 test("mode × risk matrix covers every combination", () => {
 	const expected: Record<PermissionMode, Record<RiskLevel, PolicyAction>> = {
 		"read-only": { low: "allow", medium: "deny", high: "deny" },
 		supervised: { low: "allow", medium: "ask", high: "ask" },
+		"accept-edits": { low: "allow", medium: "ask", high: "ask" },
 		autonomous: { low: "allow", medium: "allow", high: "ask" },
 		bypass: { low: "allow", medium: "allow", high: "allow" },
 	};
@@ -133,4 +136,29 @@ test("custom protected paths and dangerous patterns append to the defaults", () 
 	// Defaults still apply.
 	assert.equal(custom.assess({ toolName: "write", args: { path: ".env", content: "" } }, "supervised").risk, "high");
 	assert.equal(custom.assess({ toolName: "bash", args: { command: "ls" } }, "supervised").risk, "medium");
+});
+
+test("accept-edits allows edits inside the working directory and asks for the rest (P26d)", () => {
+	const assess = (toolName: string, args: Record<string, unknown>, cwd = "/work/proj") =>
+		policy.assess({ toolName, args, cwd }, "accept-edits").action;
+	assert.equal(assess("write", { path: "src/a.ts", content: "x" }), "allow");
+	assert.equal(assess("edit", { path: "/work/proj/src/a.ts", edits: [] }), "allow");
+	assert.equal(assess("memory_write", { content: "a fact" }), "allow");
+	assert.equal(assess("write", { path: "../other/a.ts", content: "x" }), "ask");
+	assert.equal(assess("write", { path: "/etc/hosts", content: "x" }), "ask");
+	assert.equal(assess("write", { path: ".env", content: "x" }), "ask", "protected paths still ask");
+	assert.equal(assess("bash", { command: "npm test" }), "ask", "commands still ask");
+	assert.equal(assess("read", { path: "a.ts" }), "allow");
+});
+
+test("isInsideCwd and stricterMode", () => {
+	assert.equal(isInsideCwd("a/../b", undefined), true);
+	assert.equal(isInsideCwd("a/../../b", undefined), false);
+	assert.equal(isInsideCwd("C:\\Work\\Proj\\x.ts", "c:\\work\\proj"), true);
+	assert.equal(isInsideCwd("/work/project2/x", "/work/proj"), false);
+	assert.equal(isInsideCwd("/abs/x", undefined), false);
+	assert.equal(stricterMode("autonomous", "accept-edits"), "accept-edits");
+	assert.equal(stricterMode("supervised", "accept-edits"), "supervised");
+	assert.equal(stricterMode("supervised", "bypass"), "supervised");
+	assert.equal(stricterMode("bypass", undefined), "bypass");
 });

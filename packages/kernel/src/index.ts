@@ -243,6 +243,7 @@ export {
 	type ApprovalRequest,
 	createDefaultPolicy,
 	DEFAULT_PROTECTED_PATHS,
+	isInsideCwd,
 	type PermissionMode,
 	type PolicyAction,
 	type PolicyDecision,

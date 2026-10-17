@@ -539,15 +539,24 @@ export class TuiController {
 		return (this.deps.copy ?? copyToClipboard)(text);
 	}
 
-	/** Shift+Tab: supervised → autonomous → read-only → supervised (bypass rejoins at supervised). */
+	/** Shift+Tab: supervised → accept-edits → autonomous → read-only → supervised (bypass rejoins at supervised). */
 	cycleMode(): void {
 		const current = this.agent.getPermissionMode();
-		const next = current === "supervised" ? "autonomous" : current === "autonomous" ? "read-only" : "supervised";
+		const next =
+			current === "supervised"
+				? "accept-edits"
+				: current === "accept-edits"
+					? "autonomous"
+					: current === "autonomous"
+						? "read-only"
+						: "supervised";
 		this.agent.setPermissionMode(next);
 		this.options.setPermissionMode?.(next);
 		this.dispatch({ type: "status", status: { mode: next } });
 		if (next === "autonomous") {
 			this.notice("warn", "Autonomous: tool calls run without asking (Shift+Tab to switch).");
+		} else if (next === "accept-edits") {
+			this.notice("info", "Accept edits: file edits in this directory run without asking; commands still ask.");
 		} else if (next === "read-only") {
 			this.notice("info", "Read-only: tools that change files or run commands are denied.");
 		} else {

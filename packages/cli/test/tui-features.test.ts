@@ -356,6 +356,8 @@ describe("P25c commands and keys", () => {
 			permissionMode: "supervised",
 		});
 		await h.key("\x1b[Z");
+		await h.waitFor((f) => f.includes("Accept edits:"), "accept-edits");
+		await h.key("\x1b[Z");
 		await h.waitFor((f) => f.includes("Autonomous: tool calls run without asking"), "the switch");
 		assert.match(h.frame(), /test-model · autonomous/);
 		assert.equal(h.controller.agent.getPermissionMode(), "autonomous");

@@ -284,3 +284,32 @@ test("setPermissionMode applies to the next tool call (P25)", async () => {
 	assert.equal(requests.length, 1);
 	assert.equal(executions.length, 2);
 });
+
+test("accept-edits: an edit inside the working directory runs without approval; bash still asks (P26d)", async () => {
+	const write = probeTool("write");
+	const bash = probeTool("bash");
+	const requests: ApprovalRequest[] = [];
+	const platform = scripted(
+		toolCallTurn("write", { path: "src/a.ts", content: "x" }),
+		toolCallTurn("bash", { command: "npm test" }),
+		textTurn("done"),
+	);
+	const agent = new Agent({
+		config,
+		platform,
+		tools: [write.tool, bash.tool],
+		permissionMode: "accept-edits",
+		capabilities: { platform, fs: { cwd: "/work/proj" } as never },
+		onApproval: async (request) => {
+			requests.push(request);
+			return true;
+		},
+	});
+	await drain(agent, "edit then test");
+	assert.equal(write.executions.length, 1);
+	assert.equal(bash.executions.length, 1);
+	assert.deepEqual(
+		requests.map((request) => request.toolName),
+		["bash"],
+	);
+});

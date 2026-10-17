@@ -530,7 +530,7 @@ const KEYS: Array<[string, string]> = [
 	["↑ / ↓", "history; ↑ on an empty input takes queued messages back"],
 	["Ctrl+O", "expand or collapse tool details"],
 	["Ctrl+T", "show or hide reasoning"],
-	["Shift+Tab", "permission mode: supervised → autonomous → read-only"],
+	["Shift+Tab", "permission mode: supervised → accept-edits → autonomous → read-only"],
 	["Ctrl+G", "edit the input in $VISUAL / $EDITOR"],
 	["Tab", "complete / commands and @ files"],
 	["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],

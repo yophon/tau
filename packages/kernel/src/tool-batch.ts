@@ -57,6 +57,8 @@ export interface ToolBatchHost {
 	readonly extensions: ExtensionRegistry | undefined;
 	readonly policy: ToolPolicy;
 	readonly permissionMode: PermissionMode;
+	/** The filesystem's working directory, for the accept-edits rule (P26d). */
+	readonly cwd?: string;
 	readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	ui(): UiCapability | undefined;
 	readonly preflightLock: PreflightLock;
@@ -332,7 +334,12 @@ export class ToolBatchRunner {
 		// A denial is a normal error tool result — the loop continues and the
 		// model can change course; tool_execution_start never fires for it.
 		const policyDecision = this.host.policy.assess(
-			{ toolName: toolCall.name, args, declaredRisk: tool.risk },
+			{
+				toolName: toolCall.name,
+				args,
+				declaredRisk: tool.risk,
+				...(this.host.cwd !== undefined ? { cwd: this.host.cwd } : {}),
+			},
 			this.host.permissionMode,
 		);
 		const riskText =
