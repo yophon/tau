@@ -5,10 +5,12 @@
 // ext-codemode too and runs a codemode script from the installed layout, so the
 // pi-codemode worker and wasm resolve as they will after `npm i` (needs the
 // registry for @earendil-works/pi-codemode).
-// The full cli path needs the registry (pi-tui) and is exercised after real
-// publishes instead.
+// (4) P25: the CLI's TUI from an installed layout — its built tui/ modules next
+// to the packed kernel and the exact ink/react/string-width versions the CLI
+// pins, loaded and rendered once. The CLI tarball itself pins its internal deps
+// to registry URLs (shrinkwrap), so the full cli install runs after publishing.
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -126,6 +128,41 @@ if (!/^Script completed/.test(text) || !text.endsWith("hi!")) throw new Error(\`
 console.log("pack smoke codemode ok");
 `;
 
+const TUI_MJS = `
+import { PassThrough } from "node:stream";
+import React from "react";
+import { render } from "ink";
+import { Agent, ExtensionRegistry } from "@yophon/tau-kernel";
+import { App } from "./tui/app.js";
+import { TuiController } from "./tui/controller.js";
+
+const extensions = new ExtensionRegistry();
+const agent = new Agent({ config: { baseUrl: "https://fake.test/v1", model: "m" }, extensions });
+const controller = new TuiController(
+	{ agent, extensions, model: "m", baseUrl: "x", cwd: process.cwd(), permissionMode: "supervised",
+		sessionRepo: {}, shell: {}, setModel() {}, setThinkingLevel() {}, buildAgent: () => agent,
+		reloadExtensions: async () => extensions, sessionReason: "startup" },
+	{ columns: () => 80, readBranch: () => undefined },
+);
+const stdout = new PassThrough();
+stdout.columns = 80;
+let output = "";
+stdout.on("data", (chunk) => { output += chunk; });
+const stdin = new PassThrough();
+stdin.isTTY = true;
+stdin.setRawMode = () => stdin;
+stdin.ref = () => stdin;
+stdin.unref = () => stdin;
+const ink = render(React.createElement(App, { controller }), { stdout, stdin, debug: true, patchConsole: false, exitOnCtrlC: false });
+await controller.start();
+controller.store.flush();
+await new Promise((resolve) => setTimeout(resolve, 100));
+ink.unmount();
+await controller.stop();
+if (!output.includes("tau · m") || !output.includes("╭")) throw new Error(\`unexpected TUI output: \${output}\`);
+console.log("pack smoke tui ok");
+`;
+
 const CONSUMER_TS = `
 import { Agent, type AgentEvent, type Platform, type Tool } from "@yophon/tau-kernel";
 
@@ -202,8 +239,20 @@ try {
 	if (!codemode.stdout.includes("pack smoke codemode ok"))
 		throw new Error(`codemode smoke failed:\n${codemode.stdout}`);
 
+	// P25: the TUI's modules load and render from an installed layout.
+	const cliPkg = JSON.parse(readFileSync(join(packageDir("cli"), "package.json"), "utf8"));
+	const tuiDir = join(workDir, "tui-consumer");
+	mkdirSync(tuiDir);
+	writeFileSync(join(tuiDir, "package.json"), JSON.stringify({ name: "tui-consumer", type: "module" }, null, "\t"));
+	const pinned = ["ink", "react", "string-width"].map((name) => `${name}@${cliPkg.dependencies[name]}`);
+	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, ...pinned], { cwd: tuiDir });
+	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
+	writeFileSync(join(tuiDir, "main.mjs"), TUI_MJS);
+	const tui = run("node", ["main.mjs"], { cwd: tuiDir });
+	if (!tui.stdout.includes("pack smoke tui ok")) throw new Error(`tui smoke failed:\n${tui.stdout}`);
+
 	console.log(
-		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs",
+		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout",
 	);
 } finally {
 	rmSync(workDir, { recursive: true, force: true });

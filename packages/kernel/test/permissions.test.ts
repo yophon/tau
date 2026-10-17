@@ -256,3 +256,31 @@ test("subagents inherit permissionMode and onApproval", async () => {
 	assert.ok(childToolResult && childToolResult.role === "toolResult");
 	assert.match(childToolResult.content[0].type === "text" ? childToolResult.content[0].text : "", /^Denied by policy/);
 });
+
+test("setPermissionMode applies to the next tool call (P25)", async () => {
+	const { tool, executions } = probeTool("bash");
+	const requests: ApprovalRequest[] = [];
+	const agent = new Agent({
+		config,
+		platform: scripted(
+			toolCallTurn("bash", { command: "npm test" }),
+			textTurn("first"),
+			toolCallTurn("bash", { command: "npm test" }),
+			textTurn("second"),
+		),
+		tools: [tool],
+		permissionMode: "supervised",
+		onApproval: async (request) => {
+			requests.push(request);
+			return true;
+		},
+	});
+	await drain(agent, "run tests");
+	assert.equal(requests.length, 1);
+	agent.setPermissionMode("autonomous");
+	assert.equal(agent.getPermissionMode(), "autonomous");
+	await drain(agent, "again");
+	// Autonomous runs the medium-risk call without asking.
+	assert.equal(requests.length, 1);
+	assert.equal(executions.length, 2);
+});

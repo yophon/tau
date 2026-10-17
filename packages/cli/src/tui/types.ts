@@ -31,6 +31,10 @@ export interface RunTuiOptions {
 	thinkingLevel?: ThinkingLevel;
 	setModel(model: string): void;
 	setThinkingLevel(level: ThinkingLevel | undefined): void;
+	/** Agents built later (/reload, /resume) use the mode Shift+Tab switched to. */
+	setPermissionMode?(mode: PermissionMode): void;
+	/** Save a trust decision for this project's resources (/trust); returns the resources it covers. */
+	saveTrust?(trusted: boolean): Promise<string[]>;
 	/** Install the TUI approval prompt into the host's approval loop (P15). */
 	setApprovalPrompt?(prompt: (request: ApprovalRequest) => Promise<ApprovalAnswer>): void;
 	buildAgent(
@@ -50,6 +54,10 @@ export interface TuiDeps {
 	fileLister?: (cwd: string) => Promise<string[]>;
 	columns?: () => number;
 	now?: () => number;
+	/** Ctrl+G: edit text in an external editor; undefined keeps the input. */
+	editText?: (text: string) => string | undefined;
+	/** /copy: put text on the clipboard; returns how. */
+	copy?: (text: string) => Promise<string>;
 	/** Clear the screen and scrollback (/clear, session switches). */
 	clearScreen?: () => void;
 	/** Git branch for the status line. */

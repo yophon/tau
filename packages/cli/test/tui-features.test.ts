@@ -281,3 +281,100 @@ describe("console capture", () => {
 		assert.deepEqual(problems, ["warn:careful", "error:Error: broken", "warn:raw stderr line"]);
 	});
 });
+
+describe("P25c commands and keys", () => {
+	it("/new starts a fresh session after session_before_switch (reason new)", async () => {
+		const reasons: string[] = [];
+		const watcher: Extension = (api) => {
+			api.on("session_before_switch", (event) => {
+				reasons.push(event.reason);
+				return undefined;
+			});
+		};
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("ANSWER_ONE"))],
+			sessions: true,
+			extensions: [watcher],
+		});
+		await h.submit("hello");
+		await h.waitFor((f) => f.includes("ANSWER_ONE") && /· \d/.test(f), "the answer");
+		const before = (await h.controller.sessionStore?.getMetadata())?.id;
+		await h.submit("/new");
+		await h.waitFor((f) => f.includes("New session."), "the new session");
+		assert.deepEqual(reasons, ["new"]);
+		assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, before);
+		assert.equal(h.controller.agent.messages.filter((message) => message.role !== "system").length, 0);
+		// The test renderer keeps every static frame, so check what the screen was reset to.
+		assert.ok(!JSON.stringify(h.controller.state.committed).includes("ANSWER_ONE"));
+	});
+
+	it("/clone copies the session at its current position", async () => {
+		const h = await harness({ responses: [makeSseResponse(textTurn("CLONED_ANSWER"))], sessions: true });
+		await h.submit("question");
+		await h.waitFor((f) => f.includes("CLONED_ANSWER") && /· \d/.test(f), "the answer");
+		const original = await h.controller.sessionStore?.getMetadata();
+		const originalMessages = h.controller.agent.messages.filter((message) => message.role !== "system").length;
+		await h.submit("/clone");
+		await h.waitFor((f) => f.includes("Forked to"), "the clone");
+		assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, original?.id);
+		assert.equal(h.controller.agent.messages.filter((message) => message.role !== "system").length, originalMessages);
+		assert.match(h.frame(), /CLONED_ANSWER/);
+	});
+
+	it("/export writes JSONL and /session shows the id and entry count", async () => {
+		const h = await harness({ responses: [makeSseResponse(textTurn("EXPORTED"))], sessions: true });
+		await h.submit("question");
+		await h.waitFor((f) => f.includes("EXPORTED") && /· \d/.test(f), "the answer");
+		await h.submit("/export out.jsonl");
+		await h.waitFor((f) => f.includes("Exported the session to"), "the export");
+		const lines = readFileSync(join(h.controller.options.cwd, "out.jsonl"), "utf8").trim().split("\n");
+		for (const line of lines) JSON.parse(line);
+		assert.ok(lines.some((line) => line.includes("EXPORTED")));
+		await h.submit("/session");
+		const id = (await h.controller.sessionStore?.getMetadata())?.id ?? "";
+		const frame = await h.waitFor((f) => f.includes("entries"), "the session info");
+		assert.ok(frame.includes(id));
+		assert.match(frame, /messages\s+2 in context/);
+	});
+
+	it("/copy puts the last answer on the clipboard", async () => {
+		const h = await harness({ responses: [makeSseResponse(textTurn("COPY **ME**"))] });
+		await h.submit("/copy");
+		await h.waitFor((f) => f.includes("Nothing to copy yet."), "the empty case");
+		await h.submit("hi");
+		await h.waitFor((f) => f.includes("COPY ME") && /· \d/.test(f), "the answer");
+		await h.submit("/copy");
+		await h.waitFor((f) => f.includes("via the test clipboard"), "the copy");
+		assert.deepEqual(h.copied, ["COPY **ME**"]);
+	});
+
+	it("Shift+Tab switches the permission mode for the next tool call", async () => {
+		const executions: string[] = [];
+		const h = await harness({
+			responses: [makeSseResponse(toolCallTurn("bash", { command: "npm test" })), makeSseResponse(textTurn("ran"))],
+			tools: [textTool("bash", "ok", executions)],
+			permissionMode: "supervised",
+		});
+		await h.key("\x1b[Z");
+		await h.waitFor((f) => f.includes("Autonomous: tool calls run without asking"), "the switch");
+		assert.match(h.frame(), /test-model · autonomous/);
+		assert.equal(h.controller.agent.getPermissionMode(), "autonomous");
+		await h.submit("run tests");
+		await h.waitFor((f) => f.includes("ran") && /· \d/.test(f), "the run");
+		assert.doesNotMatch(h.frame(), /wants to run/);
+		assert.equal(executions.length, 1);
+		await h.key("\x1b[Z");
+		await h.waitFor((f) => f.includes("Read-only:"), "read-only");
+		await h.key("\x1b[Z");
+		await h.waitFor((f) => f.includes("Supervised:"), "back to supervised");
+	});
+
+	it("Ctrl+G replaces the input with the external editor's text", async () => {
+		const h = await harness({ responses: [] });
+		await h.type("draft");
+		h.editorResult.value = "edited in the editor\n";
+		await h.key("\x07");
+		await h.waitFor((f) => f.includes("› edited in the editor"), "the edited input");
+		assert.equal(h.controller.state.editor.text, "edited in the editor");
+	});
+});

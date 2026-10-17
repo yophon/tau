@@ -57,7 +57,7 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
-import { conversationLength, createStartupTuiUi, nestedNote, runTui } from "./tui.ts";
+import { conversationLength } from "./tui/controller.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -82,7 +82,8 @@ Options:
       --models <list>    Comma-separated TUI model selector candidates (env: TAU_MODELS)
   -s, --system <text>    Override the system prompt
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
-      --tui              Use the TUI interactive mode
+      --tui              Use the TUI (the default on a terminal)
+      --repl             Use the line-based REPL instead of the TUI
   -w, --context-window <n>  Model context window in tokens; enables auto-compaction
                          (env: TAU_CONTEXT_WINDOW)
       --pricing <spec>   Unit prices, USD per million tokens, e.g.
@@ -133,6 +134,7 @@ interface CliOptions {
 	system?: string;
 	print?: string;
 	tui: boolean;
+	repl: boolean;
 	continue: boolean;
 	contextWindow?: number;
 	pricing?: ModelPricing;
@@ -147,7 +149,14 @@ interface CliOptions {
 }
 
 function parseArgs(argv: string[]): CliOptions {
-	const options: CliOptions = { help: false, extras: [], continue: false, noSession: false, tui: false };
+	const options: CliOptions = {
+		help: false,
+		extras: [],
+		continue: false,
+		noSession: false,
+		tui: false,
+		repl: false,
+	};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		const next = (): string => {
@@ -254,6 +263,9 @@ function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "--tui":
 				options.tui = true;
+				break;
+			case "--repl":
+				options.repl = true;
 				break;
 			case "-h":
 			case "--help":
@@ -607,6 +619,18 @@ async function isProjectTrusted(
 	return approved;
 }
 
+/** Record a trust decision for the project's current resources (the TUI's /trust); applies from the next start or /reload. */
+async function saveProjectTrust(cwd: string, trusted: boolean): Promise<string[]> {
+	const projectFiles = await listExtensionFiles(join(cwd, ".tau", "extensions"));
+	const present = presentGatedResources(cwd).filter(
+		(relative) => relative !== ".tau/extensions" || projectFiles.length > 0,
+	);
+	const store = readTrustStore();
+	store.trusted[cwd] = { trusted, digest: await digestProjectResources(cwd, present) };
+	writeTrustStore(store);
+	return present;
+}
+
 /** The registry plus the trust decision for the project's gated resources (backs ctx.isProjectTrusted). */
 interface LoadedExtensions {
 	registry: ExtensionRegistry;
@@ -686,6 +710,11 @@ const turnState: { controller: AbortController | null } = { controller: null };
 /** A REPL command holding the agent outside a turn (P23e): extension prompts are refused meanwhile. */
 let hostTask: "compact" | "tree" | undefined;
 let hostTaskController: AbortController | undefined;
+/** Approval prompts say when the call came from another tool (a codemode script, P24c). */
+function nestedNote(request: ApprovalRequest): string {
+	return request.parentToolCallId === undefined ? "" : ", called by another tool";
+}
+
 /** Resolver for the single readline line currently awaited by an approval gate. */
 let pendingApproval: { resolve: (choice: ApprovalChoice) => void } | undefined;
 /** Marks the current readline event when an approval answer was consumed. */
@@ -1010,24 +1039,21 @@ async function main(): Promise<void> {
 		...(Number.isFinite(envRetryDelay) && envRetryDelay > 0 ? { baseDelayMs: envRetryDelay } : {}),
 	};
 	const cwd = resolve(process.cwd());
-	if (options.tui && options.print === undefined && (!process.stdin.isTTY || !process.stdout.isTTY)) {
+	const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+	if (options.tui && options.print === undefined && !terminal) {
 		console.error("--tui requires a TTY stdin/stdout");
 		process.exit(1);
 	}
-	const readline =
-		options.tui && options.print === undefined
-			? undefined
-			: createInterface({ input: process.stdin, output: process.stdout });
+	// On a terminal the TUI is the interactive default (P25); --repl keeps the line-based REPL.
+	const useTui = options.print === undefined && !options.repl && (options.tui || terminal);
+	const readline = useTui ? undefined : createInterface({ input: process.stdin, output: process.stdout });
 	// Headless stdin (pipes, CI) cannot answer prompts; omit the UI capability
 	// so extensions take their no-UI degradation path instead of hanging.
-	const ui =
-		options.tui && options.print === undefined
-			? process.env.TAU_TUI === "next"
-				? (await import("./tui/startup.ts")).createStartupUi()
-				: createStartupTuiUi()
-			: readline && process.stdin.isTTY
-				? createUi(readline)
-				: undefined;
+	const ui = useTui
+		? (await import("./tui/startup.ts")).createStartupUi()
+		: readline && process.stdin.isTTY
+			? createUi(readline)
+			: undefined;
 	const loaded = await loadExtensionRegistry(cwd, ui);
 	const extensions = loaded.registry;
 	// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
@@ -1194,10 +1220,9 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (options.tui) {
-		// P25: the rewritten TUI, behind a switch until it reaches parity with the P8 one.
-		const run = process.env.TAU_TUI === "next" ? (await import("./tui/app.ts")).runTui : runTui;
-		await run({
+	if (useTui) {
+		const { runTui } = await import("./tui/app.ts");
+		await runTui({
 			agent,
 			extensions,
 			model,
@@ -1219,6 +1244,11 @@ async function main(): Promise<void> {
 			setThinkingLevel: (nextLevel) => {
 				thinkingLevel = nextLevel;
 			},
+			setPermissionMode: (nextMode) => {
+				// Agents built later (/reload, /resume) start from the switched mode.
+				permissionMode = nextMode;
+			},
+			saveTrust: (trusted) => saveProjectTrust(cwd, trusted),
 			setApprovalPrompt: (prompt) => {
 				approvalPromptRef.current = prompt;
 			},

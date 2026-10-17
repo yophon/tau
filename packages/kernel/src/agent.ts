@@ -340,7 +340,7 @@ export class Agent {
 	/** Model of this agent's requests (Agent.setModel; starts as config.model). */
 	private currentModel: string;
 	private currentThinkingLevel: ThinkingLevel | undefined;
-	private readonly permissionMode: PermissionMode;
+	private permissionMode: PermissionMode;
 	private readonly policy: ToolPolicy;
 	private readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	private readonly toolExecution: ToolExecutionMode;
@@ -441,10 +441,14 @@ export class Agent {
 		this.finishTurn = options.finishTurn;
 		this.isProjectTrusted = options.isProjectTrusted;
 		this.preflightLock = options.preflightLock ?? new PreflightLock();
+		const currentPermissionMode = (): PermissionMode => this.permissionMode;
 		this.toolRunner = new ToolBatchRunner({
 			extensions: this.extensions,
 			policy: this.policy,
-			permissionMode: this.permissionMode,
+			// Read on every preflight: setPermissionMode() applies to the next tool call.
+			get permissionMode() {
+				return currentPermissionMode();
+			},
 			onApproval: this.onApproval,
 			ui: () => this.ui,
 			preflightLock: this.preflightLock,
@@ -1107,6 +1111,21 @@ export class Agent {
 			await this.session.append({ type: "thinking_level_change", thinkingLevel: level === "none" ? "off" : level });
 			await this.refresh();
 		});
+	}
+
+	/** The permission mode tool calls are checked against (D20). */
+	getPermissionMode(): PermissionMode {
+		return this.permissionMode;
+	}
+
+	/**
+	 * Change the permission mode from the next tool call on; subagents spawned
+	 * afterwards inherit it (tau, P25: the TUI's Shift+Tab). Not recorded in the
+	 * session: a resumed session takes its mode from the host again, so a
+	 * session never comes back more permissive than the host started it.
+	 */
+	setPermissionMode(mode: PermissionMode): void {
+		this.permissionMode = mode;
 	}
 
 	/** The extension-facing model switch: model_select before, the switch, model_select after (pi setModel). */

@@ -4,7 +4,9 @@
  * plain TypeScript with no Ink, so tests drive it directly and the Ink tree
  * stays a thin view (the logic the P8 TUI kept in one closure).
  */
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	type Agent,
@@ -23,6 +25,7 @@ import {
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
+import { copyToClipboard } from "./clipboard.ts";
 import { commandList, runCommand } from "./commands.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { errorText, fmtCost, fmtElapsed, fmtInt, shortPath, type Tone } from "./format.ts";
@@ -501,7 +504,7 @@ export class TuiController {
 				this.exitTimer = setTimeout(() => this.disarmExit(), ARM_WINDOW_MS);
 				return;
 			case "cycle-mode":
-				this.notice("dim", "Switching the permission mode from the TUI is not available yet.");
+				this.cycleMode();
 				return;
 			case "queue":
 				this.queueFollowUp();
@@ -518,7 +521,7 @@ export class TuiController {
 				this.notice("dim", `Reasoning ${this.state.showReasoning ? "shown" : "hidden"}.`);
 				return;
 			case "external-editor":
-				this.notice("dim", "The external editor is not available yet.");
+				this.openExternalEditor();
 				return;
 			case "history-prev":
 				this.historyPrev();
@@ -529,6 +532,48 @@ export class TuiController {
 			default:
 				return;
 		}
+	}
+
+	/** /copy */
+	copyText(text: string): Promise<string> {
+		return (this.deps.copy ?? copyToClipboard)(text);
+	}
+
+	/** Shift+Tab: supervised → autonomous → read-only → supervised (bypass rejoins at supervised). */
+	cycleMode(): void {
+		const current = this.agent.getPermissionMode();
+		const next = current === "supervised" ? "autonomous" : current === "autonomous" ? "read-only" : "supervised";
+		this.agent.setPermissionMode(next);
+		this.options.setPermissionMode?.(next);
+		this.dispatch({ type: "status", status: { mode: next } });
+		if (next === "autonomous") {
+			this.notice("warn", "Autonomous: tool calls run without asking (Shift+Tab to switch).");
+		} else if (next === "read-only") {
+			this.notice("info", "Read-only: tools that change files or run commands are denied.");
+		} else {
+			this.notice("info", "Supervised: medium- and high-risk tool calls ask first.");
+		}
+		// Started read-only, the write tools were never loaded (D20); a reload builds them.
+		if (this.options.permissionMode === "read-only" && next !== "read-only" && !this.writeToolsLoaded()) {
+			this.notice("dim", "This session started read-only, so the write tools are not loaded yet: /reload loads them.");
+		}
+	}
+
+	private writeToolsLoaded(): boolean {
+		return this.agent.getAllTools().some((tool) => tool.name === "write" || tool.name === "bash");
+	}
+
+	/** Ctrl+G: edit the input in $VISUAL / $EDITOR (Notepad on Windows, nano elsewhere). */
+	openExternalEditor(): void {
+		if (this.state.task !== undefined || this.state.approval || this.state.picker) return;
+		let edited: string | undefined;
+		try {
+			edited = (this.deps.editText ?? editInExternalEditor)(this.state.editor.text);
+		} catch (error) {
+			this.notice("error", `External editor failed: ${errorText(error)}`);
+			return;
+		}
+		if (edited !== undefined) this.setEditor(ed.fromText(edited.replace(/\r\n/g, "\n").replace(/\n+$/, "")));
 	}
 
 	private disarmExit(): void {
@@ -1325,5 +1370,22 @@ export function readGitBranch(cwd: string): string | undefined {
 		return match ? match[1] : head.slice(0, 7);
 	} catch {
 		return undefined;
+	}
+}
+
+/** Write the text to a temp file, run the editor on it in the foreground, read it back. */
+export function editInExternalEditor(text: string): string | undefined {
+	const editor = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "nano");
+	const dir = mkdtempSync(join(tmpdir(), "tau-edit-"));
+	const file = join(dir, "prompt.md");
+	try {
+		writeFileSync(file, text, "utf8");
+		// Synchronous on purpose: the event loop (and Ink) pause while a terminal editor owns the screen.
+		const result = spawnSync(`${editor} "${file}"`, { shell: true, stdio: "inherit" });
+		if (result.error) throw result.error;
+		if (result.status !== 0) return undefined;
+		return readFileSync(file, "utf8");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
 	}
 }

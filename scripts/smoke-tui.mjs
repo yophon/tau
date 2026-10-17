@@ -266,13 +266,11 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		// Pre-P15 behavior for scenarios that are not about permissions; the
 		// approval scenario overrides with an explicit --permission-mode flag.
 		"TAU_PERMISSION_MODE=autonomous",
-		"TAU_TUI=next",
 		"TAU_HISTORY=",
 		...extraEnv.map(shellQuote),
 		shellQuote(process.execPath),
 		"--disable-warning=ExperimentalWarning",
 		shellQuote(cliPath),
-		"--tui",
 		...args.map(shellQuote),
 	].join(" ");
 	await tmux(["new-session", "-d", "-x", "120", "-y", "38", "-s", name, "-c", dirs.cwd, command]);

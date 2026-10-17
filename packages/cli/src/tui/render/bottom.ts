@@ -165,7 +165,7 @@ export function hintText(state: UiState, completion: Completion | undefined): st
 	if (state.prompt) return "Enter to submit · Esc to cancel";
 	if (state.task === "turn") return "Enter to steer · Alt+Enter to queue · Esc to interrupt · Ctrl+O details";
 	if (state.task) return "Esc to interrupt";
-	return "Enter to send · Ctrl+J newline · ↑↓ history · @ file · / commands · Ctrl+O details";
+	return "Enter to send · Ctrl+J newline · ↑↓ history · @ file · / commands · Shift+Tab mode · Ctrl+O details";
 }
 
 /** One status line; parts are dropped from the right until it fits. */

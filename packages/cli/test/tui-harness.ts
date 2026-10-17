@@ -33,6 +33,10 @@ export interface Harness {
 	controller: TuiController;
 	requests: Array<{ messages: Array<{ role: string; content: unknown }> }>;
 	repo?: JsonlSessionRepo;
+	/** Text /copy put on the clipboard. */
+	copied: string[];
+	/** What Ctrl+G returns from the external editor. */
+	editorResult: { value: string | undefined };
 	frame(): string;
 	type(text: string): Promise<void>;
 	key(sequence: string): Promise<void>;
@@ -129,10 +133,17 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		reloadExtensions: async () => ExtensionRegistry.load(options.reloadExtensions ?? options.extensions ?? []),
 		sessionReason: initial ? "resume" : "startup",
 	};
+	const copied: string[] = [];
+	const editorResult: { value: string | undefined } = { value: undefined };
 	const controller = new TuiController(tuiOptions, {
 		columns: () => 100,
 		readBranch: () => undefined,
 		clearScreen: () => undefined,
+		copy: async (text) => {
+			copied.push(text);
+			return "the test clipboard";
+		},
+		editText: () => editorResult.value,
 	});
 	const ink = render(React.createElement(App, { controller }));
 	const cleanup = (): void => {
@@ -169,6 +180,8 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	return {
 		controller,
 		requests,
+		copied,
+		editorResult,
 		...(repo !== undefined ? { repo } : {}),
 		frame,
 		type,

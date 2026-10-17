@@ -3,6 +3,9 @@
  * commands.ts; behavior from the P8 TUI). Extension commands merge in; a
  * built-in name wins.
  */
+
+import { copyFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import {
 	type ExtensionRegistry,
 	messageText,
@@ -248,6 +251,127 @@ const BUILTINS: BuiltinCommand[] = [
 		},
 	},
 	{
+		name: "new",
+		description: "Start a new session",
+		run: async (tui) => {
+			if (!tui.sessionStore) {
+				tui.notice("error", "No active session (--no-session).");
+				return;
+			}
+			const result = await tui.switchSession(await tui.options.sessionRepo.create(), "new");
+			if (result.cancelled) tui.notice("dim", "New session cancelled by an extension.");
+		},
+	},
+	{
+		name: "clone",
+		description: "Copy this session at its current position and switch to the copy",
+		run: async (tui) => {
+			const store = tui.sessionStore;
+			if (!store) {
+				tui.notice("error", "No active session (--no-session).");
+				return;
+			}
+			const leaf = await store.getLeafId();
+			const copy = await tui.options.sessionRepo.fork(
+				await store.getMetadata(),
+				leaf === null || leaf === undefined ? undefined : { entryId: leaf, position: "at" },
+			);
+			const result = await tui.switchSession(copy, "fork");
+			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the copy was kept).");
+		},
+	},
+	{
+		name: "session",
+		description: "Show the session file, id, size and usage",
+		run: async (tui) => {
+			const usage = tui.agent.getSessionUsage();
+			const context = tui.agent.getContextUsage();
+			const row = (label: string, value: string): StyledLine => [
+				span(`  ${label.padEnd(12)}`, { dim: true }),
+				span(value),
+			];
+			const lines: StyledLine[] = [plainLine("Session", { bold: true })];
+			if (tui.sessionStore) {
+				const metadata = await tui.sessionStore.getMetadata();
+				const entries = await tui.sessionStore.getEntries();
+				lines.push(row("id", metadata.id));
+				if (metadata.name) lines.push(row("name", metadata.name));
+				if (metadata.filePath) lines.push(row("file", metadata.filePath));
+				lines.push(row("entries", String(entries.length)));
+			} else {
+				lines.push(row("file", "none (--no-session)"));
+			}
+			lines.push(row("messages", `${conversationLength(tui.agent.messages)} in context`));
+			lines.push(
+				row("context", `~${context.tokens} tokens${context.contextWindow ? ` of ${context.contextWindow}` : ""}`),
+			);
+			lines.push(
+				row(
+					"usage",
+					`${usage.input + usage.cacheRead + usage.cacheWrite} in · ${usage.output} out${usage.cost.total > 0 ? ` · $${usage.cost.total.toFixed(4)}` : ""}`,
+				),
+			);
+			lines.push(row("model", `${tui.model} · ${tui.thinkingLevel ?? "default"} reasoning`));
+			lines.push(row("mode", tui.agent.getPermissionMode()));
+			tui.lines(lines);
+		},
+	},
+	{
+		name: "copy",
+		description: "Copy the last answer to the clipboard",
+		run: async (tui) => {
+			const last = tui.agent.messages.findLast((message) => message.role === "assistant");
+			const text = last ? messageText(last).trim() : "";
+			if (text === "") {
+				tui.notice("dim", "Nothing to copy yet.");
+				return;
+			}
+			const how = await tui.copyText(text);
+			tui.notice("dim", `Copied the last answer (${text.length} characters) via ${how}.`);
+		},
+	},
+	{
+		name: "export",
+		args: "[path]",
+		description: "Write the session as JSONL",
+		run: async (tui, args) => {
+			const store = tui.sessionStore;
+			if (!store) {
+				tui.notice("error", "No active session (--no-session).");
+				return;
+			}
+			const metadata = await store.getMetadata();
+			const target = resolve(tui.options.cwd, args === "" ? `tau-session-${metadata.id.slice(0, 8)}.jsonl` : args);
+			if (metadata.filePath) {
+				await copyFile(metadata.filePath, target);
+			} else {
+				const entries = await store.getEntries();
+				await writeFile(target, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n", "utf8");
+			}
+			tui.notice("dim", `Exported the session to ${target}.`);
+		},
+	},
+	{
+		name: "trust",
+		description: "Save whether this project's extensions, skills and settings are trusted",
+		run: async (tui) => {
+			if (!tui.options.saveTrust) {
+				tui.notice("error", "Trust decisions cannot be saved here.");
+				return;
+			}
+			const answer = await tui.pick("Trust this project's resources from now on?", [
+				{ label: "Trust", value: "yes", key: "y" },
+				{ label: "Do not trust", value: "no", key: "n" },
+			]);
+			if (answer === undefined) return;
+			const present = await tui.options.saveTrust(answer === "yes");
+			tui.notice(
+				"dim",
+				`${answer === "yes" ? "Trusted" : "Not trusted"}${present.length > 0 ? `: ${present.join(", ")}` : ""}. /reload applies it now.`,
+			);
+		},
+	},
+	{
 		name: "follow",
 		args: "<text>",
 		description: "Queue a follow-up after the current turn (Alt+Enter)",
@@ -406,6 +530,8 @@ const KEYS: Array<[string, string]> = [
 	["↑ / ↓", "history; ↑ on an empty input takes queued messages back"],
 	["Ctrl+O", "expand or collapse tool details"],
 	["Ctrl+T", "show or hide reasoning"],
+	["Shift+Tab", "permission mode: supervised → autonomous → read-only"],
+	["Ctrl+G", "edit the input in $VISUAL / $EDITOR"],
 	["Tab", "complete / commands and @ files"],
 	["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],
 	["Ctrl+A/E/U/K/W", "line editing"],
