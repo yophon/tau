@@ -286,7 +286,7 @@ test("--tools narrows the declared built-in tools (P23e)", async () => {
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "ls", "subagent"],
+				["read", "ls", "subagent", "todo_write", "memory_write"],
 				"nope is not a tool; read and ls survive; --tools narrows built-in coding tools only",
 			);
 		} finally {
@@ -336,6 +336,26 @@ test("untrusted project settings and skills are ignored headless; a broken exten
 			await cli.waitForExit();
 			assert.match(cli.output(), /\[extension failed to load, skipped\] .*broken\.ts: broken on purpose/);
 			assert.ok(cli.output().includes("Tool call blocked: denied by the working extension"), cli.output());
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("project memory from ~/.tau/projects reaches the system prompt (P26c)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const { sessionDirSlug } = await import("@yophon/tau-kernel");
+		const dir = join(home, ".tau", "projects", sessionDirSlug(cwd));
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "MEMORY.md"), "- The user wants answers in French\n");
+		const mock = await startMockOpenAI([() => mockTextTurn("d'accord")]);
+		try {
+			const cli = startCli(["-p", "hello", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const request = mock.requests[0] as { messages: { role: string; content: string }[] };
+			const system = request.messages.find((message) => message.role === "system")?.content ?? "";
+			assert.match(system, /## Memory\n/);
+			assert.match(system, /- The user wants answers in French/);
 		} finally {
 			await mock.close();
 		}
@@ -817,7 +837,7 @@ test("read-only mode keeps write/edit/bash off the request wire entirely", async
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "grep", "find", "ls", "subagent"],
+				["read", "grep", "find", "ls", "subagent", "todo_write", "memory_write"],
 			);
 		} finally {
 			await mock.close();

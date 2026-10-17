@@ -534,6 +534,7 @@ const KEYS: Array<[string, string]> = [
 	["Ctrl+G", "edit the input in $VISUAL / $EDITOR"],
 	["Tab", "complete / commands and @ files"],
 	["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],
+	["#fact", "save a fact to long-term project memory"],
 	["Ctrl+A/E/U/K/W", "line editing"],
 ];
 

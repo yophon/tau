@@ -657,6 +657,11 @@ export class TuiController {
 			void this.runSlash(text);
 			return;
 		}
+		// `#fact` saves a memory instead of prompting (yo-agent #remember, P26c).
+		if (/^#[^#\s]/.test(text) && !text.includes("\n") && this.extensions.commands.has("remember")) {
+			void this.runSlash(`/remember ${text.slice(1).trim()}`);
+			return;
+		}
 		if (task === "turn") {
 			this.sendQueued("steer", text);
 			return;
@@ -808,6 +813,8 @@ export class TuiController {
 				const lines = await this.renderTool(event);
 				if (lines) this.dispatch({ type: "tool-rendered", callId: event.toolCall.id, lines });
 				this.dispatch({ type: "agent-event", event, at });
+				// A tool may have changed what a widget shows (the todo list, say).
+				if (this.extensions.widgets.size > 0) void this.refreshWidgets().catch(() => undefined);
 				return;
 			}
 			case "tool_start":

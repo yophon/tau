@@ -219,6 +219,20 @@ const RENDERERS: Record<string, Renderer> = {
 		return { head, body: shown };
 	},
 
+	todo_write: (tool, verbose) => {
+		const todos = Array.isArray(tool.args.todos) ? (tool.args.todos as Array<Record<string, unknown>>) : [];
+		const done = todos.filter((todo) => todo.status === "completed").length;
+		const head = `todo(${done}/${todos.length} done)`;
+		if (tool.status === "error") return { head, body: errorBody(tool, verbose) };
+		const body = todos.map((todo): StyledLine => {
+			const text = typeof todo.content === "string" ? todo.content : "";
+			if (todo.status === "completed") return [span(`☑ ${text}`, { dim: true })];
+			if (todo.status === "in_progress") return [span(`◐ ${text}`, { bold: true, color: "cyan" })];
+			return [span(`☐ ${text}`)];
+		});
+		return { head, body };
+	},
+
 	tool_search: (tool, verbose) => ({
 		head: `tool_search(${firstLine(str(tool.args, "query"), 60)})`,
 		body: tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? 30 : 3),

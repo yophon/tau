@@ -9,7 +9,9 @@ import { join } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
 import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
-import type { Agent, Extension, ToolInfo } from "@yophon/tau-kernel";
+import { type Agent, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
+import { createMemoryExtension } from "./memory.ts";
+import { todoExtension } from "./todo.ts";
 
 /** The `codemode` section of settings.json, with pi's key names. */
 interface CodemodeSettings {
@@ -23,7 +25,9 @@ const state: {
 	agent: Agent | undefined;
 	/** Whether the system prompt is the CLI default (a custom -s prompt is left alone). */
 	defaultPrompt: boolean;
-} = { codemode: {}, agent: undefined, defaultPrompt: true };
+	/** ~/.tau/projects/<project>/MEMORY.md (P26c); undefined until configured. */
+	memoryFile: string | undefined;
+} = { codemode: {}, agent: undefined, defaultPrompt: true, memoryFile: undefined };
 
 function readCodemodeSettings(path: string): CodemodeSettings {
 	if (!existsSync(path)) return {};
@@ -49,6 +53,7 @@ function readCodemodeSettings(path: string): CodemodeSettings {
  */
 export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
+	state.memoryFile = join(home, ".tau", "projects", sessionDirSlug(options.cwd), "MEMORY.md");
 	state.codemode = {
 		...readCodemodeSettings(join(home, ".tau", "settings.json")),
 		...(options.projectTrusted ? readCodemodeSettings(join(options.cwd, ".tau", "settings.json")) : {}),
@@ -109,5 +114,8 @@ export function builtinExtensions(): Extension[] {
 		}),
 		// P26b: subagents (single, parallel, chain, background) over agent definitions; active by default.
 		createSubagentsExtension(),
+		// P26c: the todo list and long-term memory.
+		todoExtension,
+		createMemoryExtension(() => state.memoryFile),
 	];
 }
