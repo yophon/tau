@@ -120,6 +120,8 @@ D3 预留的"扩展层协议适配"口子兑现为内核 `ChatTransport` 注入�
 
 > **P22 补记（2026-10-16，用户确认，改形状不推翻）**：`TransportRequest` 改为 pi TranscriptContext 的形状 `{ messages, signal?, maxTokens? }`。prompt 与工具声明是 `messages` 里的 system 消息，transport 用 `resolveTranscript()` 折叠成自家线格式（两个内置 transport 缺省都折叠，wire 与改形前逐字节相同）。理由：transport 看到的就是转录，P22 的不变式检查只有一个比较对象。注入方式、不热换、摘要随 transport 走三条不变。
 
+> **P28 补记（2026-10-17，用户确认，放开热换）**：「不热换协议」一条撤销，见 D33。transport 仍由宿主装配注入，Agent 新增 `setModel(model, { transport, provider, api, contextWindow })` 在两轮之间替换；跨协议回放沿用两个 transport 已有的 transformMessages 转换。
+
 > **P23 补记（2026-10-16）**：`TransportRequest` 增加四个可选字段——`headers`（`before_provider_headers` 的结果，字符串增改、null 删除，大小写不敏感，排在 transport 自己的 headers 之后）、`cacheRetention: "none"`（摘要请求固定带，Anthropic transport 据此不打 cache_control）、`thinkingLevel`（协议中立下发：OpenAI 兼容写 `reasoning_effort`，Anthropic 映射 adaptive/effort 或 budget）、`model`（`Agent.setModel` 之后的请求模型，transport 缺省回落到自己的配置）。`ChatTransport` 可带 `supportsHeaders: true` 声明自己应用 headers；两个内置 transport 都声明。模型与思考等级从此由 Agent 持有并随请求下发，切换写 `model_change`/`thinking_level_change` 条目；宿主仍可改 config 以影响之后新建的 Agent。不热换协议这一条不变。
 
 ## D22：并行工具执行照抄 pi 到默认值与分派语义，写冲突走内核版 mutation queue（2026-07-20，P18）
@@ -168,6 +170,14 @@ yo-agent 不再开新阶段，它的能力收进 tau。五处取舍：
 - **待办采用 todo_write 整表替换**（yo-agent、Claude Code 的形状），不用 pi 示例的增删勾：少调用、模型更熟悉。
 - **记忆放在用户目录** `~/.tau/projects/<项目>/MEMORY.md`：不进仓库、不会被误提交、不受项目信任门影响。记忆以「笔记，不是指令」的说明进系统提示，只载入最后 200 行；模型写入走审批（medium），accept-edits 及以上自动放行。
 - **新增 accept-edits 档位**，位于 supervised 与 autonomous 之间：cwd 内、非保护路径的 write、edit、memory_write 放行，其余照 supervised。**不做循环熔断**：用户在 yo-agent 4.10 真机反馈里说熔断「反而是个阻碍」。
+
+## D33：模型表放在宿主层，会话中途可以换协议（2026-10-17，P28，用户确认）
+
+- **模型表是 CLI 的配置，不是内核的模型库。** `~/.tau/models.json` 照抄 pi 的格式子集（供应商的 `baseUrl`、`api`、`apiKey`、`headers`，模型的 `contextWindow`、`maxTokens`、`cost`），条目全部由用户填写，tau 不带任何模型数据，D2、D3 不变。内核只多一个形状：`Agent.setModel(model, { transport, provider, api, contextWindow })`。
+- **只读用户目录的 models.json，项目目录的不读**：端点和密钥去向不能由仓库决定。settings 里的缺省模型、搜索配置同理只读用户目录。
+- **配置文件优先于环境变量**：models.json 里有可用模型时，`TAU_BASE_URL`/`TAU_MODEL` 等不再参与；显式的 `-b`/`-k`/`--provider` 仍走临时端点。理由：shell 里常年导出的环境变量会让配置文件形同虚设。
+- **密钥写法照 pi**：`$NAME`、`${NAME}`、字面量、`!command`；`!command` 每个进程执行一次后缓存（pi 每次请求执行，tau 的 transport 拿静态 key）。tau 从不写入密钥。
+- **会话中途可以换协议**（D21 补记）：`/model` 在两轮之间换 transport；别家的 thinking 转成文本、redacted 丢弃、tool call id 规范化，两个 transport 早已照 pi 的 transformMessages 实现。prompt cache 在切换后失效，这是预期代价。`model_change` 条目记录供应商，恢复会话时按它还原。
 
 ## D23：pi 参照系重锚到 v1.2.0（2026-10-15，P21，用户确认）
 

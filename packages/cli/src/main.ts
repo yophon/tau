@@ -34,6 +34,7 @@ import {
 	type ApprovalRequest,
 	type ChatTransport,
 	createCodingTools,
+	createOpenAICompatTransport,
 	defaultPlatform,
 	ExtensionRegistry,
 	JsonlSessionRepo,
@@ -44,8 +45,10 @@ import {
 	type PermissionMode,
 	renderProjectContext,
 	restoreSession,
+	type SessionEntry,
 	SessionRecorder,
 	type SessionStore,
+	type SetModelOptions,
 	sessionDirSlug,
 	TauError,
 	type ThinkingLevel,
@@ -57,6 +60,21 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
+import {
+	availableModels,
+	type ConfiguredModel,
+	chooseStartupModel,
+	describeModel,
+	findModel,
+	loadModelsConfig,
+	MODELS_EXAMPLE,
+	modelPricing,
+	modelRef,
+	resolveConfigValue,
+	resolveHeaders,
+	type ValueResolver,
+} from "./models.ts";
+import { readSettings, writeSettings } from "./settings.ts";
 import { conversationLength } from "./tui/controller.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
@@ -71,7 +89,9 @@ Options:
                          ANTHROPIC_API_KEY per protocol). TAU_BASE_URL and
                          TAU_API_KEY apply only to the protocol TAU_PROVIDER
                          names (openai when unset).
-  -m, --model <model>    Model id (env: TAU_MODEL)
+  -m, --model <model>    Model: provider/id or id from ~/.tau/models.json, or a model
+                         id on the --base-url endpoint (env: TAU_MODEL)
+      --list-models      List the models configured in ~/.tau/models.json and exit
       --provider <name>  Wire protocol: openai (default) | anthropic
                          (anthropic: /thinking sends adaptive thinking + effort;
                          TAU_ANTHROPIC_THINKING=budget for pre-4.6 models;
@@ -122,8 +142,13 @@ TAU_RETRY_BASE_DELAY_MS (default 2000, exponential), TAU_STALL_TIMEOUT_MS
 Chat Completions dialect knobs: TAU_MAX_TOKENS_FIELD=max_completion_tokens (OpenAI
 reasoning models; summary requests), TAU_SUPPORTS_FINISH_REASON=0 (endpoints that
 omit finish_reason), TAU_INPUT=text (text-only models: images become placeholders).
-Without -p, tau starts an interactive REPL. During a running turn, typed lines
-are queued as steering messages. Ctrl+C aborts the current turn.`;
+Models: describe providers and models once in ~/.tau/models.json (pi's format;
+see the README). With a usable model there, the endpoint env vars above are
+not used; -b/-k/--provider still run an ad-hoc endpoint. web_search needs
+"webSearch" in ~/.tau/settings.json, or BRAVE_API_KEY / TAVILY_API_KEY /
+EXA_API_KEY.
+Without -p, tau starts the TUI on a terminal (--repl for the line-based REPL).
+During a running turn, typed lines steer it. Ctrl+C aborts the current turn.`;
 
 interface CliOptions {
 	tools?: string[];
@@ -145,6 +170,7 @@ interface CliOptions {
 	sessionPath?: string;
 	noSession: boolean;
 	noContextFiles?: boolean;
+	listModels?: boolean;
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading. */
 	extras: string[];
@@ -269,6 +295,9 @@ function parseArgs(argv: string[]): CliOptions {
 			case "--repl":
 				options.repl = true;
 				break;
+			case "--list-models":
+				options.listModels = true;
+				break;
 			case "-h":
 			case "--help":
 				options.help = true;
@@ -356,6 +385,15 @@ function parsePricing(spec: string): ModelPricing | Error {
 		return new Error('Pricing requires both "in" and "out" (USD per million tokens)');
 	}
 	return { inputPerMTok: values.inputPerMTok, outputPerMTok: values.outputPerMTok, ...values };
+}
+
+/** The last model_change on a session path (pi restores that model on resume). */
+function lastModelChange(path: readonly SessionEntry[]): { provider: string; modelId: string } | undefined {
+	for (let i = path.length - 1; i >= 0; i--) {
+		const entry = path[i];
+		if (entry?.type === "model_change") return { provider: entry.provider, modelId: entry.modelId };
+	}
+	return undefined;
 }
 
 function splitList(value: string | undefined): string[] {
@@ -914,14 +952,57 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	const model = options.model ?? process.env.TAU_MODEL;
+	// The model table (P28): ~/.tau/models.json and the settings defaults. Explicit
+	// endpoint flags keep the ad-hoc path; env vars only apply without a usable table.
+	const home = userHome();
+	const modelsConfig = loadModelsConfig(join(home, ".tau", "models.json"));
+	for (const diagnostic of modelsConfig.diagnostics) console.error(`Warning: ${diagnostic}`);
+	const userSettingsPath = join(home, ".tau", "settings.json");
+	const userSettings = readSettings(userSettingsPath);
+	const valueResolver: ValueResolver = { env: process.env };
+	const configuredModels = availableModels(modelsConfig, valueResolver);
+	if (options.listModels) {
+		if (configuredModels.length === 0) {
+			console.log(
+				modelsConfig.present
+					? `No model in ${modelsConfig.path} has a usable API key.`
+					: `No models configured. Create ${modelsConfig.path}, for example:\n${MODELS_EXAMPLE}`,
+			);
+			return;
+		}
+		const width = Math.max(...configuredModels.map((entry) => modelRef(entry).length));
+		for (const entry of configuredModels) console.log(`${modelRef(entry).padEnd(width)}  ${describeModel(entry)}`);
+		return;
+	}
+	const adHocEndpoint = options.baseUrl !== undefined || options.apiKey !== undefined || options.provider !== undefined;
+	const startup = adHocEndpoint
+		? ({ kind: "none" } as const)
+		: chooseStartupModel(configuredModels, {
+				...(options.model !== undefined ? { requested: options.model } : {}),
+				...(userSettings.defaultProvider !== undefined ? { defaultProvider: userSettings.defaultProvider } : {}),
+				...(userSettings.defaultModel !== undefined ? { defaultModel: userSettings.defaultModel } : {}),
+			});
+	if (startup.kind === "error") {
+		console.error(startup.message);
+		process.exit(1);
+	}
+	/** The table entry the session runs on; undefined on the ad-hoc / env path. */
+	let activeModel: ConfiguredModel | undefined = startup.kind === "configured" ? startup.model : undefined;
+	const model =
+		startup.kind === "configured"
+			? (startup.requestedId ?? startup.model.id)
+			: (options.model ?? process.env.TAU_MODEL);
 	let envProvider: ProviderKind | undefined;
 	if (process.env.TAU_PROVIDER) {
 		const value = process.env.TAU_PROVIDER;
 		if (isProvider(value)) envProvider = value;
 		else console.error(`Ignoring TAU_PROVIDER="${value}" (expected one of: ${PROVIDERS.join(", ")})`);
 	}
-	const provider: ProviderKind = options.provider ?? envProvider ?? "openai";
+	const provider: ProviderKind = activeModel
+		? activeModel.api === "anthropic-messages"
+			? "anthropic"
+			: "openai"
+		: (options.provider ?? envProvider ?? "openai");
 	// Endpoint and credential env vars are scoped to one wire protocol, so a key
 	// configured for one vendor is never sent to another vendor's host: OPENAI_* only
 	// feed openai, ANTHROPIC_* only feed anthropic, and TAU_BASE_URL/TAU_API_KEY only
@@ -931,13 +1012,21 @@ async function main(): Promise<void> {
 		provider === "anthropic"
 			? { baseUrl: process.env.ANTHROPIC_BASE_URL, apiKey: process.env.ANTHROPIC_API_KEY }
 			: { baseUrl: process.env.OPENAI_BASE_URL, apiKey: process.env.OPENAI_API_KEY };
-	const baseUrl =
-		options.baseUrl ?? (tauEnvApplies ? process.env.TAU_BASE_URL : undefined) ?? (vendorEnv.baseUrl || undefined);
-	const apiKey =
-		options.apiKey ?? (tauEnvApplies ? process.env.TAU_API_KEY : undefined) ?? (vendorEnv.apiKey || undefined);
+	const baseUrl = activeModel
+		? activeModel.baseUrl
+		: (options.baseUrl ?? (tauEnvApplies ? process.env.TAU_BASE_URL : undefined) ?? (vendorEnv.baseUrl || undefined));
+	const apiKey = activeModel
+		? resolveConfigValue(activeModel.apiKey, valueResolver)
+		: (options.apiKey ?? (tauEnvApplies ? process.env.TAU_API_KEY : undefined) ?? (vendorEnv.apiKey || undefined));
 	// anthropic has a well-known default endpoint; the OpenAI-compatible world does not.
 	if (!model || (provider === "openai" && !baseUrl)) {
-		console.error("Missing --base-url and/or --model (or TAU_BASE_URL / TAU_MODEL env vars).\n");
+		if (modelsConfig.present) {
+			console.error(`No model in ${modelsConfig.path} has a usable API key, and no --base-url/--model was given.\n`);
+		} else {
+			console.error(
+				`No model configured. Describe your models once in ${modelsConfig.path}, for example:\n\n${MODELS_EXAMPLE}\n\nor pass an endpoint: tau --base-url <url> --model <id> (env: TAU_BASE_URL, TAU_MODEL).\n`,
+			);
+		}
 		console.error(USAGE);
 		process.exit(1);
 	}
@@ -948,12 +1037,18 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	const contextWindow = options.contextWindow ?? envInt("TAU_CONTEXT_WINDOW", 1);
-	const modelChoices = uniqueStrings([model, ...(options.models ?? []), ...splitList(process.env.TAU_MODELS)]);
+	// -w beats the table, the table beats TAU_CONTEXT_WINDOW (P28). An id the table
+	// lacks (-m on a configured provider) takes none of the entry's per-model values.
+	const tableEntry = activeModel && activeModel.id === model ? activeModel : undefined;
+	const contextWindow = options.contextWindow ?? tableEntry?.contextWindow ?? envInt("TAU_CONTEXT_WINDOW", 1);
+	const modelChoices = activeModel
+		? uniqueStrings([modelRef({ provider: activeModel.provider, id: model }), ...configuredModels.map(modelRef)])
+		: uniqueStrings([model, ...(options.models ?? []), ...splitList(process.env.TAU_MODELS)]);
 	// "120s" used to become a 120 ms watchdog; now it is rejected with a warning.
 	const envStall = envInt("TAU_STALL_TIMEOUT_MS", 0);
 	const stallTimeout = envStall !== undefined ? { stallTimeoutMs: envStall } : {};
 	const effectiveBaseUrl = baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL;
+	const platform = defaultPlatform();
 	// Output cap for the Anthropic transport (it must send max_tokens; default 8192 is
 	// tight once adaptive thinking runs at high/xhigh effort).
 	const envMaxTokens = envInt("TAU_MAX_TOKENS", 1);
@@ -980,30 +1075,63 @@ async function main(): Promise<void> {
 	else if (envInput && envInput !== "text,image" && envInput !== "image") {
 		console.error(`Ignoring TAU_INPUT="${envInput}" (expected text or text,image)`);
 	}
-	const config: OpenAICompatConfig = {
-		baseUrl: effectiveBaseUrl,
+	/** The config and transport of one endpoint: the startup one, or a table model /model switches to. */
+	const buildEndpoint = (spec: {
+		kind: ProviderKind;
+		label: string | undefined;
+		baseUrl: string | undefined;
+		apiKey: string | undefined;
+		model: string;
+		contextWindow: number | undefined;
+		maxTokens: number | undefined;
+		headers: Record<string, string>;
+	}): { config: OpenAICompatConfig; anthropic: AnthropicTransportConfig | undefined } => {
+		const headers = Object.keys(spec.headers).length > 0 ? { headers: spec.headers } : {};
+		const config: OpenAICompatConfig = {
+			baseUrl: spec.baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL,
+			apiKey: spec.apiKey,
+			model: spec.model,
+			contextWindow: spec.contextWindow,
+			...(spec.kind === "anthropic"
+				? { provider: spec.label ?? "anthropic", api: ANTHROPIC_MESSAGES_API }
+				: spec.label !== undefined
+					? { provider: spec.label }
+					: {}),
+			...headers,
+			...stallTimeout,
+			...dialect,
+		};
+		const anthropic: AnthropicTransportConfig | undefined =
+			spec.kind === "anthropic"
+				? {
+						// The required-key gate ran already; assert for the type system.
+						apiKey: spec.apiKey as string,
+						model: spec.model,
+						...(spec.baseUrl !== undefined ? { baseUrl: spec.baseUrl } : {}),
+						...((spec.maxTokens ?? envMaxTokens) !== undefined ? { maxTokens: spec.maxTokens ?? envMaxTokens } : {}),
+						...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
+						...(spec.label !== undefined ? { provider: spec.label } : {}),
+						...headers,
+						thinkingMode: process.env.TAU_ANTHROPIC_THINKING === "budget" ? "budget" : "adaptive",
+						...stallTimeout,
+					}
+				: undefined;
+		return { config, anthropic };
+	};
+	const startupEndpoint = buildEndpoint({
+		kind: provider,
+		label: activeModel?.provider,
+		baseUrl,
 		apiKey,
 		model,
 		contextWindow,
-		...(provider === "anthropic" ? { provider: "anthropic", api: ANTHROPIC_MESSAGES_API } : {}),
-		...stallTimeout,
-		...dialect,
-	};
-	const anthropicConfig: AnthropicTransportConfig | undefined =
-		provider === "anthropic"
-			? {
-					// The required-key gate above ran already; assert for the type system.
-					apiKey: apiKey as string,
-					model,
-					...(baseUrl !== undefined ? { baseUrl } : {}),
-					...(envMaxTokens !== undefined ? { maxTokens: envMaxTokens } : {}),
-					...(contextWindow !== undefined ? { contextWindow } : {}),
-					thinkingMode: process.env.TAU_ANTHROPIC_THINKING === "budget" ? "budget" : "adaptive",
-					...stallTimeout,
-				}
-			: undefined;
+		maxTokens: tableEntry?.maxTokens,
+		headers: activeModel ? resolveHeaders(activeModel, valueResolver) : {},
+	});
+	let config = startupEndpoint.config;
+	let anthropicConfig = startupEndpoint.anthropic;
 	// The thinking level travels with every request (P23d); /thinking changes it on the agent.
-	let thinkingLevel: ThinkingLevel | undefined;
+	let thinkingLevel: ThinkingLevel | undefined = userSettings.defaultThinkingLevel;
 	let fixedPricing = options.pricing;
 	if (!fixedPricing && process.env.TAU_PRICING) {
 		const parsed = parsePricing(process.env.TAU_PRICING);
@@ -1013,11 +1141,16 @@ async function main(): Promise<void> {
 		else fixedPricing = parsed;
 	}
 	// The given prices belong to the startup model: after /model the cost is unknown
-	// rather than priced at another model's rates (debt #12, D19-3).
+	// rather than priced at another model's rates (debt #12, D19-3). Table models
+	// carry their own prices (P28): the active provider's entry first, then any.
 	const pricedModel = model;
-	const pricing = fixedPricing
-		? (forModel: string): ModelPricing | undefined => (forModel === pricedModel ? fixedPricing : undefined)
-		: undefined;
+	const pricing = (forModel: string): ModelPricing | undefined => {
+		if (fixedPricing && forModel === pricedModel) return fixedPricing;
+		const entry =
+			configuredModels.find((candidate) => candidate.provider === activeModel?.provider && candidate.id === forModel) ??
+			configuredModels.find((candidate) => candidate.id === forModel);
+		return entry ? modelPricing(entry) : undefined;
+	};
 	let permissionMode = options.permissionMode;
 	if (!permissionMode && process.env.TAU_PERMISSION_MODE) {
 		const value = process.env.TAU_PERMISSION_MODE;
@@ -1073,10 +1206,64 @@ async function main(): Promise<void> {
 		return next.registry;
 	};
 
-	const platform = defaultPlatform();
-	const transport: ChatTransport | undefined = anthropicConfig
+	let transport: ChatTransport | undefined = anthropicConfig
 		? createAnthropicTransport(anthropicConfig, platform)
 		: undefined;
+	/**
+	 * Resolve a /model choice (P28): a table model switches endpoint and protocol
+	 * along with the id (D21 addendum); without a table, or for an id the table
+	 * lacks, only the id changes, as before.
+	 */
+	const resolveModelSwitch = (
+		requested: string,
+	): { model: string; display: string; options: SetModelOptions; commit(): void } | { error: string } => {
+		const found = findModel(configuredModels, requested);
+		if (found === "ambiguous") return { error: `"${requested}" exists on several providers; use provider/id.` };
+		if (!found) {
+			const prefix = activeModel ? `${activeModel.provider}/` : undefined;
+			const id = prefix && requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
+			return {
+				model: id,
+				display: activeModel ? modelRef({ provider: activeModel.provider, id }) : id,
+				options: {},
+				commit: () => {
+					config.model = id;
+					if (anthropicConfig) anthropicConfig.model = id;
+				},
+			};
+		}
+		const key = resolveConfigValue(found.apiKey, valueResolver);
+		const kind: ProviderKind = found.api === "anthropic-messages" ? "anthropic" : "openai";
+		const window = options.contextWindow ?? found.contextWindow;
+		const endpoint = buildEndpoint({
+			kind,
+			label: found.provider,
+			baseUrl: found.baseUrl,
+			apiKey: key,
+			model: found.id,
+			contextWindow: window,
+			maxTokens: found.maxTokens,
+			headers: resolveHeaders(found, valueResolver),
+		});
+		const nextTransport = endpoint.anthropic ? createAnthropicTransport(endpoint.anthropic, platform) : undefined;
+		return {
+			model: found.id,
+			display: modelRef(found),
+			options: {
+				transport: nextTransport ?? createOpenAICompatTransport(platform, endpoint.config),
+				provider: endpoint.config.provider ?? "openai-compat",
+				api: endpoint.config.api ?? "openai-completions",
+				contextWindow: window,
+			},
+			// Agents built later (/reload, /resume) start from the switched endpoint.
+			commit: () => {
+				activeModel = found;
+				config = endpoint.config;
+				anthropicConfig = endpoint.anthropic;
+				transport = nextTransport;
+			},
+		};
+	};
 	const sessionRepo = new JsonlSessionRepo(
 		new NodeFileSystem("/"),
 		platform,
@@ -1100,6 +1287,17 @@ async function main(): Promise<void> {
 		if (store) {
 			const restored = await restoreSession(store);
 			initialMessages = restored.messages;
+			// The session's last model, when the table has it (pi restores the model on resume).
+			const last = lastModelChange(await store.getPathToRoot(await store.getLeafId()));
+			if (last && !options.model && configuredModels.length > 0) {
+				const entry = configuredModels.find(
+					(candidate) => candidate.provider === last.provider && candidate.id === last.modelId,
+				);
+				if (entry && (entry.provider !== activeModel?.provider || entry.id !== config.model)) {
+					const restoredModel = resolveModelSwitch(modelRef(entry));
+					if (!("error" in restoredModel)) restoredModel.commit();
+				}
+			}
 			console.log(
 				dim(
 					`Resumed session (${conversationLength(restored.messages)} messages${restored.name ? `, "${restored.name}"` : ""}).`,
@@ -1230,11 +1428,23 @@ async function main(): Promise<void> {
 		await runTui({
 			agent,
 			extensions,
-			model,
+			model: activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model,
 			modelChoices,
-			baseUrl: effectiveBaseUrl,
+			...(configuredModels.length > 0
+				? {
+						modelHints: Object.fromEntries(configuredModels.map((entry) => [modelRef(entry), describeModel(entry)])),
+						resolveModelSwitch,
+						saveDefaultModel: (ref: string) => {
+							const entry = findModel(configuredModels, ref);
+							if (!entry || entry === "ambiguous") return false;
+							writeSettings(userSettingsPath, { defaultProvider: entry.provider, defaultModel: entry.id });
+							return true;
+						},
+					}
+				: {}),
+			baseUrl: config.baseUrl,
 			cwd,
-			contextWindow,
+			contextWindow: config.contextWindow,
 			permissionMode,
 			sessionRepo,
 			shell,

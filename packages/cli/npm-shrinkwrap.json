@@ -13,6 +13,7 @@
 				"@yophon/tau-ext-provider-anthropic": "^0.2.0",
 				"@yophon/tau-ext-subagents": "^0.2.0",
 				"@yophon/tau-ext-tool-search": "^0.2.0",
+				"@yophon/tau-ext-web": "^0.2.0",
 				"@yophon/tau-host-node": "^0.2.0",
 				"@yophon/tau-kernel": "^0.2.0",
 				"ink": "5.2.1",
@@ -55,6 +56,14 @@
 		"node_modules/@yophon/tau-ext-tool-search": {
 			"version": "0.2.0",
 			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-tool-search/-/tau-ext-tool-search-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.2.0"
+			}
+		},
+		"node_modules/@yophon/tau-ext-web": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-web/-/tau-ext-web-0.2.0.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@yophon/tau-kernel": "^0.2.0"

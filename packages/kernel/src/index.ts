@@ -1,5 +1,12 @@
 export { AbortHandle } from "./abort.ts";
-export { Agent, type AgentEvent, type AgentOperation, type AgentOptions, type QueueMode } from "./agent.ts";
+export {
+	Agent,
+	type AgentEvent,
+	type AgentOperation,
+	type AgentOptions,
+	type QueueMode,
+	type SetModelOptions,
+} from "./agent.ts";
 export { encodeBase64 } from "./base64.ts";
 export {
 	BRANCH_SUMMARY_MAX_TOKENS,

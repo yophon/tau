@@ -1,16 +1,19 @@
 // Extensions the CLI loads before any user or project extension (P24e), as pi
 // loads its built-in extensions: tool_search and codemode, both registered
 // inactive (`--tools +codemode`, `--tools +tool_search`, or an MCP server with
-// codemode/deferred exposure activates them), the system prompt's tool line, and
-// (P26b) the subagent tool.
+// codemode/deferred exposure activates them), the system prompt's tool line,
+// (P26b) the subagent tool, and (P28) web_fetch / web_search.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
 import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
+import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
 import { type Agent, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
 import { createMemoryExtension } from "./memory.ts";
+import { resolveConfigValue } from "./models.ts";
+import { readSettings } from "./settings.ts";
 import { todoExtension } from "./todo.ts";
 
 /** The `codemode` section of settings.json, with pi's key names. */
@@ -27,7 +30,39 @@ const state: {
 	defaultPrompt: boolean;
 	/** ~/.tau/projects/<project>/MEMORY.md (P26c); undefined until configured. */
 	memoryFile: string | undefined;
-} = { codemode: {}, agent: undefined, defaultPrompt: true, memoryFile: undefined };
+	/** The web_search provider (P28); undefined = web_search is not registered. */
+	webSearch: WebSearchConfig | undefined;
+} = { codemode: {}, agent: undefined, defaultPrompt: true, memoryFile: undefined, webSearch: undefined };
+
+/** Environment keys that pick a search provider when settings name none (P28), in this order. */
+const SEARCH_ENV: ReadonlyArray<[WebSearchConfig["provider"], string]> = [
+	["brave", "BRAVE_API_KEY"],
+	["tavily", "TAVILY_API_KEY"],
+	["exa", "EXA_API_KEY"],
+];
+
+/** settings.json `webSearch` (its apiKey may be `$NAME` or `!command`), else the first search key in the environment. */
+export function resolveWebSearch(
+	settingsPath: string,
+	env: Record<string, string | undefined> = process.env,
+): WebSearchConfig | undefined {
+	const configured = readSettings(settingsPath).webSearch;
+	if (configured) {
+		const apiKey = resolveConfigValue(configured.apiKey, { env });
+		if (configured.provider !== "searxng" && !apiKey) return undefined;
+		if (configured.provider === "searxng" && !configured.baseUrl) return undefined;
+		return {
+			provider: configured.provider,
+			...(apiKey ? { apiKey } : {}),
+			...(configured.baseUrl ? { baseUrl: configured.baseUrl } : {}),
+		};
+	}
+	for (const [provider, name] of SEARCH_ENV) {
+		const apiKey = env[name];
+		if (apiKey) return { provider, apiKey };
+	}
+	return undefined;
+}
 
 function readCodemodeSettings(path: string): CodemodeSettings {
 	if (!existsSync(path)) return {};
@@ -54,6 +89,8 @@ function readCodemodeSettings(path: string): CodemodeSettings {
 export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	state.memoryFile = join(home, ".tau", "projects", sessionDirSlug(options.cwd), "MEMORY.md");
+	// User settings only: the search endpoint and key are never chosen by a repository.
+	state.webSearch = resolveWebSearch(join(home, ".tau", "settings.json"));
 	state.codemode = {
 		...readCodemodeSettings(join(home, ".tau", "settings.json")),
 		...(options.projectTrusted ? readCodemodeSettings(join(options.cwd, ".tau", "settings.json")) : {}),
@@ -117,5 +154,10 @@ export function builtinExtensions(): Extension[] {
 		// P26c: the todo list and long-term memory.
 		todoExtension,
 		createMemoryExtension(() => state.memoryFile),
+		// P28: web_fetch always, web_search when a provider is configured.
+		createWebExtension({
+			...(state.webSearch ? { search: state.webSearch } : {}),
+			userAgent: "tau (+https://github.com/yophon/tau)",
+		}),
 	];
 }

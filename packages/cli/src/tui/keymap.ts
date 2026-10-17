@@ -54,6 +54,7 @@ export type KeyCommand =
 	| { type: "picker-confirm" }
 	| { type: "picker-cancel" }
 	| { type: "picker-key"; key: string }
+	| { type: "picker-alt" }
 	| { type: "menu-up" }
 	| { type: "menu-down" }
 	| { type: "menu-accept" }
@@ -103,6 +104,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.downArrow) return { type: "picker-down" };
 		if (key.return) return { type: "picker-confirm" };
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
+		if (key.ctrl && ch === "s") return { type: "picker-alt" };
 		if (ch.length === 1 && ch.trim() !== "" && !key.ctrl && !key.meta) return { type: "picker-key", key: ch };
 		return undefined;
 	}

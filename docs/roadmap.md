@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；**当前工作 = 发 0.4.0（含 P22–P27）**；网关草案待定）
+> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；**当前工作 = P29 嵌入接口（规格书已确认）**；0.4.0（含 P22–P28）待发布；网关草案待定）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -256,6 +256,16 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 ## Phase 27 ✅ 斜杠命令补全（2026-10-17）
 
 规格书：[specs/phase-27-slash-commands.md](specs/phase-27-slash-commands.md)。用户问 Shift+Tab 之外怎么切档位，随后要求「补全下斜杠命令，该有的功能都要有」。对照 pi 1.2.0、yo-agent 补齐：`/mode` `/usage` `/context` `/tools` 选择器 `/import` `/export` HTML `/init` `/settings` `/hotkeys`，扩展命令 `/todos` `/memory` `/agents` `/skills` `/skill:<名字>` `/mcp`，命令参数补全（内核 `getArgumentCompletions`）。不做 login/logout、share、bug、scoped-models、changelog（理由见规格书）。
+
+## Phase 28 ✅ 模型配置与联网工具（2026-10-17）
+
+规格书：[specs/phase-28-models-web.md](specs/phase-28-models-web.md)（2026-10-17 确认）。`~/.tau/models.json`（pi 格式子集）与 settings 缺省模型，配置一次直接开用；`/model` 跨供应商切换（需 D21 补记）；新包 `@yophon/tau-ext-web`：纯 ES 的 `web_fetch`（HTML 转 markdown）与 BYOK 的 `web_search`（Brave、Tavily、Exa、SearXNG）。
+
+**完成记录**：全量 576 个测试，573 通过、3 跳过；smoke-tui 十二个场景（新增 models）通过；pack smoke 15 个包。真实 DeepSeek 下同一 TUI 会话在 OpenAI 与 Anthropic 两种协议间来回切换并调用工具；web_fetch 真实抓取文档站。web_search 待搜索 key 补验。决策 D33（D21 补记放开热换）。偏差见规格书「实施记录」。
+
+## Phase 29 ⬜ 嵌入接口（JSON、RPC、ACP）
+
+规格书：[specs/phase-29-embedding.md](specs/phase-29-embedding.md)（2026-10-17 确认；依赖 P28）。`--mode json` 事件流、`--mode rpc`（照抄 pi 协议，审批借用扩展 UI 的 select）、`--mode acp`（Agent Client Protocol，编辑器里用 tau：审批走编辑器、读写走缓冲区、待办显示为计划）。
 
 ## 产品层 ⬜ 待定
 

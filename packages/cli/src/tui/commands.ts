@@ -56,6 +56,15 @@ export const PERMISSION_MODES: ReadonlyArray<{ mode: PermissionMode; hint: strin
 	{ mode: "bypass", hint: "every approval skipped, policy rules included" },
 ];
 
+/** The /model choices: table models with their hints, or the configured ids. */
+function modelItems(tui: TuiController): CompletionItem[] {
+	const hints = tui.options.modelHints ?? {};
+	return tui.modelChoices.map((model) => {
+		const hint = [model === tui.model ? "current" : "", hints[model] ?? ""].filter((part) => part !== "").join(" · ");
+		return { value: model, label: model, ...(hint !== "" ? { hint } : {}) };
+	});
+}
+
 /** Values that start with the prefix (case-insensitive), as completion items. */
 function startingWith(prefix: string, values: ReadonlyArray<string | CompletionItem>): CompletionItem[] {
 	const lower = prefix.toLowerCase();
@@ -92,29 +101,34 @@ const BUILTINS: BuiltinCommand[] = [
 		name: "model",
 		args: "[model]",
 		description: "Show or switch the model",
-		complete: (tui, prefix) =>
-			startingWith(
-				prefix,
-				tui.modelChoices.map((model) => ({
-					value: model,
-					label: model,
-					...(model === tui.model ? { hint: "current" } : {}),
-				})),
-			),
+		complete: (tui, prefix) => startingWith(prefix, modelItems(tui)),
 		run: async (tui, args) => {
 			if (args !== "") {
 				await tui.switchModel(args);
 				return;
 			}
-			const picked = await tui.pick(
-				`Model (current: ${tui.model})`,
-				tui.modelChoices.map((model) => ({
-					label: model,
-					value: model,
-					...(model === tui.model ? { hint: "current" } : {}),
-				})),
+			const items = modelItems(tui).map((item) => ({
+				label: item.label,
+				value: item.value,
+				...(item.hint !== undefined ? { hint: item.hint } : {}),
+			}));
+			const selected = Math.max(
+				0,
+				items.findIndex((item) => item.value === tui.model),
 			);
-			if (picked !== undefined && picked !== tui.model) await tui.switchModel(picked);
+			const save = tui.options.saveDefaultModel;
+			if (!save) {
+				const picked = await tui.pick(`Model (current: ${tui.model})`, items, selected);
+				if (picked !== undefined && picked !== tui.model) await tui.switchModel(picked);
+				return;
+			}
+			const picked = await tui.pickWithAlt(`Model (current: ${tui.model})`, items, selected, "save as default");
+			if (!picked) return;
+			if (picked.alt) {
+				if (save(picked.value)) tui.notice("dim", `Default model for new sessions: ${picked.value}.`);
+				else tui.notice("error", `Cannot save ${picked.value} as the default.`);
+			}
+			if (picked.value !== tui.model) await tui.switchModel(picked.value);
 		},
 	},
 	{

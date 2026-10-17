@@ -7,13 +7,14 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { NodeFileSystem } from "@yophon/tau-host-node";
 import {
+	createOpenAICompatTransport,
 	defaultPlatform,
 	type Extension,
 	ExtensionRegistry,
 	JsonlSessionRepo,
 	SessionRecorder,
 } from "@yophon/tau-kernel";
-import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
+import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { createMemoryExtension } from "../src/memory.ts";
 import { todoExtension } from "../src/todo.ts";
 import { sessionHtml } from "../src/tui/export-html.ts";
@@ -314,5 +315,96 @@ describe("P27 extension commands", () => {
 			},
 		} as never);
 		assert.match(String(output), /No editor here; edit .*MEMORY\.md directly\./);
+	});
+});
+
+describe("P28 /model with a model table", () => {
+	it("switches provider and endpoint mid-session; Ctrl+S saves the default", async () => {
+		const otherRequests: unknown[] = [];
+		const otherPlatform = fakePlatform([makeSseResponse(textTurn("FROM_OTHER"))], otherRequests);
+		const saved: string[] = [];
+		const commits: string[] = [];
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("FROM_FIRST"))],
+			tui: {
+				model: "first/test-model",
+				modelChoices: ["first/test-model", "other/model-b"],
+				modelHints: { "first/test-model": "8k ctx", "other/model-b": "200k ctx · anthropic" },
+				resolveModelSwitch: (requested) =>
+					requested === "other/model-b" || requested === "model-b"
+						? {
+								model: "model-b",
+								display: "other/model-b",
+								options: {
+									transport: createOpenAICompatTransport(otherPlatform, {
+										baseUrl: "https://other.test/v1",
+										model: "model-b",
+										provider: "other",
+									}),
+									provider: "other",
+									contextWindow: 200_000,
+								},
+								commit: () => commits.push(requested),
+							}
+						: { error: `unknown ${requested}` },
+				saveDefaultModel: (ref) => {
+					saved.push(ref);
+					return true;
+				},
+			},
+		});
+		await h.submit("first question");
+		await h.waitFor((f) => f.includes("FROM_FIRST") && /· \d/.test(f), "the first answer");
+		await h.submit("/model");
+		await h.waitFor(
+			(f) => f.includes("Model (current: first/test-model)") && f.includes("200k ctx · anthropic"),
+			"the picker",
+		);
+		await h.waitFor((f) => f.includes("Ctrl+S to save as default"), "the alt hint");
+		await h.key(DOWN);
+		await h.key("\x13");
+		await h.waitFor((f) => f.includes("Default model for new sessions: other/model-b."), "the save");
+		await h.waitFor((f) => f.includes("Model set to other/model-b."), "the switch");
+		assert.deepEqual(saved, ["other/model-b"]);
+		assert.deepEqual(commits, ["other/model-b"]);
+		assert.match(h.frame(), /other\/model-b · autonomous/);
+		assert.equal(h.controller.agent.getContextUsage().contextWindow, 200_000);
+		await h.submit("second question");
+		await h.waitFor((f) => f.includes("FROM_OTHER") && /· \d/.test(f), "the other provider's answer");
+		assert.equal(h.requests.length, 1);
+		assert.equal(otherRequests.length, 1);
+		assert.equal((otherRequests[0] as { model: string }).model, "model-b");
+		await h.submit("/model nope");
+		await h.waitFor((f) => f.includes("unknown nope"), "the error");
+	});
+});
+
+describe("P28 resume restores the session's model", () => {
+	it("/resume of a session whose last model_change is another table model switches to it", async () => {
+		const switched: string[] = [];
+		const h = await harness({
+			responses: [],
+			sessions: true,
+			tui: {
+				model: "first/test-model",
+				modelChoices: ["first/test-model", "other/model-b"],
+				resolveModelSwitch: (requested) => ({
+					model: requested.split("/")[1] ?? requested,
+					display: requested,
+					options: { provider: requested.split("/")[0] ?? "" },
+					commit: () => switched.push(requested),
+				}),
+			},
+		});
+		const repo = h.repo as JsonlSessionRepo;
+		const other = await repo.create();
+		const recorder = await SessionRecorder.open(other);
+		await recorder.recordMessage({ role: "user", content: "EARLIER_QUESTION", timestamp: 1 });
+		await recorder.append({ type: "model_change", provider: "other", modelId: "model-b" });
+		const id = (await other.getMetadata()).id;
+		await h.submit(`/resume ${id}`);
+		await h.waitFor((f) => f.includes("Model set to other/model-b."), "the restored model");
+		assert.deepEqual(switched, ["other/model-b"]);
+		assert.equal(h.controller.agent.model, "model-b");
 	});
 });

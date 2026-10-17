@@ -182,3 +182,110 @@ test("createOpenAICompatTransport forwards maxTokens into the wire body", async 
 	assert.equal(messageText(final ?? { role: "user", content: "", timestamp: 0 }), "ok");
 	assert.equal((requests[0] as { max_tokens?: number }).max_tokens, 321);
 });
+
+test("setModel with a transport switches provider between requests; model_change records it; window follows (P28)", async () => {
+	const first: TransportRequest[] = [];
+	const second: TransportRequest[] = [];
+	const reply = (text: string, provider: string, model: string): ChatStreamEvent[] => [
+		{
+			type: "response_end",
+			message: { ...assistantMessage([{ type: "text", text }], "stop"), provider, model },
+		},
+	];
+	const agent = new Agent({
+		config: { baseUrl: "https://a.test/v1", model: "model-a", provider: "provider-a", contextWindow: 1000 },
+		transport: scriptedTransport([reply("from a", "provider-a", "model-a")], first),
+		platform: fakePlatform([]),
+	});
+	for await (const _event of agent.prompt("one")) {
+		// drain
+	}
+	agent.setModel("model-b", {
+		transport: scriptedTransport([reply("from b", "provider-b", "model-b")], second),
+		provider: "provider-b",
+		api: "anthropic-messages",
+		contextWindow: 200_000,
+	});
+	assert.equal(agent.getContextUsage().contextWindow, 200_000);
+	for await (const _event of agent.prompt("two")) {
+		// drain
+	}
+	assert.equal(first.length, 1);
+	assert.equal(second.length, 1);
+	assert.equal(second[0]?.model, "model-b");
+	// The new transport sees the whole conversation, the other provider's reply included.
+	assert.deepEqual(
+		second[0]?.messages.filter((message) => message.role !== "system").map((message) => messageText(message)),
+		["one", "from a", "two"],
+	);
+	await agent.flush();
+	const change = agent
+		.extensionContext()
+		.sessionManager?.getBranch()
+		.find((entry) => entry.type === "model_change");
+	assert.deepEqual(
+		change && { provider: (change as { provider: string }).provider, modelId: (change as { modelId: string }).modelId },
+		{
+			provider: "provider-b",
+			modelId: "model-b",
+		},
+	);
+	// Same model, same options: nothing to log.
+	agent.setModel("model-b", { provider: "provider-b" });
+	await agent.flush();
+	assert.equal(
+		agent
+			.extensionContext()
+			.sessionManager?.getBranch()
+			.filter((entry) => entry.type === "model_change").length,
+		1,
+	);
+});
+
+test("an OpenAI-compatible transport replays another provider's signed thinking as text and keeps tool pairs (P28)", async () => {
+	const requests: unknown[] = [];
+	const transport = createOpenAICompatTransport(fakePlatform([makeSseResponse(textTurn("ok"))], requests), {
+		baseUrl: "https://fake.test/v1",
+		model: "deepseek-chat",
+		provider: "deepseek",
+	});
+	const claudeTurn: AssistantMessage = {
+		...assistantMessage(
+			[
+				{ type: "thinking", thinking: "Plan: list files.", thinkingSignature: "sig-abc" },
+				{ type: "thinking", thinking: "", thinkingSignature: "opaque", redacted: true },
+				{ type: "toolCall", id: "toolu_01", name: "ls", arguments: {} },
+			],
+			"toolUse",
+		),
+		provider: "anthropic",
+		api: "anthropic-messages",
+		model: "claude-sonnet-5-5",
+	};
+	for await (const _event of transport({
+		messages: [
+			{ role: "user", content: "list", timestamp: 1 },
+			claudeTurn,
+			{
+				role: "toolResult",
+				toolCallId: "toolu_01",
+				toolName: "ls",
+				content: [{ type: "text", text: "a.txt" }],
+				isError: false,
+				timestamp: 2,
+			},
+			{ role: "user", content: "and now?", timestamp: 3 },
+		],
+	})) {
+		// drain
+	}
+	const body = requests[0] as { messages: Array<Record<string, unknown>> };
+	const assistant = body.messages.find((message) => message.role === "assistant") as Record<string, unknown>;
+	assert.equal(assistant.content, "Plan: list files.");
+	assert.equal(assistant.reasoning_content, undefined);
+	assert.equal(JSON.stringify(body).includes("sig-abc"), false);
+	assert.equal(JSON.stringify(body).includes("opaque"), false);
+	const callId = (assistant.tool_calls as Array<{ id: string }>)[0]?.id;
+	const result = body.messages.find((message) => message.role === "tool") as Record<string, unknown>;
+	assert.equal(result.tool_call_id, callId);
+});

@@ -159,7 +159,9 @@ function renderMenu(completion: Completion, selected: number): React.ReactElemen
 
 export function hintText(state: UiState, completion: Completion | undefined): string {
 	if (state.approval) return "↑↓ or 1-4 to choose · Enter to confirm · Esc twice to deny";
-	if (state.picker) return "↑↓ to choose · Enter to confirm · Esc to cancel";
+	if (state.picker) {
+		return `↑↓ to choose · Enter to confirm${state.picker.alt ? ` · Ctrl+S to ${state.picker.alt}` : ""} · Esc to cancel`;
+	}
 	if (completion && completion.items.length > 0) return "Tab or Enter to complete · Esc to close";
 	if (state.prompt?.kind === "tell") return "Enter to deny and send this · Esc to go back to the approval";
 	if (state.prompt) return "Enter to submit · Esc to cancel";

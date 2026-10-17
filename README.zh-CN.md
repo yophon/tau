@@ -23,8 +23,11 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 - **编码工具**——read（文本与图片）、write、edit（一次调用做多处精确替换）、
   bash，以及纯 ES 实现、走宿主文件系统的 grep / find / ls（照 `.gitignore`
   过滤，所有宿主可用，包括 OPFS）。CLI 另带 `todo_write`（TUI 里显示清单）、
-  按项目的长期记忆（`memory_write`，TUI 里输入 `#事实`）和五档权限
+  按项目的长期记忆（`memory_write`，TUI 里输入 `#事实`）、`web_fetch` /
+  `web_search` 和五档权限
   （read-only、supervised、accept-edits、autonomous、bypass）。
+- **模型**——在 `~/.tau/models.json`（pi 的格式）里把供应商和模型写一次；
+  `/model` 在会话中途切换，可以跨协议，上下文窗口和单价按模型生效。
 - **子代理**——`subagent` 工具把任务交给拥有独立上下文的子代理：单个、多个
   并行、串联，或放到后台（做完后结果作为 follow-up 送回）。子代理用 Markdown
   定义（pi 的格式），内置 scout、planner、reviewer、worker。
@@ -60,6 +63,7 @@ MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的�
 | `@yophon/tau-ext-mcp` | Node 上的 MCP 扩展：ext-mcp-http 的核心加本地服务器的 stdio 传输（不依赖 MCP SDK） | 是——子进程 |
 | `@yophon/tau-ext-mcp-http` | 完全构建在 `Platform` 缝隙上的纯 ES MCP client 与扩展核心（Streamable HTTP）——零依赖，裸引擎可跑 | **否**——纯 `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | 完全构建在 `Platform` 缝隙上的 Anthropic Messages `ChatTransport`——thinking 原生流式、prompt 缓存、工具结果携带图片 | **否**——纯 `Platform` |
+| `@yophon/tau-ext-web` | `web_fetch`（经 `Platform.fetch` 抓网页转 markdown）与 BYOK 的 `web_search`（Brave、Tavily、Exa、SearXNG） | **否**——纯 `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`：在未声明的工具（如 MCP 工具）里用 BM25 检索，命中的下一次请求起可用 | 否——纯 ES |
 | `@yophon/tau-ext-codemode` | `codemode`：模型写 JavaScript 调用工具，跑在 pi 的 QuickJS 沙箱里（`./node`） | 是——worker 线程与 wasm（Node 入口） |
 | `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
@@ -115,17 +119,58 @@ npm install --ignore-scripts
 npm run check   # lint + 类型 + 内核纯度
 npm test        # node --test：内核单测 + 宿主测试 + CLI e2e
 
-# 用任意 OpenAI 兼容端点跑 CLI（BYOK）
+# 在 ~/.tau/models.json 里把模型写一次（见下文「模型」），之后直接：
+npm run tau                       # 终端里进 TUI（/help 列出命令与快捷键）
+npm run tau -- --list-models      # 看配置了哪些、哪些可用
+
+# 或者临时指向任意 OpenAI 兼容端点（BYOK）
 export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
 export TAU_MODEL=deepseek-chat
-npm run tau                       # 终端下进 TUI（/help 列出命令和键位）
 npm run tau -- --repl             # 改用逐行 REPL
 npm run tau -- -p "列出这里的文件并总结"
 
 # 或原生说 Anthropic Messages 协议（base URL 可省略）
 npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "你好"
 ```
+
+### 模型
+
+`~/.tau/models.json` 用 pi 格式的子集。tau 从不保存密钥：`apiKey` 写
+`$NAME` / `${NAME}` 读环境变量，写 `!命令` 取命令输出（比如密码管理器），
+其余按字面量处理。
+
+```json
+{
+  "providers": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$DEEPSEEK_API_KEY",
+      "models": [{ "id": "deepseek-chat", "contextWindow": 128000, "cost": { "input": 0.27, "output": 1.1 } }]
+    },
+    "anthropic": {
+      "api": "anthropic-messages",
+      "apiKey": "$ANTHROPIC_API_KEY",
+      "models": [{ "id": "claude-sonnet-5-5", "contextWindow": 200000, "maxTokens": 32000 }]
+    }
+  }
+}
+```
+
+写了上下文窗口就有自动压缩和上下文占用显示；`cost`（美元/百万 token）用来算会话
+费用。`/model` 列出所有密钥可用的模型，会话中途可以切换，协议不同也行；选择器里
+按 Ctrl+S 存为缺省（写进 `~/.tau/settings.json` 的 `defaultProvider` /
+`defaultModel`）。启动时用 `-m 供应商/模型` 指定。有可用的模型表时，
+`TAU_BASE_URL` 这类环境变量不再参与；`-b` / `-k` / `--provider` 仍然走临时端点。
+
+### 联网
+
+`web_fetch` 把网页读成 markdown（纯 ES，走宿主的 fetch）。`web_search` 需要在
+`~/.tau/settings.json` 里配一个供应商——
+`{ "webSearch": { "provider": "brave", "apiKey": "$BRAVE_API_KEY" } }`（也可以是
+`tavily`、`exa`，或带 `baseUrl` 的自建 `searxng`）——或者直接导出
+`BRAVE_API_KEY`、`TAVILY_API_KEY`、`EXA_API_KEY` 之一。
 
 > **权限（P15，破坏性变更）**：CLI/TUI 现默认 `--permission-mode supervised`——
 > bash 命令与文件写入在 TTY 下先审批，headless（`-p` 管道）下直接**拒绝**。
@@ -212,7 +257,7 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D22）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D33）
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

@@ -5,6 +5,11 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ## [Unreleased]
 
 ### ⚠ Breaking
+- CLI (P28): when `~/.tau/models.json` has a usable model, it decides the
+  endpoint, key and model; `TAU_BASE_URL`, `TAU_MODEL`, `TAU_API_KEY` and the
+  `OPENAI_*`/`ANTHROPIC_*` variables only apply without one. `-b`/`-k`/
+  `--provider` still run an ad-hoc endpoint. The CLI also declares `web_fetch`
+  by default (a new built-in extension), so exact tool lists grow by one.
 - ext-subagents (P26b): the tool is `subagent` (was `task`) with pi's
   parameters — `{agent, task}`, `{tasks: [...]}` or `{chain: [...]}`, plus
   `background` — instead of `{description, prompt}`. The CLI now loads it by
@@ -244,6 +249,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   do that). `/export` writes HTML unless the path ends in `.jsonl` (pi).
 
 ### Added
+- CLI (P28): `~/.tau/models.json` (a subset of pi's format: providers with
+  `baseUrl`, `api` — `openai-completions` or `anthropic-messages` — `apiKey`
+  as `$NAME`, `${NAME}`, `!command` or a literal, and `headers`; models with
+  `contextWindow`, `maxTokens` and `cost`), `defaultProvider` /
+  `defaultModel` / `defaultThinkingLevel` in `~/.tau/settings.json`,
+  `--list-models`, and `-m provider/id`. `/model` lists the usable models and
+  switches between them mid-session, protocol included; Ctrl+S in its picker
+  saves the default. A resumed session goes back to its last model.
+- Kernel (P28): `Agent.setModel(model, { transport, provider, api,
+  contextWindow })` switches provider between requests (D21 addendum, D33);
+  `SetModelOptions` is exported.
+- New package `@yophon/tau-ext-web` (P28, pure `Platform`): `web_fetch` reads a
+  page as markdown (its own HTML converter: main content, absolute links,
+  lists, code, tables), text and JSON as is, images as image blocks, 50KB per
+  call with `offset` paging; `web_search` over Brave, Tavily, Exa or SearXNG
+  with the user's key (`webSearch` in settings, or `BRAVE_API_KEY` /
+  `TAVILY_API_KEY` / `EXA_API_KEY`). The CLI loads it by default.
 - CLI TUI (P27): slash commands `/mode` (picker or argument; bypass asks
   first), `/usage` (`/cost`: tokens and cost per turn), `/context` (what
   fills the window), `/import <file.jsonl>` (pi), `/init` (the model writes

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,20 +34,26 @@ interface CliProcess {
 	waitForExit(timeoutMs?: number): Promise<number | null>;
 }
 
-function startCli(args: string[], options: { cwd: string; home: string; baseUrl: string }): CliProcess {
+function startCli(
+	args: string[],
+	options: { cwd: string; home: string; baseUrl: string; env?: Record<string, string | undefined> },
+): CliProcess {
+	const env: Record<string, string | undefined> = {
+		...process.env,
+		HOME: options.home,
+		TAU_BASE_URL: options.baseUrl,
+		TAU_MODEL: "mock-model",
+		TAU_API_KEY: "test",
+		// Pre-P15 behavior for the scenarios that are not about permissions;
+		// permission tests override with an explicit --permission-mode flag
+		// (flags take precedence over the env).
+		TAU_PERMISSION_MODE: "autonomous",
+		...options.env,
+	};
+	for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];
 	const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", CLI_PATH, ...args], {
 		cwd: options.cwd,
-		env: {
-			...process.env,
-			HOME: options.home,
-			TAU_BASE_URL: options.baseUrl,
-			TAU_MODEL: "mock-model",
-			TAU_API_KEY: "test",
-			// Pre-P15 behavior for the scenarios that are not about permissions;
-			// permission tests override with an explicit --permission-mode flag
-			// (flags take precedence over the env).
-			TAU_PERMISSION_MODE: "autonomous",
-		},
+		env,
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	spawnedChildren.push(child);
@@ -286,9 +292,57 @@ test("--tools narrows the declared built-in tools (P23e)", async () => {
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "ls", "subagent", "todo_write", "memory_write"],
+				["read", "ls", "subagent", "todo_write", "memory_write", "web_fetch"],
 				"nope is not a tool; read and ls survive; --tools narrows built-in coding tools only",
 			);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("~/.tau/models.json picks endpoint, key and model without env; it beats TAU_BASE_URL; --list-models (P28)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([() => mockTextTurn("from the table"), () => mockTextTurn("again")]);
+		try {
+			mkdirSync(join(home, ".tau"), { recursive: true });
+			writeFileSync(
+				join(home, ".tau", "models.json"),
+				JSON.stringify({
+					providers: {
+						mock: {
+							baseUrl: mock.baseUrl,
+							apiKey: "$MOCK_KEY",
+							models: [{ id: "table-model", contextWindow: 4096 }, { id: "second-model" }],
+						},
+						nokey: { baseUrl: "http://unused.test/v1", apiKey: "$ABSENT_KEY", models: [{ id: "x" }] },
+					},
+				}),
+			);
+			writeFileSync(join(home, ".tau", "settings.json"), JSON.stringify({ defaultModel: "mock/second-model" }));
+			const list = startCli(["--list-models"], { cwd, home, baseUrl: mock.baseUrl, env: { MOCK_KEY: "k" } });
+			assert.equal(await list.waitForExit(), 0, list.output());
+			assert.match(list.output(), /mock\/table-model\s+4k ctx\r?\nmock\/second-model/);
+			assert.doesNotMatch(list.output(), /nokey/);
+
+			const bare = startCli(["-p", "hi", "--no-session"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+				env: { MOCK_KEY: "k", TAU_BASE_URL: undefined, TAU_MODEL: undefined, TAU_API_KEY: undefined },
+			});
+			assert.equal(await bare.waitForExit(), 0, bare.output());
+			assert.equal((mock.requests[0] as { model: string }).model, "second-model");
+
+			// The table wins over a TAU_BASE_URL that points elsewhere (P28 ruling 2); -m picks another entry.
+			const flagged = startCli(["-p", "hi", "--no-session", "-m", "table-model"], {
+				cwd,
+				home,
+				baseUrl: "http://127.0.0.1:9/v1",
+				env: { MOCK_KEY: "k" },
+			});
+			assert.equal(await flagged.waitForExit(), 0, flagged.output());
+			assert.equal((mock.requests[1] as { model: string }).model, "table-model");
 		} finally {
 			await mock.close();
 		}
@@ -837,7 +891,7 @@ test("read-only mode keeps write/edit/bash off the request wire entirely", async
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "grep", "find", "ls", "subagent", "todo_write", "memory_write"],
+				["read", "grep", "find", "ls", "subagent", "todo_write", "memory_write", "web_fetch"],
 			);
 		} finally {
 			await mock.close();

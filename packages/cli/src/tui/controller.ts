@@ -90,7 +90,7 @@ export class TuiController {
 	 * messages instead races with a result landing while a turn wraps up.
 	 */
 	private readonly shownCustom = new Set<string>();
-	private readonly pickers = new Map<number, (value: string | undefined) => void>();
+	private readonly pickers = new Map<number, (value: string | undefined, alt?: boolean) => void>();
 	private readonly prompts = new Map<number, (value: string | undefined) => void>();
 	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
 	private tellFor: ApprovalView | undefined;
@@ -296,7 +296,7 @@ export class TuiController {
 				model: this.model,
 				...(this.thinkingLevel !== undefined ? { thinking: this.thinkingLevel } : { thinking: undefined }),
 				contextTokens: usage.tokens,
-				...(usage.contextWindow !== undefined ? { contextWindow: usage.contextWindow } : {}),
+				contextWindow: usage.contextWindow,
 				inputTokens: session.input + session.cacheRead + session.cacheWrite,
 				outputTokens: session.output,
 				costUsd: session.cost.total,
@@ -509,6 +509,14 @@ export class TuiController {
 				if (!picker) return;
 				this.dispatch({ type: "picker-close", id: picker.id });
 				this.settlePicker(picker.id, picker.items[picker.selected]?.value);
+				return;
+			}
+			case "picker-alt": {
+				const picker = state.picker;
+				const value = picker?.items[picker.selected]?.value;
+				if (!picker?.alt || value === undefined) return;
+				this.dispatch({ type: "picker-close", id: picker.id });
+				this.settlePicker(picker.id, value, true);
 				return;
 			}
 			case "picker-key": {
@@ -1192,7 +1200,19 @@ export class TuiController {
 				: `${reason === "fork" ? "Forked to" : "Resumed"} ${metadata.name ? `"${metadata.name}" ` : ""}${metadata.filePath ?? metadata.id} (${messageCount} messages).`,
 		);
 		await this.refreshSurfaces();
+		if (reason === "resume") await this.restoreSessionModel(store);
 		return { cancelled: false, metadata, messageCount };
+	}
+
+	/** A resumed session goes back to its last model when the model table has it (pi, P28). */
+	private async restoreSessionModel(store: SessionStore): Promise<void> {
+		if (!this.options.resolveModelSwitch) return;
+		const path = await store.getPathToRoot(await store.getLeafId());
+		const last = path.findLast((entry) => entry.type === "model_change");
+		if (last?.type !== "model_change") return;
+		const ref = `${last.provider}/${last.modelId}`;
+		if (ref === this.model || !this.modelChoices.includes(ref)) return;
+		await this.switchModel(ref);
 	}
 
 	async reloadExtensions(): Promise<void> {
@@ -1239,26 +1259,36 @@ export class TuiController {
 	}
 
 	async switchModel(requested: string): Promise<void> {
-		const previous = this.model;
+		// With a model table (P28) the choice may switch provider, endpoint and protocol too.
+		const resolved = this.options.resolveModelSwitch?.(requested);
+		if (resolved && "error" in resolved) {
+			this.notice("error", resolved.error);
+			return;
+		}
+		const previous = this.agent.model;
+		const target = resolved ? resolved.model : requested;
 		const decision = await this.extensions.runModelSelectBefore(
-			{ currentModel: previous, requestedModel: requested },
+			{ currentModel: previous, requestedModel: target },
 			this.agent.extensionContext(),
 		);
 		if (decision.cancel) {
 			this.notice("dim", `Model switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
 			return;
 		}
-		this.model = decision.model;
-		this.modelChoices = unique([decision.model, ...this.modelChoices]);
-		this.options.setModel(decision.model);
+		// An extension that rewrote the choice gets exactly its id, on the current provider.
+		const followsTable = resolved !== undefined && decision.model === target;
+		if (followsTable) resolved.commit();
+		else this.options.setModel(decision.model);
+		this.model = followsTable ? resolved.display : decision.model;
+		this.modelChoices = unique([this.model, ...this.modelChoices]);
 		// The agent sends the model with each request and logs a model_change entry (P23d).
-		this.agent.setModel(decision.model);
+		this.agent.setModel(decision.model, followsTable ? resolved.options : {});
 		await this.extensions.notifyModelSelected(
-			{ previousModel: previous, requestedModel: requested, selectedModel: decision.model },
+			{ previousModel: previous, requestedModel: target, selectedModel: decision.model },
 			this.agent.extensionContext(),
 		);
 		await this.refreshStatus();
-		this.notice("dim", `Model set to ${decision.model}.`);
+		this.notice("dim", `Model set to ${this.model}.`);
 	}
 
 	async switchThinking(requested: ThinkingLevel | undefined): Promise<void> {
@@ -1367,10 +1397,28 @@ export class TuiController {
 		});
 	}
 
-	private settlePicker(id: number, value: string | undefined): void {
+	private settlePicker(id: number, value: string | undefined, alt = false): void {
 		const resolve = this.pickers.get(id);
 		this.pickers.delete(id);
-		resolve?.(value);
+		resolve?.(value, alt);
+	}
+
+	/** A picker whose Ctrl+S also picks, flagged `alt` (the /model picker saves the default with it). */
+	pickWithAlt(
+		title: string,
+		items: PickerItem[],
+		selected: number,
+		alt: string,
+	): Promise<{ value: string; alt: boolean } | undefined> {
+		const id = this.nextDialogId++;
+		return new Promise((resolve) => {
+			this.pickers.set(id, (value, isAlt) => resolve(value === undefined ? undefined : { value, alt: isAlt === true }));
+			this.dispatch({
+				type: "picker-open",
+				picker: { id, title, items, selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)), alt },
+			});
+			this.store.flush();
+		});
 	}
 
 	ask(kind: "input", title: string, placeholder?: string): Promise<string | undefined> {

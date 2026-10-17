@@ -34,6 +34,7 @@ async function main() {
 		await run("trust", runTrustDigestSmoke);
 		await run("subagent", runSubagentSmoke);
 		await run("commands", runCommandsSmoke);
+		await run("models", runModelsSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -464,6 +465,46 @@ async function runCommandsSmoke(root, baseUrl) {
 	}
 }
 
+// P28 验收：只靠 ~/.tau/models.json 与 settings 缺省模型启动（指向别处的
+// TAU_BASE_URL、TAU_MODEL 被忽略），/model 跨供应商切换后请求换了模型。
+async function runModelsSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "models", false);
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	await writeFile(
+		join(dirs.home, ".tau", "models.json"),
+		JSON.stringify({
+			providers: {
+				alpha: { baseUrl, apiKey: "k", models: [{ id: "alpha-1", contextWindow: 32000 }] },
+				beta: { baseUrl, apiKey: "k", models: [{ id: "beta-2", contextWindow: 64000 }] },
+			},
+		}),
+		"utf8",
+	);
+	await writeFile(join(dirs.home, ".tau", "settings.json"), JSON.stringify({ defaultModel: "alpha/alpha-1" }), "utf8");
+	const session = await startTui(
+		"models",
+		dirs,
+		baseUrl,
+		["--no-session"],
+		["TAU_BASE_URL=http://127.0.0.1:9/v1", "TAU_MODEL=ignored-model"],
+	);
+	try {
+		await session.waitFor("alpha/alpha-1", 10_000);
+		await session.send("which model", "Enter");
+		await session.waitFor("MODEL_IS_alpha-1", 10_000);
+		await session.send("/model beta/beta-2", "Enter");
+		await session.waitFor("Model set to beta/beta-2.", 10_000);
+		await session.send("which model", "Enter");
+		await session.waitFor("MODEL_IS_beta-2", 10_000);
+		await session.waitFor("beta/beta-2 · autonomous", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok models");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P15 验收：trust.json 内容 digest——同内容二次启动不再询问；扩展内容修改后
 // 重新触发信任询问。
 async function runTrustDigestSmoke(root, baseUrl) {
@@ -587,6 +628,7 @@ function responseFor(request) {
 	}
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
+	if (content.includes("which model")) return textTurn(`MODEL_IS_${request.model}`);
 	if (content.includes("stream smoke")) return textTurn("SMOKE_STREAM_OK", 40);
 	if (content === "SCOUT_TASK") return textTurn("RESULT_SCOUT", 40);
 	if (content === "WORKER_TASK") return textTurn("RESULT_WORKER", 40);

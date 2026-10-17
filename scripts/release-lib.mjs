@@ -15,6 +15,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-mcp-http",
 	"ext-mcp",
 	"ext-tool-search",
+	"ext-web",
 	"ext-codemode",
 	"ext-provider-anthropic",
 	"ext-resources",

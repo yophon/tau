@@ -28,8 +28,12 @@ inject a small adapter instead of polyfilling globals.
   replacements in one call), bash, and grep / find / ls in pure ES over the
   host filesystem (they honor `.gitignore` and work on every host, OPFS
   included). The CLI adds `todo_write` (a checklist in the TUI), long-term
-  project memory (`memory_write`, `#fact` in the TUI) and five permission modes
-  (read-only, supervised, accept-edits, autonomous, bypass).
+  project memory (`memory_write`, `#fact` in the TUI), `web_fetch` /
+  `web_search`, and five permission modes (read-only, supervised,
+  accept-edits, autonomous, bypass).
+- **Models** — describe providers and models once in `~/.tau/models.json`
+  (pi's format); `/model` switches between them mid-session, across
+  protocols, with per-model context windows and prices.
 - **Subagents** — the `subagent` tool delegates to child agents with their
   own context: one, several in parallel, a chain, or in the background (the
   result comes back as a follow-up). Agents are Markdown definitions (pi's
@@ -70,6 +74,7 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-ext-mcp` | MCP extension for Node: the ext-mcp-http core plus a stdio transport for local servers (no MCP SDK) | Yes — child processes |
 | `@yophon/tau-ext-mcp-http` | Pure-ES MCP client and extension core (Streamable HTTP) written entirely on the `Platform` seam — zero dependencies, runs on bare engines | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
+| `@yophon/tau-ext-web` | `web_fetch` (HTML to markdown over `Platform.fetch`) and BYOK `web_search` (Brave, Tavily, Exa, SearXNG) | **No** — pure `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`: BM25 search over deferred tools (e.g. MCP tools), loading the matches for the next request | No — pure ES |
 | `@yophon/tau-ext-codemode` | `codemode`: the model writes JavaScript that calls tools, run in pi's QuickJS sandbox (`./node`) | Yes — worker threads + wasm (Node entry) |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
@@ -128,17 +133,60 @@ npm install --ignore-scripts
 npm run check   # lint + types + kernel purity
 npm test        # node --test: kernel unit tests + host tests + CLI e2e
 
-# Run the CLI against any OpenAI-compatible endpoint (BYOK)
+# Describe your models once in ~/.tau/models.json (see "Models" below), then:
+npm run tau                       # the TUI on a terminal (/help lists commands and keys)
+npm run tau -- --list-models      # what is configured and usable
+
+# Or point it at any OpenAI-compatible endpoint ad hoc (BYOK)
 export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
 export TAU_MODEL=deepseek-chat
-npm run tau                       # the TUI on a terminal (/help lists commands and keys)
 npm run tau -- --repl             # line-based REPL instead
 npm run tau -- -p "list the files here and summarize"
 
 # Or speak the Anthropic Messages API natively (base URL optional)
 npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
 ```
+
+### Models
+
+`~/.tau/models.json` uses a subset of pi's format. Keys are never stored by
+tau: `apiKey` reads `$NAME` / `${NAME}` from the environment, runs
+`!command` (a password manager, say), or takes a literal.
+
+```json
+{
+  "providers": {
+    "deepseek": {
+      "baseUrl": "https://api.deepseek.com/v1",
+      "api": "openai-completions",
+      "apiKey": "$DEEPSEEK_API_KEY",
+      "models": [{ "id": "deepseek-chat", "contextWindow": 128000, "cost": { "input": 0.27, "output": 1.1 } }]
+    },
+    "anthropic": {
+      "api": "anthropic-messages",
+      "apiKey": "$ANTHROPIC_API_KEY",
+      "models": [{ "id": "claude-sonnet-5-5", "contextWindow": 200000, "maxTokens": 32000 }]
+    }
+  }
+}
+```
+
+The context window turns on auto-compaction and the context meter; `cost`
+(USD per million tokens) prices the session. `/model` lists every model with
+a usable key and switches between them mid-session, protocol included; Ctrl+S
+in its picker saves the default (`defaultProvider` / `defaultModel` in
+`~/.tau/settings.json`). `-m provider/id` picks one at startup. With a usable
+table, `TAU_BASE_URL`-style variables are ignored; `-b` / `-k` /
+`--provider` still run an ad-hoc endpoint.
+
+### Web
+
+`web_fetch` reads a page as markdown (pure ES over the host's fetch). For
+`web_search`, set a provider in `~/.tau/settings.json` —
+`{ "webSearch": { "provider": "brave", "apiKey": "$BRAVE_API_KEY" } }` (also
+`tavily`, `exa`, or `searxng` with a `baseUrl`) — or just export
+`BRAVE_API_KEY`, `TAVILY_API_KEY` or `EXA_API_KEY`.
 
 > **Permissions (P15, breaking):** the CLI/TUI now default to
 > `--permission-mode supervised` — bash commands and file writes ask for
@@ -233,7 +281,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D22)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D33)
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

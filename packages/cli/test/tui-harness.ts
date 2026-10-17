@@ -64,6 +64,8 @@ export interface HarnessOptions {
 	resume?: (store: SessionStore, recorder: SessionRecorder) => Promise<void>;
 	/** What /reload loads; defaults to the same extensions again. */
 	reloadExtensions?: Extension[];
+	/** Extra RunTuiOptions (P28: the model table hooks). */
+	tui?: Partial<RunTuiOptions>;
 }
 
 export async function harness(options: HarnessOptions): Promise<Harness> {
@@ -132,6 +134,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		buildAgent: (messages, session, registry) => buildAgent(messages, session, registry),
 		reloadExtensions: async () => ExtensionRegistry.load(options.reloadExtensions ?? options.extensions ?? []),
 		sessionReason: initial ? "resume" : "startup",
+		...options.tui,
 	};
 	const copied: string[] = [];
 	const editorResult: { value: string | undefined } = { value: undefined };

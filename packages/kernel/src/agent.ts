@@ -150,6 +150,18 @@ type CompactionOutcome =
 	| { kind: "done"; result: CompactionResult }
 	| { kind: "failed"; errorMessage?: string; aborted: boolean; cancelledByExtension: boolean; error: Error };
 
+/** What Agent.setModel switches along with the model (P28). */
+export interface SetModelOptions {
+	/** The new model's transport; omitted = keep the current one. */
+	transport?: ChatTransport;
+	/** Provider label for messages and the model_change entry (pi `provider`). */
+	provider?: string;
+	/** Wire API label for messages (pi `api`), e.g. "anthropic-messages". */
+	api?: string;
+	/** The new model's context window (auto-compaction, context %); present-but-undefined clears it. */
+	contextWindow?: number | undefined;
+}
+
 export interface AgentOptions {
 	config: OpenAICompatConfig;
 	/**
@@ -329,8 +341,9 @@ export class Agent {
 	private sessionMetadata: SessionMetadata | undefined;
 	private readonlySessionManager: ReadonlySessionManager | undefined;
 	private readonly platform: Platform;
-	private readonly config: OpenAICompatConfig;
-	private readonly transport: ChatTransport;
+	/** Replaced, not mutated, when setModel switches provider (P28). */
+	private config: OpenAICompatConfig;
+	private transport: ChatTransport;
 	private readonly systemPrompt: string | undefined;
 	private readonly baseTools: Tool[];
 	private readonly extensions: ExtensionRegistry | undefined;
@@ -1115,9 +1128,31 @@ export class Agent {
 	 * Use another model from the next request on and log a model_change entry
 	 * (pi). No events: hosts run model_select around it; the extension-facing
 	 * `api.setModel` does that itself.
+	 *
+	 * `options` switch the provider with it (P28, D21 addendum): another
+	 * transport (endpoint, key, wire protocol), the provider and api labels the
+	 * messages carry, and the model's context window. The switch takes effect
+	 * between requests; the transports turn earlier messages from another model
+	 * into what the new one accepts (pi transformMessages).
 	 */
-	setModel(model: string): void {
-		if (model === this.currentModel) return;
+	setModel(model: string, options: SetModelOptions = {}): void {
+		const switchesProvider =
+			options.transport !== undefined ||
+			(options.provider !== undefined && options.provider !== this.config.provider) ||
+			(options.api !== undefined && options.api !== this.config.api) ||
+			("contextWindow" in options && options.contextWindow !== this.config.contextWindow);
+		if (model === this.currentModel && !switchesProvider) return;
+		if (switchesProvider) {
+			const next: OpenAICompatConfig = { ...this.config, model };
+			if (options.provider !== undefined) next.provider = options.provider;
+			if (options.api !== undefined) next.api = options.api;
+			if ("contextWindow" in options) {
+				if (options.contextWindow === undefined) delete next.contextWindow;
+				else next.contextWindow = options.contextWindow;
+			}
+			this.config = next;
+			if (options.transport) this.transport = options.transport;
+		}
 		this.currentModel = model;
 		const provider = this.config.provider ?? "openai-compat";
 		this.enqueueBackground(async () => {

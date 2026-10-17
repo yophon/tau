@@ -77,7 +77,7 @@
 | `getSettings` | 1.2 | ❌D9 | 返回 pi 产品层 Settings。tau 没有 settings 层：配置是宿主装配的 AgentOptions、flag 与工厂 options（D8） |
 | `setActiveTools` | 0.80 | ✅ P23b | 未知名与 hidden 忽略、下一次请求生效；只能激活已注册工具，权限档没注册的工具激活不到（D20）；移出任何工具即清空挂起名，只增不减（tool_search 加载）则保留（P24b，pi） |
 | `getCommands` | 0.80 | ✅ P23c | `{ name, description, source }`，name 为调用名（含 `:N`） |
-| `setModel` | 0.80 | ✅ P23d | 跑 model_select，被取消返回 false。⚠ 偏离：参数是模型 id（无模型库，D21） |
+| `setModel` | 0.80 | ✅ P23d | 跑 model_select，被取消返回 false。⚠ 偏离：参数是模型 id（无模型库，D21）；宿主侧 `Agent.setModel(id, { transport, provider, api, contextWindow })` 跨供应商切换（P28，D33） |
 | `getThinkingLevel` | 0.80 | ✅ P23d | undefined 表示端点缺省；tau 的 `none` 即 pi 的 `off`（会话条目写 `off`） |
 | `setThinkingLevel` | 0.80 | ✅ P23d | 下一次请求生效，写 `thinking_level_change` 条目；新增 `max` 档（pi 0.80.6） |
 | `registerProvider` | 0.80 | ⚠D21 | 以 `AgentOptions.transport` 装配注入兑现：协议是宿主装配决策，不做运行中热换。首个适配包 ext-provider-anthropic（P16） |

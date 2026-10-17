@@ -233,6 +233,36 @@ const RENDERERS: Record<string, Renderer> = {
 		return { head, body };
 	},
 
+	web_fetch: (tool, verbose) => {
+		const offset = typeof tool.args.offset === "number" && tool.args.offset > 0 ? ` @${tool.args.offset}` : "";
+		const view = `web_fetch(${firstLine(str(tool.args, "url"), 80)}${offset})`;
+		if (tool.status === "error") return { head: view, body: errorBody(tool, verbose) };
+		if (tool.status !== "ok") return { head: view, body: [] };
+		const lines = outputLines(tool);
+		const title = lines[0]?.startsWith("# ") ? lines[0].slice(2) : undefined;
+		const more = lines.some((line) => /^\[Characters \d+–\d+ of \d+\. Use offset=\d+/.test(line));
+		const summary = `${title ? `${firstLine(title, 60)} · ` : ""}${lines.length} lines${more ? " · more with offset" : ""}`;
+		const body = [plainLine(summary, { dim: true })];
+		if (verbose) body.push(...head(lines, 40));
+		return { head: view, body };
+	},
+
+	web_search: (tool, verbose) => {
+		const view = `web_search("${firstLine(str(tool.args, "query"), 60)}")`;
+		if (tool.status === "error") return { head: view, body: errorBody(tool, verbose) };
+		if (tool.status !== "ok") return { head: view, body: [] };
+		const lines = outputLines(tool);
+		const titles = lines.filter((line) => /^\d+\. /.test(line));
+		if (titles.length === 0) return { head: view, body: [plainLine("no results", { dim: true })] };
+		return {
+			head: view,
+			body: [
+				plainLine(`${titles.length} result${titles.length === 1 ? "" : "s"}`, { dim: true }),
+				...head(verbose ? lines : titles, verbose ? 60 : 3),
+			],
+		};
+	},
+
 	tool_search: (tool, verbose) => ({
 		head: `tool_search(${firstLine(str(tool.args, "query"), 60)})`,
 		body: tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? 30 : 3),

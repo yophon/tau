@@ -74,6 +74,8 @@ export interface PickerView {
 	title: string;
 	items: PickerItem[];
 	selected: number;
+	/** What Ctrl+S does with the selected item (e.g. "save as default"); absent = nothing. */
+	alt?: string;
 }
 
 /** A question answered in the editor: ctx.ui.input, or the text after "deny and tell". */

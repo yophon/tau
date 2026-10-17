@@ -7,6 +7,7 @@ import type {
 	PermissionMode,
 	SessionRecorder,
 	SessionStore,
+	SetModelOptions,
 	Shell,
 	ThinkingLevel,
 	UiCapability,
@@ -30,6 +31,19 @@ export interface RunTuiOptions {
 	recorder?: SessionRecorder;
 	thinkingLevel?: ThinkingLevel;
 	setModel(model: string): void;
+	/** Hints per `provider/id` for the /model picker (P28 model table). */
+	modelHints?: Record<string, string>;
+	/**
+	 * Resolve a /model choice against the model table (P28): the id to request,
+	 * the name to show, and what else the agent switches (transport, provider,
+	 * context window); `commit` makes later agents (/reload, /resume) use it.
+	 * Absent without a table: /model changes the id only.
+	 */
+	resolveModelSwitch?(
+		requested: string,
+	): { model: string; display: string; options: SetModelOptions; commit(): void } | { error: string };
+	/** Ctrl+S in the /model picker: save `provider/id` as the default in settings.json. */
+	saveDefaultModel?(ref: string): boolean;
 	setThinkingLevel(level: ThinkingLevel | undefined): void;
 	/** Agents built later (/reload, /resume) use the mode Shift+Tab switched to. */
 	setPermissionMode?(mode: PermissionMode): void;

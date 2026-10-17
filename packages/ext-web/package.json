@@ -1,0 +1,25 @@
+{
+	"name": "@yophon/tau-ext-web",
+	"version": "0.2.0",
+	"description": "Web tools for tau: web_fetch (HTML to markdown over Platform.fetch, pure ES) and BYOK web_search (Brave, Tavily, Exa, SearXNG)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-web"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}
