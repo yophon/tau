@@ -1,0 +1,911 @@
+/**
+ * The TUI controller: owns the Agent, the session and the extension registry,
+ * runs prompts and commands, and turns their events into store actions. It is
+ * plain TypeScript with no Ink, so tests drive it directly and the Ink tree
+ * stays a thin view (the logic the P8 TUI kept in one closure).
+ */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+	type Agent,
+	type AgentEvent,
+	type ApprovalRequest,
+	type ExtensionRegistry,
+	type SessionRecorder,
+	type SessionStore,
+	TauError,
+	type UiCapability,
+	type UserContent,
+	userContentText,
+} from "@yophon/tau-kernel";
+import { commandList, runCommand } from "./commands.ts";
+import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
+import { errorText, fmtCost, fmtElapsed, fmtInt, shortPath, type Tone } from "./format.ts";
+import { acceptCompletion, type Completion, computeCompletion, listFiles } from "./input/completion.ts";
+import { InputDecoder } from "./input/decoder.ts";
+import * as ed from "./input/editor.ts";
+import { PersistentHistory } from "./input/history.ts";
+import { expandPastes, foldPaste, newPasteStore } from "./input/paste.ts";
+import { type KeyCommand, type KeyLike, routeKey } from "./keymap.ts";
+import { APPROVAL_OPTIONS, type ApprovalView, initialState, type PickerItem, type TaskKind } from "./model.ts";
+import { span } from "./render/spans.ts";
+import { TuiStore } from "./store.ts";
+import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "./types.ts";
+
+const ARM_WINDOW_MS = 3000;
+
+export class TuiController {
+	readonly store: TuiStore;
+	agent: Agent;
+	extensions: ExtensionRegistry;
+	sessionStore: SessionStore | undefined;
+	recorder: SessionRecorder | undefined;
+	model: string;
+	modelChoices: string[];
+
+	private readonly decoder = new InputDecoder();
+	private readonly pastes = newPasteStore();
+	private readonly history: PersistentHistory;
+	private historyIndex: number;
+	private files: string[] | undefined;
+	private filesLoading = false;
+	private menuCache:
+		| { text: string; cursor: number; files: unknown; suppressed: unknown; result: Completion | undefined }
+		| undefined;
+	private controller: AbortController | undefined;
+	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
+	private readonly pendingStarts: (UserContent | null)[] = [];
+	private nextDialogId = 1;
+	private readonly approvals = new Map<number, (answer: ApprovalAnswer) => void>();
+	private readonly pickers = new Map<number, (value: string | undefined) => void>();
+	private readonly prompts = new Map<number, (value: string | undefined) => void>();
+	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
+	private tellFor: ApprovalView | undefined;
+	private exitTimer: ReturnType<typeof setTimeout> | undefined;
+	private rejectTimer: ReturnType<typeof setTimeout> | undefined;
+	private stopped = false;
+	private resolveDone: (() => void) | undefined;
+	readonly done: Promise<void>;
+	readonly ui: UiCapability;
+
+	readonly options: RunTuiOptions;
+	private readonly deps: TuiDeps;
+
+	constructor(options: RunTuiOptions, deps: TuiDeps = {}) {
+		this.options = options;
+		this.deps = deps;
+		this.agent = options.agent;
+		this.extensions = options.extensions;
+		this.sessionStore = options.store;
+		this.recorder = options.recorder;
+		this.model = options.model;
+		this.modelChoices = unique([options.model, ...(options.modelChoices ?? [])]);
+		this.history = PersistentHistory.load(deps.historyFile, options.cwd);
+		this.historyIndex = this.history.list().length;
+		this.done = new Promise((resolve) => {
+			this.resolveDone = resolve;
+		});
+		this.store = new TuiStore(
+			initialState({
+				model: options.model,
+				mode: options.permissionMode,
+				...(options.thinkingLevel !== undefined ? { thinking: options.thinkingLevel } : {}),
+				contextTokens: 0,
+				...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}),
+				inputTokens: 0,
+				outputTokens: 0,
+				costUsd: 0,
+				cwd: options.cwd,
+				items: [],
+			}),
+		);
+		this.ui = {
+			confirm: async (title, message) =>
+				(await this.pick(message ? `${title} — ${message}` : title, [
+					{ label: "Yes", value: "yes" },
+					{ label: "No", value: "no" },
+				])) === "yes",
+			input: (title, placeholder) => this.ask("input", title, placeholder),
+			select: (title, values) =>
+				this.pick(
+					title,
+					values.map((value) => ({ label: value, value })),
+				),
+			notify: (message, level) =>
+				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message),
+		};
+	}
+
+	get state() {
+		return this.store.getState();
+	}
+
+	private dispatch(action: Parameters<TuiStore["dispatch"]>[0]): void {
+		this.store.dispatch(action);
+	}
+
+	private now(): number {
+		return this.deps.now?.() ?? Date.now();
+	}
+
+	columns(): number {
+		return this.deps.columns?.() ?? process.stdout.columns ?? 80;
+	}
+
+	notice(tone: Tone, text: string): void {
+		this.dispatch({ type: "notice", tone, text });
+	}
+
+	// ── lifecycle ────────────────────────────────────────────────────────────
+
+	async start(): Promise<void> {
+		this.agent.setUi(this.ui);
+		this.options.setApprovalPrompt?.((request) => this.requestApproval(request));
+		this.attachHostActions(this.extensions);
+		this.dispatch({
+			type: "lines",
+			lines: [
+				[
+					span("tau", { bold: true, color: "cyan" }),
+					span(` · ${this.model} · ${shortPath(this.options.cwd)} · ${this.options.permissionMode}`, { dim: true }),
+				],
+			],
+		});
+		// session_start after the host actions are in place (P23e, pi bindExtensions order).
+		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
+		await this.refreshStatus();
+	}
+
+	async stop(): Promise<void> {
+		if (this.stopped) return;
+		this.stopped = true;
+		this.controller?.abort();
+		this.clearTimers();
+		try {
+			await this.extensions.notifySessionShutdown("quit", this.agent.extensionContext());
+		} finally {
+			this.resolveDone?.();
+		}
+	}
+
+	private clearTimers(): void {
+		if (this.exitTimer) clearTimeout(this.exitTimer);
+		if (this.rejectTimer) clearTimeout(this.rejectTimer);
+		this.exitTimer = undefined;
+		this.rejectTimer = undefined;
+	}
+
+	private attachHostActions(registry: ExtensionRegistry): void {
+		registry.setErrorSink(({ event, error }) => this.notice("error", `Extension error in ${event}: ${error.message}`));
+		registry.attachHostActions({
+			submitPrompt: (content) => {
+				// A finishing turn: run next. Other tasks refuse loudly so the caller can retry (ext-feishu re-queues).
+				if (this.state.task === "turn") {
+					this.pendingStarts.push(content);
+					return;
+				}
+				if (this.state.task !== undefined) throw new TauError("busy", `a ${this.state.task} task is running`);
+				void this.runPrompt(content);
+			},
+			resumeTurn: () => {
+				if (this.state.task !== undefined) {
+					if (!this.pendingStarts.includes(null)) this.pendingStarts.push(null);
+					return;
+				}
+				void this.runPrompt(null);
+			},
+			shutdown: () => {
+				void this.stop();
+			},
+		});
+	}
+
+	async refreshStatus(): Promise<void> {
+		const usage = this.agent.getContextUsage();
+		const session = this.agent.getSessionUsage();
+		let sessionName: string | undefined;
+		try {
+			sessionName = this.sessionStore ? (await this.sessionStore.getMetadata()).name : undefined;
+		} catch {
+			sessionName = undefined;
+		}
+		const items: string[] = [];
+		for (const item of this.extensions.footerItems.values()) {
+			try {
+				const result = await item.handler(this.agent.extensionContext());
+				if (result) items.push(result);
+			} catch (error) {
+				items.push(`${item.name} failed: ${errorText(error)}`);
+			}
+		}
+		this.dispatch({
+			type: "status",
+			status: {
+				model: this.model,
+				contextTokens: usage.tokens,
+				...(usage.contextWindow !== undefined ? { contextWindow: usage.contextWindow } : {}),
+				inputTokens: session.input + session.cacheRead + session.cacheWrite,
+				outputTokens: session.output,
+				costUsd: session.cost.total,
+				branch: (this.deps.readBranch ?? readGitBranch)(this.options.cwd),
+				...(sessionName !== undefined ? { sessionName } : {}),
+				items,
+			},
+		});
+	}
+
+	// ── input ────────────────────────────────────────────────────────────────
+
+	handleInput(raw: string, key: KeyLike): void {
+		for (const event of this.decoder.feed(raw, key)) {
+			if (event.kind === "paste") {
+				this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(event.text))));
+			} else if (event.kind === "text") {
+				this.execute({ type: "insert", text: event.text });
+			} else if (event.kind === "enter") {
+				this.execute({ type: "submit" });
+			} else {
+				this.handleKey(event.ch, event.key);
+			}
+		}
+	}
+
+	private handleKey(ch: string, key: KeyLike): void {
+		const state = this.state;
+		const menu = this.completion();
+		const command = routeKey(ch, key, {
+			approvalOpen: state.approval !== undefined,
+			pickerOpen: state.picker !== undefined,
+			menuOpen: menu !== undefined && menu.items.length > 0,
+			promptActive: state.prompt !== undefined,
+			running: state.task !== undefined,
+			bufferEmpty: state.editor.text === "",
+			cursorAtFirstRow: ed.cursorRow(state.editor) === 0,
+			cursorAtLastRow: ed.cursorRow(state.editor) === ed.rowCount(state.editor) - 1,
+		});
+		if (!command) return;
+		if (command.type !== "exit-request") this.disarmExit();
+		this.execute(command);
+	}
+
+	private setEditor(editor: ed.EditorState): void {
+		this.dispatch({ type: "editor", editor });
+		this.syncMenu();
+	}
+
+	/** Completion for the current input (cached per text/cursor/files/suppression). */
+	completion(): Completion | undefined {
+		const { editor, menu } = this.state;
+		const cache = this.menuCache;
+		if (
+			cache &&
+			cache.text === editor.text &&
+			cache.cursor === editor.cursor &&
+			cache.files === this.files &&
+			cache.suppressed === menu.suppressedToken
+		) {
+			return cache.result;
+		}
+		const computed = computeCompletion(editor.text, editor.cursor, {
+			commands: commandList(this.extensions),
+			files: this.files,
+		});
+		const result = computed && computed.token !== menu.suppressedToken ? computed : undefined;
+		this.menuCache = {
+			text: editor.text,
+			cursor: editor.cursor,
+			files: this.files,
+			suppressed: menu.suppressedToken,
+			result,
+		};
+		return result;
+	}
+
+	private lastToken: string | undefined;
+
+	/** A new token resets the selection and lifts a suppression; `@` loads the file list once. */
+	private syncMenu(): void {
+		const completion = computeCompletion(this.state.editor.text, this.state.editor.cursor, {
+			commands: commandList(this.extensions),
+			files: this.files,
+		});
+		const token = completion?.token;
+		if (token !== this.lastToken) {
+			this.lastToken = token;
+			this.dispatch({ type: "menu-select", index: 0 });
+			if (token !== undefined && token !== this.state.menu.suppressedToken)
+				this.dispatch({ type: "menu-suppress", token: undefined });
+		}
+		if (completion?.kind === "file" && this.files === undefined && !this.filesLoading) {
+			this.filesLoading = true;
+			void (this.deps.fileLister ?? listFiles)(this.options.cwd)
+				.catch(() => [] as string[])
+				.then((files) => {
+					this.files = files;
+					this.menuCache = undefined;
+					this.dispatch({ type: "menu-select", index: this.state.menu.selected });
+					this.store.flush();
+				});
+		}
+	}
+
+	execute(command: KeyCommand): void {
+		const state = this.state;
+		const edited = applyEditorCommand(state.editor, command);
+		if (edited !== undefined) {
+			this.setEditor(edited);
+			return;
+		}
+		switch (command.type) {
+			case "approval-up":
+			case "approval-down":
+				this.disarmReject();
+				this.dispatch({ type: "approval-move", delta: command.type === "approval-up" ? -1 : 1 });
+				return;
+			case "approval-confirm":
+				this.decideApproval(state.approval?.selected ?? 0);
+				return;
+			case "approval-choose":
+				this.decideApproval(command.index);
+				return;
+			case "approval-reject":
+				if (!state.approval) return;
+				if (state.rejectArmed) {
+					this.disarmReject();
+					this.decideApproval(APPROVAL_OPTIONS.findIndex((option) => option.choice === "deny"));
+				} else {
+					this.dispatch({ type: "armed", reject: true });
+					this.rejectTimer = setTimeout(() => this.disarmReject(), ARM_WINDOW_MS);
+				}
+				return;
+			case "prompt-cancel":
+				this.cancelPrompt();
+				return;
+			case "picker-up":
+			case "picker-down":
+				this.dispatch({ type: "picker-move", delta: command.type === "picker-up" ? -1 : 1 });
+				return;
+			case "picker-confirm": {
+				const picker = state.picker;
+				if (!picker) return;
+				this.dispatch({ type: "picker-close", id: picker.id });
+				this.settlePicker(picker.id, picker.items[picker.selected]?.value);
+				return;
+			}
+			case "picker-cancel":
+				if (!state.picker) return;
+				this.dispatch({ type: "picker-close", id: state.picker.id });
+				this.settlePicker(state.picker.id, undefined);
+				return;
+			case "menu-up":
+			case "menu-down": {
+				const completion = this.completion();
+				if (!completion || completion.items.length === 0) return;
+				const n = completion.items.length;
+				const delta = command.type === "menu-up" ? -1 : 1;
+				this.dispatch({ type: "menu-select", index: (state.menu.selected + delta + n) % n });
+				return;
+			}
+			case "menu-accept": {
+				const completion = this.completion();
+				const item = completion?.items[Math.min(state.menu.selected, completion.items.length - 1)];
+				if (!completion || !item) return;
+				// A fully typed command name runs right away (Enter completes and submits in one step).
+				if (completion.kind === "slash" && item.value === completion.token) {
+					this.submit();
+					return;
+				}
+				const next = acceptCompletion(state.editor.text, completion, item);
+				this.setEditor(ed.fromText(next.text, next.cursor));
+				return;
+			}
+			case "menu-close": {
+				const completion = this.completion();
+				if (completion) this.dispatch({ type: "menu-suppress", token: completion.token });
+				this.dispatch({ type: "menu-select", index: 0 });
+				return;
+			}
+			case "interrupt":
+				this.interrupt();
+				return;
+			case "exit-request":
+				if (state.exitArmed) {
+					void this.stop();
+					return;
+				}
+				this.dispatch({ type: "armed", exit: true });
+				this.exitTimer = setTimeout(() => this.disarmExit(), ARM_WINDOW_MS);
+				return;
+			case "cycle-mode":
+				this.notice("dim", "Switching the permission mode from the TUI is not available yet.");
+				return;
+			case "queue":
+				this.queueFollowUp();
+				return;
+			case "submit":
+				this.submit();
+				return;
+			case "toggle-verbose":
+				this.dispatch({ type: "toggle-verbose" });
+				this.notice("dim", `Tool details ${this.state.verbose ? "expanded" : "collapsed"} for new output.`);
+				return;
+			case "toggle-reasoning":
+				this.dispatch({ type: "toggle-reasoning" });
+				this.notice("dim", `Reasoning ${this.state.showReasoning ? "shown" : "hidden"}.`);
+				return;
+			case "external-editor":
+				this.notice("dim", "The external editor is not available yet.");
+				return;
+			case "history-prev":
+				this.historyPrev();
+				return;
+			case "history-next":
+				this.historyNext();
+				return;
+			default:
+				return;
+		}
+	}
+
+	private disarmExit(): void {
+		if (this.exitTimer) clearTimeout(this.exitTimer);
+		this.exitTimer = undefined;
+		if (this.state.exitArmed) this.dispatch({ type: "armed", exit: false });
+	}
+
+	private disarmReject(): void {
+		if (this.rejectTimer) clearTimeout(this.rejectTimer);
+		this.rejectTimer = undefined;
+		if (this.state.rejectArmed) this.dispatch({ type: "armed", reject: false });
+	}
+
+	private historyPrev(): void {
+		const state = this.state;
+		// Queued input and an empty editor: ↑ takes the queue back for editing (pi Alt+Up).
+		if (state.queued.length > 0 && state.editor.text === "") {
+			this.restoreQueuedInput();
+			return;
+		}
+		const items = this.history.list();
+		if (this.historyIndex > 0) {
+			this.historyIndex -= 1;
+			this.setEditor(ed.fromText(items[this.historyIndex] ?? ""));
+		}
+	}
+
+	private historyNext(): void {
+		const items = this.history.list();
+		if (this.historyIndex < items.length) {
+			this.historyIndex += 1;
+			this.setEditor(ed.fromText(this.historyIndex < items.length ? (items[this.historyIndex] ?? "") : ""));
+		}
+	}
+
+	/** Take steering and follow-ups back from the agent into the editor. */
+	private restoreQueuedInput(): void {
+		const { steering, followUp } = this.agent.clearQueue();
+		const texts = [...steering, ...followUp]
+			.filter((message) => message.role === "user")
+			.map((message) => userContentText(message.content))
+			.filter((text) => text !== "");
+		this.dispatch({ type: "queue-clear" });
+		if (texts.length === 0) return;
+		const current = this.state.editor.text;
+		this.setEditor(ed.fromText([...texts, ...(current.trim() === "" ? [] : [current])].join("\n")));
+	}
+
+	private takeInput(): string {
+		const text = expandPastes(this.pastes, this.state.editor.text).trim();
+		this.setEditor(ed.EMPTY);
+		return text;
+	}
+
+	submit(): void {
+		const raw = this.state.editor.text;
+		// A trailing backslash continues the line (Claude Code habit).
+		if (raw.endsWith("\\")) {
+			this.setEditor(ed.fromText(`${raw.slice(0, -1)}\n`));
+			return;
+		}
+		const prompt = this.state.prompt;
+		if (prompt) {
+			const text = this.takeInput();
+			if (text === "" && prompt.kind === "tell") return;
+			this.dispatch({ type: "prompt-close", id: prompt.id });
+			this.settlePrompt(prompt.id, text === "" ? undefined : text);
+			return;
+		}
+		const text = this.takeInput();
+		if (text === "") return;
+		this.history.push(text);
+		this.historyIndex = this.history.list().length;
+		if (text.startsWith("/")) {
+			void this.runSlash(text);
+			return;
+		}
+		const task = this.state.task;
+		if (task === "turn") {
+			this.sendQueued("steer", text);
+			return;
+		}
+		if (task !== undefined) {
+			this.setEditor(ed.fromText(text));
+			this.notice("dim", `A ${task} task is running. Press Esc to interrupt it; your input stays in the editor.`);
+			return;
+		}
+		void this.runPrompt(text);
+	}
+
+	private queueFollowUp(): void {
+		const text = this.takeInput();
+		if (text === "") return;
+		this.history.push(text);
+		this.historyIndex = this.history.list().length;
+		this.sendQueued("followUp", text);
+	}
+
+	private sendQueued(kind: "steer" | "followUp", text: string): void {
+		// Extension commands cannot be queued as model input (pi _throwIfExtensionCommand).
+		const name = text.startsWith("/") ? text.slice(1).split(/\s/, 1)[0] : undefined;
+		if (name !== undefined && this.extensions.commands.has(name)) {
+			this.setEditor(ed.fromText(text));
+			this.notice("dim", `/${name} is an extension command; run it when the turn ends.`);
+			return;
+		}
+		this.dispatch({ type: "queue-add", input: { kind, text } });
+		// Input handlers see queued input first and may consume it (pi 0.86.0).
+		void (kind === "followUp" ? this.agent.followUp(text) : this.agent.steer(text)).then(
+			(disposition) => {
+				if (disposition === "handled") {
+					this.dispatch({ type: "queue-clear" });
+					this.notice("dim", `Handled by an extension: ${text}`);
+				}
+			},
+			(error: unknown) => this.notice("error", `Input failed: ${errorText(error)}`),
+		);
+	}
+
+	private async runSlash(text: string): Promise<void> {
+		try {
+			const handled = await runCommand(this, text);
+			if (handled) return;
+		} catch (error) {
+			this.notice("error", `${text.split(/\s/, 1)[0]} failed: ${errorText(error)}`);
+			return;
+		}
+		// Not a command: send it as a prompt (a path such as /etc/hosts, say).
+		if (this.state.task === "turn") this.sendQueued("steer", text);
+		else if (this.state.task === undefined) void this.runPrompt(text);
+	}
+
+	interrupt(): void {
+		if (this.controller) {
+			this.controller.abort();
+			this.dispatch({ type: "activity", text: "Interrupting" });
+		}
+	}
+
+	// ── tasks ────────────────────────────────────────────────────────────────
+
+	/** Hold the task slot for `run`; one task at a time. */
+	async runTask(task: TaskKind, activity: string, run: (signal: AbortSignal) => Promise<void>): Promise<void> {
+		const controller = new AbortController();
+		this.controller = controller;
+		this.dispatch({ type: "task-start", task, activity, at: this.now() });
+		try {
+			await run(controller.signal);
+		} finally {
+			this.controller = undefined;
+			this.settleOpenApprovals();
+			this.dispatch({ type: "task-end" });
+			await this.refreshStatus().catch(() => undefined);
+			this.startPending();
+		}
+	}
+
+	private startPending(): void {
+		if (this.state.task !== undefined || this.stopped) return;
+		const next = this.pendingStarts.shift();
+		if (next !== undefined) void this.runPrompt(next);
+	}
+
+	async runPrompt(input: UserContent | null): Promise<void> {
+		const before = this.agent.getSessionUsage();
+		const startedAt = this.now();
+		let interrupted = false;
+		if (input !== null) {
+			const images = typeof input === "string" ? 0 : input.filter((part) => part.type === "image").length;
+			this.dispatch({ type: "user", text: userContentText(input), images });
+		}
+		await this.runTask("turn", "Thinking", async (signal) => {
+			try {
+				// input null = an extension-triggered continuation without new user input.
+				const stream = input === null ? this.agent.resume(signal) : this.agent.prompt(input, signal);
+				for await (const event of stream) await this.handleEvent(event);
+			} catch (error) {
+				if (isAbortError(error)) interrupted = true;
+				else this.notice("error", `Error: ${errorText(error)}`);
+			}
+			if (signal.aborted) interrupted = true;
+			// Queues survive an abort (kernel contract): put queued text back in the editor
+			// instead of replaying it into the next prompt (pi restoreQueuedMessagesToEditor).
+			this.restoreQueuedInput();
+		});
+		if (interrupted) {
+			this.notice("warn", "⏹ Interrupted");
+			return;
+		}
+		const after = this.agent.getSessionUsage();
+		const parts = [fmtElapsed(this.now() - startedAt)];
+		const inTokens =
+			after.input + after.cacheRead + after.cacheWrite - (before.input + before.cacheRead + before.cacheWrite);
+		const outTokens = after.output - before.output;
+		if (inTokens > 0 || outTokens > 0) parts.push(`↑${fmtInt(inTokens)} ↓${fmtInt(outTokens)}`);
+		const cost = fmtCost(after.cost.total - before.cost.total);
+		if (cost) parts.push(cost);
+		this.notice("dim", `· ${parts.join(" · ")}`);
+	}
+
+	private async handleEvent(event: AgentEvent): Promise<void> {
+		const at = this.now();
+		switch (event.type) {
+			case "assistant_message": {
+				this.dispatch({ type: "agent-event", event, at });
+				const lines = await this.renderMessage(event.message);
+				if (lines) this.dispatch({ type: "assistant-rendered", lines });
+				void this.refreshStatus().catch(() => undefined);
+				return;
+			}
+			case "user_message": {
+				if (event.message.role === "custom") {
+					const message = event.message;
+					const lines = await this.renderMessage(message);
+					if (lines) this.dispatch({ type: "lines", lines });
+					else if (message.display) this.notice("dim", userContentText(message.content));
+					return;
+				}
+				this.dispatch({ type: "agent-event", event, at });
+				return;
+			}
+			case "tool_start":
+			case "tool_update":
+			case "tool_result": {
+				this.dispatch({ type: "agent-event", event, at });
+				const lines = await this.renderTool(event);
+				if (lines) this.dispatch({ type: "tool-rendered", callId: event.toolCall.id, lines });
+				return;
+			}
+			default:
+				this.dispatch({ type: "agent-event", event, at });
+		}
+	}
+
+	private async renderMessage(message: Parameters<typeof messageRendererMatches>[1]) {
+		for (const renderer of this.extensions.messageRenderers.values()) {
+			if (!messageRendererMatches(renderer, message)) continue;
+			try {
+				const lines = renderResultLines(
+					await renderer.handler(message, this.agent.extensionContext()),
+					this.columns() - 2,
+				);
+				if (lines) return lines;
+			} catch (error) {
+				this.notice("error", `Message renderer ${renderer.name} failed: ${errorText(error)}`);
+				return undefined;
+			}
+		}
+		return undefined;
+	}
+
+	private toolOutput = new Map<string, string>();
+
+	private async renderTool(event: AgentEvent & { type: "tool_start" | "tool_update" | "tool_result" }) {
+		if (this.extensions.toolRenderers.size === 0) return undefined;
+		const id = event.toolCall.id;
+		if (event.type === "tool_update") this.toolOutput.set(id, (this.toolOutput.get(id) ?? "") + event.partialOutput);
+		const liveOutput = this.toolOutput.get(id);
+		const renderEvent =
+			event.type === "tool_start"
+				? { phase: "start" as const, toolCall: event.toolCall }
+				: event.type === "tool_update"
+					? {
+							phase: "update" as const,
+							toolCall: event.toolCall,
+							partialOutput: event.partialOutput,
+							...(event.stream !== undefined ? { stream: event.stream } : {}),
+							...(liveOutput !== undefined ? { liveOutput } : {}),
+						}
+					: {
+							phase: "result" as const,
+							toolCall: event.toolCall,
+							result: event.result,
+							...(liveOutput !== undefined ? { liveOutput } : {}),
+							...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+						};
+		if (event.type === "tool_result") this.toolOutput.delete(id);
+		for (const renderer of this.extensions.toolRenderers.values()) {
+			if (!toolRendererMatches(renderer, renderEvent)) continue;
+			try {
+				const lines = renderResultLines(
+					await renderer.handler(renderEvent, this.agent.extensionContext()),
+					this.columns() - 4,
+				);
+				if (lines) return lines;
+			} catch (error) {
+				this.notice("error", `Tool renderer ${renderer.name} failed: ${errorText(error)}`);
+				return undefined;
+			}
+		}
+		return undefined;
+	}
+
+	// ── dialogs ──────────────────────────────────────────────────────────────
+
+	requestApproval(request: ApprovalRequest): Promise<ApprovalAnswer> {
+		const id = this.nextDialogId++;
+		return new Promise((resolve) => {
+			this.approvals.set(id, resolve);
+			this.dispatch({ type: "approval-open", id, request });
+			this.store.flush();
+		});
+	}
+
+	private decideApproval(index: number): void {
+		const view = this.state.approval;
+		const option = APPROVAL_OPTIONS[index];
+		if (!view || !option) return;
+		this.disarmReject();
+		if (option.choice === "deny-tell") {
+			// The approval stays pending until the text is sent, so the denial and the
+			// instruction reach the model together.
+			this.tellFor = view;
+			const promptId = this.nextDialogId++;
+			this.dispatch({
+				type: "prompt-open",
+				prompt: {
+					id: promptId,
+					kind: "tell",
+					title: `Denied ${view.request.toolName}. What should the agent do instead?`,
+				},
+			});
+			this.dispatch({ type: "approval-close", id: view.id });
+			this.prompts.set(promptId, (text) => {
+				const pending = this.tellFor;
+				this.tellFor = undefined;
+				if (!pending) return;
+				if (text === undefined) {
+					// Cancelled: back to the approval panel.
+					this.dispatch({ type: "approval-open", id: pending.id, request: pending.request });
+					return;
+				}
+				this.sendQueued("steer", text);
+				this.settleApproval(pending.id, "deny");
+			});
+			return;
+		}
+		this.dispatch({ type: "approval-close", id: view.id });
+		this.settleApproval(view.id, option.choice === "once" ? "once" : option.choice === "always" ? "always" : "deny");
+	}
+
+	private settleApproval(id: number, answer: ApprovalAnswer): void {
+		const resolve = this.approvals.get(id);
+		this.approvals.delete(id);
+		resolve?.(answer);
+	}
+
+	/** A task ended (or was aborted) with approvals still open: they count as denied. */
+	private settleOpenApprovals(): void {
+		for (const [id, resolve] of this.approvals) {
+			this.approvals.delete(id);
+			resolve("deny");
+		}
+		if (this.tellFor && this.state.prompt?.kind === "tell") {
+			const promptId = this.state.prompt.id;
+			this.tellFor = undefined;
+			this.prompts.delete(promptId);
+			this.dispatch({ type: "prompt-close", id: promptId });
+		}
+	}
+
+	pick(title: string, items: PickerItem[]): Promise<string | undefined> {
+		const id = this.nextDialogId++;
+		return new Promise((resolve) => {
+			this.pickers.set(id, resolve);
+			this.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0 } });
+			this.store.flush();
+		});
+	}
+
+	private settlePicker(id: number, value: string | undefined): void {
+		const resolve = this.pickers.get(id);
+		this.pickers.delete(id);
+		resolve?.(value);
+	}
+
+	ask(kind: "input", title: string, placeholder?: string): Promise<string | undefined> {
+		const id = this.nextDialogId++;
+		return new Promise((resolve) => {
+			this.prompts.set(id, resolve);
+			this.dispatch({
+				type: "prompt-open",
+				prompt: { id, kind, title, ...(placeholder !== undefined ? { placeholder } : {}) },
+			});
+			this.store.flush();
+		});
+	}
+
+	private cancelPrompt(): void {
+		const prompt = this.state.prompt;
+		if (!prompt) return;
+		this.setEditor(ed.EMPTY);
+		this.dispatch({ type: "prompt-close", id: prompt.id });
+		this.settlePrompt(prompt.id, undefined);
+	}
+
+	private settlePrompt(id: number, value: string | undefined): void {
+		const resolve = this.prompts.get(id);
+		this.prompts.delete(id);
+		resolve?.(value);
+	}
+}
+
+/** Pure editor commands → the next editor state; undefined for everything else. */
+export function applyEditorCommand(current: ed.EditorState, command: KeyCommand): ed.EditorState | undefined {
+	switch (command.type) {
+		case "newline":
+			return ed.newline(current);
+		case "clear-input":
+			return ed.EMPTY;
+		case "kill-line-start":
+			return ed.killToLineStart(current);
+		case "cursor-home":
+			return ed.lineHome(current);
+		case "cursor-end":
+			return ed.lineEnd(current);
+		case "cursor-left":
+			return ed.left(current);
+		case "cursor-right":
+			return ed.right(current);
+		case "cursor-up":
+			return ed.up(current) ?? current;
+		case "cursor-down":
+			return ed.down(current) ?? current;
+		case "word-left":
+			return ed.wordLeft(current);
+		case "word-right":
+			return ed.wordRight(current);
+		case "delete-word-back":
+			return ed.deleteWordBack(current);
+		case "kill-line-end":
+			return ed.killToLineEnd(current);
+		case "delete-forward":
+			return ed.deleteForward(current);
+		case "backspace":
+			return ed.backspace(current);
+		case "insert":
+			return ed.insert(current, command.text);
+		default:
+			return undefined;
+	}
+}
+
+function unique(values: string[]): string[] {
+	return [...new Set(values.filter((value) => value !== ""))];
+}
+
+function isAbortError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	if (error.name === "AbortError") return true;
+	return "code" in error && error.code === "aborted";
+}
+
+/** The git branch, best effort: the ref name in .git/HEAD, a short sha when detached. */
+export function readGitBranch(cwd: string): string | undefined {
+	try {
+		const head = readFileSync(join(cwd, ".git", "HEAD"), "utf8").trim();
+		const match = head.match(/^ref: refs\/heads\/(.+)$/);
+		return match ? match[1] : head.slice(0, 7);
+	} catch {
+		return undefined;
+	}
+}

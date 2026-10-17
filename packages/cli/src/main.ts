@@ -1193,7 +1193,9 @@ async function main(): Promise<void> {
 	}
 
 	if (options.tui) {
-		await runTui({
+		// P25: the rewritten TUI, behind a switch until it reaches parity with the P8 one.
+		const run = process.env.TAU_TUI === "next" ? (await import("./tui/app.ts")).runTui : runTui;
+		await run({
 			agent,
 			extensions,
 			model,
