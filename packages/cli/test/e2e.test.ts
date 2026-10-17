@@ -896,3 +896,37 @@ test("trust digest: legacy records upgrade, matching digests skip the question, 
 		}
 	});
 });
+
+test("--tools +codemode runs a script that reads files; codemode stays undeclared without it (P24e)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await writeFile(join(cwd, "a.txt"), "alpha");
+		await writeFile(join(cwd, "b.txt"), "beta");
+		const code =
+			'const [a, b] = await Promise.all([tools.read({ path: "a.txt" }), tools.read({ path: "b.txt" })]); return a.trim() + "+" + b.trim();';
+		let mock = await startMockOpenAI([() => mockToolCallTurn("codemode", { code }), () => mockTextTurn("done")]);
+		try {
+			const cli = startCli(["--tools", "+codemode", "-p", "go", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const first = mock.requests[0] as { tools?: { function: { name: string } }[]; messages: { content: string }[] };
+			assert.ok((first.tools ?? []).some((tool) => tool.function.name === "codemode"));
+			assert.match(first.messages[0].content, /Use the available tools \([^)]*codemode[^)]*\)/);
+			assert.match(first.messages[0].content, /Use codemode to batch independent tool calls/);
+			const second = mock.requests[1] as { messages: { role: string; content: string }[] };
+			const toolMessage = second.messages.find((message) => message.role === "tool");
+			assert.match(toolMessage?.content ?? "", /Script completed/);
+			assert.match(toolMessage?.content ?? "", /1\talpha\+1\tbeta$/);
+		} finally {
+			await mock.close();
+		}
+
+		mock = await startMockOpenAI([() => mockTextTurn("plain")]);
+		try {
+			const cli = startCli(["-p", "go", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
+			assert.ok(!(request.tools ?? []).some((tool) => ["codemode", "tool_search"].includes(tool.function.name)));
+		} finally {
+			await mock.close();
+		}
+	});
+});

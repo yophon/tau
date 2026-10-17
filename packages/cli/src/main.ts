@@ -56,6 +56,7 @@ import {
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
+import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { conversationLength, createStartupTuiUi, nestedNote, runTui } from "./tui.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
@@ -295,11 +296,12 @@ function envInt(name: string, min: number): number | undefined {
 /**
  * The active tool names for --tools/--no-tools (pi 0.84.2 semantics): plain names
  * (or "*") pick the built-in tools; "+name" adds and "-name" removes a tool.
- * Choosing built-ins never drops extension tools implicitly — only "-name" or
- * --no-tools does.
+ * Choosing built-ins never drops active extension tools implicitly — only "-name"
+ * or --no-tools does. Inactive ones (tool_search, codemode) need "+name" (P24e).
  */
 function selectActiveTools(
 	all: readonly { name: string; source: "builtin" | "extension" }[],
+	active: readonly string[],
 	spec: readonly string[] | undefined,
 	noTools: boolean,
 ): string[] | undefined {
@@ -310,14 +312,17 @@ function selectActiveTools(
 		plain.length === 0 || plain.includes("*")
 			? new Set(all.filter((tool) => tool.source === "builtin").map((tool) => tool.name))
 			: new Set(plain);
-	const active = new Set(
-		all.filter((tool) => tool.source === "extension" || builtinsKept.has(tool.name)).map((tool) => tool.name),
+	const wasActive = new Set(active);
+	const selected = new Set(
+		all
+			.filter((tool) => (tool.source === "extension" ? wasActive.has(tool.name) : builtinsKept.has(tool.name)))
+			.map((tool) => tool.name),
 	);
 	for (const entry of spec) {
-		if (entry.startsWith("+")) active.add(entry.slice(1));
-		else if (entry.startsWith("-")) active.delete(entry.slice(1));
+		if (entry.startsWith("+")) selected.add(entry.slice(1));
+		else if (entry.startsWith("-")) selected.delete(entry.slice(1));
 	}
-	return [...active];
+	return [...selected];
 }
 
 function parsePricing(spec: string): ModelPricing | Error {
@@ -609,7 +614,12 @@ interface LoadedExtensions {
 }
 
 async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<LoadedExtensions> {
-	const registry = await ExtensionRegistry.load(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")));
+	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the user's extensions.
+	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
+	const registry = await ExtensionRegistry.load([
+		...builtinExtensions(),
+		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
+	]);
 	// A failing notification handler (an unreachable MCP server in session_start, a
 	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
 	registry.setErrorSink(({ event, error }) => {
@@ -637,6 +647,8 @@ async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined):
 			if (ignored.length > 0) console.log(dim(`Ignored ${ignored.join(", ")}: directory not trusted.`));
 		}
 	}
+	// Project codemode settings count only for a trusted directory.
+	configureBuiltins({ cwd, projectTrusted, home: userHome() });
 	reportExtensionLoad(registry);
 	return { registry, projectTrusted };
 }
@@ -647,22 +659,19 @@ async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined):
  */
 function reportExtensionLoad(registry: ExtensionRegistry): void {
 	for (const { extension, error } of registry.loadErrors) {
-		process.stderr.write(`[extension failed to load, skipped] ${extension}: ${error.message}
-`);
+		process.stderr.write(`[extension failed to load, skipped] ${extension}: ${error.message}\n`);
 	}
-	for (const warning of registry.warnings)
-		process.stderr.write(`[extension conflict] ${warning}
-`);
+	for (const warning of registry.warnings) process.stderr.write(`[extension conflict] ${warning}\n`);
 }
 
 function defaultSystemPrompt(cwd: string, toolNames: readonly string[]): string {
 	// Name the tools actually loaded: read-only mode has no write/edit, and a prompt
-	// promising them invites calls that can only fail (HF-16).
-	const tools = toolNames.length > 0 ? ` (${toolNames.join(", ")})` : "";
+	// promising them invites calls that can only fail (HF-16). The built-in tool
+	// prompt keeps this line equal to the declared tools at each run (P24e).
 	return [
 		"You are tau, a coding agent running in a terminal.",
 		`Working directory: ${cwd}`,
-		`Use the available tools${tools} to inspect${toolNames.includes("write") || toolNames.includes("edit") ? " and modify" : ""} the project.`,
+		toolLine(toolNames),
 		"Be direct and concise. Answer questions before making changes.",
 	].join("\n");
 }
@@ -1159,8 +1168,14 @@ async function main(): Promise<void> {
 			onApproval,
 		});
 		// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
-		const active = selectActiveTools(built.getAllTools(), options.tools, options.noTools === true);
+		const active = selectActiveTools(
+			built.getAllTools(),
+			built.getActiveTools(),
+			options.tools,
+			options.noTools === true,
+		);
 		if (active) built.setActiveTools(active);
+		attachPromptAgent(built, options.system === undefined);
 		return built;
 	};
 	let agent = buildAgent(initialMessages, recorder);

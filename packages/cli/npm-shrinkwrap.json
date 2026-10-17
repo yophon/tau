@@ -10,7 +10,9 @@
 			"license": "MIT",
 			"dependencies": {
 				"@earendil-works/pi-tui": "0.80.3",
+				"@yophon/tau-ext-codemode": "^0.2.0",
 				"@yophon/tau-ext-provider-anthropic": "^0.2.0",
+				"@yophon/tau-ext-tool-search": "^0.2.0",
 				"@yophon/tau-host-node": "^0.2.0",
 				"@yophon/tau-kernel": "^0.2.0"
 			},
@@ -34,9 +36,27 @@
 				"node": ">=22.19.0"
 			}
 		},
+		"node_modules/@yophon/tau-ext-codemode": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-codemode/-/tau-ext-codemode-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@earendil-works/pi-codemode": "1.2.0",
+				"@yophon/tau-ext-tool-search": "^0.2.0",
+				"@yophon/tau-kernel": "^0.2.0"
+			}
+		},
 		"node_modules/@yophon/tau-ext-provider-anthropic": {
 			"version": "0.2.0",
 			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-provider-anthropic/-/tau-ext-provider-anthropic-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.2.0"
+			}
+		},
+		"node_modules/@yophon/tau-ext-tool-search": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-tool-search/-/tau-ext-tool-search-0.2.0.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@yophon/tau-kernel": "^0.2.0"
@@ -78,6 +98,24 @@
 			"engines": {
 				"node": ">= 20"
 			}
+		},
+		"node_modules/@earendil-works/pi-codemode": {
+			"version": "1.2.0",
+			"resolved": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.2.0.tgz",
+			"integrity": "sha512-UZF7IN0IIrf3bop2wTxrwoAakGctH6d3zdPwhPN+QHMECfoI5E6B6l6I17YGFZPj8cmGex6xX7mLCNJXRf7wsw==",
+			"license": "MIT",
+			"dependencies": {
+				"quickjs-wasi": "3.6.2"
+			},
+			"engines": {
+				"node": ">=22.19.0"
+			}
+		},
+		"node_modules/quickjs-wasi": {
+			"version": "3.6.2",
+			"resolved": "https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz",
+			"integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==",
+			"license": "MIT"
 		}
 	}
 }

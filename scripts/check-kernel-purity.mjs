@@ -17,6 +17,8 @@ const PURE_PACKAGES = [
 	{ dir: "ext-mcp-http", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-provider-anthropic", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-tool-search", external: ["@yophon/tau-kernel"] },
+	// The pure entry only; ./node wires the worker-thread sandbox (D30).
+	{ dir: "ext-codemode", external: ["@yophon/tau-kernel", "@yophon/tau-ext-tool-search"], skip: ["node.ts"] },
 ];
 
 const BANNED_PATTERNS = [
@@ -49,8 +51,9 @@ function listTsFiles(dir) {
 }
 
 const violations = [];
-for (const { dir } of PURE_PACKAGES) {
+for (const { dir, skip = [] } of PURE_PACKAGES) {
 	for (const file of listTsFiles(join(root, "packages", dir, "src"))) {
+		if (skip.some((name) => file.endsWith(name))) continue;
 		const text = readFileSync(file, "utf8");
 		const relPath = relative(root, file);
 		const isSeam = relPath.endsWith("platform.ts");

@@ -1,0 +1,28 @@
+{
+	"name": "@yophon/tau-ext-codemode",
+	"version": "0.2.0",
+	"description": "codemode for tau: the model writes JavaScript that calls tools, run in a QuickJS sandbox (pi 0.99.0-1.2.0)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-codemode"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./node": "./src/node.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@earendil-works/pi-codemode": "1.2.0",
+		"@yophon/tau-ext-tool-search": "^0.2.0",
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}

@@ -1,7 +1,10 @@
 // Pack smoke: prove the published artifact works for a real consumer. Packs
-// @yophon/tau-kernel (zero deps → offline-safe), installs the tarball into a
-// bare temp project, then (1) runs a two-turn scripted agent loop through the
-// built JS and (2) typechecks a consumer TS file against the shipped d.ts.
+// @yophon/tau-kernel, installs the tarball into a bare temp project, then (1)
+// runs a two-turn scripted agent loop through the built JS and (2) typechecks a
+// consumer TS file against the shipped d.ts. (3) P24e: packs ext-tool-search and
+// ext-codemode too and runs a codemode script from the installed layout, so the
+// pi-codemode worker and wasm resolve as they will after `npm i` (needs the
+// registry for @earendil-works/pi-codemode).
 // The full cli path needs the registry (pi-tui) and is exercised after real
 // publishes instead.
 import { spawnSync } from "node:child_process";
@@ -13,6 +16,7 @@ import { withPublishManifest } from "./release-lib.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const kernelDir = join(root, "packages/kernel");
+const packageDir = (dir) => join(root, "packages", dir);
 const workDir = join(tmpdir(), `tau-pack-smoke-${Date.now()}`);
 mkdirSync(workDir, { recursive: true });
 
@@ -86,6 +90,42 @@ if (text !== "回声：你好 ☀️" || echoed !== "你好") {
 console.log("pack smoke runtime ok");
 `;
 
+const CODEMODE_MJS = `
+import { Agent, createIncrementalUtf8Decoder } from "@yophon/tau-kernel";
+import { createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
+import { ExtensionRegistry } from "@yophon/tau-kernel";
+
+const encoder = new TextEncoder();
+const sse = (payloads) => {
+	const bytes = encoder.encode([...payloads.map((p) => \`data: \${JSON.stringify(p)}\\n\\n\`), "data: [DONE]\\n\\n"].join(""));
+	let sent = false;
+	return { ok: true, status: 200, text: async () => "", body: { getReader: () => ({
+		read: async () => (sent ? { done: true } : ((sent = true), { done: false, value: bytes })),
+		cancel: () => undefined,
+	}) } };
+};
+const code = 'const r = await tools.echo({ text: "hi" }); return r + "!";';
+const turns = [
+	sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "c1", function: { name: "codemode", arguments: JSON.stringify({ code }) } }] }, finish_reason: "tool_calls" }] }]),
+	sse([{ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] }]),
+];
+let call = 0;
+const registry = await ExtensionRegistry.load([createNodeCodemodeExtension()]);
+const agent = new Agent({
+	config: { baseUrl: "https://fake.test/v1", model: "m" },
+	platform: { fetch: async () => turns[call++], createUtf8Decoder: createIncrementalUtf8Decoder, randomBytes: (n) => new Uint8Array(n) },
+	extensions: registry,
+	tools: [{ name: "echo", description: "echo", parameters: { type: "object", properties: { text: { type: "string" } } },
+		execute: async (args) => ({ content: [{ type: "text", text: String(args.text) }] }) }],
+});
+agent.setActiveTools([...agent.getActiveTools(), "codemode"]);
+for await (const _event of agent.prompt("go")) {}
+const result = agent.messages.find((m) => m.role === "toolResult");
+const text = result.content.map((block) => block.text ?? "").join("");
+if (!/^Script completed/.test(text) || !text.endsWith("hi!")) throw new Error(\`unexpected codemode result: \${text}\`);
+console.log("pack smoke codemode ok");
+`;
+
 const CONSUMER_TS = `
 import { Agent, type AgentEvent, type Platform, type Tool } from "@yophon/tau-kernel";
 
@@ -136,7 +176,35 @@ try {
 		join(consumerDir, "consumer.ts"),
 	]);
 
-	console.log("pack smoke passed: tarball installs, runs, and typechecks for a bare consumer");
+	// P24e: codemode from packed tarballs (kernel + ext-tool-search + ext-codemode).
+	const tarballs = [tarball];
+	for (const [dir, name] of [
+		["ext-tool-search", "ext-tool-search"],
+		["ext-codemode", "ext-codemode"],
+	]) {
+		const before = new Set(readdirSync(workDir));
+		await withPublishManifest(packageDir(dir), name, async () => {
+			run("npm", ["pack", "--ignore-scripts", "--pack-destination", workDir], { cwd: packageDir(dir) });
+		});
+		const created = readdirSync(workDir).find((file) => file.endsWith(".tgz") && !before.has(file));
+		if (!created) throw new Error(`npm pack produced no tarball for ${dir}`);
+		tarballs.push(join(workDir, created));
+	}
+	const codemodeDir = join(workDir, "codemode-consumer");
+	mkdirSync(codemodeDir);
+	writeFileSync(
+		join(codemodeDir, "package.json"),
+		JSON.stringify({ name: "codemode-consumer", type: "module" }, null, "\t"),
+	);
+	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", ...tarballs], { cwd: codemodeDir });
+	writeFileSync(join(codemodeDir, "main.mjs"), CODEMODE_MJS);
+	const codemode = run("node", ["main.mjs"], { cwd: codemodeDir });
+	if (!codemode.stdout.includes("pack smoke codemode ok"))
+		throw new Error(`codemode smoke failed:\n${codemode.stdout}`);
+
+	console.log(
+		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs",
+	);
 } finally {
 	rmSync(workDir, { recursive: true, force: true });
 }
