@@ -1047,6 +1047,8 @@ async function main(): Promise<void> {
 	// On a terminal the TUI is the interactive default (P25); --repl keeps the line-based REPL.
 	const useTui = options.print === undefined && !options.repl && (options.tui || terminal);
 	const readline = useTui ? undefined : createInterface({ input: process.stdin, output: process.stdout });
+	// Before anything imports Ink: a shell exporting CI must not leave the TUI blank.
+	if (useTui) await (await import("./tui/ink-env.ts")).loadInk();
 	// Headless stdin (pipes, CI) cannot answer prompts; omit the UI capability
 	// so extensions take their no-UI degradation path instead of hanging.
 	const ui = useTui

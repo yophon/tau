@@ -378,3 +378,21 @@ describe("P25c commands and keys", () => {
 		assert.equal(h.controller.state.editor.text, "edited in the editor");
 	});
 });
+
+describe("ink environment", () => {
+	it("loadInk leaves CI as it was for the commands tools run", async () => {
+		const { loadInk } = await import("../src/tui/ink-env.ts");
+		const original = process.env.CI;
+		try {
+			process.env.CI = "true";
+			await loadInk();
+			assert.equal(process.env.CI, "true");
+			delete process.env.CI;
+			await loadInk();
+			assert.equal(Object.hasOwn(process.env, "CI"), false);
+		} finally {
+			if (original === undefined) delete process.env.CI;
+			else process.env.CI = original;
+		}
+	});
+});
