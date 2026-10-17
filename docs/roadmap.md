@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-16（P23 完成；P24 完成；**当前工作 = 发 0.4.0（含 P22–P24），然后 P25**）
+> 最后更新：2026-10-17（P23 完成；P24 完成；**当前工作 = P25 TUI 重写（规格书已确认）**；0.4.0（含 P22–P24）待发布；网关草案待定）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -241,9 +241,13 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 399 个测试，396 通过、3 跳过（Windows 上本来就跳过的三项，CI Linux 跑）。24a MCP 收敛（faacbb5）：ext-mcp-http 成为照抄 pi-mcp 形状的纯 ES 核心，ext-mcp 加 stdio、退役官方 SDK，工具名 `mcp__<server>__<tool>`；24b 工具面（bade033）：exposure 五档、namespace、structuredContent、prepareLoadout、显式 active 集与转录复原；24c 嵌套调用（4e64adf）：`ctx.executeTool`、`nestedCalls`、整棵 Agent 树一把 preflight 锁、bash 结构化结果，D29；24d（bb19675）：新包 ext-tool-search，MCP 暴露档位、namespace、结构化结果、`mcp_servers` 段、后台连接；24e（535c0f0）：新包 ext-codemode（钉版 pi-codemode，D30），CLI 内置 tool_search 与 codemode，提示工具行跟随声明集。真实 DeepSeek：codemode 并行读文件、tool_search 加载 deferred MCP 工具、store 跨 `--continue` 均通过。偏差见规格书「实施记录」。
 
-## Phase 25+ ⬜ 产品层
+## Phase 25 ⬜ TUI 重写
 
-P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
+规格书：[specs/phase-25-tui.md](specs/phase-25-tui.md)（2026-10-17 确认，四步 25a–25d）。用户反馈现在的 TUI 难看、有错位，参考 yo-agent 重写：事件经纯 reducer 折叠成区块、按键纯函数路由、渲染为纯函数，已完成区块写进终端回滚（Ink `<Static>`）；视觉语言与审批面板来自 yo-agent；旧 TUI 的功能与扩展 UI 接口一项不丢；新增 `/new`、`/session`、`/clone`、`/copy`、`/export`、`/trust`；TTY 下 `tau` 默认进 TUI。
+
+## 产品层 ⬜ 待定
+
+常驻网关与聊天渠道的草案见 [specs/draft-gateway.md](specs/draft-gateway.md)（2026-10-16 草拟，用户决定先做 TUI，开放问题未裁定）：常驻网关进程（每对话一个会话、排队、持久化）、渠道抽象、微信（移植 yo-agent iLink）与飞书渠道、主人与名单准入、聊天审批。之后的方向（各自另立规格书）：目标与调度（goal 一等对象、cron/提醒、只读主动模式）；记忆、连接器凭据、对外身份与审计。
 
 ## 未排期（Backlog）
 
@@ -275,7 +279,7 @@ P24 之后从 tau 长出个人 agent 产品层，届时另立规格书。
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
 | 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 阻断已解除（P23c 信任门、P23e 媒体 owner-only）；随下次发版首发 |
-| 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | 绑定 pi-tui 升级（P24 之后） |
+| 15 | 启动期 notify 被 TUI 吞掉 | 扩展在 session_start 的通知看不到 | P25（TUI 重写） |
 | 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 
