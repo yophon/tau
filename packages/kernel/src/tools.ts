@@ -1,9 +1,10 @@
 import { TauError } from "./errors.ts";
-import type { ExtensionContext } from "./extensions.ts";
+import type { ExtensionToolContext } from "./extensions.ts";
 import type { ImageContent, JsonValue, TextContent, Usage } from "./messages.ts";
 import type { JsonSchema, ToolDefinition } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
+import { utf8CodePointLength } from "./utf8.ts";
 
 /**
  * What a tool returns — pi's AgentToolResult (P23b; was `{ output, isError }`).
@@ -160,7 +161,7 @@ export interface Tool extends ToolDefinition {
 		args: Record<string, unknown>,
 		signal?: TauAbortSignal,
 		onUpdate?: (partialOutput: string, stream?: ToolUpdateStream) => void,
-		ctx?: ExtensionContext,
+		ctx?: ExtensionToolContext,
 	): Promise<ToolResult>;
 }
 
@@ -196,11 +197,6 @@ export function toToolInfo(tool: Tool, source: ToolInfo["source"]): ToolInfo {
 	};
 }
 
-/** UTF-8 byte length of a code point (pure ES: no TextEncoder on bare engines). */
-function utf8Length(codePoint: number): number {
-	return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
-}
-
 /**
  * Keep the start and the end of `content`, about half of `maxBytes` (UTF-8) each,
  * and replace the middle with a `…N chars truncated…` marker — pi's
@@ -211,7 +207,7 @@ export function truncateMiddle(
 	maxBytes: number,
 ): { content: string; truncated: boolean; removedChars: number; totalBytes: number; totalLines: number } {
 	const chars = Array.from(content);
-	const sizes = chars.map((char) => utf8Length(char.codePointAt(0) ?? 0));
+	const sizes = chars.map((char) => utf8CodePointLength(char.codePointAt(0) ?? 0));
 	const totalBytes = sizes.reduce((sum, size) => sum + size, 0);
 	const totalLines = content.split("\n").length;
 	if (totalBytes <= maxBytes) return { content, truncated: false, removedChars: 0, totalBytes, totalLines };

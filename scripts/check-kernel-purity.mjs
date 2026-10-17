@@ -25,6 +25,7 @@ const BANNED_PATTERNS = [
 	{ pattern: /\bBuffer\b/, reason: "Buffer global" },
 	{ pattern: /__dirname|__filename/, reason: "CommonJS path global" },
 	{ pattern: /\bimport\s*\(/, reason: "dynamic import" },
+	{ pattern: /\beval\s*\(|\bnew\s+Function\b/, reason: "code evaluation (eval/new Function)" },
 ];
 
 // Globals outside the Platform seam that pure packages may not touch directly.

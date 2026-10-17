@@ -153,6 +153,31 @@ export interface AssistantMessage {
 	durationMs?: number;
 }
 
+/** A tool call that another tool made while it ran, for example from a codemode script (pi-ai 0.99.0). */
+export interface NestedToolCallRecord {
+	id: string;
+	name: string;
+	/**
+	 * Omitted when over the size limits; `argumentsBytes` then gives their size.
+	 * Deviation (D29): read/write/edit keep `{ path }` even then.
+	 */
+	arguments?: JsonObject;
+	/** UTF-8 size of the arguments as JSON, set when they were omitted. */
+	argumentsBytes?: number;
+	/** `unfinished`: the call was still running when the calling tool finished. */
+	status: "ok" | "error" | "unfinished";
+	durationMs?: number;
+	/** Error text, truncated. */
+	error?: string;
+}
+
+/** Bounded record of the nested calls a tool made. Results are not recorded (pi). */
+export interface NestedToolCalls {
+	calls: NestedToolCallRecord[];
+	/** False when calls were dropped, arguments omitted, or calls had not finished. */
+	complete: boolean;
+}
+
 export interface ToolResultMessage {
 	role: "toolResult";
 	toolCallId: string;
@@ -161,6 +186,8 @@ export interface ToolResultMessage {
 	details?: JsonValue;
 	/** Usage of the tool execution itself (e.g. a subagent's LLM calls); not part of context accounting. */
 	usage?: Usage;
+	/** Calls this tool made to other tools (ctx.executeTool). Kept for the session record; not sent to the model. */
+	nestedCalls?: NestedToolCalls;
 	isError: boolean;
 	timestamp: number;
 	/** Milliseconds tool.execute took (pi 1.1.0); absent for results that never executed. */

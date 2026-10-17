@@ -607,16 +607,27 @@ export interface FileOperations {
 	edited: Set<string>;
 }
 
+/**
+ * File operations of the tool calls in an assistant message, or of the nested calls
+ * recorded on a tool result (pi: calls made from codemode scripts).
+ */
 export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
+	if (message.role === "toolResult") {
+		for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps);
+		return;
+	}
 	if (message.role !== "assistant") return;
 	for (const block of message.content) {
-		if (block.type !== "toolCall") continue;
-		const path = typeof block.arguments.path === "string" ? block.arguments.path : undefined;
-		if (!path) continue;
-		if (block.name === "read") fileOps.read.add(path);
-		else if (block.name === "write") fileOps.written.add(path);
-		else if (block.name === "edit") fileOps.edited.add(path);
+		if (block.type === "toolCall") addFileOp(block.name, block.arguments, fileOps);
 	}
+}
+
+function addFileOp(toolName: string, args: Record<string, unknown> | undefined, fileOps: FileOperations): void {
+	const path = typeof args?.path === "string" ? args.path : undefined;
+	if (!path) return;
+	if (toolName === "read") fileOps.read.add(path);
+	else if (toolName === "write") fileOps.written.add(path);
+	else if (toolName === "edit") fileOps.edited.add(path);
 }
 
 export function computeFileLists(fileOps: FileOperations): { readFiles: string[]; modifiedFiles: string[] } {

@@ -904,7 +904,10 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 			runtime.kernelBusy = true;
 		});
 
+		// Calls a tool makes itself (codemode scripts, P24c) stay off the progress card:
+		// hundreds of nested calls would flood it and hit Feishu's edit rate limit.
 		api.on("tool_execution_start", (event: ToolExecutionStartEvent) => {
+			if (event.parentToolCallId !== undefined) return;
 			const state = activeState();
 			if (
 				!state ||
@@ -921,6 +924,7 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 		});
 
 		api.on("tool_execution_update", (event: ToolExecutionUpdateEvent) => {
+			if (event.parentToolCallId !== undefined) return;
 			const state = activeState();
 			if (
 				!state ||
@@ -940,6 +944,7 @@ export function createFeishuExtension(options: FeishuExtensionOptions = {}): Ext
 		});
 
 		api.on("tool_execution_end", (event: ToolExecutionEndEvent) => {
+			if (event.parentToolCallId !== undefined) return;
 			const state = activeState();
 			if (
 				!state ||

@@ -1,6 +1,12 @@
 import type { AgentEvent } from "./agent.ts";
 import { toError } from "./errors.ts";
-import type { ExtensionContext, ExtensionRegistry, ToolCallEvent, UiCapability } from "./extensions.ts";
+import type {
+	ExtensionContext,
+	ExtensionRegistry,
+	ExtensionToolContext,
+	ToolCallEvent,
+	UiCapability,
+} from "./extensions.ts";
 import type { ToolCall, ToolResultMessage } from "./messages.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import type { ApprovalRequest, PermissionMode, ToolPolicy } from "./policy.ts";
@@ -21,6 +27,31 @@ import {
  * each result through `host.commit` in source order.
  */
 
+/**
+ * FIFO lock held for a tool call's whole preflight — tool_call hooks, validation,
+ * policy, approval, tool_execution_start — never across execution. One lock serves
+ * an agent tree (the root agent's, shared with subagents), so nested calls from a
+ * script's Promise.all and parallel subagents never prompt for approval at once
+ * (D22-2: hooks and approvals run one at a time).
+ */
+export class PreflightLock {
+	private tail: Promise<void> = Promise.resolve();
+
+	async run<T>(work: () => Promise<T>): Promise<T> {
+		const previous = this.tail;
+		let release: () => void = () => {};
+		this.tail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await previous;
+		try {
+			return await work();
+		} finally {
+			release();
+		}
+	}
+}
+
 /** What the runner needs from its agent. */
 export interface ToolBatchHost {
 	readonly extensions: ExtensionRegistry | undefined;
@@ -28,6 +59,9 @@ export interface ToolBatchHost {
 	readonly permissionMode: PermissionMode;
 	readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	ui(): UiCapability | undefined;
+	readonly preflightLock: PreflightLock;
+	/** The context a tool's execute receives: `ctx` plus executeTool/tools bound to this call. */
+	toolContext(ctx: ExtensionContext, toolCallId: string, signal: TauAbortSignal | undefined): ExtensionToolContext;
 	/** Log one tool result and return its AgentEvent. */
 	commit(toolCall: ToolCall, outcome: ToolOutcome, ctx: ExtensionContext, batch: ToolBatch): Promise<AgentEvent>;
 }
@@ -38,7 +72,13 @@ interface ToolUpdate {
 }
 
 /** Outcome of the serial preflight stage (P18, mirrors pi's prepareToolCall shapes). */
-type PreparedToolCall = { kind: "prepared"; toolCall: ToolCall; tool: Tool; args: Record<string, unknown> };
+type PreparedToolCall = {
+	kind: "prepared";
+	toolCall: ToolCall;
+	tool: Tool;
+	args: Record<string, unknown>;
+	parentToolCallId?: string;
+};
 type ToolCallPreparation = PreparedToolCall | { kind: "immediate"; toolCall: ToolCall; result: ToolResult };
 /** A tool result plus how long tool.execute took (absent when it never ran). */
 export type ToolOutcome = ToolResult & { durationMs?: number };
@@ -193,17 +233,51 @@ export class ToolBatchRunner {
 	}
 
 	/**
+	 * A call another tool made (ctx.executeTool): the same preflight and execution as
+	 * a model-issued call, with `parentToolCallId` on its events and approval request.
+	 */
+	async runNested(
+		toolCall: ToolCall,
+		tools: ReadonlyMap<string, Tool>,
+		ctx: ExtensionContext,
+		parentToolCallId: string,
+		signal: TauAbortSignal | undefined,
+		onUpdate: ((partialOutput: string, stream?: ToolUpdateStream) => void) | undefined,
+	): Promise<ToolOutcome> {
+		const prep = await this.preflightToolCall(toolCall, tools, ctx, signal, parentToolCallId);
+		if (prep.kind === "immediate") return prep.result;
+		return this.executePreparedToolCall(
+			prep,
+			ctx,
+			signal,
+			onUpdate ? (update) => onUpdate(update.partialOutput, update.stream) : undefined,
+		);
+	}
+
+	/**
 	 * Serial preflight of one tool call: tool_call hook (block/rewrite),
 	 * argument validation, policy gate, approval, and — for calls that will
 	 * execute — the tool_execution_start notification. Immediate outcomes
 	 * (unknown tool, block, invalid args, deny) never see execution hooks.
 	 */
-	private async preflightToolCall(
+	private preflightToolCall(
 		toolCall: ToolCall,
 		tools: ReadonlyMap<string, Tool>,
 		ctx: ExtensionContext,
 		signal?: TauAbortSignal,
+		parentToolCallId?: string,
 	): Promise<ToolCallPreparation> {
+		return this.host.preflightLock.run(() => this.preflightLocked(toolCall, tools, ctx, signal, parentToolCallId));
+	}
+
+	private async preflightLocked(
+		toolCall: ToolCall,
+		tools: ReadonlyMap<string, Tool>,
+		ctx: ExtensionContext,
+		signal: TauAbortSignal | undefined,
+		parentToolCallId: string | undefined,
+	): Promise<ToolCallPreparation> {
+		const parent = parentToolCallId !== undefined ? { parentToolCallId } : {};
 		const tool = tools.get(toolCall.name);
 		if (!tool) {
 			return { kind: "immediate", toolCall, result: errorResult(`Unknown tool: ${toolCall.name}`) };
@@ -219,6 +293,7 @@ export class ToolBatchRunner {
 				toolCallId: toolCall.id,
 				toolName: toolCall.name,
 				input: args,
+				...parent,
 			};
 			const decision = await this.host.extensions.runToolCall(event, ctx);
 			if (decision.blocked) {
@@ -282,6 +357,7 @@ export class ToolBatchRunner {
 				args,
 				risk: policyDecision.risk,
 				reason: policyDecision.reason,
+				...parent,
 			};
 			let approved: boolean;
 			try {
@@ -303,10 +379,10 @@ export class ToolBatchRunner {
 		}
 
 		await this.host.extensions?.notifyToolExecutionStart(
-			{ toolCallId: toolCall.id, toolName: toolCall.name, args },
+			{ toolCallId: toolCall.id, toolName: toolCall.name, args, ...parent },
 			ctx,
 		);
-		return { kind: "prepared", toolCall, tool, args };
+		return { kind: "prepared", toolCall, tool, args, ...parent };
 	}
 
 	/** Execute a prepared tool call: updates stream, tool_execution_end, tool_result hook. */
@@ -317,6 +393,7 @@ export class ToolBatchRunner {
 		onUpdate?: (update: ToolUpdate) => void,
 	): Promise<ToolOutcome> {
 		const { toolCall, tool, args } = prep;
+		const parent = prep.parentToolCallId !== undefined ? { parentToolCallId: prep.parentToolCallId } : {};
 		const updateNotifications: Promise<void>[] = [];
 		// Updates after execute settled are dropped, so none lands after tool_execution_end (pi acceptingUpdates).
 		let acceptingUpdates = true;
@@ -325,7 +402,7 @@ export class ToolBatchRunner {
 			if (this.host.extensions) {
 				const notification = this.host.extensions
 					.notifyToolExecutionUpdate(
-						{ toolCallId: toolCall.id, toolName: toolCall.name, args, partialOutput, stream },
+						{ toolCallId: toolCall.id, toolName: toolCall.name, args, partialOutput, stream, ...parent },
 						ctx,
 					)
 					.then(() => {
@@ -347,7 +424,7 @@ export class ToolBatchRunner {
 			// durationMs covers tool.execute only: preflight and approval ran before (pi 1.1.0).
 			const startedAt = Date.now();
 			try {
-				result = await tool.execute(args, signal, emitUpdate, ctx);
+				result = await tool.execute(args, signal, emitUpdate, this.host.toolContext(ctx, toolCall.id, signal));
 			} catch (cause) {
 				result = errorResult(cause instanceof Error ? cause.message : String(cause));
 			}
@@ -356,7 +433,13 @@ export class ToolBatchRunner {
 		acceptingUpdates = false;
 		await Promise.all(updateNotifications);
 		await this.host.extensions?.notifyToolExecutionEnd(
-			{ toolCallId: toolCall.id, toolName: toolCall.name, result, ...(durationMs !== undefined ? { durationMs } : {}) },
+			{
+				toolCallId: toolCall.id,
+				toolName: toolCall.name,
+				result,
+				...(durationMs !== undefined ? { durationMs } : {}),
+				...parent,
+			},
 			ctx,
 		);
 
@@ -367,6 +450,7 @@ export class ToolBatchRunner {
 					type: "tool_result",
 					toolCallId: toolCall.id,
 					toolName: toolCall.name,
+					...parent,
 					input: args,
 					content: result.content,
 					...(result.details !== undefined ? { details: result.details } : {}),
@@ -397,7 +481,7 @@ export class ToolBatchRunner {
 			const summary = JSON.stringify(request.args) ?? "{}";
 			const detail = summary.length > 400 ? `${summary.slice(0, 400)}…` : summary;
 			return ui.confirm(
-				`Allow ${request.toolName}? (${request.risk} risk)`,
+				`Allow ${request.toolName}? (${request.risk} risk${request.parentToolCallId === undefined ? "" : ", called by another tool"})`,
 				request.reason ? `${request.reason}\n${detail}` : detail,
 			);
 		};

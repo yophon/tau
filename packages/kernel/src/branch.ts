@@ -163,6 +163,11 @@ export function prepareBranchEntries(entries: SessionEntry[], tokenBudget = 0): 
 	}
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
+		// Tool results stay out of the summary input, but the files their nested calls
+		// touched (codemode scripts) still count. Deviation: pi skips them here too.
+		if (entry.type === "message" && entry.message.role === "toolResult") {
+			extractFileOpsFromMessage(entry.message, fileOps);
+		}
 		const message = getMessageFromEntry(entry);
 		if (!message) continue;
 		extractFileOpsFromMessage(message, fileOps);

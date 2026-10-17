@@ -17,6 +17,9 @@ const INTERNAL = new Set([
 	"tool-batch.ts:ToolOutcome",
 	"tool-batch.ts:ToolBatchRunner",
 	"tool-batch.ts:normalizeToolOutcome",
+	// The agent drives nested calls; tools reach them through ctx.executeTool (P24c).
+	"nested-calls.ts:NestedToolCallHost",
+	"nested-calls.ts:NestedToolCallRunner",
 ]);
 
 function exportedNames(source: string): string[] {

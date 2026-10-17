@@ -1,6 +1,7 @@
 import type { FileSystem, Shell } from "./capabilities.ts";
 import type { PermissionMode } from "./policy.ts";
 import { errorResult, optionalNumber, requireString, type Tool, textResult } from "./tools.ts";
+import { utf8CodePointLength } from "./utf8.ts";
 
 const MAX_READ_LINES = 2000;
 const MAX_OUTPUT_CHARS = 50_000;
@@ -10,6 +11,45 @@ function truncate(text: string, limit: number = MAX_OUTPUT_CHARS): string {
 	if (text.length <= limit) return text;
 	return `${text.slice(0, limit)}\n[output truncated after ${limit} characters]`;
 }
+
+/** Structured bash output for programmatic callers is capped at 1 MiB (pi STRUCTURED_OUTPUT_MAX_BYTES). */
+export const BASH_STRUCTURED_OUTPUT_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Keep the first and last half of `maxBytes` (UTF-8) of `text`, cut at character
+ * boundaries, with pi's `[... N bytes omitted ...]` marker between (pi readFullOutput).
+ */
+export function limitOutputBytes(text: string, maxBytes: number): { content: string; truncated: boolean } {
+	const chars = Array.from(text);
+	const sizes = chars.map((char) => utf8CodePointLength(char.codePointAt(0) ?? 0));
+	const total = sizes.reduce((sum, size) => sum + size, 0);
+	if (total <= maxBytes) return { content: text, truncated: false };
+	const headBudget = Math.floor(maxBytes / 2);
+	const tailBudget = maxBytes - headBudget;
+	let headEnd = 0;
+	for (let used = 0; headEnd < chars.length && used + sizes[headEnd] <= headBudget; headEnd++) used += sizes[headEnd];
+	let tailStart = chars.length;
+	for (let used = 0; tailStart > headEnd && used + sizes[tailStart - 1] <= tailBudget; tailStart--)
+		used += sizes[tailStart - 1];
+	const omitted = sizes.slice(headEnd, tailStart).reduce((sum, size) => sum + size, 0);
+	return {
+		content: `${chars.slice(0, headEnd).join("")}\n\n[... ${omitted} bytes omitted ...]\n\n${chars.slice(tailStart).join("")}`,
+		truncated: true,
+	};
+}
+
+/** JSON Schema of bash's structuredContent (pi bashOutputSchema). */
+const BASH_OUTPUT_SCHEMA = {
+	type: "object",
+	properties: {
+		output: { type: "string", description: "Combined stdout and stderr, possibly truncated" },
+		truncated: { type: "boolean" },
+		full_output_path: { type: "string", description: "Full output, when truncated" },
+		exit_code: { type: "number" },
+		wall_time_seconds: { type: "number" },
+	},
+	required: ["output", "truncated", "exit_code", "wall_time_seconds"],
+};
 
 function countOccurrences(haystack: string, needle: string): number {
 	if (needle === "") return 0;
@@ -187,9 +227,13 @@ function createBashTool(shell: Shell): Tool {
 			},
 			required: ["command"],
 		},
+		// For programmatic callers (codemode scripts): the whole output up to 1 MiB, also on
+		// a non-zero exit. `full_output_path` is never set: the kernel has no temp files.
+		outputSchema: BASH_OUTPUT_SCHEMA,
 		execute: wrapExecute(async (args, signal, onUpdate) => {
 			const command = requireString(args, "command");
 			const timeoutSeconds = optionalNumber(args, "timeoutSeconds") ?? DEFAULT_BASH_TIMEOUT_SECONDS;
+			const startedAt = Date.now();
 			const result = await shell.exec(command, {
 				timeoutSeconds,
 				signal,
@@ -199,11 +243,22 @@ function createBashTool(shell: Shell): Tool {
 			const parts: string[] = [];
 			if (result.stdout !== "") parts.push(result.stdout);
 			if (result.stderr !== "") parts.push(result.stderr);
-			let output = truncate(parts.join("\n"));
+			const combined = parts.join("\n");
+			const structured = limitOutputBytes(combined, BASH_STRUCTURED_OUTPUT_MAX_BYTES);
+			let output = truncate(combined);
 			if (result.exitCode !== 0) {
 				output = output === "" ? `Exit code ${result.exitCode}` : `${output}\nExit code ${result.exitCode}`;
 			}
-			return { ...textResult(output === "" ? "(no output)" : output), isError: result.exitCode !== 0 };
+			return {
+				...textResult(output === "" ? "(no output)" : output),
+				isError: result.exitCode !== 0,
+				structuredContent: {
+					output: structured.content,
+					truncated: structured.truncated,
+					exit_code: result.exitCode,
+					wall_time_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
+				},
+			};
 		}),
 	};
 }

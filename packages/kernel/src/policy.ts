@@ -46,6 +46,8 @@ export interface ApprovalRequest {
 	args: Record<string, unknown>;
 	risk: RiskLevel;
 	reason?: string;
+	/** Set for a call another tool made (ctx.executeTool), e.g. from a codemode script. */
+	parentToolCallId?: string;
 }
 
 /**

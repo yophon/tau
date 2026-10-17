@@ -21,6 +21,7 @@ import {
 	type ExtensionCapabilities,
 	type ExtensionContext,
 	ExtensionRegistry,
+	type ExtensionToolContext,
 	type InputSource,
 	type QueuedInputDisposition,
 	type ReadonlySessionManager,
@@ -32,6 +33,7 @@ import {
 	type AgentMessage,
 	type AssistantMessage,
 	type CustomMessage,
+	combineUsage,
 	computeUsageCost,
 	emptyUsage,
 	type ImageContent,
@@ -46,6 +48,7 @@ import {
 	type UserMessage,
 	userContentText,
 } from "./messages.ts";
+import { type ExecuteToolOptions, NestedToolCallRunner } from "./nested-calls.ts";
 import {
 	type ChatStreamEvent,
 	type ChatTransport,
@@ -70,7 +73,13 @@ import {
 } from "./projection.ts";
 import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings, retryDelayMs } from "./retry.ts";
 import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
-import { normalizeToolOutcome, type ToolBatch, ToolBatchRunner, type ToolOutcome } from "./tool-batch.ts";
+import {
+	normalizeToolOutcome,
+	PreflightLock,
+	type ToolBatch,
+	ToolBatchRunner,
+	type ToolOutcome,
+} from "./tool-batch.ts";
 import {
 	assertToolSchema,
 	errorResult,
@@ -206,6 +215,12 @@ export interface AgentOptions {
 	 * batch to sequential (pi dispatch semantics).
 	 */
 	toolExecution?: ToolExecutionMode;
+	/**
+	 * Lock serializing tool-call preflight (hooks, policy, approval). Subagents get
+	 * their parent's, so one agent tree never asks for two approvals at once (D22-2).
+	 * Hosts running several agents against one approval UI may share one too.
+	 */
+	preflightLock?: PreflightLock;
 	/**
 	 * Before every LLM request, rebuild the projection from a JSON round trip of
 	 * the session log and require it to equal the conversation about to be sent
@@ -356,6 +371,9 @@ export class Agent {
 	private readonly isProjectTrusted: (() => boolean) | undefined;
 	/** Runs tool batches: preflight (hooks, validation, policy, approval), execution, result hooks. */
 	private readonly toolRunner: ToolBatchRunner;
+	private readonly preflightLock: PreflightLock;
+	/** Calls tools make through ctx.executeTool(), and their record per model-issued call. */
+	private readonly nestedCalls: NestedToolCallRunner;
 	/** The active tools by name: declared to the model (pi agent.state.tools). */
 	private activeNames = new Set<string>();
 	/** Each registered tool as last seen, to activate new registrations (pi _refreshToolRegistry). */
@@ -422,13 +440,22 @@ export class Agent {
 		this.verifyTranscript = options.verifyTranscript ?? true;
 		this.finishTurn = options.finishTurn;
 		this.isProjectTrusted = options.isProjectTrusted;
+		this.preflightLock = options.preflightLock ?? new PreflightLock();
 		this.toolRunner = new ToolBatchRunner({
 			extensions: this.extensions,
 			policy: this.policy,
 			permissionMode: this.permissionMode,
 			onApproval: this.onApproval,
 			ui: () => this.ui,
+			preflightLock: this.preflightLock,
+			toolContext: (ctx, toolCallId, signal) => this.toolContext(ctx, toolCallId, signal),
 			commit: (toolCall, outcome, ctx, batch) => this.commitToolResult(toolCall, outcome, ctx, batch),
+		});
+		this.nestedCalls = new NestedToolCallRunner({
+			getTools: () => this.callableTools(),
+			isSequential: () => this.toolExecution === "sequential",
+			runToolCall: (toolCall, tools, parentToolCallId, signal, onUpdate) =>
+				this.toolRunner.runNested(toolCall, tools, this.extensionContext(), parentToolCallId, signal, onUpdate),
 		});
 		options.extensions?.attachHostActions({
 			sendMessage: (input, sendOptions) => {
@@ -607,6 +634,29 @@ export class Agent {
 	/** Tools callable through `ctx.executeTool()`, without `execute`. */
 	getCallableTools(): ToolInfo[] {
 		return [...this.callableTools().values()].map((tool) => this.toolInfo(tool));
+	}
+
+	/**
+	 * The context one tool call's execute receives (pi ExtensionToolContext): the
+	 * shared context plus executeTool/tools bound to this call. Only tools get it —
+	 * handlers keep the plain context, so a tool_call handler cannot recurse.
+	 */
+	private toolContext(
+		ctx: ExtensionContext,
+		toolCallId: string,
+		signal: TauAbortSignal | undefined,
+	): ExtensionToolContext {
+		const toolCtx = Object.create(ctx) as ExtensionToolContext;
+		Object.defineProperty(toolCtx, "tools", { get: () => this.getCallableTools(), enumerable: true });
+		Object.defineProperty(toolCtx, "executeTool", {
+			value: (name: string, args: unknown, options: ExecuteToolOptions = {}) =>
+				this.nestedCalls.execute(toolCallId, name, args, {
+					signal: options.signal ?? signal,
+					onUpdate: options.onUpdate,
+				}),
+			enumerable: true,
+		});
+		return toolCtx;
 	}
 
 	/**
@@ -997,6 +1047,7 @@ export class Agent {
 			pricing: this.pricing,
 			thinkingLevel: this.currentThinkingLevel,
 			toolExecution: this.toolExecution,
+			preflightLock: this.preflightLock,
 		});
 		let text = "";
 		let lastAssistantText = "";
@@ -2031,6 +2082,7 @@ export class Agent {
 	): AsyncGenerator<AgentEvent> {
 		// Messages already polled from the queue go back to it, so the host can restore them.
 		this.steeringQueue.restore(pending);
+		this.nestedCalls.clear();
 		if (retryAttempt > 0) {
 			const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
 			await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
@@ -2048,7 +2100,10 @@ export class Agent {
 		ctx: ExtensionContext,
 		batch: ToolBatch,
 	): Promise<AgentEvent> {
-		const { durationMs, usage, terminate, ...result } = normalizeToolOutcome(toolCall.name, outcome);
+		const { durationMs, usage: ownUsage, terminate, ...result } = normalizeToolOutcome(toolCall.name, outcome);
+		// The calls this tool made through ctx.executeTool() and their usage (pi).
+		const nested = this.nestedCalls.takeRecord(toolCall.id);
+		const usage = nested?.usage ? (ownUsage ? combineUsage(ownUsage, nested.usage) : nested.usage) : ownUsage;
 		const toolResultMessage: ToolResultMessage = {
 			role: "toolResult",
 			toolCallId: toolCall.id,
@@ -2059,6 +2114,7 @@ export class Agent {
 			...(result.details !== undefined ? { details: result.details } : {}),
 			...(durationMs !== undefined ? { durationMs } : {}),
 			...(usage ? { usage } : {}),
+			...(nested?.calls ? { nestedCalls: nested.calls } : {}),
 		};
 		const committed = await this.commitMessageWithId(toolResultMessage, ctx);
 		batch.messages.push(committed.message as ToolResultMessage);

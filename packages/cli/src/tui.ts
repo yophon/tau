@@ -59,6 +59,12 @@ const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
 const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
 const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
 const bold = (text: string): string => `\x1b[1m${text}\x1b[0m`;
+
+/** Approval prompts say when the call came from another tool (a codemode script, P24c). */
+export function nestedNote(request: ApprovalRequest): string {
+	return request.parentToolCallId === undefined ? "" : ", called by another tool";
+}
+
 type TuiKey = Parameters<typeof matchesKey>[1];
 
 const builtInCommands: SlashCommand[] = [
@@ -393,7 +399,7 @@ export async function runTui(options: RunTuiOptions): Promise<void> {
 			.filter((part): part is string => Boolean(part))
 			.join("\n");
 		const choice = await uiCapability.select(
-			`Allow ${request.toolName}? (${request.risk} risk)${detail === "" ? "" : `\n${dim(detail)}`}`,
+			`Allow ${request.toolName}? (${request.risk} risk${nestedNote(request)})${detail === "" ? "" : `\n${dim(detail)}`}`,
 			["Allow once", "Always allow", "Deny"],
 		);
 		return choice === "Allow once" ? "once" : choice === "Always allow" ? "always" : "deny";

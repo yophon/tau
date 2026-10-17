@@ -56,7 +56,7 @@ import {
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
-import { conversationLength, createStartupTuiUi, runTui } from "./tui.ts";
+import { conversationLength, createStartupTuiUi, nestedNote, runTui } from "./tui.ts";
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
@@ -1090,7 +1090,10 @@ async function main(): Promise<void> {
 					if (isAlwaysAllowed(request)) return true;
 					const choice = approvalPromptRef.current
 						? await approvalPromptRef.current(request)
-						: (await ui.confirm(`Allow ${request.toolName}? (${request.risk} risk)`, request.reason))
+						: (await ui.confirm(
+									`Allow ${request.toolName}? (${request.risk} risk${nestedNote(request)})`,
+									request.reason,
+								))
 							? "once"
 							: "deny";
 					if (choice === "always") recordAlwaysAllow(request);
@@ -1100,7 +1103,7 @@ async function main(): Promise<void> {
 		// Readline prompt shared by the REPL and one-shot TTY runs; the TUI
 		// replaces it with a selector via setApprovalPrompt.
 		approvalPromptRef.current = async (request) => {
-			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk)`)}`);
+			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk${nestedNote(request)})`)}`);
 			if (request.reason) console.log(dim(request.reason));
 			console.log(dim(firstLine(JSON.stringify(request.args), 200)));
 			process.stdout.write("\nAllow? [y]es once / [a]lways / [N]o ");

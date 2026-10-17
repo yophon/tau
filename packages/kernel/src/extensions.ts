@@ -12,6 +12,7 @@ import type {
 	Usage,
 	UserContent,
 } from "./messages.ts";
+import type { ExecuteToolOptions, ToolCallOutcome } from "./nested-calls.ts";
 import type { ChatStreamEvent } from "./openai.ts";
 import type { Platform, TauAbortSignal } from "./platform.ts";
 import type { RiskLevel } from "./policy.ts";
@@ -113,6 +114,29 @@ export interface ExtensionContext {
 	sessionManager?: ReadonlySessionManager;
 	/** The system prompt the model currently has: the transcript's system messages replayed (P22). */
 	getSystemPrompt?: () => string;
+}
+
+/**
+ * The context a tool's `execute` receives (pi ExtensionToolContext): the
+ * extension context plus `executeTool()`, which runs another tool through the same
+ * validation, hooks, policy and approval as a model-issued call (D20 — never a way
+ * around them). Event and command handlers get the plain ExtensionContext, so a
+ * tool_call handler cannot recurse into tools. Both members are optional (D10):
+ * a tool run outside an agent gets no nested calls.
+ */
+export interface ExtensionToolContext extends ExtensionContext {
+	/** Tools `executeTool` can call, without `execute`: the active `direct` tools and every `codemode`/`deferred` tool. */
+	readonly tools?: readonly ToolInfo[];
+	/**
+	 * Run another tool. The call gets the id `<calling id>/<n>`, and its tool_call,
+	 * tool_result and tool_execution_* events carry `parentToolCallId`. It does not
+	 * appear in the transcript; a bounded record is kept as `nestedCalls` on the
+	 * calling tool's result message, and its usage is added to that message.
+	 *
+	 * Never rejects for tool failures: unknown tools, validation errors, blocked or
+	 * denied calls and thrown errors come back as `isError: true`.
+	 */
+	executeTool?: (name: string, args: unknown, options?: ExecuteToolOptions) => Promise<ToolCallOutcome>;
 }
 
 /**
@@ -314,6 +338,8 @@ export interface ToolExecutionStartEvent {
 	toolCallId: string;
 	toolName: string;
 	args: Record<string, unknown>;
+	/** Set when another tool (for example a codemode script) issued this call. */
+	parentToolCallId?: string;
 }
 
 /** Fired with streaming partial output during tool execution (e.g. bash stdout chunks). */
@@ -324,6 +350,8 @@ export interface ToolExecutionUpdateEvent {
 	args: Record<string, unknown>;
 	partialOutput: string;
 	stream?: "stdout" | "stderr";
+	/** Set when another tool issued this call. */
+	parentToolCallId?: string;
 }
 
 /** Fired when a tool finishes executing, before tool_result. */
@@ -334,6 +362,8 @@ export interface ToolExecutionEndEvent {
 	result: ToolResult;
 	/** Milliseconds tool.execute took (pi 1.1.0). */
 	durationMs?: number;
+	/** Set when another tool issued this call. */
+	parentToolCallId?: string;
 }
 
 /** Fired by hosts to decide whether a project directory's extensions may be loaded. */
@@ -526,6 +556,8 @@ export interface ToolCallEvent {
 	toolCallId: string;
 	toolName: string;
 	input: Record<string, unknown>;
+	/** Set when another tool (for example a codemode script) issued this call. */
+	parentToolCallId?: string;
 }
 
 export interface ToolCallEventResult {
@@ -545,6 +577,8 @@ export interface ToolResultEvent {
 	type: "tool_result";
 	toolCallId: string;
 	toolName: string;
+	/** Set when another tool issued this call. */
+	parentToolCallId?: string;
 	input: Record<string, unknown>;
 	content: (TextContent | ImageContent)[];
 	details?: JsonValue;

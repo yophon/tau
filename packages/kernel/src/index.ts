@@ -13,7 +13,12 @@ export {
 	prepareBranchEntries,
 } from "./branch.ts";
 export type { FileInfo, FileKind, FileSystem, Shell, ShellExecResult } from "./capabilities.ts";
-export { createCodingTools, mutationQueueKey } from "./coding-tools.ts";
+export {
+	BASH_STRUCTURED_OUTPUT_MAX_BYTES,
+	createCodingTools,
+	limitOutputBytes,
+	mutationQueueKey,
+} from "./coding-tools.ts";
 export {
 	type CompactionPreparation,
 	type CompactionResult,
@@ -94,6 +99,7 @@ export {
 	type ExtensionPaths,
 	ExtensionRegistry,
 	type ExtensionRenderComponent,
+	type ExtensionToolContext,
 	type InlineExtension,
 	type InputEvent,
 	type InputEventResult,
@@ -178,6 +184,8 @@ export {
 	type JsonValue,
 	type ModelPricing,
 	messageText,
+	type NestedToolCallRecord,
+	type NestedToolCalls,
 	type StopReason,
 	type SystemMessage,
 	type TextContent,
@@ -191,6 +199,13 @@ export {
 	type UserMessage,
 	userContentText,
 } from "./messages.ts";
+export {
+	type ExecuteToolOptions,
+	NESTED_CALL_LIMITS,
+	NestedCallRecorder,
+	type NestedCallSummary,
+	type ToolCallOutcome,
+} from "./nested-calls.ts";
 export {
 	applyHeaderChanges,
 	BRANCH_SUMMARY_PREFIX,
@@ -285,6 +300,7 @@ export {
 	sessionDirSlug,
 } from "./session.ts";
 export { type SseEvent, SseParser } from "./sse.ts";
+export { PreflightLock } from "./tool-batch.ts";
 export {
 	assertToolSchema,
 	errorResult,
@@ -311,5 +327,5 @@ export {
 	validateToolArgs,
 } from "./tools.ts";
 export { type TransformTarget, transformMessages } from "./transform.ts";
-export { createIncrementalUtf8Decoder } from "./utf8.ts";
+export { createIncrementalUtf8Decoder, utf8ByteLength, utf8CodePointLength } from "./utf8.ts";
 export { uuidv7 } from "./uuid.ts";

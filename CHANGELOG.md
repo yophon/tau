@@ -208,6 +208,21 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   `--tunnel` flag (Cloudflare Quick Tunnel, no account) is the remote path.
 
 ### Added
+- Kernel (P24c, pi 0.99.0): tools can call tools. A tool's `execute` context has
+  `executeTool(name, args, options?)` and `tools` (the callable set): the nested call
+  runs through the same tool_call hooks, validation, policy and approval as a model
+  call, gets the id `<parent>/<n>`, and its hook and tool_execution events carry
+  `parentToolCallId`. It stays out of the transcript; the calling tool's result
+  message records it in `nestedCalls` (pi limits; read/write/edit keep their path,
+  D29) and adds its usage. Compaction and branch summaries list the files nested
+  calls touched. One `PreflightLock` per agent tree (shared with subagents,
+  `AgentOptions.preflightLock`) keeps hooks and approvals one at a time, so two
+  parallel subagents no longer ask for approval at once. Approval requests carry
+  `parentToolCallId`.
+- Kernel (P24c, pi 0.99.0): `bash` declares an `outputSchema` and returns
+  `structuredContent` `{ output, truncated, exit_code, wall_time_seconds }` (up to
+  1 MiB, head and tail kept), also on a non-zero exit; the model-facing text is
+  unchanged.
 - Kernel (P24b, pi 0.99.0–1.2.0): tool `exposure` (`direct` / `model-only` /
   `codemode` / `deferred` / `hidden`), `namespace` (with `aliases`), `outputSchema` and
   `ToolResult.structuredContent` (a `tool_result` handler that replaces `content`

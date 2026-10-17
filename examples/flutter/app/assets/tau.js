@@ -905,15 +905,21 @@ Only summarize information explicitly present above. Do not infer or recreate la
     return parts.join("\n\n");
   }
   function extractFileOpsFromMessage(message, fileOps) {
+    if (message.role === "toolResult") {
+      for (const call of message.nestedCalls?.calls ?? []) addFileOp(call.name, call.arguments, fileOps);
+      return;
+    }
     if (message.role !== "assistant") return;
     for (const block of message.content) {
-      if (block.type !== "toolCall") continue;
-      const path = typeof block.arguments.path === "string" ? block.arguments.path : void 0;
-      if (!path) continue;
-      if (block.name === "read") fileOps.read.add(path);
-      else if (block.name === "write") fileOps.written.add(path);
-      else if (block.name === "edit") fileOps.edited.add(path);
+      if (block.type === "toolCall") addFileOp(block.name, block.arguments, fileOps);
     }
+  }
+  function addFileOp(toolName, args, fileOps) {
+    const path = typeof args?.path === "string" ? args.path : void 0;
+    if (!path) return;
+    if (toolName === "read") fileOps.read.add(path);
+    else if (toolName === "write") fileOps.written.add(path);
+    else if (toolName === "edit") fileOps.edited.add(path);
   }
   function computeFileLists(fileOps) {
     const modified = /* @__PURE__ */ new Set([...fileOps.edited, ...fileOps.written]);
@@ -1207,6 +1213,9 @@ ${turnPrefix.text}`;
     }
     for (let i = entries.length - 1; i >= 0; i--) {
       const entry = entries[i];
+      if (entry.type === "message" && entry.message.role === "toolResult") {
+        extractFileOpsFromMessage(entry.message, fileOps);
+      }
       const message = getMessageFromEntry(entry);
       if (!message) continue;
       extractFileOpsFromMessage(message, fileOps);
@@ -1295,13 +1304,120 @@ ${instructions}`;
     return { summary: summary || "No summary generated", readFiles, modifiedFiles, usage: generated.usage };
   }
 
-  // ../../../packages/kernel/src/tools.ts
-  function utf8Length(codePoint) {
+  // ../../../packages/kernel/src/utf8.ts
+  var REPLACEMENT = "\uFFFD";
+  function utf8CodePointLength(codePoint) {
     return codePoint < 128 ? 1 : codePoint < 2048 ? 2 : codePoint < 65536 ? 3 : 4;
+  }
+  function utf8ByteLength(text) {
+    let bytes = 0;
+    for (const char of text) bytes += utf8CodePointLength(char.codePointAt(0) ?? 0);
+    return bytes;
+  }
+  var MIN_CODE_POINT = [0, 0, 128, 2048, 65536];
+  function createIncrementalUtf8Decoder() {
+    let pending = [];
+    const drain = (final) => {
+      let out = "";
+      let i = 0;
+      while (i < pending.length) {
+        const lead = pending[i];
+        if (lead < 128) {
+          out += String.fromCharCode(lead);
+          i += 1;
+          continue;
+        }
+        const length = lead >> 5 === 6 ? 2 : lead >> 4 === 14 ? 3 : lead >> 3 === 30 ? 4 : 0;
+        if (length === 0) {
+          out += REPLACEMENT;
+          i += 1;
+          continue;
+        }
+        if (i + length > pending.length) {
+          let plausible = true;
+          for (let j = i + 1; j < pending.length; j++) {
+            if (pending[j] >> 6 !== 2) {
+              plausible = false;
+              break;
+            }
+          }
+          if (plausible) {
+            if (!final) break;
+            out += REPLACEMENT;
+            i = pending.length;
+            break;
+          }
+          out += REPLACEMENT;
+          i += 1;
+          continue;
+        }
+        let codePoint = lead & 255 >> length + 1;
+        let valid = true;
+        for (let j = 1; j < length; j++) {
+          const byte = pending[i + j];
+          if (byte >> 6 !== 2) {
+            valid = false;
+            break;
+          }
+          codePoint = codePoint << 6 | byte & 63;
+        }
+        if (!valid) {
+          out += REPLACEMENT;
+          i += 1;
+          continue;
+        }
+        if (codePoint < MIN_CODE_POINT[length] || codePoint >= 55296 && codePoint <= 57343 || codePoint > 1114111) {
+          out += REPLACEMENT;
+          i += length;
+          continue;
+        }
+        out += String.fromCodePoint(codePoint);
+        i += length;
+      }
+      pending = pending.slice(i);
+      return out;
+    };
+    return {
+      decode(chunk) {
+        for (const byte of chunk) pending.push(byte);
+        return drain(false);
+      },
+      flush() {
+        const out = drain(true);
+        pending = [];
+        return out;
+      }
+    };
+  }
+
+  // ../../../packages/kernel/src/tools.ts
+  function toolExposure(tool) {
+    return tool.exposure ?? "direct";
+  }
+  function isDeclarable(tool) {
+    const exposure = toolExposure(tool);
+    return exposure === "direct" || exposure === "model-only";
+  }
+  function isActivatedOnRegistration(tool) {
+    return isDeclarable(tool) && tool.defaultActive !== false;
+  }
+  function toToolInfo(tool, source) {
+    return {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      ...tool.outputSchema ? { outputSchema: tool.outputSchema } : {},
+      exposure: toolExposure(tool),
+      ...tool.namespace ? { namespace: tool.namespace } : {},
+      ...tool.promptSnippet ? { promptSnippet: tool.promptSnippet } : {},
+      ...tool.promptGuidelines ? { promptGuidelines: [...tool.promptGuidelines] } : {},
+      ...tool.reachesTools ? { reachesTools: tool.reachesTools } : {},
+      source
+    };
   }
   function truncateMiddle(content, maxBytes) {
     const chars = Array.from(content);
-    const sizes = chars.map((char) => utf8Length(char.codePointAt(0) ?? 0));
+    const sizes = chars.map((char) => utf8CodePointLength(char.codePointAt(0) ?? 0));
     const totalBytes = sizes.reduce((sum, size) => sum + size, 0);
     const totalLines = content.split("\n").length;
     if (totalBytes <= maxBytes) return { content, truncated: false, removedChars: 0, totalBytes, totalLines };
@@ -1613,7 +1729,7 @@ ${where(text)}`;
         registerTool: (tool, options) => {
           assertToolSchema(tool);
           const owner = this.toolOwners.get(tool.name);
-          if (owner !== void 0) {
+          if (owner !== void 0 && owner !== name) {
             warnings.push(`Tool "${tool.name}" conflicts with ${owner}`);
             return;
           }
@@ -1789,12 +1905,22 @@ ${where(text)}`;
       for (const handler of [...this.handlers.tool_result]) {
         const result = await handler(event, ctx);
         if (!result) continue;
-        if (result.content !== void 0) event.content = result.content;
+        if (result.content !== void 0) {
+          event.content = result.content;
+          if (result.structuredContent === void 0) delete event.structuredContent;
+        }
+        if (result.structuredContent !== void 0) event.structuredContent = result.structuredContent;
         if (result.details !== void 0) event.details = result.details;
         if (result.isError !== void 0) event.isError = result.isError;
         if (result.usage !== void 0) event.usage = result.usage;
       }
-      return { content: event.content, details: event.details, isError: event.isError, usage: event.usage };
+      return {
+        content: event.content,
+        details: event.details,
+        isError: event.isError,
+        usage: event.usage,
+        ...event.structuredContent !== void 0 ? { structuredContent: event.structuredContent } : {}
+      };
     }
     /** Run user_bash handlers. Rewrites chain; cancel short-circuits. */
     async runUserBash(event, ctx) {
@@ -2099,6 +2225,137 @@ ${where(text)}`;
     }
     async notifyAgentSettled(aborted, ctx) {
       await this.dispatch(this.handlers.agent_settled, { type: "agent_settled", aborted }, ctx);
+    }
+  };
+
+  // ../../../packages/kernel/src/nested-calls.ts
+  var NESTED_CALL_LIMITS = {
+    maxCalls: 256,
+    maxArgumentBytesPerCall: 8 * 1024,
+    maxArgumentBytesTotal: 32 * 1024,
+    maxErrorChars: 500
+  };
+  var MAX_KEPT_PATH_CHARS = 4096;
+  var PATH_TOOLS = /* @__PURE__ */ new Set(["read", "write", "edit"]);
+  function textOf(result) {
+    return result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+  }
+  var NestedCallRecorder = class {
+    constructor() {
+      __publicField(this, "calls", []);
+      __publicField(this, "startedAt", /* @__PURE__ */ new Map());
+      __publicField(this, "complete", true);
+      __publicField(this, "argumentBytes", 0);
+      __publicField(this, "usage");
+    }
+    /** Record a call as it starts. Returns undefined when the call is dropped from the record. */
+    start(toolCall) {
+      if (this.calls.length >= NESTED_CALL_LIMITS.maxCalls) {
+        this.complete = false;
+        return void 0;
+      }
+      const record = { id: toolCall.id, name: toolCall.name, status: "unfinished" };
+      const json = JSON.stringify(toolCall.arguments ?? {});
+      const bytes = utf8ByteLength(json);
+      if (bytes > NESTED_CALL_LIMITS.maxArgumentBytesPerCall || this.argumentBytes + bytes > NESTED_CALL_LIMITS.maxArgumentBytesTotal) {
+        record.argumentsBytes = bytes;
+        this.complete = false;
+        const path = toolCall.arguments?.path;
+        if (PATH_TOOLS.has(toolCall.name) && typeof path === "string") {
+          record.arguments = { path: path.slice(0, MAX_KEPT_PATH_CHARS) };
+        }
+      } else {
+        record.arguments = JSON.parse(json);
+        this.argumentBytes += bytes;
+      }
+      this.calls.push(record);
+      this.startedAt.set(record, Date.now());
+      return record;
+    }
+    finish(record, isError, errorText) {
+      if (!record) return;
+      record.status = isError ? "error" : "ok";
+      record.durationMs = Math.max(0, Date.now() - (this.startedAt.get(record) ?? Date.now()));
+      this.startedAt.delete(record);
+      if (isError && errorText) record.error = errorText.slice(0, NESTED_CALL_LIMITS.maxErrorChars);
+    }
+    addUsage(usage) {
+      this.usage = this.usage ? combineUsage(this.usage, usage) : usage;
+    }
+    get totalUsage() {
+      return this.usage;
+    }
+    /** Copy of the record so far, or undefined when no nested call was made. */
+    snapshot() {
+      if (this.calls.length === 0 && this.complete) return void 0;
+      const calls = this.calls.map((call) => ({ ...call }));
+      return { calls, complete: this.complete && calls.every((call) => call.status !== "unfinished") };
+    }
+  };
+  var NestedToolCallRunner = class {
+    constructor(host2) {
+      __publicField(this, "host");
+      /** Scopes by the id of the calling tool call. */
+      __publicField(this, "scopes", /* @__PURE__ */ new Map());
+      /** Serializes nested calls that must not run concurrently. */
+      __publicField(this, "queueTail", Promise.resolve());
+      this.host = host2;
+    }
+    /**
+     * Run `name` on behalf of the call `callerId`; the nested call gets the id
+     * `<callerId>/<n>`. Never rejects for tool failures: they come back as `isError`.
+     */
+    async execute(callerId, name, args, options = {}) {
+      let scope = this.scopes.get(callerId);
+      if (!scope) {
+        scope = { recorder: new NestedCallRecorder(), nextId: 1, holdsQueue: false };
+        this.scopes.set(callerId, scope);
+      }
+      const toolCall = {
+        type: "toolCall",
+        id: `${callerId}/${scope.nextId++}`,
+        name,
+        arguments: args !== null && typeof args === "object" && !Array.isArray(args) ? args : {}
+      };
+      const record = scope.recorder.start(toolCall);
+      const tools = this.host.getTools();
+      const exclusive = !scope.holdsQueue && (this.host.isSequential() || tools.get(name)?.executionMode === "sequential");
+      let release;
+      if (exclusive) {
+        const previous = this.queueTail;
+        this.queueTail = new Promise((resolve) => {
+          release = resolve;
+        });
+        await previous;
+      }
+      this.scopes.set(toolCall.id, { recorder: scope.recorder, nextId: 1, holdsQueue: scope.holdsQueue || exclusive });
+      let outcome;
+      try {
+        outcome = await this.host.runToolCall(toolCall, tools, callerId, options.signal, options.onUpdate);
+      } catch (cause) {
+        outcome = {
+          content: [{ type: "text", text: cause instanceof Error ? cause.message : String(cause) }],
+          isError: true
+        };
+      } finally {
+        this.scopes.delete(toolCall.id);
+        release?.();
+      }
+      const { durationMs, ...result } = outcome;
+      const isError = result.isError === true;
+      scope.recorder.finish(record, isError, textOf(result));
+      if (result.usage) scope.recorder.addUsage(result.usage);
+      return { toolCall, result, isError, ...durationMs !== void 0 ? { durationMs } : {} };
+    }
+    /** Remove and return the record of the nested calls a model-issued call made. */
+    takeRecord(toolCallId) {
+      const scope = this.scopes.get(toolCallId);
+      this.scopes.delete(toolCallId);
+      if (!scope) return void 0;
+      return { calls: scope.recorder.snapshot(), usage: scope.recorder.totalUsage };
+    }
+    clear() {
+      this.scopes.clear();
     }
   };
 
@@ -3180,6 +3437,25 @@ ${where(text)}`;
   };
 
   // ../../../packages/kernel/src/tool-batch.ts
+  var PreflightLock = class {
+    constructor() {
+      __publicField(this, "tail", Promise.resolve());
+    }
+    async run(work) {
+      const previous = this.tail;
+      let release = () => {
+      };
+      this.tail = new Promise((resolve) => {
+        release = resolve;
+      });
+      await previous;
+      try {
+        return await work();
+      } finally {
+        release();
+      }
+    }
+  };
   var ToolBatchRunner = class {
     constructor(host2) {
       __publicField(this, "host");
@@ -3297,12 +3573,30 @@ ${where(text)}`;
       return { result: await this.executePreparedToolCall(prep, ctx, signal, onUpdate) };
     }
     /**
+     * A call another tool made (ctx.executeTool): the same preflight and execution as
+     * a model-issued call, with `parentToolCallId` on its events and approval request.
+     */
+    async runNested(toolCall, tools, ctx, parentToolCallId, signal, onUpdate) {
+      const prep = await this.preflightToolCall(toolCall, tools, ctx, signal, parentToolCallId);
+      if (prep.kind === "immediate") return prep.result;
+      return this.executePreparedToolCall(
+        prep,
+        ctx,
+        signal,
+        onUpdate ? (update) => onUpdate(update.partialOutput, update.stream) : void 0
+      );
+    }
+    /**
      * Serial preflight of one tool call: tool_call hook (block/rewrite),
      * argument validation, policy gate, approval, and — for calls that will
      * execute — the tool_execution_start notification. Immediate outcomes
      * (unknown tool, block, invalid args, deny) never see execution hooks.
      */
-    async preflightToolCall(toolCall, tools, ctx, signal) {
+    preflightToolCall(toolCall, tools, ctx, signal, parentToolCallId) {
+      return this.host.preflightLock.run(() => this.preflightLocked(toolCall, tools, ctx, signal, parentToolCallId));
+    }
+    async preflightLocked(toolCall, tools, ctx, signal, parentToolCallId) {
+      const parent = parentToolCallId !== void 0 ? { parentToolCallId } : {};
       const tool = tools.get(toolCall.name);
       if (!tool) {
         return { kind: "immediate", toolCall, result: errorResult(`Unknown tool: ${toolCall.name}`) };
@@ -3313,7 +3607,8 @@ ${where(text)}`;
           type: "tool_call",
           toolCallId: toolCall.id,
           toolName: toolCall.name,
-          input: args
+          input: args,
+          ...parent
         };
         const decision = await this.host.extensions.runToolCall(event, ctx);
         if (decision.blocked) {
@@ -3362,7 +3657,8 @@ ${where(text)}`;
           toolName: toolCall.name,
           args,
           risk: policyDecision.risk,
-          reason: policyDecision.reason
+          reason: policyDecision.reason,
+          ...parent
         };
         let approved;
         try {
@@ -3383,21 +3679,22 @@ ${where(text)}`;
         }
       }
       await this.host.extensions?.notifyToolExecutionStart(
-        { toolCallId: toolCall.id, toolName: toolCall.name, args },
+        { toolCallId: toolCall.id, toolName: toolCall.name, args, ...parent },
         ctx
       );
-      return { kind: "prepared", toolCall, tool, args };
+      return { kind: "prepared", toolCall, tool, args, ...parent };
     }
     /** Execute a prepared tool call: updates stream, tool_execution_end, tool_result hook. */
     async executePreparedToolCall(prep, ctx, signal, onUpdate) {
       const { toolCall, tool, args } = prep;
+      const parent = prep.parentToolCallId !== void 0 ? { parentToolCallId: prep.parentToolCallId } : {};
       const updateNotifications = [];
       let acceptingUpdates = true;
       const emitUpdate = (partialOutput, stream) => {
         if (!acceptingUpdates) return;
         if (this.host.extensions) {
           const notification = this.host.extensions.notifyToolExecutionUpdate(
-            { toolCallId: toolCall.id, toolName: toolCall.name, args, partialOutput, stream },
+            { toolCallId: toolCall.id, toolName: toolCall.name, args, partialOutput, stream, ...parent },
             ctx
           ).then(() => {
             onUpdate?.({ partialOutput, stream });
@@ -3414,7 +3711,7 @@ ${where(text)}`;
       } else {
         const startedAt = Date.now();
         try {
-          result = await tool.execute(args, signal, emitUpdate, ctx);
+          result = await tool.execute(args, signal, emitUpdate, this.host.toolContext(ctx, toolCall.id, signal));
         } catch (cause) {
           result = errorResult(cause instanceof Error ? cause.message : String(cause));
         }
@@ -3423,7 +3720,13 @@ ${where(text)}`;
       acceptingUpdates = false;
       await Promise.all(updateNotifications);
       await this.host.extensions?.notifyToolExecutionEnd(
-        { toolCallId: toolCall.id, toolName: toolCall.name, result, ...durationMs !== void 0 ? { durationMs } : {} },
+        {
+          toolCallId: toolCall.id,
+          toolName: toolCall.name,
+          result,
+          ...durationMs !== void 0 ? { durationMs } : {},
+          ...parent
+        },
         ctx
       );
       if (this.host.extensions) {
@@ -3433,11 +3736,13 @@ ${where(text)}`;
             type: "tool_result",
             toolCallId: toolCall.id,
             toolName: toolCall.name,
+            ...parent,
             input: args,
             content: result.content,
             ...result.details !== void 0 ? { details: result.details } : {},
             isError: result.isError === true,
-            ...result.usage ? { usage: result.usage } : {}
+            ...result.usage ? { usage: result.usage } : {},
+            ...result.structuredContent !== void 0 ? { structuredContent: result.structuredContent } : {}
           },
           ctx
         );
@@ -3446,6 +3751,7 @@ ${where(text)}`;
           ...finalResult.details !== void 0 ? { details: finalResult.details } : {},
           isError: finalResult.isError,
           ...finalResult.usage ? { usage: finalResult.usage } : {},
+          ...finalResult.structuredContent !== void 0 ? { structuredContent: finalResult.structuredContent } : {},
           ...result.terminate ? { terminate: true } : {}
         };
       }
@@ -3459,7 +3765,7 @@ ${where(text)}`;
         const summary = JSON.stringify(request.args) ?? "{}";
         const detail = summary.length > 400 ? `${summary.slice(0, 400)}\u2026` : summary;
         return ui.confirm(
-          `Allow ${request.toolName}? (${request.risk} risk)`,
+          `Allow ${request.toolName}? (${request.risk} risk${request.parentToolCallId === void 0 ? "" : ", called by another tool"})`,
           request.reason ? `${request.reason}
 ${detail}` : detail
         );
@@ -3612,8 +3918,19 @@ ${detail}` : detail
       __publicField(this, "isProjectTrusted");
       /** Runs tool batches: preflight (hooks, validation, policy, approval), execution, result hooks. */
       __publicField(this, "toolRunner");
-      /** Registered tools switched off by setActiveTools (the rest, including later registrations, are active). */
-      __publicField(this, "inactiveTools", /* @__PURE__ */ new Set());
+      __publicField(this, "preflightLock");
+      /** Calls tools make through ctx.executeTool(), and their record per model-issued call. */
+      __publicField(this, "nestedCalls");
+      /** The active tools by name: declared to the model (pi agent.state.tools). */
+      __publicField(this, "activeNames", /* @__PURE__ */ new Set());
+      /** Each registered tool as last seen, to activate new registrations (pi _refreshToolRegistry). */
+      __publicField(this, "seenTools", /* @__PURE__ */ new Map());
+      /** Active tools restored from the transcript that are not registered yet (pi _pendingToolNames). */
+      __publicField(this, "pendingTools", /* @__PURE__ */ new Set());
+      /** Set once a host or extension chose the active tools; the initial transcript restore then yields to it. */
+      __publicField(this, "toolsChosen", false);
+      /** Declared tools that prepareLoadout hooks leave out of requests (pi _hiddenDeclarations). */
+      __publicField(this, "hiddenDeclarations", /* @__PURE__ */ new Set());
       /**
        * True only while the LLM turn loop is in flight — pi's isStreaming. Hooks
        * that fire before the loop (input, before_agent_start) see false, so their
@@ -3635,7 +3952,10 @@ ${detail}` : detail
       this.projection = Object.freeze(seed);
       if (options.session) {
         this.session = options.session;
-        this.enqueueBackground(() => this.refresh());
+        this.enqueueBackground(async () => {
+          await this.refresh();
+          this.restoreToolsFromTranscript({ initial: true });
+        });
       } else {
         const store = new InMemorySessionStore(
           { id: uuidv7(this.platform.randomBytes), cwd: "/", timestamp: (/* @__PURE__ */ new Date()).toISOString() },
@@ -3646,6 +3966,7 @@ ${detail}` : detail
           this.enqueueBackground(async () => {
             for (const message of seed) await this.session.recordMessage(message);
             await this.refresh();
+            this.restoreToolsFromTranscript({ initial: true });
           });
         }
       }
@@ -3664,13 +3985,21 @@ ${detail}` : detail
       this.verifyTranscript = options.verifyTranscript ?? true;
       this.finishTurn = options.finishTurn;
       this.isProjectTrusted = options.isProjectTrusted;
+      this.preflightLock = options.preflightLock ?? new PreflightLock();
       this.toolRunner = new ToolBatchRunner({
         extensions: this.extensions,
         policy: this.policy,
         permissionMode: this.permissionMode,
         onApproval: this.onApproval,
         ui: () => this.ui,
+        preflightLock: this.preflightLock,
+        toolContext: (ctx, toolCallId, signal) => this.toolContext(ctx, toolCallId, signal),
         commit: (toolCall, outcome, ctx, batch) => this.commitToolResult(toolCall, outcome, ctx, batch)
+      });
+      this.nestedCalls = new NestedToolCallRunner({
+        getTools: () => this.callableTools(),
+        isSequential: () => this.toolExecution === "sequential",
+        runToolCall: (toolCall, tools, parentToolCallId, signal, onUpdate) => this.toolRunner.runNested(toolCall, tools, this.extensionContext(), parentToolCallId, signal, onUpdate)
       });
       options.extensions?.attachHostActions({
         sendMessage: (input, sendOptions) => {
@@ -3763,34 +4092,175 @@ ${detail}` : detail
       for (const [name, tool] of this.extensions?.tools ?? []) tools.set(name, tool);
       return tools;
     }
-    /** The active tools: declared to the model and callable. A tool registered later is active (pi "direct"). */
-    activeTools() {
+    /**
+     * Take new registrations into the active set (pi _refreshToolRegistry): a tool
+     * restored from the transcript becomes active once registered; a new tool that is
+     * activated on registration joins; a re-registered tool keeps its state unless it
+     * newly became activated on registration (e.g. from `hidden` back to `direct`).
+     */
+    syncRegistrations() {
       const tools = this.currentTools();
-      for (const name of this.inactiveTools) tools.delete(name);
+      for (const [name, tool] of tools) {
+        const previous = this.seenTools.get(name);
+        if (previous === tool) continue;
+        this.seenTools.set(name, tool);
+        if (this.pendingTools.has(name) && toolExposure(tool) !== "hidden") {
+          this.pendingTools.delete(name);
+          this.activeNames.add(name);
+        } else if (isActivatedOnRegistration(tool) && !(previous && isActivatedOnRegistration(previous))) {
+          this.activeNames.add(name);
+        }
+      }
+      for (const name of this.seenTools.keys()) {
+        if (!tools.has(name)) {
+          this.seenTools.delete(name);
+          this.activeNames.delete(name);
+        }
+      }
       return tools;
     }
-    /** Names of the active tools (pi getActiveTools). */
+    /** The active tools (declared to the model, in registration order); `hidden` tools never are (pi). */
+    activeTools() {
+      const active = /* @__PURE__ */ new Map();
+      for (const [name, tool] of this.syncRegistrations()) {
+        if (this.activeNames.has(name) && toolExposure(tool) !== "hidden") active.set(name, tool);
+      }
+      return active;
+    }
+    /** Names of the active tools, the ones declared to the model (pi getActiveTools). */
     getActiveTools() {
       return [...this.activeTools().keys()];
     }
-    /** Every registered tool, active or not (pi getAllTools, the ToolInfo subset tau has). */
+    toolInfo(tool) {
+      return toToolInfo(tool, this.extensions?.tools.get(tool.name) === tool ? "extension" : "builtin");
+    }
+    /** Every registered tool, active or not (pi getAllTools). */
     getAllTools() {
-      const extensionTools = this.extensions?.tools;
-      return [...this.currentTools().values()].map((tool) => ({
-        name: tool.name,
-        description: tool.description,
-        parameters: tool.parameters,
-        source: extensionTools?.get(tool.name) === tool ? "extension" : "builtin"
-      }));
+      return [...this.syncRegistrations().values()].map((tool) => this.toolInfo(tool));
     }
     /**
-     * Set the active tools by name (pi setActiveTools): unknown names are ignored,
-     * and the change applies from the next request. Only registered tools can be
-     * activated, so a permission mode that never registered a tool keeps it out (D20).
+     * Tools callable through `ctx.executeTool()` (pi _getCallableTools): the active
+     * `direct` tools and every registered `codemode` or `deferred` tool.
+     */
+    callableTools(active = new Set(this.activeTools().keys())) {
+      const callable = /* @__PURE__ */ new Map();
+      for (const [name, tool] of this.syncRegistrations()) {
+        const exposure = toolExposure(tool);
+        if (exposure === "codemode" || exposure === "deferred" || exposure === "direct" && active.has(name)) {
+          callable.set(name, tool);
+        }
+      }
+      return callable;
+    }
+    /** Tools callable through `ctx.executeTool()`, without `execute`. */
+    getCallableTools() {
+      return [...this.callableTools().values()].map((tool) => this.toolInfo(tool));
+    }
+    /**
+     * The context one tool call's execute receives (pi ExtensionToolContext): the
+     * shared context plus executeTool/tools bound to this call. Only tools get it —
+     * handlers keep the plain context, so a tool_call handler cannot recurse.
+     */
+    toolContext(ctx, toolCallId, signal) {
+      const toolCtx = Object.create(ctx);
+      Object.defineProperty(toolCtx, "tools", { get: () => this.getCallableTools(), enumerable: true });
+      Object.defineProperty(toolCtx, "executeTool", {
+        value: (name, args, options = {}) => this.nestedCalls.execute(toolCallId, name, args, {
+          signal: options.signal ?? signal,
+          onUpdate: options.onUpdate
+        }),
+        enumerable: true
+      });
+      return toolCtx;
+    }
+    /**
+     * Set the active tools by name (pi setActiveTools): unknown and `hidden` tools are
+     * ignored, and the change applies from the next request. Only registered tools can
+     * be activated, so a permission mode that never registered a tool keeps it out
+     * (D20). Deactivating any tool drops the names still pending from the transcript;
+     * a change that only adds tools (tool_search loading some) keeps them (pi).
      */
     setActiveTools(toolNames) {
+      this.toolsChosen = true;
+      const previous = this.getActiveTools();
+      this.applyActiveTools(toolNames);
+      const active = new Set(this.getActiveTools());
+      if (previous.some((name) => !active.has(name))) this.pendingTools.clear();
+    }
+    applyActiveTools(toolNames) {
+      const tools = this.syncRegistrations();
       const wanted = new Set(toolNames);
-      this.inactiveTools = new Set([...this.currentTools().keys()].filter((name) => !wanted.has(name)));
+      this.activeNames = new Set(
+        [...tools.values()].filter((tool) => wanted.has(tool.name) && toolExposure(tool) !== "hidden").map((tool) => tool.name)
+      );
+      for (const name of this.activeNames) this.pendingTools.delete(name);
+    }
+    /**
+     * Restore the active tools the transcript declares, if it declares any (pi
+     * _restoreToolsFromTranscript). Names not registered yet stay pending until their
+     * tool registers (MCP servers still connecting) or the next run starts.
+     */
+    restoreToolsFromTranscript(options = {}) {
+      if (options.initial && this.toolsChosen) return;
+      this.pendingTools.clear();
+      const current = getCurrentSystemMessage(this.messages);
+      if (!current) return;
+      const names = (current.toolsAdded ?? []).map((tool) => tool.name);
+      this.pendingTools = new Set(names);
+      this.applyActiveTools(names);
+    }
+    /**
+     * The declarations a request carries (pi _applyToolLoadout): the active tools with
+     * the descriptions their prepareLoadout hooks set, and the names whose declarations
+     * requests leave out. Hooks run in registration order; one that throws is reported
+     * and skipped.
+     */
+    computeLoadout() {
+      const active = this.activeTools();
+      const tools = [...active.values()];
+      const hooks = tools.filter((tool) => tool.prepareLoadout);
+      const hidden = /* @__PURE__ */ new Set();
+      if (hooks.length === 0) return { declared: tools, hidden };
+      const registered = this.syncRegistrations();
+      const loadout = {
+        declared: tools.map((tool) => this.toolInfo(tool)),
+        callable: [...this.callableTools(new Set(active.keys())).values()].map((tool) => this.toolInfo(tool)),
+        registered: [...registered.values()].map((tool) => this.toolInfo(tool)),
+        getExposure: (name) => {
+          const tool = registered.get(name);
+          return tool ? toolExposure(tool) : "direct";
+        },
+        getNamespace: (name) => registered.get(name)?.namespace,
+        getPromptGuidelines: (name) => registered.get(name)?.promptGuidelines ?? []
+      };
+      const descriptions = /* @__PURE__ */ new Map();
+      for (const tool of hooks) {
+        try {
+          const changes = tool.prepareLoadout?.(loadout);
+          for (const [name, description] of Object.entries(changes?.descriptions ?? {})) {
+            descriptions.set(name, description);
+          }
+          for (const name of changes?.hiddenDeclarations ?? []) hidden.add(name);
+        } catch (error) {
+          this.extensions?.reportError(
+            "prepare_loadout",
+            `prepareLoadout of tool "${tool.name}" failed: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+      const declared = tools.map((tool) => {
+        const description = descriptions.get(tool.name);
+        return description === void 0 ? tool : { ...tool, description };
+      });
+      return { declared, hidden };
+    }
+    /**
+     * The tools the model sees in the next request: active, with loadout descriptions,
+     * without hidden declarations. Hosts build their system prompt's tool list from it.
+     */
+    getDeclaredTools() {
+      const { declared, hidden } = this.computeLoadout();
+      return declared.filter((tool) => !hidden.has(tool.name)).map((tool) => this.toolInfo(tool));
     }
     /** The model-visible conversation: the session log's projection (read-only; P22). */
     get messages() {
@@ -3868,11 +4338,13 @@ ${detail}` : detail
       await this.flushWrites();
       const current = getCurrentSystemMessage(this.messages);
       const sections = diffSystemPromptSections(current?.sections ?? {}, promptText === "" ? {} : { prompt: promptText });
+      const loadout = this.computeLoadout();
+      this.hiddenDeclarations = loadout.hidden;
       const tools = getToolStateChanges(
         getCurrentTools(this.messages),
         // A schemaless tool that slipped past registration cannot be declared; the
         // preflight guard still answers a call to it with a paired error result (HF-8).
-        [...this.activeTools().values()].filter(hasToolSchema).map(toToolDeclaration)
+        loadout.declared.filter(hasToolSchema).map(toToolDeclaration)
       );
       if (!sections && tools.toolsAdded.length === 0 && tools.toolsRemoved.length === 0) return;
       const update = {
@@ -4044,7 +4516,8 @@ ${detail}` : detail
         // The child's calls are billed like the parent's (D19).
         pricing: this.pricing,
         thinkingLevel: this.currentThinkingLevel,
-        toolExecution: this.toolExecution
+        toolExecution: this.toolExecution,
+        preflightLock: this.preflightLock
       });
       let text = "";
       let lastAssistantText = "";
@@ -4463,6 +4936,7 @@ ${detail}` : detail
           } : void 0
         );
         await this.refresh();
+        this.restoreToolsFromTranscript();
         return entry;
       });
       const newLeafId = await store.getLeafId();
@@ -4498,10 +4972,12 @@ ${detail}` : detail
     async applyBeforeAgentStart(promptText, ctx) {
       const base = this.systemPrompt ?? "";
       if (!this.extensions) {
+        this.pendingTools.clear();
         await this.declareLoadout(base);
         return base;
       }
       const beforeStart = await this.extensions.runBeforeAgentStart(promptText, base, ctx);
+      this.pendingTools.clear();
       await this.declareLoadout(beforeStart.systemPrompt);
       for (const injected of beforeStart.messages) {
         await this.commitMessage(
@@ -4663,6 +5139,7 @@ ${detail}` : detail
           if (this.extensions) {
             request = await this.extensions.runContext(request, ctx);
           }
+          request = withoutHiddenDeclarations(request, this.hiddenDeclarations);
           const partial = {
             role: "assistant",
             content: [],
@@ -4881,6 +5358,7 @@ ${detail}` : detail
      */
     async *endRun(ctx, retryAttempt, pending = []) {
       this.steeringQueue.restore(pending);
+      this.nestedCalls.clear();
       if (retryAttempt > 0) {
         const endEvent = { success: false, attempt: retryAttempt, finalError: "Retry cancelled" };
         await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
@@ -4892,7 +5370,9 @@ ${detail}` : detail
     }
     /** Commit one tool result to messages/session and produce the AgentEvent pair tail. */
     async commitToolResult(toolCall, outcome, ctx, batch) {
-      const { durationMs, usage, terminate, ...result } = normalizeToolOutcome(toolCall.name, outcome);
+      const { durationMs, usage: ownUsage, terminate, ...result } = normalizeToolOutcome(toolCall.name, outcome);
+      const nested = this.nestedCalls.takeRecord(toolCall.id);
+      const usage = nested?.usage ? ownUsage ? combineUsage(ownUsage, nested.usage) : nested.usage : ownUsage;
       const toolResultMessage = {
         role: "toolResult",
         toolCallId: toolCall.id,
@@ -4902,7 +5382,8 @@ ${detail}` : detail
         timestamp: Date.now(),
         ...result.details !== void 0 ? { details: result.details } : {},
         ...durationMs !== void 0 ? { durationMs } : {},
-        ...usage ? { usage } : {}
+        ...usage ? { usage } : {},
+        ...nested?.calls ? { nestedCalls: nested.calls } : {}
       };
       const committed = await this.commitMessageWithId(toolResultMessage, ctx);
       batch.messages.push(committed.message);
@@ -4968,84 +5449,23 @@ ${detail}` : detail
     if (images.length === 0) return result.text;
     return [{ type: "text", text: result.text }, ...images];
   }
-
-  // ../../../packages/kernel/src/utf8.ts
-  var REPLACEMENT = "\uFFFD";
-  var MIN_CODE_POINT = [0, 0, 128, 2048, 65536];
-  function createIncrementalUtf8Decoder() {
-    let pending = [];
-    const drain = (final) => {
-      let out = "";
-      let i = 0;
-      while (i < pending.length) {
-        const lead = pending[i];
-        if (lead < 128) {
-          out += String.fromCharCode(lead);
-          i += 1;
-          continue;
-        }
-        const length = lead >> 5 === 6 ? 2 : lead >> 4 === 14 ? 3 : lead >> 3 === 30 ? 4 : 0;
-        if (length === 0) {
-          out += REPLACEMENT;
-          i += 1;
-          continue;
-        }
-        if (i + length > pending.length) {
-          let plausible = true;
-          for (let j = i + 1; j < pending.length; j++) {
-            if (pending[j] >> 6 !== 2) {
-              plausible = false;
-              break;
-            }
-          }
-          if (plausible) {
-            if (!final) break;
-            out += REPLACEMENT;
-            i = pending.length;
-            break;
-          }
-          out += REPLACEMENT;
-          i += 1;
-          continue;
-        }
-        let codePoint = lead & 255 >> length + 1;
-        let valid = true;
-        for (let j = 1; j < length; j++) {
-          const byte = pending[i + j];
-          if (byte >> 6 !== 2) {
-            valid = false;
-            break;
-          }
-          codePoint = codePoint << 6 | byte & 63;
-        }
-        if (!valid) {
-          out += REPLACEMENT;
-          i += 1;
-          continue;
-        }
-        if (codePoint < MIN_CODE_POINT[length] || codePoint >= 55296 && codePoint <= 57343 || codePoint > 1114111) {
-          out += REPLACEMENT;
-          i += length;
-          continue;
-        }
-        out += String.fromCodePoint(codePoint);
-        i += length;
-      }
-      pending = pending.slice(i);
-      return out;
-    };
-    return {
-      decode(chunk) {
-        for (const byte of chunk) pending.push(byte);
-        return drain(false);
-      },
-      flush() {
-        const out = drain(true);
-        pending = [];
-        return out;
-      }
-    };
+  function withoutHiddenDeclarations(messages, hidden) {
+    if (hidden.size === 0) return messages;
+    return messages.map((message) => {
+      if (message.role !== "system" || !message.toolsAdded && !message.toolsRemoved) return message;
+      const { toolsAdded, toolsRemoved, ...rest } = message;
+      const added = toolsAdded?.filter((tool) => !hidden.has(tool.name)) ?? [];
+      const removed = toolsRemoved?.filter((tool) => !hidden.has(tool.name)) ?? [];
+      return {
+        ...rest,
+        ...added.length > 0 ? { toolsAdded: added } : {},
+        ...removed.length > 0 ? { toolsRemoved: removed } : {}
+      };
+    });
   }
+
+  // ../../../packages/kernel/src/coding-tools.ts
+  var BASH_STRUCTURED_OUTPUT_MAX_BYTES = 1024 * 1024;
 
   // ../../../packages/ext-mcp-http/src/jsonrpc.ts
   var JSON_RPC_ERROR_CODES = {
@@ -5619,12 +6039,7 @@ ${detail}` : detail
       else if (code < 2048) bytes.push(192 | code >> 6, 128 | code & 63);
       else if (code < 65536) bytes.push(224 | code >> 12, 128 | code >> 6 & 63, 128 | code & 63);
       else
-        bytes.push(
-          240 | code >> 18,
-          128 | code >> 12 & 63,
-          128 | code >> 6 & 63,
-          128 | code & 63
-        );
+        bytes.push(240 | code >> 18, 128 | code >> 12 & 63, 128 | code >> 6 & 63, 128 | code & 63);
     }
     return bytes;
   }
@@ -5699,7 +6114,16 @@ ${detail}` : detail
     const bitLength = bytes.length * 8;
     bytes.push(128);
     while (bytes.length % 64 !== 56) bytes.push(0);
-    bytes.push(0, 0, 0, 0, bitLength >>> 24 & 255, bitLength >>> 16 & 255, bitLength >>> 8 & 255, bitLength & 255);
+    bytes.push(
+      0,
+      0,
+      0,
+      0,
+      bitLength >>> 24 & 255,
+      bitLength >>> 16 & 255,
+      bitLength >>> 8 & 255,
+      bitLength & 255
+    );
     const h = [1779033703, 3144134277, 1013904242, 2773480762, 1359893119, 2600822924, 528734635, 1541459225];
     const w = new Array(64);
     const rotr = (x, n) => x >>> n | x << 32 - n;
@@ -5756,7 +6180,8 @@ ${block.resource.text}`);
         parts.push(JSON.stringify(block));
       }
     }
-    if (result.structuredContent !== void 0 && parts.length === 0) parts.push(JSON.stringify(result.structuredContent));
+    if (result.structuredContent !== void 0 && parts.length === 0)
+      parts.push(JSON.stringify(result.structuredContent));
     return parts.join("\n").trim() || "(empty MCP tool result)";
   }
   function binaryPlaceholder(block) {
@@ -5776,7 +6201,9 @@ ${block.resource.text}`);
     const states = [];
     for (const config of options.servers) {
       const clash = states.find((state) => mcpNamespace(state.config.name) === mcpNamespace(config.name));
-      states.push(clash ? { config, conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : { config });
+      states.push(
+        clash ? { config, conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : { config }
+      );
     }
     const toolOwners = /* @__PURE__ */ new Map();
     const clients = /* @__PURE__ */ new Set();

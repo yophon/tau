@@ -132,6 +132,20 @@ D3 预留的"扩展层协议适配"口子兑现为内核 `ChatTransport` 注入�
 
 有意偏离 pi 一处：abort 时 pi 在 preflight 循环内 break（剩余 tool_call 无结果），tau 不 break——每个 tool_call 恒有配对 toolResult（工具经 signal 快速收尾），保持 wire 的 call/result 配对完整性与既有 sequential 语义一致。
 
+## D29：嵌套调用记录为 read/write/edit 保留 path（2026-10-16，P24，用户确认）
+
+pi 的 `NestedCallRecorder` 在参数超过单次 8 KiB 或累计 32 KiB 时只记 `argumentsBytes`、丢掉整份参数。压缩与分支摘要靠这份记录列出脚本碰过的文件（`<read-files>`/`<modified-files>`），于是参数大的 write 会连路径一起丢；累计满 32 KiB 后，后续所有调用都丢参数，脚本越重漏得越多，压缩后 agent 会忘记自己改过的文件。
+
+tau 偏离一处：参数因超限被省略时，read/write/edit 仍记 `arguments: { path }`（path 截 4096 字符），`argumentsBytes` 照记。读者看到 `argumentsBytes` 就知道 `arguments` 不完整。其余上限（256 条、错误截 500 字符、结果从不记录）照抄 pi。
+
+同批另一处小偏离：分支摘要也从 toolResult 条目的 `nestedCalls` 取文件清单（pi 的分支摘要在取文件前就跳过了 toolResult 条目）。
+
+## D30：扩展层运行时依赖 pi 包（2026-10-16，P24，用户确认）
+
+`@yophon/tau-ext-codemode` 的 Node 入口精确钉版依赖 `@earendil-works/pi-codemode`（MIT，唯一依赖 `quickjs-wasi`），不自己维护 QuickJS 沙箱。冻结内置对象、输出硬上限、图片校验、死锁检测、畸形载荷不挂宿主都是安全敏感的 VM 加固，随依赖获得；手工镜像的话上游每修一次都要追。纯 ES 的 `./declarations`、`./source` 子路径可进纯度门禁。
+
+这不是 D1 否决的 fork，也不是 D9 否决的 pi-compat 生态兼容：tau 消费的是一个自述「无 pi 依赖、可独立使用」的库，先例是 CLI 精确钉版依赖 `@earendil-works/pi-tui`。钉版随 D23 重锚的参照版本走，受 `check:pinned-deps` 与 CLI shrinkwrap 门禁约束。pi-mcp 不在此列：它的主入口 import `node:child_process`，裸引擎用不了，tau 抄形状不抄包（P24a）。
+
 ## D23：pi 参照系重锚到 v1.2.0（2026-10-15，P21，用户确认）
 
 版本号推翻 D11，机制保留。

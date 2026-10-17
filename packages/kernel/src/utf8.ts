@@ -6,6 +6,18 @@ import type { Utf8Decoder } from "./platform.ts";
 
 const REPLACEMENT = "�";
 
+/** UTF-8 byte length of one code point. */
+export function utf8CodePointLength(codePoint: number): number {
+	return codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4;
+}
+
+/** UTF-8 byte length of a string (pure ES: no TextEncoder on bare engines). */
+export function utf8ByteLength(text: string): number {
+	let bytes = 0;
+	for (const char of text) bytes += utf8CodePointLength(char.codePointAt(0) ?? 0);
+	return bytes;
+}
+
 // Minimum code point for each sequence length; anything below is overlong.
 const MIN_CODE_POINT = [0, 0, 0x80, 0x800, 0x10000];
 
