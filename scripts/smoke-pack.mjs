@@ -9,6 +9,9 @@
 // to the packed kernel and the exact ink/react/string-width versions the CLI
 // pins, loaded and rendered once. The CLI tarball itself pins its internal deps
 // to registry URLs (shrinkwrap), so the full cli install runs after publishing.
+// (5) P30: the Feishu channel plugin installs the way docs/gateway.md says
+// (npm install --prefix <gateway dir>) and the packed gateway loads it from
+// there; the CLI's shrinkwrap carries no Feishu SDK.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -251,8 +254,43 @@ try {
 	const tui = run("node", ["main.mjs"], { cwd: tuiDir });
 	if (!tui.stdout.includes("pack smoke tui ok")) throw new Error(`tui smoke failed:\n${tui.stdout}`);
 
+	// P30: a channel plugin installed under a gateway directory loads through the packed gateway.
+	const gatewayTarballs = [tarball];
+	for (const [dir, name] of [
+		["ext-feishu", "ext-feishu"],
+		["gateway", "gateway"],
+		["channel-feishu", "channel-feishu"],
+	]) {
+		const before = new Set(readdirSync(workDir));
+		await withPublishManifest(packageDir(dir), name, async () => {
+			run("npm", ["pack", "--ignore-scripts", "--pack-destination", workDir], { cwd: packageDir(dir) });
+		});
+		const created = readdirSync(workDir).find((file) => file.endsWith(".tgz") && !before.has(file));
+		if (!created) throw new Error(`npm pack produced no tarball for ${dir}`);
+		gatewayTarballs.push(join(workDir, created));
+	}
+	const gatewayHome = join(workDir, "gateway-home");
+	mkdirSync(gatewayHome);
+	run("npm", ["install", "--prefix", gatewayHome, "--ignore-scripts", "--no-audit", "--no-fund", ...gatewayTarballs], {
+		cwd: workDir,
+	});
+	writeFileSync(
+		join(gatewayHome, "load.mjs"),
+		`import { loadChannelPlugin } from "@yophon/tau-gateway";
+const plugin = await loadChannelPlugin("@yophon/tau-channel-feishu", process.cwd());
+if (plugin.name !== "feishu" || typeof plugin.create !== "function") throw new Error("unexpected plugin");
+console.log("pack smoke gateway plugin ok");
+`,
+	);
+	const plugin = run("node", ["load.mjs"], { cwd: gatewayHome });
+	if (!plugin.stdout.includes("pack smoke gateway plugin ok"))
+		throw new Error(`plugin smoke failed:
+${plugin.stdout}`);
+	const shrinkwrap = readFileSync(join(packageDir("cli"), "npm-shrinkwrap.json"), "utf8");
+	if (shrinkwrap.includes("@larksuiteoapi")) throw new Error("the CLI's shrinkwrap pulls in the Feishu SDK");
+
 	console.log(
-		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout",
+		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout; a channel plugin installs under a gateway directory and loads",
 	);
 } finally {
 	rmSync(workDir, { recursive: true, force: true });

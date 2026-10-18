@@ -20,6 +20,9 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-provider-anthropic",
 	"ext-resources",
 	"ext-feishu",
+	"gateway",
+	"channel-weixin",
+	"channel-feishu",
 	"cli",
 ];
 

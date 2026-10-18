@@ -91,6 +91,7 @@ const CLI_VERSION = (
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
 Usage: tau [options] [-p "prompt"]
+       tau gateway <run|status|login|channels|allow|revoke> ...   (see tau gateway help)
 
 Options:
   -b, --base-url <url>   API base URL (env: TAU_BASE_URL, then OPENAI_BASE_URL /
@@ -187,12 +188,49 @@ interface CliOptions {
 	listModels?: boolean;
 	/** P29: json | rpc | acp. */
 	mode?: "json" | "rpc" | "acp";
+	/** P30: `tau gateway <command>`. */
+	gateway?: GatewayCommand;
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading. */
 	extras: string[];
 }
 
+/** `tau gateway <command> [args]` (P30). run also takes the usual tau options (model, flags). */
+export interface GatewayCommand {
+	command: string;
+	args: string[];
+	workspace?: string;
+	owner?: boolean;
+	mode?: string;
+}
+
+function parseGatewayArgs(argv: string[]): CliOptions {
+	const command = argv[0] ?? "help";
+	const gateway: GatewayCommand = { command, args: [] };
+	const rest: string[] = [];
+	for (let i = 1; i < argv.length; i++) {
+		const arg = argv[i] ?? "";
+		const value = (): string => {
+			const next = argv[++i];
+			if (next === undefined || next.startsWith("--")) {
+				console.error(`Missing value for ${arg}`);
+				process.exit(1);
+			}
+			return next;
+		};
+		if (arg === "--workspace") gateway.workspace = resolve(value());
+		else if (arg === "--owner") gateway.owner = true;
+		else if (arg === "--mode" && command === "allow") gateway.mode = value();
+		else if (command === "run") rest.push(arg);
+		else gateway.args.push(arg);
+	}
+	const options = parseArgs(rest);
+	options.gateway = gateway;
+	return options;
+}
+
 function parseArgs(argv: string[]): CliOptions {
+	if (argv[0] === "gateway") return parseGatewayArgs(argv.slice(1));
 	const options: CliOptions = {
 		help: false,
 		extras: [],
@@ -981,8 +1019,14 @@ async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
 	// The JSON, RPC and ACP modes own stdout: everything else goes to stderr (pi json.md).
 	if (options.mode) console.log = (...args: unknown[]) => console.error(...args);
-	if (options.help) {
+	if (options.help && !options.gateway) {
 		console.log(USAGE);
+		return;
+	}
+	// `tau gateway status/allow/login/…` need no model (P30); `run` sets the agent up first.
+	if (options.gateway && options.gateway.command !== "run") {
+		const { runGatewayCommand } = await import("./gateway.ts");
+		process.exitCode = await runGatewayCommand(options.gateway, { home: userHome(), cwd: resolve(process.cwd()) });
 		return;
 	}
 
@@ -1216,10 +1260,14 @@ async function main(): Promise<void> {
 	}
 	// On a terminal the TUI is the interactive default (P25); --repl keeps the line-based REPL.
 	const useTui =
-		options.mode === undefined && options.print === undefined && !options.repl && (options.tui || terminal);
+		options.mode === undefined &&
+		options.gateway === undefined &&
+		options.print === undefined &&
+		!options.repl &&
+		(options.tui || terminal);
 	// The JSON, RPC and ACP modes read stdin themselves (or not at all).
 	const readline =
-		useTui || options.mode !== undefined
+		useTui || options.mode !== undefined || options.gateway !== undefined
 			? undefined
 			: createInterface({ input: process.stdin, output: process.stdout });
 	const out = stdoutWriter();
@@ -1343,8 +1391,15 @@ async function main(): Promise<void> {
 		ui: UiCapability | undefined;
 		onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 		fs?: FileSystem;
+		/** P30: the gateway keeps each conversation's sessions in its own directory. */
+		sessionDir?: string;
+		/** P30: a mode for this workspace's agents instead of the host's. */
+		permissionMode?: PermissionMode;
+		/** P30: appended to the system prompt (who the agent is talking to, and where). */
+		promptNote?: string;
 	}) => {
 		const cwd = spec.cwd;
+		let workspaceMode = spec.permissionMode;
 		const loaded = await loadExtensionRegistry(cwd, spec.ui);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
@@ -1371,7 +1426,7 @@ async function main(): Promise<void> {
 		const sessionRepo = new JsonlSessionRepo(
 			new NodeFileSystem("/"),
 			platform,
-			join(userHome(), ".tau", "sessions", sessionDirSlug(cwd)),
+			spec.sessionDir ?? join(userHome(), ".tau", "sessions", sessionDirSlug(cwd)),
 			cwd,
 		);
 		const buildAgent = (
@@ -1379,7 +1434,8 @@ async function main(): Promise<void> {
 			session: SessionRecorder | undefined,
 			agentExtensions = extensions,
 		): Agent => {
-			const codingTools = createCodingTools({ fs, shell }, { mode: permissionMode });
+			const mode = workspaceMode ?? permissionMode;
+			const codingTools = createCodingTools({ fs, shell }, { mode });
 			const built = new Agent({
 				config,
 				transport,
@@ -1391,6 +1447,7 @@ async function main(): Promise<void> {
 							codingTools.map((tool) => tool.name),
 						),
 					projectContext,
+					spec.promptNote ?? "",
 				]
 					.filter((part) => part !== "")
 					.join("\n\n"),
@@ -1413,7 +1470,7 @@ async function main(): Promise<void> {
 				retry,
 				pricing,
 				thinkingLevel,
-				permissionMode,
+				permissionMode: mode,
 				toolExecution,
 				onApproval: spec.onApproval,
 			});
@@ -1437,6 +1494,11 @@ async function main(): Promise<void> {
 			buildAgent,
 			reloadExtensions,
 			isProjectTrusted: () => projectTrusted,
+			/** Agents built later (session switches) use this mode; only for a workspace opened with one. */
+			setPermissionMode: (next: PermissionMode) => {
+				if (workspaceMode !== undefined) workspaceMode = next;
+				else permissionMode = next;
+			},
 		};
 	};
 	type Workspace = Awaited<ReturnType<typeof openWorkspace>>;
@@ -1462,6 +1524,21 @@ async function main(): Promise<void> {
 			permissionMode = nextMode;
 		},
 	};
+	if (options.gateway) {
+		// One workspace per chat conversation (P30). Loaded on demand with the channels.
+		const { runGateway } = await import("./gateway.ts");
+		await runGateway(options.gateway, {
+			home,
+			cwd,
+			env: process.env,
+			openWorkspace,
+			modelDisplay,
+			modelChoices,
+			...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+			supportsImages: () => activeModel?.input?.includes("image") === true,
+		});
+		return;
+	}
 	if (options.mode === "acp") {
 		// One workspace per session/new, at the client's cwd (P29). Loaded on demand: it pulls in the MCP client.
 		const { runAcpMode } = await import("./modes/acp.ts");

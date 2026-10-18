@@ -11,6 +11,7 @@
 	},
 	"include": [
 		"src",
-		"../ext-mcp/src/cross-spawn.d.ts"
+		"../ext-mcp/src/cross-spawn.d.ts",
+		"../channel-weixin/src/vendor.d.ts"
 	]
 }

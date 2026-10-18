@@ -79,6 +79,9 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-ext-codemode` | `codemode`: the model writes JavaScript that calls tools, run in pi's QuickJS sandbox (`./node`) | Yes — worker threads + wasm (Node entry) |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 | `@yophon/tau-ext-feishu` | Feishu/Lark WebSocket bridge with media, reactions, progress cards, and outbound tools | Yes — Feishu SDK and Node filesystem |
+| `@yophon/tau-gateway` | The resident gateway core: one conversation per chat, queues, pairing and owner access, approvals in chat, channel plugins | Yes — Node filesystem |
+| `@yophon/tau-channel-weixin` | WeChat channel (official iLink Bot protocol), built into `tau gateway` | Yes — network, filesystem |
+| `@yophon/tau-channel-feishu` | Feishu/Lark channel plugin for the gateway (installed separately) | Yes — Feishu SDK |
 
 ### Feishu/Lark bridge
 
@@ -227,6 +230,22 @@ editor's buffers, todo_write shows as the plan, and the permission modes are the
 session modes. See [docs/rpc.md](docs/rpc.md) for the protocols and where they
 differ from pi.
 
+## Resident gateway
+
+```bash
+tau gateway login weixin     # scan the QR code with WeChat; the scanner owns the account
+tau gateway run              # stays up; each chat gets its own session
+tau gateway stop
+```
+
+The gateway runs tau without a terminal for chat apps: every conversation is a
+separate session (resumed after a restart), messages of one conversation run in
+order, others in parallel. The owner approves tool calls by replying in chat;
+other people pair with a code the gateway prints and get read-only by default.
+WeChat is built in; Feishu is a plugin
+(`npm install --prefix ~/.tau/gateway @yophon/tau-channel-feishu`), and other
+channels can be written the same way. See [docs/gateway.md](docs/gateway.md).
+
 ## Embedding the kernel
 
 ```ts
@@ -295,8 +314,9 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D33)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D34)
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
+- [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

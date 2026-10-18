@@ -233,7 +233,7 @@ Enter send · Ctrl+J newline · ↑↓ history · @ file · Ctrl+O details · /h
 - 扩展交互组件的 `handleInput`：新 TUI 里扩展组件只渲染不接收按键（见开放问题 5）。
 - readline REPL 的功能增强。
 - 其他内核改动。除开放问题 4 需要的 `Agent.setPermissionMode()` 和 ext-feishu 的日志修正外，只动 CLI 包；如果发现还需要内核钩子，先回规格书补充。
-- 网关与聊天渠道（草案见 `specs/draft-gateway.md`，待定）。
+- 网关与聊天渠道（P30，见 `specs/phase-30-gateway.md`）。
 
 ## 验收清单
 

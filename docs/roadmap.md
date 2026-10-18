@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-17（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；**当前工作 = 发 0.4.0（含 P22–P29）**；网关草案待定）
+> 最后更新：2026-10-18（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；**当前工作 = 发 0.4.0（含 P22–P30）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -269,9 +269,15 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 584 个测试，581 通过、3 跳过；smoke-tui 十二个场景、pack smoke 通过。`--mode json`（pi 事件流）、`--mode rpc`（pi 命令集 + 审批借用 select）、`--mode acp`（ACP v1，按会话 cwd 开工作区，审批、文件读写、计划、模式都接到编辑器）；main.ts 收出 `openWorkspace`。真实 DeepSeek 下三种模式都跑通，ACP 以脚本模拟的编辑器验收（本机没有 Zed）。偏差见规格书「实施记录」，协议说明见 [rpc.md](rpc.md)。
 
-## 产品层 ⬜ 待定
+## Phase 30 ✅ 常驻网关与聊天渠道（2026-10-18）
 
-常驻网关与聊天渠道的草案见 [specs/draft-gateway.md](specs/draft-gateway.md)（2026-10-16 草拟，用户决定先做 TUI，开放问题未裁定）：常驻网关进程（每对话一个会话、排队、持久化）、渠道抽象、微信（移植 yo-agent iLink）与飞书渠道、主人与名单准入、聊天审批。之后的方向（各自另立规格书）：目标与调度（goal 一等对象、cron/提醒、只读主动模式）；记忆、连接器凭据、对外身份与审计。
+规格书：[specs/phase-30-gateway.md](specs/phase-30-gateway.md)（2026-10-18 确认）。`tau gateway run` 常驻，每个对话一个 `HeadlessSession`；新包 `tau-gateway`；渠道可插拔，`tau-channel-weixin`（内置，移植 yo-agent iLink），`tau-channel-feishu`（外装插件，复用 `FeishuClient`）；主人与名单、配对码与认主码、聊天审批。
+
+**完成记录**：全量 647 个测试，644 通过、3 跳过；新增网关 26、微信 28（yo-agent 的 28 个用例全部移植）、飞书插件 4、CLI 端到端 1、附件与 models.json input 4。pack smoke 加一步：飞书插件按文档用 `npm install --prefix` 装进网关目录并由打包后的网关加载，CLI 的 shrinkwrap 里没有飞书 SDK。真实 DeepSeek 下用假渠道跑通两个人的对话隔离、聊天审批后真实执行 bash、`tau gateway stop` 后重启续接；微信扫码与飞书认主的真机验收待用户执行。偏差见规格书「实施记录」，使用说明见 [gateway.md](gateway.md)。
+
+## 产品层后续 ⬜ 待定
+
+P31 目标与调度（goal 一等对象、定时与一次性提醒、只读主动模式）；P32 跨对话记忆、连接器凭据、对外身份与审计。各自另立规格书。
 
 ## 未排期（Backlog）
 
@@ -302,8 +308,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 |---|---|---|---|
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
-| 13 | ext-feishu 尚未首发 npm | 只能经 workspace wrapper 使用 | 阻断已解除（P23c 信任门、P23e 媒体 owner-only）；随下次发版首发 |
+| 13 | ext-feishu、gateway、channel-weixin、channel-feishu 尚未首发 npm | 只能在仓库里用；飞书插件装不进网关目录 | 随 0.4.0 首发 |
 | 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
+| 19 | 网关每个对话各加载一份扩展（P30） | MCP 服务器按对话各起一套 stdio 进程，对话多时进程数随之增长 | 现由驻留上限（缺省 16）与空闲卸载控制；出现实测瓶颈再做共享连接池 |
+| 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
 
 （#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

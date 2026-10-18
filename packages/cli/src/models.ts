@@ -30,6 +30,8 @@ export interface ConfiguredModel {
 	apiKey?: string;
 	headers: Record<string, string>;
 	reasoning: boolean;
+	/** pi `input`: what the model accepts; omitted = text only (P30: images in gateway chats). */
+	input?: ("text" | "image")[];
 	contextWindow?: number;
 	maxTokens?: number;
 	cost?: ModelCost;
@@ -126,6 +128,10 @@ export function parseModelsConfig(text: string, path: string): ModelsConfig {
 				reasoning: entry.reasoning === true,
 			};
 			if (typeof entry.name === "string" && entry.name !== "") model.name = entry.name;
+			if (Array.isArray(entry.input)) {
+				const input = entry.input.filter((kind): kind is "text" | "image" => kind === "text" || kind === "image");
+				if (input.length > 0) model.input = input;
+			}
 			if (baseUrl !== undefined) model.baseUrl = baseUrl;
 			if (providerKey !== undefined) model.apiKey = providerKey;
 			const contextWindow = positive(entry.contextWindow);

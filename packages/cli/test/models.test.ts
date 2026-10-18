@@ -186,3 +186,21 @@ describe("settings.json", () => {
 		assert.deepEqual(resolveWebSearch(file, {}), { provider: "searxng", baseUrl: "https://searx.example" });
 	});
 });
+
+describe("models.json input (P30)", () => {
+	it("reads pi's input list and ignores unknown kinds", () => {
+		const config = parseModelsConfig(
+			JSON.stringify({
+				providers: {
+					p: {
+						baseUrl: "https://x/v1",
+						models: [{ id: "vision", input: ["text", "image", "audio"] }, { id: "plain" }],
+					},
+				},
+			}),
+			"/m.json",
+		);
+		assert.deepEqual(config.models[0]?.input, ["text", "image"]);
+		assert.equal(config.models[1]?.input, undefined);
+	});
+});

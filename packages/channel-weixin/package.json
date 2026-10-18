@@ -1,0 +1,26 @@
+{
+	"name": "@yophon/tau-channel-weixin",
+	"version": "0.2.0",
+	"description": "WeChat channel for the tau gateway: the official iLink Bot protocol (QR login, long polling, CDN media, tool progress)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/channel-weixin"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-gateway": "^0.2.0",
+		"qrcode-terminal": "0.12.0"
+	}
+}

@@ -1,0 +1,25 @@
+{
+	"name": "@yophon/tau-gateway",
+	"version": "0.2.0",
+	"description": "Resident gateway for tau: one conversation per chat, channel plugins, pairing and owner access, approvals in chat",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/gateway"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}

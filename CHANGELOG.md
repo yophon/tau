@@ -249,6 +249,19 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   do that). `/export` writes HTML unless the path ends in `.jsonl` (pi).
 
 ### Added
+- New packages (P30): `@yophon/tau-gateway` (the resident gateway core: one
+  conversation per (channel, account, peer), queued input merged per turn,
+  residency limits and idle unloading, owners and an allow list with pairing
+  and owner codes, approvals in chat with short ids and a timeout, chat
+  commands, channel plugins), `@yophon/tau-channel-weixin` (WeChat over the
+  official iLink Bot protocol, ported from yo-agent: QR login, long polling with
+  a persisted cursor, CDN media decryption, quotes, tool progress items) and
+  `@yophon/tau-channel-feishu` (a Feishu/Lark channel plugin on ext-feishu's
+  `FeishuClient`, installed under `~/.tau/gateway`). The CLI gains
+  `tau gateway run|stop|status|login|channels|allow|revoke` and depends on the
+  gateway and the WeChat channel (not on the Feishu SDK). See docs/gateway.md.
+- CLI (P30): models.json reads pi's `input` (`["text", "image"]`); the
+  gateway hands images to models that declare it.
 - CLI (P29): `--mode json` (one run as pi's JSONL event stream; the prompt
   from `-p` or stdin; exit codes 0/1/130), `--mode rpc` (pi's RPC protocol:
   prompt with streamingBehavior, steer, follow_up, abort, sessions, models,

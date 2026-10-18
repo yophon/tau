@@ -68,6 +68,9 @@ MCP 接一个远程的（这正是 Flutter demo 的叙事）。可移植性的�
 | `@yophon/tau-ext-codemode` | `codemode`：模型写 JavaScript 调用工具，跑在 pi 的 QuickJS 沙箱里（`./node`） | 是——worker 线程与 wasm（Node 入口） |
 | `@yophon/tau-ext-resources` | pi 兼容的 skills 与 prompt templates 扩展包 | 不直接碰运行时 API |
 | `@yophon/tau-ext-feishu` | 飞书/Lark WebSocket 桥接，支持媒体、Reaction、进度卡片和主动发送工具 | 是——飞书 SDK 与 Node 文件系统 |
+| `@yophon/tau-gateway` | 常驻网关核心：每个对话一个会话、排队、配对与主人准入、聊天审批、渠道插件 | 是——Node 文件系统 |
+| `@yophon/tau-channel-weixin` | 微信渠道（官方 iLink Bot 协议），`tau gateway` 内置 | 是——网络、文件系统 |
+| `@yophon/tau-channel-feishu` | 网关的飞书/Lark 渠道插件（另装） | 是——飞书 SDK |
 
 ### 飞书/Lark 桥接
 
@@ -207,6 +210,16 @@ Zed 里配置 `{ "agent_servers": { "tau": { "command": "tau", "args": ["--mode"
 审批变成编辑器的权限对话框，读写走编辑器缓冲区，todo_write 显示成计划，权限档位就是
 会话模式。协议细节与和 pi 的差异见 [docs/rpc.md](docs/rpc.md)。
 
+## 常驻网关
+
+```bash
+tau gateway login weixin     # 用微信扫码登录，扫码的人就是这个账号的主人
+tau gateway run              # 常驻；每个对话一个独立会话
+tau gateway stop
+```
+
+网关让 tau 不用终端也一直在线：每个对话一个会话（重启后续上），同一个对话的消息按顺序处理，不同对话并行。主人在聊天里回复就能批准工具调用；别人用网关打印的配对码进入名单，缺省只读。微信内置，飞书是插件（`npm install --prefix ~/.tau/gateway @yophon/tau-channel-feishu`），其他渠道照同样的接口写。详见 [docs/gateway.md](docs/gateway.md)。
+
 ## 嵌入内核
 
 ```ts
@@ -269,8 +282,9 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D33）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D34）
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
+- [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证
