@@ -55,6 +55,7 @@ export interface GatewayHost {
 		permissionMode?: PermissionMode;
 		promptNote?: string;
 		extensions?: Extension[];
+		memoryFile?: string;
 	}): Promise<HeadlessWorkspace & { extensions: ExtensionRegistry; setPermissionMode(mode: PermissionMode): void }>;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
@@ -133,6 +134,20 @@ export function conversationContent(input: ConversationInput, images: boolean): 
 	return [textBlock, ...blocks];
 }
 
+/** A gateway guest's own memory: ~/.tau/gateway/people/<channel>/<account>/<peer>/USER.md. */
+export function guestMemoryFile(home: string, key: ConversationKey): string {
+	return join(
+		home,
+		".tau",
+		"gateway",
+		"people",
+		segment(key.channel),
+		segment(key.account),
+		segment(key.peer),
+		"USER.md",
+	);
+}
+
 /** One chat conversation: a workspace and a HeadlessSession, sessions under the gateway's directory. */
 export async function openConversation(
 	host: GatewayHost,
@@ -149,6 +164,8 @@ export async function openConversation(
 		permissionMode: policy.permissionMode,
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
+		// Someone other than the owner never sees the owner's memory, only their own (P32).
+		...(policy.role === "owner" ? {} : { memoryFile: guestMemoryFile(host.home, key) }),
 	});
 	const existing = (await ws.sessionRepo.list())[0];
 	const store = existing ? await ws.sessionRepo.open(existing) : await ws.sessionRepo.create();

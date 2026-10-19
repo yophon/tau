@@ -752,12 +752,13 @@ async function loadExtensionRegistry(
 	cwd: string,
 	ui: UiCapability | undefined,
 	hostExtensions: readonly Extension[] = [],
+	memoryFile?: string,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
 	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
 	const registry = await ExtensionRegistry.load([
-		...builtinExtensions(),
+		...builtinExtensions(memoryFile !== undefined ? { memoryFile } : {}),
 		...hostExtensions,
 		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
 	]);
@@ -1406,10 +1407,12 @@ async function main(): Promise<void> {
 		promptNote?: string;
 		/** P31: extensions the host adds after the built-ins (the gateway's schedule tools); kept across /reload. */
 		extensions?: Extension[];
+		/** P32: this workspace's memory file instead of the project's (a gateway guest's own). */
+		memoryFile?: string;
 	}) => {
 		const cwd = spec.cwd;
 		let workspaceMode = spec.permissionMode;
-		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions);
+		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions, spec.memoryFile);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
@@ -1417,7 +1420,7 @@ async function main(): Promise<void> {
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 			projectContext = await loadProjectContext();
-			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions);
+			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions, spec.memoryFile);
 			projectTrusted = next.projectTrusted;
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
 			return next.registry;

@@ -283,7 +283,7 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 ## 产品层后续 ⬜ 待定
 
-P32 跨对话记忆、连接器凭据、对外身份与审计；主动模式（P31 移出，D35）。各自另立规格书。
+P32 跨对话记忆、凭据与连接器、审计（规格书草拟：[specs/phase-32-memory-credentials-audit.md](specs/phase-32-memory-credentials-audit.md)）。主动模式等见 Backlog D。
 
 ## 未排期（Backlog）
 
@@ -305,6 +305,13 @@ P32 跨对话记忆、连接器凭据、对外身份与审计；主动模式（P
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
 - pi parity 📍Backlog 行（P21）：`before_provider_request`/`after_provider_response`、`provider_stream_event`、`ui_prompt_start/end`、`registerMarkdownTransformer`、`pi.events`
 - MCP 2026-07-28 新规范适配（pi 1.2.0 仍协商 2025-11-25，单独立项）
+
+### D. 产品层候选（2026-10-19 用户：「先不着急，记下来」）
+
+- **bash 沙箱**：让 bash 在受限环境里跑（只能写工作目录、网络受控），沙箱内的调用可以不要审批。P31 验收时，周期任务用 bash 每次都要主人批一次，这是真实痛点。Linux 有 bubblewrap、macOS 有 Seatbelt，Windows 没有好用的方案。等网关常驻在哪台机器上定了再议。
+- **主动模式**：没人布置任务、模型自己定期醒来看看有没有该说的（P31 移出，D35）。业界做法是只读工具、限频、限预算，结果只进收件箱不外发。等定时任务用一段时间、看清实际用法后再定边界。
+- **微信群聊**：P30 跳过（每个群只记一次日志）。待定的是群里的触发方式（@ 才回？）和群级权限。
+- **运行预算**：每天的 token 上限、每个任务每天最多跑几次，超了暂停定时任务并通知主人。运行记录部分并入 P32 的审计考虑。
 
 ## 技术债登记
 

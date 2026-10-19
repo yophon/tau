@@ -141,7 +141,11 @@ const toolPrompt: Extension = (api) => {
 	});
 };
 
-export function builtinExtensions(): Extension[] {
+/**
+ * The built-ins for one workspace. `memoryFile` overrides where its memory lives
+ * (P32: a gateway guest gets only their own, never the owner's project memory).
+ */
+export function builtinExtensions(options: { memoryFile?: string } = {}): Extension[] {
 	return [
 		toolPrompt,
 		createToolSearchExtension(),
@@ -153,7 +157,7 @@ export function builtinExtensions(): Extension[] {
 		createSubagentsExtension(),
 		// P26c: the todo list and long-term memory.
 		todoExtension,
-		createMemoryExtension(() => state.memoryFile),
+		createMemoryExtension(() => options.memoryFile ?? state.memoryFile),
 		// P28: web_fetch always, web_search when a provider is configured.
 		createWebExtension({
 			...(state.webSearch ? { search: state.webSearch } : {}),

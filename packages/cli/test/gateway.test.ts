@@ -173,6 +173,11 @@ describe("tau gateway (e2e)", { timeout: 120_000 }, () => {
 				join(home, ".tau", "gateway", "config.json"),
 				JSON.stringify({ plugins: [pluginPath], channels: { weixin: false, fake: { url: chat.url } } }),
 			);
+			// The owner's project memory: never shown to someone else's conversation (P32).
+			const { sessionDirSlug } = await import("@yophon/tau-kernel");
+			const memoryDir = join(home, ".tau", "projects", sessionDirSlug(workspace));
+			mkdirSync(memoryDir, { recursive: true });
+			writeFileSync(join(memoryDir, "MEMORY.md"), "- The owner's locker code is 4321\n");
 			// Before the gateway runs: let bob in, look at the channels.
 			const allowed = cli(["gateway", "allow", "fake", "acc", "bob"], workspace, home, mock.baseUrl);
 			assert.equal(allowed.code, 0, allowed.output);
@@ -191,6 +196,8 @@ describe("tau gateway (e2e)", { timeout: 120_000 }, () => {
 			await until(() => chat.texts("bob").length === 1, "the reply to bob");
 			assert.equal(chat.texts("bob")[0], "hi bob");
 			assert.ok(!JSON.stringify(mock.requests[1]).includes("hello"), "bob's conversation does not see boss's messages");
+			assert.match(JSON.stringify(mock.requests[0]), /locker code is 4321/, "the owner's conversation has the memory");
+			assert.doesNotMatch(JSON.stringify(mock.requests[1]), /locker code/, "bob's conversation does not");
 
 			// supervised: bash asks the owner in chat; the reply with the id lets it run once.
 			chat.say("boss", "run it");
