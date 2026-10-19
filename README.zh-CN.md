@@ -23,7 +23,8 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 - **编码工具**——read（文本与图片）、write、edit（一次调用做多处精确替换）、
   bash，以及纯 ES 实现、走宿主文件系统的 grep / find / ls（照 `.gitignore`
   过滤，所有宿主可用，包括 OPFS）。CLI 另带 `todo_write`（TUI 里显示清单）、
-  按项目的长期记忆（`memory_write`，TUI 里输入 `#事实`）、`web_fetch` /
+  关于你和关于项目的长期记忆（`memory_write`，TUI 里输入 `#事实`，见
+  [docs/memory.md](docs/memory.md)）、在历史会话里查找的 `session_search`、`web_fetch` /
   `web_search` 和五档权限
   （read-only、supervised、accept-edits、autonomous、bypass）。
 - **模型**——在 `~/.tau/models.json`（pi 的格式）里把供应商和模型写一次；

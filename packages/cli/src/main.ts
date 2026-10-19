@@ -63,6 +63,7 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
+import type { MemoryScope } from "./memory.ts";
 import {
 	availableModels,
 	type ConfiguredModel,
@@ -752,13 +753,13 @@ async function loadExtensionRegistry(
 	cwd: string,
 	ui: UiCapability | undefined,
 	hostExtensions: readonly Extension[] = [],
-	memoryFile?: string,
+	memory?: MemoryScope,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
 	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
 	const registry = await ExtensionRegistry.load([
-		...builtinExtensions(memoryFile !== undefined ? { memoryFile } : {}),
+		...builtinExtensions(memory !== undefined ? { memory } : {}),
 		...hostExtensions,
 		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
 	]);
@@ -1407,12 +1408,12 @@ async function main(): Promise<void> {
 		promptNote?: string;
 		/** P31: extensions the host adds after the built-ins (the gateway's schedule tools); kept across /reload. */
 		extensions?: Extension[];
-		/** P32: this workspace's memory file instead of the project's (a gateway guest's own). */
-		memoryFile?: string;
+		/** P32a: this workspace's memory scope instead of the project's (a gateway guest's own). */
+		memory?: MemoryScope;
 	}) => {
 		const cwd = spec.cwd;
 		let workspaceMode = spec.permissionMode;
-		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions, spec.memoryFile);
+		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions, spec.memory);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
@@ -1420,7 +1421,7 @@ async function main(): Promise<void> {
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 			projectContext = await loadProjectContext();
-			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions, spec.memoryFile);
+			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions, spec.memory);
 			projectTrusted = next.projectTrusted;
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
 			return next.registry;

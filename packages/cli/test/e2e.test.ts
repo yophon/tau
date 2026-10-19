@@ -292,7 +292,18 @@ test("--tools narrows the declared built-in tools (P23e)", async () => {
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "ls", "subagent", "todo_write", "memory_write", "web_fetch"],
+				[
+					"read",
+					"ls",
+					"subagent",
+					"todo_write",
+					"memory_write",
+					"memory_edit",
+					"memory_read",
+					"session_search",
+					"session_read",
+					"web_fetch",
+				],
 				"nope is not a tool; read and ls survive; --tools narrows built-in coding tools only",
 			);
 		} finally {
@@ -410,6 +421,31 @@ test("project memory from ~/.tau/projects reaches the system prompt (P26c)", asy
 			const system = request.messages.find((message) => message.role === "system")?.content ?? "";
 			assert.match(system, /## Memory\n/);
 			assert.match(system, /- The user wants answers in French/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("memory about the user follows them to another project's next session (P32a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const other = join(cwd, "..", "other-project");
+		await mkdir(other, { recursive: true });
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("memory_write", { target: "user", content: "Call the user Lao Wang" }),
+			() => mockTextTurn("noted"),
+			() => mockTextTurn("hi Lao Wang"),
+		]);
+		try {
+			const first = startCli(["-p", "call me Lao Wang", "--no-session"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await first.waitForExit(), 0, first.output());
+			const user = await readFile(join(home, ".tau", "memory", "USER.md"), "utf8");
+			assert.equal(user, "- Call the user Lao Wang\n");
+			const second = startCli(["-p", "hello", "--no-session"], { cwd: other, home, baseUrl: mock.baseUrl });
+			assert.equal(await second.waitForExit(), 0, second.output());
+			const request = mock.requests[2] as { messages: { role: string; content: string }[] };
+			const system = request.messages.find((message) => message.role === "system")?.content ?? "";
+			assert.match(system, /### About the user \(.*USER\.md\)\n- Call the user Lao Wang/);
 		} finally {
 			await mock.close();
 		}
@@ -891,7 +927,20 @@ test("read-only mode keeps write/edit/bash off the request wire entirely", async
 			const request = mock.requests[0] as { tools?: { function: { name: string } }[] };
 			assert.deepEqual(
 				(request.tools ?? []).map((tool) => tool.function.name),
-				["read", "grep", "find", "ls", "subagent", "todo_write", "memory_write", "web_fetch"],
+				[
+					"read",
+					"grep",
+					"find",
+					"ls",
+					"subagent",
+					"todo_write",
+					"memory_write",
+					"memory_edit",
+					"memory_read",
+					"session_search",
+					"session_read",
+					"web_fetch",
+				],
 			);
 		} finally {
 			await mock.close();

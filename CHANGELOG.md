@@ -4,6 +4,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Fixed (P32a)
+- gateway: a non-owner's conversation carried the owner's project memory in
+  its prompt. Each guest now has only their own memory file.
+
+### Changed (P32a)
+- CLI memory is layered: `~/.tau/memory/USER.md` (about you, every project),
+  the project's `MEMORY.md` (now an index) plus topic files in
+  `memory/<topic>.md`, and a gateway guest's own `USER.md`. Files have size
+  limits (2000 / 4000 / 20 000 characters); a full file makes the model merge
+  entries. The memory in the prompt is taken when a session starts and stays
+  the same for that session. `memory_write` takes `target` (`user` or
+  `project`) and an optional `topic`, and is low risk now (no approval). New
+  tools `memory_edit`, `memory_read`, `session_search` and `session_read`
+  (keyword search over your own earlier sessions), so exact tool lists grow by
+  four. `/remember !fact` and `#!fact` save memory about you; `/memory` shows
+  all layers, `/memory edit|clear [user|project|<topic>]`.
+
 ### Added (P31)
 - gateway: schedules and goals. In the owner's chat the model gets
   `schedule_create`/`schedule_list`/`schedule_cancel` and

@@ -279,31 +279,35 @@ describe("P27 extension commands", () => {
 	});
 
 	it("/memory shows, edits through ui.editor and clears after confirmation", async () => {
-		const file = join(mkdtempSync(join(tmpdir(), "tau-memory-")), "MEMORY.md");
-		const h = await harness({ responses: [], extensions: [createMemoryExtension(() => file)] });
+		const dir = mkdtempSync(join(tmpdir(), "tau-memory-"));
+		const file = join(dir, "MEMORY.md");
+		const scope = { userFile: join(dir, "USER.md"), project: { file, topicsDir: join(dir, "memory") }, sessions: [] };
+		const h = await harness({ responses: [], extensions: [createMemoryExtension(() => scope)] });
 		await h.submit("/memory");
-		await h.waitFor((f) => f.includes("No memories yet"), "the empty memory");
+		await h.waitFor((f) => f.includes("This project") && f.includes("(empty)"), "the empty memory");
 		await h.submit("#Tabs, not spaces");
 		await h.waitFor((f) => f.includes("Remembered: Tabs, not spaces"), "the fact");
 		await h.submit("/memory");
-		await h.waitFor((f) => f.includes("Memory (") && f.includes("- Tabs, not spaces"), "the memory");
+		await h.waitFor((f) => f.includes("(18/4000)") && f.includes("- Tabs, not spaces"), "the memory");
 		h.editorResult.value = "- Tabs, not spaces\r\n- Answer in Chinese\r\n";
 		await h.submit("/memory edit");
 		await h.waitFor((f) => f.includes("Memory saved"), "the edit");
 		assert.equal(readFileSync(file, "utf8"), "- Tabs, not spaces\n- Answer in Chinese\n");
 		await h.submit("/memory clear");
-		await h.waitFor((f) => f.includes("Forget everything in long-term memory?"), "the confirmation");
+		await h.waitFor((f) => f.includes("Forget everything in this memory?"), "the confirmation");
 		await h.key("y");
-		await h.waitFor((f) => f.includes("Memory cleared."), "cleared");
+		await h.waitFor((f) => f.includes("Cleared "), "cleared");
 		assert.equal(readFileSync(file, "utf8"), "");
 		await h.type("/memory e");
-		await h.waitFor((f) => f.includes("open MEMORY.md in"), "the argument menu");
+		await h.waitFor((f) => f.includes("open project memory in"), "the argument menu");
 	});
 
 	it("/memory edit without a host editor points at the file", async () => {
-		const file = join(mkdtempSync(join(tmpdir(), "tau-memory-")), "MEMORY.md");
+		const dir = mkdtempSync(join(tmpdir(), "tau-memory-"));
+		const file = join(dir, "MEMORY.md");
 		writeFileSync(file, "- x\n");
-		const registry = await ExtensionRegistry.load([createMemoryExtension(() => file)]);
+		const scope = { userFile: join(dir, "USER.md"), project: { file, topicsDir: join(dir, "memory") }, sessions: [] };
+		const registry = await ExtensionRegistry.load([createMemoryExtension(() => scope)]);
 		const command = registry.commands.get("memory");
 		const output = await command?.handler("edit", {
 			messages: [],

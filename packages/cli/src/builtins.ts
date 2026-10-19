@@ -11,7 +11,7 @@ import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
 import { type Agent, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
-import { createMemoryExtension } from "./memory.ts";
+import { createMemoryExtension, type MemoryScope } from "./memory.ts";
 import { resolveConfigValue } from "./models.ts";
 import { readSettings } from "./settings.ts";
 import { todoExtension } from "./todo.ts";
@@ -28,11 +28,11 @@ const state: {
 	agent: Agent | undefined;
 	/** Whether the system prompt is the CLI default (a custom -s prompt is left alone). */
 	defaultPrompt: boolean;
-	/** ~/.tau/projects/<project>/MEMORY.md (P26c); undefined until configured. */
-	memoryFile: string | undefined;
+	/** The project's memory scope (P26c, P32a); undefined until configured. */
+	memory: MemoryScope | undefined;
 	/** The web_search provider (P28); undefined = web_search is not registered. */
 	webSearch: WebSearchConfig | undefined;
-} = { codemode: {}, agent: undefined, defaultPrompt: true, memoryFile: undefined, webSearch: undefined };
+} = { codemode: {}, agent: undefined, defaultPrompt: true, memory: undefined, webSearch: undefined };
 
 /** Environment keys that pick a search provider when settings name none (P28), in this order. */
 const SEARCH_ENV: ReadonlyArray<[WebSearchConfig["provider"], string]> = [
@@ -83,12 +83,29 @@ function readCodemodeSettings(path: string): CodemodeSettings {
 }
 
 /**
+ * The memory of someone at their own terminal or an owner in chat (P32a): their
+ * USER.md, the project's index and topics, and their sessions (the terminal's, and
+ * the gateway conversations recorded as an owner's).
+ */
+export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
+	const project = join(home, ".tau", "projects", sessionDirSlug(cwd));
+	return {
+		userFile: join(home, ".tau", "memory", "USER.md"),
+		project: { file: join(project, "MEMORY.md"), topicsDir: join(project, "memory") },
+		sessions: [
+			{ dir: join(home, ".tau", "sessions") },
+			{ dir: join(home, ".tau", "gateway", "sessions"), ownerOnly: true },
+		],
+	};
+}
+
+/**
  * Read the codemode settings: ~/.tau/settings.json, then the project's
  * .tau/settings.json when the directory is trusted (P23c trust gate).
  */
 export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
-	state.memoryFile = join(home, ".tau", "projects", sessionDirSlug(options.cwd), "MEMORY.md");
+	state.memory = defaultMemoryScope(home, options.cwd);
 	// User settings only: the search endpoint and key are never chosen by a repository.
 	state.webSearch = resolveWebSearch(join(home, ".tau", "settings.json"));
 	state.codemode = {
@@ -142,10 +159,10 @@ const toolPrompt: Extension = (api) => {
 };
 
 /**
- * The built-ins for one workspace. `memoryFile` overrides where its memory lives
- * (P32: a gateway guest gets only their own, never the owner's project memory).
+ * The built-ins for one workspace. `memory` overrides its memory scope (P32a: a
+ * gateway guest gets only their own, never the owner's).
  */
-export function builtinExtensions(options: { memoryFile?: string } = {}): Extension[] {
+export function builtinExtensions(options: { memory?: MemoryScope } = {}): Extension[] {
 	return [
 		toolPrompt,
 		createToolSearchExtension(),
@@ -157,7 +174,7 @@ export function builtinExtensions(options: { memoryFile?: string } = {}): Extens
 		createSubagentsExtension(),
 		// P26c: the todo list and long-term memory.
 		todoExtension,
-		createMemoryExtension(() => options.memoryFile ?? state.memoryFile),
+		createMemoryExtension(() => options.memory ?? state.memory),
 		// P28: web_fetch always, web_search when a provider is configured.
 		createWebExtension({
 			...(state.webSearch ? { search: state.webSearch } : {}),

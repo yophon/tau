@@ -40,6 +40,7 @@ import type {
 } from "@yophon/tau-kernel";
 import { restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import type { GatewayCommand } from "./main.ts";
+import type { MemoryScope } from "./memory.ts";
 import { HeadlessSession, type HeadlessWorkspace, type ModelSwitch } from "./modes/headless.ts";
 
 /** What main.ts hands the gateway: its workspace factory and the model state. */
@@ -55,7 +56,7 @@ export interface GatewayHost {
 		permissionMode?: PermissionMode;
 		promptNote?: string;
 		extensions?: Extension[];
-		memoryFile?: string;
+		memory?: MemoryScope;
 	}): Promise<HeadlessWorkspace & { extensions: ExtensionRegistry; setPermissionMode(mode: PermissionMode): void }>;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
@@ -134,18 +135,17 @@ export function conversationContent(input: ConversationInput, images: boolean): 
 	return [textBlock, ...blocks];
 }
 
-/** A gateway guest's own memory: ~/.tau/gateway/people/<channel>/<account>/<peer>/USER.md. */
-export function guestMemoryFile(home: string, key: ConversationKey): string {
-	return join(
-		home,
-		".tau",
-		"gateway",
-		"people",
-		segment(key.channel),
-		segment(key.account),
-		segment(key.peer),
-		"USER.md",
-	);
+/**
+ * A gateway guest's memory (P32a): their own USER.md under
+ * ~/.tau/gateway/people/<channel>/<account>/<peer>/, no project memory, and only
+ * their own conversation for session_search.
+ */
+export function guestMemoryScope(home: string, sessionsDir: string, key: ConversationKey): MemoryScope {
+	const parts = [segment(key.channel), segment(key.account), segment(key.peer)];
+	return {
+		userFile: join(home, ".tau", "gateway", "people", ...parts, "USER.md"),
+		sessions: [{ dir: join(sessionsDir, ...parts) }],
+	};
 }
 
 /** One chat conversation: a workspace and a HeadlessSession, sessions under the gateway's directory. */
@@ -165,7 +165,7 @@ export async function openConversation(
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
 		// Someone other than the owner never sees the owner's memory, only their own (P32).
-		...(policy.role === "owner" ? {} : { memoryFile: guestMemoryFile(host.home, key) }),
+		...(policy.role === "owner" ? {} : { memory: guestMemoryScope(host.home, sessionsDir, key) }),
 	});
 	const existing = (await ws.sessionRepo.list())[0];
 	const store = existing ? await ws.sessionRepo.open(existing) : await ws.sessionRepo.create();

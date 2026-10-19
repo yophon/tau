@@ -28,7 +28,9 @@ inject a small adapter instead of polyfilling globals.
   replacements in one call), bash, and grep / find / ls in pure ES over the
   host filesystem (they honor `.gitignore` and work on every host, OPFS
   included). The CLI adds `todo_write` (a checklist in the TUI), long-term
-  project memory (`memory_write`, `#fact` in the TUI), `web_fetch` /
+  memory about you and about the project (`memory_write`, `#fact` in the TUI;
+  see [docs/memory.md](docs/memory.md)), `session_search` over your earlier
+  sessions, `web_fetch` /
   `web_search`, and five permission modes (read-only, supervised,
   accept-edits, autonomous, bypass).
 - **Models** — describe providers and models once in `~/.tau/models.json`
