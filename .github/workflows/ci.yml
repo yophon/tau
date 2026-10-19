@@ -40,6 +40,8 @@ jobs:
       - run: npm run smoke:quickjs:mcp
       - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:browser:runtime
       - run: npm run smoke:tui
+      # P33: the same scenarios in the inline TUI (the default is full screen)
+      - run: SMOKE_TUI_MODE=inline npm run smoke:tui
 
   # 方言冒烟(P17):真实端点,天然 flaky,不进必跑门禁。secrets 缺失时逐方言明示 SKIP
   # (脚本对"全 SKIP"退出 0 但打印显式清单,不装绿)。手动触发或 secrets 就位的 push 才有实测值。
