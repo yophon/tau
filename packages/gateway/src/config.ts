@@ -5,6 +5,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PermissionMode } from "@yophon/tau-kernel";
+import { isTimeZone, localTimeZone } from "./time.ts";
 
 export interface GatewayConfig {
 	/** The tools' working directory; default: where `tau gateway run` started. */
@@ -20,6 +21,8 @@ export interface GatewayConfig {
 	plugins: string[];
 	/** Per-channel settings; false turns a channel off. */
 	channels: Record<string, Record<string, unknown> | false>;
+	/** P31: the IANA zone schedules run in; default: the host's. */
+	timeZone: string;
 }
 
 export interface GatewayPaths {
@@ -33,6 +36,7 @@ export interface GatewayPaths {
 	logs: string;
 	media: string;
 	sessions: string;
+	schedules: string;
 }
 
 export function gatewayPaths(home: string): GatewayPaths {
@@ -47,6 +51,7 @@ export function gatewayPaths(home: string): GatewayPaths {
 		logs: join(dir, "logs"),
 		media: join(dir, "media"),
 		sessions: join(dir, "sessions"),
+		schedules: join(dir, "schedules.json"),
 	};
 }
 
@@ -113,6 +118,11 @@ export function loadGatewayConfig(
 	const plugins = Array.isArray(raw.plugins)
 		? raw.plugins.filter((entry): entry is string => typeof entry === "string" && entry.trim() !== "")
 		: [];
+	let timeZone = localTimeZone();
+	if (raw.timeZone !== undefined) {
+		if (typeof raw.timeZone === "string" && isTimeZone(raw.timeZone)) timeZone = raw.timeZone;
+		else diagnostics.push(`timeZone: "${String(raw.timeZone)}" is not an IANA time zone; using ${timeZone}`);
+	}
 	const workspace =
 		options.workspace ?? (typeof raw.workspace === "string" && raw.workspace !== "" ? raw.workspace : options.cwd);
 	return {
@@ -126,6 +136,7 @@ export function loadGatewayConfig(
 			progress: raw.progress !== false,
 			plugins,
 			channels,
+			timeZone,
 		},
 		diagnostics,
 	};

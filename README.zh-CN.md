@@ -218,7 +218,7 @@ tau gateway run              # 常驻；每个对话一个独立会话
 tau gateway stop
 ```
 
-网关让 tau 不用终端也一直在线：每个对话一个会话（重启后续上），同一个对话的消息按顺序处理，不同对话并行。主人在聊天里回复就能批准工具调用；别人用网关打印的配对码进入名单，缺省只读。微信内置，飞书是插件（`npm install --prefix ~/.tau/gateway @yophon/tau-channel-feishu`），其他渠道照同样的接口写。详见 [docs/gateway.md](docs/gateway.md)。
+网关让 tau 不用终端也一直在线：每个对话一个会话（重启后续上），同一个对话的消息按顺序处理，不同对话并行。主人在聊天里回复就能批准工具调用；别人用网关打印的配对码进入名单，缺省只读。微信内置，飞书是插件（`npm install --prefix ~/.tau/gateway @yophon/tau-channel-feishu`），其他渠道照同样的接口写。在主人的对话里还能布置提醒、周期任务和目标（「三点提醒我」「每天早上 9 点汇总昨天的提交」「每小时看一次 CI，变绿了告诉我」）：网关按存下来的时间发一条确认，到点在这个对话里执行。详见 [docs/gateway.md](docs/gateway.md)。
 
 ## 嵌入内核
 

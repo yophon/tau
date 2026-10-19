@@ -143,6 +143,7 @@ function gatewayConfig(progress: boolean): GatewayConfig {
 		progress,
 		plugins: [],
 		channels: {},
+		timeZone: "Asia/Shanghai",
 	};
 }
 

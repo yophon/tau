@@ -244,7 +244,11 @@ order, others in parallel. The owner approves tool calls by replying in chat;
 other people pair with a code the gateway prints and get read-only by default.
 WeChat is built in; Feishu is a plugin
 (`npm install --prefix ~/.tau/gateway @yophon/tau-channel-feishu`), and other
-channels can be written the same way. See [docs/gateway.md](docs/gateway.md).
+channels can be written the same way. In the owner's chat, tau can also take
+reminders, recurring tasks and goals ("remind me at 3", "every morning at 9,
+summarize yesterday's commits", "check CI every hour and tell me when it is
+green"); the gateway confirms each one with the stored time and runs it in that
+chat when it is due. See [docs/gateway.md](docs/gateway.md).
 
 ## Embedding the kernel
 

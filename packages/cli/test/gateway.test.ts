@@ -243,4 +243,87 @@ describe("tau gateway (e2e)", { timeout: 120_000 }, () => {
 			await mock.close();
 		}
 	});
+
+	it("schedules a reminder from chat, fires it, lists and cancels from the CLI, and fires a missed one late", async () => {
+		const home = await realpath(await mkdtemp(join(tmpdir(), "tau-gw-home-")));
+		const workspace = await realpath(await mkdtemp(join(tmpdir(), "tau-gw-ws-")));
+		const chat = await startChat();
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("schedule_create", { title: "喝水", prompt: "提醒用户喝水", in: "3s" }),
+			() => mockTextTurn("好的"),
+			() => mockTextTurn("该喝水啦"),
+			() => mockToolCallTurn("schedule_create", { title: "汇总", prompt: "汇总提交", cron: "0 9 * * *" }),
+			() => mockTextTurn("每天九点"),
+			() => mockToolCallTurn("schedule_create", { title: "开会", prompt: "提醒用户开会", in: "1h" }),
+			() => mockTextTurn("一小时后"),
+			() => mockTextTurn("开会提醒（补发）"),
+		]);
+		try {
+			const pluginPath = join(home, "fake-channel.mjs");
+			writeFileSync(pluginPath, FAKE_PLUGIN);
+			const gatewayDir = join(home, ".tau", "gateway");
+			mkdirSync(gatewayDir, { recursive: true });
+			writeFileSync(
+				join(gatewayDir, "config.json"),
+				JSON.stringify({
+					plugins: [pluginPath],
+					channels: { weixin: false, fake: { url: chat.url } },
+					timeZone: "Asia/Shanghai",
+				}),
+			);
+			const gateway = startGateway(workspace, home, mock.baseUrl);
+			await until(() => gateway.output().includes("pairing code"), "the gateway to start");
+			assert.match(gateway.output(), /time zone: Asia\/Shanghai/);
+
+			chat.say("boss", "3 秒后提醒我喝水");
+			await until(() => chat.texts("boss").some((text) => text.startsWith("⏰ 已设置")), "the confirmation");
+			const confirmation = chat.texts("boss").find((text) => text.startsWith("⏰")) ?? "";
+			assert.match(
+				confirmation,
+				/^⏰ 已设置 #\w{4}：喝水\n时间：\d+月\d+日 周. \d\d:\d\d\n取消发 \/schedules cancel \w{4}$/,
+			);
+			// The model saw the time first, and the tools.
+			const first = JSON.stringify(mock.requests[0]);
+			assert.match(first, /\[\d+月\d+日 周. \d\d:\d\d Asia\/Shanghai\]\\n3 秒后提醒我喝水/);
+			assert.match(first, /schedule_create/);
+			await until(() => chat.texts("boss").includes("该喝水啦"), "the reminder", 15_000);
+			assert.match(JSON.stringify(mock.requests[2]), /\[定时任务 #\w{4}「喝水」，计划 .* 执行\]\\n提醒用户喝水/);
+			// The reminder's run sends no tool progress and no 「[静默]」 hint (it is a one-off).
+			assert.doesNotMatch(JSON.stringify(mock.requests[2]), /静默/);
+
+			chat.say("boss", "每天九点汇总提交");
+			await until(() => chat.texts("boss").includes("每天九点"), "the daily schedule");
+			const listed = cli(["gateway", "schedules"], workspace, home, mock.baseUrl);
+			assert.equal(listed.code, 0, listed.output);
+			const daily = /fake\/acc\/boss {2}#(\w{4}) 「汇总」 每天 09:00 · next/.exec(listed.output);
+			assert.ok(daily, listed.output);
+			assert.match(
+				cli(["gateway", "status"], workspace, home, mock.baseUrl).output,
+				/Schedules: 1 active, next .* \(#\w{4} 汇总\)/,
+			);
+			const cancelled = cli(["gateway", "schedules", "cancel", daily[1] ?? ""], workspace, home, mock.baseUrl);
+			assert.equal(cancelled.code, 0, cancelled.output);
+			assert.match(cli(["gateway", "schedules"], workspace, home, mock.baseUrl).output, /\(none\)/);
+
+			// A reminder due while the gateway is down fires after the restart, saying how late.
+			chat.say("boss", "一小时后提醒我开会");
+			await until(() => chat.texts("boss").includes("一小时后"), "the meeting reminder");
+			assert.equal(cli(["gateway", "stop"], workspace, home, mock.baseUrl).code, 0);
+			assert.equal(await gateway.exited, 0);
+			const file = join(gatewayDir, "schedules.json");
+			const data = JSON.parse(readFileSync(file, "utf8")) as { schedules: Array<{ title: string; nextAt?: number }> };
+			const meeting = data.schedules.find((entry) => entry.title === "开会");
+			assert.ok(meeting?.nextAt);
+			meeting.nextAt = Date.now() - 2 * 3600_000 - 5 * 60_000;
+			writeFileSync(file, JSON.stringify(data));
+			const again = startGateway(workspace, home, mock.baseUrl);
+			await until(() => chat.texts("boss").includes("开会提醒（补发）"), "the late reminder");
+			assert.match(JSON.stringify(mock.requests[7]), /「开会」，本应在 .* 执行，网关当时没有运行，晚了 2 小时 5 分\]/);
+			assert.equal(cli(["gateway", "stop"], workspace, home, mock.baseUrl).code, 0);
+			assert.equal(await again.exited, 0);
+		} finally {
+			await chat.close();
+			await mock.close();
+		}
+	});
 });

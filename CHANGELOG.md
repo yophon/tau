@@ -4,6 +4,21 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P31)
+- gateway: schedules and goals. In the owner's chat the model gets
+  `schedule_create`/`schedule_list`/`schedule_cancel` and
+  `goal_create`/`goal_update`/`goal_list`: one-off reminders (`at` or `in`),
+  recurring tasks (5-field cron, at least 5 minutes apart) and goals whose
+  schedules end when the goal is done. The gateway confirms each new schedule
+  with the stored time, fires due ones into their conversation as a message,
+  sends a missed one-off late with a note and skips a missed recurring firing,
+  drops a recurring task's bare `[静默]` reply, and sends no tool progress for
+  a scheduled run. `/schedules`, `/goals`, `tau gateway schedules [cancel <id>]`,
+  `tau gateway goals`; `config.json` `timeZone`; a schedules line in
+  `tau gateway status`. Every gateway turn starts with the current time.
+- CLI: `openWorkspace` takes host `extensions` (added after the built-ins,
+  kept across `/reload`).
+
 ### ⚠ Breaking
 - CLI (P28): when `~/.tau/models.json` has a usable model, it decides the
   endpoint, key and model; `TAU_BASE_URL`, `TAU_MODEL`, `TAU_API_KEY` and the

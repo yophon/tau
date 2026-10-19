@@ -42,4 +42,11 @@ describe("gateway conversation content", () => {
 	it("passes plain text through", () => {
 		assert.equal(conversationContent({ text: "hi", attachments: [] }, true), "hi");
 	});
+
+	it("puts the time first (P31)", () => {
+		assert.equal(
+			conversationContent({ text: "三点提醒我", attachments: [], time: "10月18日 周日 15:02 Asia/Shanghai" }, false),
+			"[10月18日 周日 15:02 Asia/Shanghai]\n三点提醒我",
+		);
+	});
 });

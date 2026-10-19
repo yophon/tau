@@ -9,7 +9,10 @@ import type { AgentEvent, ApprovalRequest, AssistantMessage, PermissionMode } fr
 import type { AccessStore } from "./access.ts";
 import { ChatApprovals } from "./approvals.ts";
 import { ALLOWED_MODES, type GatewayConfig, OWNER_MODES } from "./config.ts";
+import type { Schedule, ScheduleResult, ScheduleStore } from "./schedule.ts";
+import { createScheduleTools, describeGoal, describeSchedule } from "./schedule-tools.ts";
 import { chunkText, summarizeArgs, TEXT } from "./text.ts";
+import { describeDuration, formatLocalTime } from "./time.ts";
 import type {
 	Channel,
 	ChannelSink,
@@ -39,6 +42,10 @@ export interface GatewayOptions {
 	onChange?: () => void;
 	/** How long stop() waits for running turns before aborting them. */
 	stopGraceMs?: number;
+	/** P31: schedules and goals; without it the gateway has no schedule tools. */
+	schedules?: ScheduleStore;
+	/** How often due schedules are checked. Default 30 s. */
+	scheduleTickMs?: number;
 	now?: () => number;
 }
 
@@ -56,7 +63,35 @@ export interface GatewayStatus {
 		lastActive: number;
 	}>;
 	pendingApprovals: number;
+	/** P31: active schedules and the next one to fire. */
+	schedules?: { active: number; next?: { id: string; title: string; at: number } };
 }
+
+/** A schedule firing, as the gateway marks the message it queues (channels never set it). */
+interface ScheduledMark {
+	id: string;
+	recurring: boolean;
+	/** When it was due: a one-off dropped at shutdown is put back with this time. */
+	due: number;
+}
+
+type QueuedMessage = InboundMessage & { scheduled?: ScheduledMark };
+
+/** What the run in progress was started by, for silence and progress. */
+interface RunKind {
+	scheduled: ScheduledMark[];
+	/** Every message of the run is a firing: no tool progress. */
+	quiet: boolean;
+	/** The run carries a recurring firing: a bare 「[静默]」 reply is not sent. */
+	mayBeSilent: boolean;
+	silent: boolean;
+}
+
+/** A recurring task's reply that means "nothing to report". */
+export const SILENT_REPLY = "[静默]";
+/** A recurring firing later than this is skipped; a one-off later than LATE_NOTE_MS says so. */
+const SKIP_LATE_MS = 5 * 60_000;
+const LATE_NOTE_MS = 60_000;
 
 interface Slot {
 	id: string;
@@ -64,8 +99,9 @@ interface Slot {
 	role: PeerRole;
 	conversation?: Conversation;
 	opening?: Promise<Conversation>;
-	queue: InboundMessage[];
+	queue: QueuedMessage[];
 	running: boolean;
+	runKind?: RunKind;
 	stopRequested: boolean;
 	runId?: string;
 	lastActive: number;
@@ -123,6 +159,8 @@ export class Gateway {
 	private startedAt = 0;
 	private stopping = false;
 	private sweeper: ReturnType<typeof setInterval> | undefined;
+	private scheduleTimer: ReturnType<typeof setInterval> | undefined;
+	private scheduleWake: ReturnType<typeof setTimeout> | undefined;
 	private channelRuns: Promise<void>[] = [];
 
 	constructor(options: GatewayOptions) {
@@ -152,6 +190,11 @@ export class Gateway {
 		const signal = this.controller.signal;
 		this.sweeper = setInterval(() => void this.sweep(), 60_000);
 		this.sweeper.unref?.();
+		if (this.options.schedules) {
+			this.scheduleTimer = setInterval(() => this.checkSchedules(), this.options.scheduleTickMs ?? 30_000);
+			this.scheduleTimer.unref?.();
+			setTimeout(() => this.checkSchedules(), 0).unref?.();
+		}
 		this.channelRuns = [...this.channels.values()].map(async (channel) => {
 			try {
 				await channel.start(this.sinkFor(channel), signal);
@@ -169,10 +212,15 @@ export class Gateway {
 		if (this.stopping) return;
 		this.stopping = true;
 		if (this.sweeper) clearInterval(this.sweeper);
+		if (this.scheduleTimer) clearInterval(this.scheduleTimer);
+		if (this.scheduleWake) clearTimeout(this.scheduleWake);
 		this.controller.abort();
 		this.approvals.denyAll();
 		// Queued input that has not started is dropped; running turns get the grace period.
-		for (const slot of this.slots.values()) slot.queue.length = 0;
+		for (const slot of this.slots.values()) {
+			for (const message of slot.queue) if (message.scheduled) this.dropFiring(message.scheduled);
+			slot.queue.length = 0;
+		}
 		const running = [...this.slots.values()].filter((slot) => slot.running);
 		if (running.length > 0) {
 			this.log(`waiting for ${running.length} running conversation(s)`);
@@ -213,6 +261,18 @@ export class Gateway {
 				lastActive: slot.lastActive,
 			})),
 			pendingApprovals: this.approvals.size,
+			...(this.options.schedules ? { schedules: this.scheduleSummary(this.options.schedules) } : {}),
+		};
+	}
+
+	private scheduleSummary(store: ScheduleStore): NonNullable<GatewayStatus["schedules"]> {
+		// A cancel from the CLI shows in the next status write without waiting for the poll.
+		store.reload();
+		const active = store.schedules().filter((entry) => entry.state === "active").length;
+		const next = store.upcoming();
+		return {
+			active,
+			...(next?.nextAt !== undefined ? { next: { id: next.id, title: next.title, at: next.nextAt } } : {}),
 		};
 	}
 
@@ -298,7 +358,8 @@ export class Gateway {
 		if (OWNER_RE.test(text) && (await this.claimOwner(message, text))) return;
 
 		const slot = this.slotFor(message.key, role);
-		slot.queue.push(message);
+		const { scheduled: _ignored, ...inbound } = message as QueuedMessage;
+		slot.queue.push(inbound);
 		slot.lastActive = this.now();
 		this.log(`in ${message.key.channel}/${message.key.account}/${message.key.peer} (${role})`);
 		void this.drain(slot);
@@ -420,6 +481,17 @@ export class Gateway {
 				reply(this.statusText(slot));
 				return true;
 			}
+			case "schedules":
+			case "goals": {
+				const store = this.options.schedules;
+				if (!store) return false;
+				if (!owner) {
+					reply(TEXT.noPermission);
+					return true;
+				}
+				reply(name === "schedules" ? this.schedulesCommand(store, key, args) : this.goalsCommand(store, key, args));
+				return true;
+			}
 			default:
 				return false;
 		}
@@ -432,8 +504,57 @@ export class Gateway {
 			`对话：${status.conversations.filter((entry) => entry.resident).length} 个驻留，${status.conversations.filter((entry) => entry.running).length} 个运行中`,
 			`待批请求：${status.pendingApprovals}`,
 		];
+		if (status.schedules) {
+			const next = status.schedules.next;
+			lines.push(
+				`定时任务：${status.schedules.active} 个进行中${next ? `，下一个 ${this.formatTime(next.at)}（#${next.id}）` : ""}`,
+			);
+		}
 		if (slot?.conversation) lines.push(`本对话：${slot.conversation.describe()}`);
 		return lines.join("\n");
+	}
+
+	private formatTime(at: number): string {
+		const store = this.options.schedules;
+		const zone = store?.timeZone ?? this.options.config.timeZone;
+		return formatLocalTime(at, zone, this.now());
+	}
+
+	private schedulesCommand(store: ScheduleStore, key: ConversationKey, args: string): string {
+		store.reload();
+		const cancel = /^cancel\s+#?(\S+)$/i.exec(args);
+		if (cancel) {
+			const entry = store.cancelSchedule(cancel[1] ?? "", key);
+			return entry ? TEXT.scheduleCancelled(entry.id, entry.title) : TEXT.scheduleUnknown(cancel[1] ?? "");
+		}
+		if (args !== "") return TEXT.schedulesUsage;
+		const entries = store.schedules(key).filter((entry) => entry.state === "active");
+		if (entries.length === 0) return TEXT.noSchedules;
+		return [
+			"定时任务：",
+			...entries.map((entry) => describeSchedule(store, entry, this.now())),
+			TEXT.schedulesHint,
+		].join("\n");
+	}
+
+	private goalsCommand(store: ScheduleStore, key: ConversationKey, args: string): string {
+		store.reload();
+		const end = /^(done|drop)\s+#?(\S+)$/i.exec(args);
+		if (end) {
+			const state = (end[1] ?? "").toLowerCase() === "done" ? "done" : "abandoned";
+			const updated = store.updateGoal(end[2] ?? "", { state }, key);
+			if (!updated) return TEXT.goalUnknown(end[2] ?? "");
+			return TEXT.goalEnded(
+				updated.goal.id,
+				updated.goal.title,
+				state,
+				updated.ended.map((entry) => entry.id),
+			);
+		}
+		if (args !== "" && args.toLowerCase() !== "all") return TEXT.goalsUsage;
+		const goals = store.goals(key).filter((goal) => args.toLowerCase() === "all" || goal.state === "active");
+		if (goals.length === 0) return args === "" ? TEXT.noGoals : "没有目标。";
+		return ["目标：", ...goals.map((goal) => describeGoal(store, goal, this.now()))].join("\n");
 	}
 
 	// ───────────────────────── conversations ─────────────────────────
@@ -507,9 +628,22 @@ export class Gateway {
 	}
 
 	private hooksFor(slot: Slot): ConversationHooks {
+		const store = this.options.schedules;
 		return {
 			onApproval: (request) => this.approve(slot, request),
 			onEvent: (event) => this.onEvent(slot, event),
+			...(store && slot.role === "owner"
+				? {
+						extensions: [
+							createScheduleTools({
+								store,
+								key: slot.key,
+								isOwner: () => this.roleOf(slot.key, slot.key.peer) === "owner",
+								created: (entry) => this.scheduleCreated(entry),
+							}),
+						],
+					}
+				: {}),
 		};
 	}
 
@@ -531,11 +665,15 @@ export class Gateway {
 			const { message } = event;
 			if (message.stopReason === "stop" || message.stopReason === "length") {
 				const text = assistantText(message);
+				if (text === SILENT_REPLY && slot.runKind?.mayBeSilent) {
+					slot.runKind.silent = true;
+					return;
+				}
 				if (text !== "") this.sendText(slot.key, text, runId);
 			}
 			return;
 		}
-		if (!this.options.config.progress) return;
+		if (!this.options.config.progress || slot.runKind?.quiet) return;
 		if (event.type === "tool_start") {
 			this.send(slot.key, {
 				kind: "progress",
@@ -576,10 +714,18 @@ export class Gateway {
 				}
 				slot.runId = randomUUID();
 				slot.stopRequested = false;
+				const scheduled = batch.flatMap((message) => (message.scheduled ? [message.scheduled] : []));
+				const kind: RunKind = {
+					scheduled,
+					quiet: scheduled.length > 0 && scheduled.length === batch.length,
+					mayBeSilent: scheduled.some((mark) => mark.recurring),
+					silent: false,
+				};
+				slot.runKind = kind;
 				void this.typing(slot.key, true);
 				let result: Awaited<ReturnType<Conversation["run"]>>;
 				try {
-					result = await conversation.run(mergeInputs(batch));
+					result = await conversation.run({ ...mergeInputs(batch), time: this.timeLine() });
 				} catch (error) {
 					result = {
 						stopReason: "error",
@@ -593,14 +739,163 @@ export class Gateway {
 				} else if (result.stopReason === "error") {
 					this.sendText(slot.key, TEXT.runFailed(result.errorMessage ?? "unknown error"), slot.runId);
 				}
+				if (scheduled.length > 0) {
+					const outcome: ScheduleResult =
+						result.aborted || result.stopReason === "error" ? "failed" : kind.silent ? "silent" : "replied";
+					for (const mark of scheduled) {
+						this.options.schedules?.recordResult(mark.id, outcome);
+						this.log(`schedule ${mark.id} ${outcome} run=${slot.runId}`);
+					}
+				}
+				slot.runKind = undefined;
 				slot.lastActive = this.now();
 			}
 		} finally {
 			slot.running = false;
+			slot.runKind = undefined;
 			slot.runId = undefined;
 			slot.stopRequested = false;
 			this.changed();
 		}
+	}
+
+	// ───────────────────────── schedules ─────────────────────────
+
+	/** 「10月18日 周六 15:02 Asia/Shanghai」 */
+	private timeLine(): string {
+		const zone = this.options.schedules?.timeZone ?? this.options.config.timeZone;
+		return `${formatLocalTime(this.now(), zone, this.now())} ${zone}`;
+	}
+
+	private scheduleCreated(entry: Schedule): void {
+		const store = this.options.schedules;
+		if (!store) return;
+		this.log(`schedule ${entry.id} created in ${keyId(entry.key)}: ${entry.cron ?? entry.at}`);
+		this.sendText(
+			entry.key,
+			TEXT.scheduleCreated({
+				id: entry.id,
+				title: entry.title,
+				timing: store.describeTiming(entry),
+				next: entry.nextAt !== undefined ? this.formatTime(entry.nextAt) : undefined,
+				recurring: entry.cron !== undefined,
+			}),
+		);
+		this.changed();
+		this.armScheduleWake();
+	}
+
+	/** A firing queued but not run at shutdown: a one-off fires again (late) after the restart. */
+	private dropFiring(mark: ScheduledMark): void {
+		const store = this.options.schedules;
+		if (!store) return;
+		if (mark.recurring) store.recordResult(mark.id, "skipped");
+		else store.revive(mark.id, mark.due);
+		this.log(`schedule ${mark.id} dropped at shutdown${mark.recurring ? "" : " (kept for the restart)"}`);
+	}
+
+	/** The poll is coarse; a firing due before the next poll gets its own short timer. */
+	private armScheduleWake(): void {
+		const store = this.options.schedules;
+		if (!store || this.stopping) return;
+		if (this.scheduleWake) clearTimeout(this.scheduleWake);
+		this.scheduleWake = undefined;
+		const next = store.upcoming()?.nextAt;
+		if (next === undefined) return;
+		const delay = next - this.now();
+		if (delay >= (this.options.scheduleTickMs ?? 30_000)) return;
+		this.scheduleWake = setTimeout(() => this.checkSchedules(), Math.max(0, delay) + 50);
+		this.scheduleWake.unref?.();
+	}
+
+	/** Whether the conversation's channel account can take a message now. */
+	private channelReady(key: ConversationKey): boolean {
+		if (!this.channels.has(key.channel)) return false;
+		for (const entry of this.channelStatus.values()) {
+			if (entry.channel !== key.channel) continue;
+			if (entry.account === key.account || entry.account === "*") {
+				if (entry.state !== "connected") return false;
+			}
+		}
+		return true;
+	}
+
+	/** Fire what is due: queue it in its conversation like a message. */
+	checkSchedules(): void {
+		const store = this.options.schedules;
+		if (!store || this.stopping) return;
+		try {
+			store.reload();
+			const now = this.now();
+			for (const entry of store.due(now)) this.fire(store, entry, now);
+		} catch (error) {
+			this.log(`schedules check failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+		this.armScheduleWake();
+	}
+
+	private fire(store: ScheduleStore, entry: Schedule, now: number): void {
+		const recurring = entry.cron !== undefined;
+		const due = entry.nextAt ?? now;
+		const late = now - due;
+		const skip = (why: string) => {
+			store.markSkipped(entry.id, now);
+			this.log(`schedule ${entry.id} skipped (${why})`);
+			this.changed();
+		};
+		if (this.roleOf(entry.key, entry.key.peer) !== "owner") {
+			store.pause(entry.id);
+			this.log(`schedule ${entry.id} paused: ${keyId(entry.key)} is no longer an owner`);
+			this.changed();
+			return;
+		}
+		if (!this.channelReady(entry.key)) {
+			// A one-off waits for the channel; a recurring firing is skipped.
+			if (recurring) skip("channel not connected");
+			return;
+		}
+		if (recurring && late > SKIP_LATE_MS) {
+			skip(`missed by ${describeDuration(late)}`);
+			return;
+		}
+		const slot = this.slotFor(entry.key, "owner");
+		const busy =
+			slot.queue.some((message) => message.scheduled?.id === entry.id) ||
+			slot.runKind?.scheduled.some((mark) => mark.id === entry.id) === true;
+		if (busy) {
+			skip("previous run not finished");
+			return;
+		}
+		const goal = entry.goalId ? store.goal(entry.goalId) : undefined;
+		if (!store.markFired(entry.id, now)) return;
+		const text = TEXT.scheduledTask({
+			id: entry.id,
+			title: entry.title,
+			prompt: entry.prompt,
+			planned: this.formatTime(due),
+			late: !recurring && late > LATE_NOTE_MS ? describeDuration(late) : undefined,
+			goal: goal
+				? {
+						id: goal.id,
+						title: goal.title,
+						state: goal.state,
+						notes: goal.notes.slice(-3).map((note) => `${this.formatTime(note.at)} ${note.text}`),
+					}
+				: undefined,
+			recurring,
+		});
+		slot.queue.push({
+			key: entry.key,
+			sender: entry.key.peer,
+			messageId: `schedule:${entry.id}:${now}`,
+			text,
+			receivedAt: now,
+			scheduled: { id: entry.id, recurring, due },
+		});
+		slot.lastActive = now;
+		this.log(`schedule ${entry.id} fired in ${keyId(entry.key)}`);
+		this.changed();
+		void this.drain(slot);
 	}
 
 	// ───────────────────────── outbound ─────────────────────────

@@ -37,6 +37,7 @@ import {
 	createCodingTools,
 	createOpenAICompatTransport,
 	defaultPlatform,
+	type Extension,
 	ExtensionRegistry,
 	type FileSystem,
 	JsonlSessionRepo,
@@ -747,11 +748,17 @@ interface LoadedExtensions {
 	projectTrusted: boolean;
 }
 
-async function loadExtensionRegistry(cwd: string, ui: UiCapability | undefined): Promise<LoadedExtensions> {
-	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the user's extensions.
+async function loadExtensionRegistry(
+	cwd: string,
+	ui: UiCapability | undefined,
+	hostExtensions: readonly Extension[] = [],
+): Promise<LoadedExtensions> {
+	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
+	// schedule tools, P31), then the user's extensions.
 	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
 	const registry = await ExtensionRegistry.load([
 		...builtinExtensions(),
+		...hostExtensions,
 		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
 	]);
 	// A failing notification handler (an unreachable MCP server in session_start, a
@@ -1397,10 +1404,12 @@ async function main(): Promise<void> {
 		permissionMode?: PermissionMode;
 		/** P30: appended to the system prompt (who the agent is talking to, and where). */
 		promptNote?: string;
+		/** P31: extensions the host adds after the built-ins (the gateway's schedule tools); kept across /reload. */
+		extensions?: Extension[];
 	}) => {
 		const cwd = spec.cwd;
 		let workspaceMode = spec.permissionMode;
-		const loaded = await loadExtensionRegistry(cwd, spec.ui);
+		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
@@ -1408,7 +1417,7 @@ async function main(): Promise<void> {
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 			projectContext = await loadProjectContext();
-			const next = await loadExtensionRegistry(cwd, reloadUi);
+			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions);
 			projectTrusted = next.projectTrusted;
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
 			return next.registry;

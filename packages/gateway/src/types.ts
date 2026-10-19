@@ -3,7 +3,7 @@
  * conversations are built by the host (the CLI wraps a HeadlessSession). Queues,
  * access, approvals and persistence live in the gateway, once.
  */
-import type { AgentEvent, ApprovalRequest, PermissionMode } from "@yophon/tau-kernel";
+import type { AgentEvent, ApprovalRequest, Extension, PermissionMode } from "@yophon/tau-kernel";
 
 /** A conversation's stable key: the same key always lands on the same session. */
 export interface ConversationKey {
@@ -108,6 +108,8 @@ export interface ConversationPolicy {
 export interface ConversationInput {
 	text: string;
 	attachments: Attachment[];
+	/** P31: the current time, 「10月18日 周六 15:02 Asia/Shanghai」; the host puts it first in the user turn. */
+	time?: string;
 }
 
 export interface RunResult {
@@ -132,4 +134,6 @@ export interface ConversationHooks {
 	/** Approvals go to the owner in chat. Throwing denies with that message (the model sees it). */
 	onApproval(request: ApprovalRequest): Promise<boolean>;
 	onEvent(event: AgentEvent): void;
+	/** P31: extensions the gateway gives this conversation (the schedule and goal tools in an owner's); the host adds them after the built-ins. */
+	extensions?: Extension[];
 }

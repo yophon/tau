@@ -1,203 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import type { AgentEvent, ApprovalRequest, AssistantMessage } from "@yophon/tau-kernel";
+import type { ApprovalRequest } from "@yophon/tau-kernel";
 import {
 	acquireLock,
 	type Channel,
-	type ChannelSink,
 	ChatApprovals,
-	type Conversation,
-	type ConversationHooks,
-	type ConversationInput,
-	type ConversationKey,
-	type ConversationPolicy,
 	DailyLog,
 	describeStatus,
 	FileAccessStore,
 	Gateway,
-	type GatewayConfig,
-	type InboundMessage,
 	loadGatewayConfig,
 	loadPlugins,
 	mergeInputs,
-	type OutboundReply,
 	TEXT,
 } from "../src/index.ts";
-
-const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
-async function until(check: () => boolean, label = "condition"): Promise<void> {
-	for (let i = 0; i < 400; i++) {
-		if (check()) return;
-		await tick();
-	}
-	throw new Error(`timed out waiting for ${label}`);
-}
-
-function tempDir(): string {
-	return mkdtempSync(join(tmpdir(), "tau-gateway-"));
-}
-
-class FakeChannel implements Channel {
-	readonly name = "fake";
-	textLimit = 2000;
-	sink: ChannelSink | undefined;
-	sent: Array<{ key: ConversationKey; reply: OutboundReply }> = [];
-	typingCalls: boolean[] = [];
-	ownerIds: string[];
-	private seq = 0;
-
-	constructor(owners: string[] = ["boss"]) {
-		this.ownerIds = owners;
-	}
-
-	start(sink: ChannelSink, signal: AbortSignal): Promise<void> {
-		this.sink = sink;
-		return new Promise((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
-	}
-
-	async send(key: ConversationKey, reply: OutboundReply): Promise<void> {
-		this.sent.push({ key, reply });
-	}
-
-	async typing(_key: ConversationKey, on: boolean): Promise<void> {
-		this.typingCalls.push(on);
-	}
-
-	owners(): readonly string[] {
-		return this.ownerIds;
-	}
-
-	message(peer: string, text: string, extra: Partial<InboundMessage> = {}): InboundMessage {
-		return {
-			key: { channel: "fake", account: "acc", peer },
-			sender: peer,
-			messageId: `m${++this.seq}`,
-			text,
-			receivedAt: Date.now(),
-			...extra,
-		};
-	}
-
-	texts(peer: string): string[] {
-		return this.sent
-			.filter((entry) => entry.key.peer === peer && entry.reply.kind === "text")
-			.map((entry) => (entry.reply as { text: string }).text);
-	}
-}
-
-function assistant(text: string): AgentEvent {
-	const message: AssistantMessage = {
-		role: "assistant",
-		content: [{ type: "text", text }],
-		api: "fake",
-		provider: "fake",
-		model: "fake",
-		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 },
-		stopReason: "stop",
-		timestamp: Date.now(),
-	} as AssistantMessage;
-	return { type: "assistant_message", message };
-}
-
-interface FakeRun {
-	input: ConversationInput;
-	finish(text?: string): void;
-	abort(): void;
-}
-
-class FakeConversation implements Conversation {
-	readonly key: ConversationKey;
-	readonly policy: ConversationPolicy;
-	readonly hooks: ConversationHooks;
-	runs: FakeRun[] = [];
-	commands: string[] = [];
-	closed = false;
-	/** Called inside run() before it waits; tests use it to request approvals. */
-	onRun?: (conversation: FakeConversation, input: ConversationInput) => Promise<void> | void;
-	private current: { resolve(value: { stopReason: string; aborted: boolean }): void } | undefined;
-
-	constructor(key: ConversationKey, policy: ConversationPolicy, hooks: ConversationHooks) {
-		this.key = key;
-		this.policy = policy;
-		this.hooks = hooks;
-	}
-
-	async run(input: ConversationInput) {
-		await this.onRun?.(this, input);
-		return new Promise<{ stopReason: string; aborted: boolean }>((resolve) => {
-			this.current = { resolve };
-			this.runs.push({
-				input,
-				finish: (text = `echo: ${input.text}`) => {
-					this.hooks.onEvent(assistant(text));
-					resolve({ stopReason: "stop", aborted: false });
-				},
-				abort: () => resolve({ stopReason: "aborted", aborted: true }),
-			});
-		});
-	}
-
-	abort(): void {
-		this.current?.resolve({ stopReason: "aborted", aborted: true });
-	}
-
-	async command(name: string, args: string): Promise<string> {
-		this.commands.push(`${name} ${args}`.trim());
-		return `did ${name}`;
-	}
-
-	describe(): string {
-		return `fake ${this.key.peer}`;
-	}
-
-	async close(): Promise<void> {
-		this.closed = true;
-	}
-}
-
-function config(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
-	return {
-		workspace: "/work",
-		ownerMode: "supervised",
-		allowedMode: "read-only",
-		approvalTimeoutSec: 300,
-		idleMinutes: 30,
-		maxResident: 16,
-		progress: true,
-		plugins: [],
-		channels: {},
-		...overrides,
-	};
-}
-
-function setup(options: { config?: Partial<GatewayConfig>; owners?: string[]; allowed?: string[] } = {}) {
-	const dir = tempDir();
-	const channel = new FakeChannel(options.owners);
-	const access = new FileAccessStore(join(dir, "access.json"));
-	for (const user of options.allowed ?? []) access.allow("fake", "acc", user, "allowed");
-	const conversations: FakeConversation[] = [];
-	const logs: string[] = [];
-	const gateway = new Gateway({
-		channels: [channel],
-		access,
-		config: config(options.config),
-		log: (line) => logs.push(line),
-		pairingCode: "111111",
-		ownerCode: "222222",
-		stopGraceMs: 200,
-		openConversation: async (key, policy, hooks) => {
-			const conversation = new FakeConversation(key, policy, hooks);
-			conversations.push(conversation);
-			return conversation;
-		},
-	});
-	const started = gateway.start();
-	const conversationOf = (peer: string) => conversations.filter((entry) => entry.key.peer === peer).at(-1);
-	return { dir, channel, access, conversations, conversationOf, gateway, started, logs };
-}
+import { config, FakeChannel, FakeConversation, setup, tempDir, tick, until } from "./fakes.ts";
 
 describe("gateway routing and queues", () => {
 	it("gives each peer its own conversation and runs one peer's messages in order", async () => {

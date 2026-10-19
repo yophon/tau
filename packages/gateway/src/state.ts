@@ -6,6 +6,7 @@ import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSyn
 import { join } from "node:path";
 import { writePrivateFile } from "./access.ts";
 import type { GatewayStatus } from "./gateway.ts";
+import { formatLocalTime, localTimeZone } from "./time.ts";
 
 function alive(pid: number): boolean {
 	try {
@@ -51,6 +52,8 @@ export interface StatusFile extends GatewayStatus {
 	pid: number;
 	updatedAt: number;
 	workspace: string;
+	/** P31: the zone schedules run in. */
+	timeZone?: string;
 }
 
 export function writeStatus(path: string, status: StatusFile): void {
@@ -103,6 +106,13 @@ export function describeStatus(status: StatusFile | undefined, now: number): str
 		lines.push(`  ${entry.channel}/${entry.account}/${entry.peer} (${flags})`);
 	}
 	lines.push(`Pending approvals: ${status.pendingApprovals}`);
+	if (status.schedules) {
+		const next = status.schedules.next;
+		const zone = status.timeZone ?? localTimeZone();
+		lines.push(
+			`Schedules: ${status.schedules.active} active${next ? `, next ${formatLocalTime(next.at, zone, now)} (#${next.id} ${next.title})` : ""}`,
+		);
+	}
 	return lines.join("\n");
 }
 

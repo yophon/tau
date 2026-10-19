@@ -16,6 +16,8 @@ import {
 	type ConversationKey,
 	type ConversationPolicy,
 	channelContext,
+	describeGoal,
+	describeSchedule,
 	describeStatus,
 	FileAccessStore,
 	gatewayPaths,
@@ -24,9 +26,11 @@ import {
 	loadPlugins,
 	OWNER_MODES,
 	readStatus,
+	ScheduleStore,
 } from "@yophon/tau-gateway";
 import type {
 	ApprovalRequest,
+	Extension,
 	ExtensionRegistry,
 	ImageContent,
 	PermissionMode,
@@ -50,6 +54,7 @@ export interface GatewayHost {
 		sessionDir?: string;
 		permissionMode?: PermissionMode;
 		promptNote?: string;
+		extensions?: Extension[];
 	}): Promise<HeadlessWorkspace & { extensions: ExtensionRegistry; setPermissionMode(mode: PermissionMode): void }>;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
@@ -119,7 +124,10 @@ export function conversationContent(input: ConversationInput, images: boolean): 
 				: `[用户发来${label}${name}，已保存到 ${attachment.path}。文本类文件可用 read 工具读取]`,
 		);
 	}
-	const text = [input.text, ...notes].filter((part) => part.trim() !== "").join("\n");
+	// P31: the time first, so the model can turn "at three" into a schedule days into a conversation.
+	const text = [input.time ? `[${input.time}]` : "", input.text, ...notes]
+		.filter((part) => part.trim() !== "")
+		.join("\n");
 	if (blocks.length === 0) return text;
 	const textBlock: TextContent = { type: "text", text };
 	return [textBlock, ...blocks];
@@ -140,6 +148,7 @@ export async function openConversation(
 		sessionDir: join(sessionsDir, segment(key.channel), segment(key.account), segment(key.peer)),
 		permissionMode: policy.permissionMode,
 		promptNote: promptNote(key, policy),
+		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
 	});
 	const existing = (await ws.sessionRepo.list())[0];
 	const store = existing ? await ws.sessionRepo.open(existing) : await ws.sessionRepo.create();
@@ -229,9 +238,11 @@ Usage:
   tau gateway allow <channel> <account> <user> [--owner | --mode <mode>]
                                                       Let someone in (or make them owner, or set their mode)
   tau gateway revoke <channel> <account> <user>       Remove someone
+  tau gateway schedules [cancel <id>]                 List schedules in all chats, or cancel one
+  tau gateway goals                                   List goals in all chats
 
 Config: ~/.tau/gateway/config.json (workspace, ownerMode, allowedMode, approvalTimeoutSec,
-idleMinutes, maxResident, progress, plugins, channels). Channel plugins install with
+idleMinutes, maxResident, progress, plugins, channels, timeZone). Channel plugins install with
   npm install --prefix ~/.tau/gateway <package>
 and are listed in "plugins". See docs/gateway.md.`;
 
@@ -251,11 +262,7 @@ export async function runGatewayCommand(
 				console.log("The gateway is not running.");
 				return 0;
 			}
-			writeFileSync(
-				paths.stopRequest,
-				`${Date.now()}
-`,
-			);
+			writeFileSync(paths.stopRequest, `${Date.now()}\n`);
 			console.log(`Asked the gateway (pid ${status.pid}) to stop; waiting…`);
 			for (let waited = 0; waited < 45_000; waited += 250) {
 				if (!readStatus(paths.status)) {
@@ -310,6 +317,43 @@ export async function runGatewayCommand(
 			);
 			return removed ? 0 : 1;
 		}
+		case "schedules":
+		case "goals": {
+			const { config } = loadGatewayConfig(paths.config, { cwd: context.cwd, env: process.env });
+			const store = new ScheduleStore(paths.schedules, { timeZone: config.timeZone });
+			const now = Date.now();
+			const where = (key: { channel: string; account: string; peer: string }) =>
+				`${key.channel}/${key.account}/${key.peer}`;
+			if (command.command === "goals") {
+				const goals = store.goals();
+				if (goals.length === 0) console.log("No goals.");
+				for (const goal of goals) console.log(`${where(goal.key)}  ${describeGoal(store, goal, now)}`);
+				return 0;
+			}
+			if (command.args[0] === "cancel") {
+				const id = (command.args[1] ?? "").replace(/^#/, "");
+				const entry = id ? store.cancelSchedule(id) : undefined;
+				if (!entry) {
+					console.error(id ? `No active schedule #${id}.` : "Usage: tau gateway schedules cancel <id>");
+					return 1;
+				}
+				console.log(
+					`Cancelled #${entry.id} 「${entry.title}」 (${where(entry.key)}). A running gateway applies it at once.`,
+				);
+				return 0;
+			}
+			if (command.args.length > 0) {
+				console.error("Usage: tau gateway schedules [cancel <id>]");
+				return 1;
+			}
+			const entries = store.schedules().filter((entry) => entry.state === "active");
+			console.log(`Schedules (${paths.schedules}, time zone ${config.timeZone}):`);
+			if (entries.length === 0) console.log("  (none)");
+			for (const entry of entries) console.log(`  ${where(entry.key)}  ${describeSchedule(store, entry, now)}`);
+			const ended = store.schedules().length - entries.length;
+			if (ended > 0) console.log(`  (${ended} ended in the last 30 days not shown)`);
+			return 0;
+		}
 		case "channels":
 		case "login": {
 			const { config, diagnostics } = loadGatewayConfig(paths.config, { cwd: context.cwd, env: process.env });
@@ -319,7 +363,7 @@ export async function runGatewayCommand(
 				for (const plugin of plugins) {
 					const off = config.channels[plugin.name] === false;
 					console.log(
-						`${plugin.name}: ${off ? "off (config.json)" : "loaded"}${plugin.login ? " · tau gateway login " + plugin.name : ""}`,
+						`${plugin.name}: ${off ? "off (config.json)" : "loaded"}${plugin.login ? ` · tau gateway login ${plugin.name}` : ""}`,
 					);
 				}
 				for (const entry of failed) console.log(`${entry.channel}: failed — ${entry.detail}`);

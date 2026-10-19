@@ -16,8 +16,27 @@ export {
 	OWNER_MODES,
 	resolveEnvValue,
 } from "./config.ts";
-export { Gateway, type GatewayOptions, type GatewayStatus, keyId, mergeInputs, newCode } from "./gateway.ts";
+export {
+	Gateway,
+	type GatewayOptions,
+	type GatewayStatus,
+	keyId,
+	mergeInputs,
+	newCode,
+	SILENT_REPLY,
+} from "./gateway.ts";
 export { isChannelPlugin, loadChannelPlugin, resolvePlugin } from "./plugins.ts";
+export {
+	type Goal,
+	type NewGoal,
+	type NewSchedule,
+	SCHEDULE_LIMITS,
+	type Schedule,
+	type ScheduleResult,
+	ScheduleStore,
+	sameKey,
+} from "./schedule.ts";
+export { createScheduleTools, describeGoal, describeSchedule, type ScheduleToolsHost } from "./schedule-tools.ts";
 export {
 	acquireLock,
 	DailyLog,
@@ -28,6 +47,21 @@ export {
 	writeStatus,
 } from "./state.ts";
 export { chunkText, summarizeArgs, TEXT } from "./text.ts";
+export {
+	type CronSpec,
+	describeCron,
+	describeDuration,
+	formatLocalTime,
+	isoLocal,
+	isTimeZone,
+	localTimeZone,
+	nextCronTime,
+	parseCron,
+	parseDuration,
+	parseLocalTime,
+	shortestCronGap,
+	wallTime,
+} from "./time.ts";
 export type {
 	Attachment,
 	Channel,

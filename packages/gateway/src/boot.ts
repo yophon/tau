@@ -9,6 +9,7 @@ import { FileAccessStore } from "./access.ts";
 import { type GatewayConfig, type GatewayPaths, gatewayPaths, loadGatewayConfig } from "./config.ts";
 import { Gateway, type GatewayOptions } from "./gateway.ts";
 import { loadChannelPlugin } from "./plugins.ts";
+import { ScheduleStore } from "./schedule.ts";
 import { acquireLock, DailyLog, writeStatus } from "./state.ts";
 import type { Channel, ChannelContext, ChannelPlugin } from "./types.ts";
 
@@ -127,6 +128,7 @@ export async function bootGateway(options: BootOptions): Promise<BootedGateway> 
 		},
 		unavailable: failed,
 		onChange: () => soon(),
+		schedules: new ScheduleStore(paths.schedules, { timeZone: config.timeZone }),
 		...(options.pairingCode !== undefined ? { pairingCode: options.pairingCode } : {}),
 	});
 	let stopping: Promise<void> | undefined;
@@ -138,6 +140,7 @@ export async function bootGateway(options: BootOptions): Promise<BootedGateway> 
 				pid: process.pid,
 				updatedAt: Date.now(),
 				workspace: config.workspace,
+				timeZone: config.timeZone,
 			});
 		} catch (error) {
 			// Status is advisory; say why once per distinct failure.
@@ -157,6 +160,7 @@ export async function bootGateway(options: BootOptions): Promise<BootedGateway> 
 		}, 200);
 	};
 	say(`workspace: ${config.workspace}`);
+	say(`time zone: ${config.timeZone}`);
 	say(`channels: ${channels.map((channel) => channel.name).join(", ") || "(none)"}`);
 	options.print(`pairing code: ${gateway.pairingCode}  (others send "配对 ${gateway.pairingCode}" to get access)`);
 	options.print(

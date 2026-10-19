@@ -98,6 +98,7 @@ const config: GatewayConfig = {
 	progress: true,
 	plugins: [],
 	channels: {},
+	timeZone: "Asia/Shanghai",
 };
 
 async function harness() {
