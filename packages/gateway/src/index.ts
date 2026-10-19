@@ -18,6 +18,7 @@ export {
 } from "./config.ts";
 export {
 	Gateway,
+	type GatewayAuditView,
 	type GatewayOptions,
 	type GatewayStatus,
 	keyId,

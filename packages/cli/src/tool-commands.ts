@@ -289,6 +289,68 @@ async function mcpCommand(args: string[], context: { home: string; cwd: string }
 	return diagnostics.length > 0 ? 1 : 0;
 }
 
+const AUDIT_USAGE = `tau audit - what tau did: runs, tool calls, approvals, messages (~/.tau/audit, kept 30 days)
+
+Usage: tau audit [options]
+  --since <1d|24h|2026-10-18>   From (default 1d)        --until <…>       To
+  --host <tui|repl|print|json|rpc|acp|gateway>           --trigger <user|chat|schedule|rpc|acp>
+  --schedule <id>   --channel <name>   --tool <name>   --decision <source>   --status <ok|error|aborted>
+  --external        only runs with calls that reached outside (MCP, web)
+  --kind <run|tool|message>   with --json: only that kind of record
+  --json            records as JSON lines        --limit <n>   most runs to show (default 50)
+
+Decision sources: mode, policy_deny, user_once, user_session, user_reject, chat_owner,
+chat_reject, timeout, non_owner, hook, no_approver.`;
+
+async function auditCommand(args: string[], home: string): Promise<number> {
+	const { AuditLedger, filterRuns, formatRuns, groupRuns } = await import("./audit.ts");
+	const { parseSince } = await import("./session-search.ts");
+	const value = (flag: string) => {
+		const index = args.indexOf(flag);
+		return index >= 0 ? args[index + 1] : undefined;
+	};
+	if (args.includes("--help") || args[0] === "help") {
+		console.log(AUDIT_USAGE);
+		return 0;
+	}
+	let since: number;
+	let until = Number.POSITIVE_INFINITY;
+	try {
+		since = parseSince(value("--since") ?? "1d");
+		const untilText = value("--until");
+		if (untilText) until = parseSince(untilText);
+	} catch (error) {
+		console.error(error instanceof Error ? error.message : String(error));
+		return 1;
+	}
+	const records = AuditLedger.at(home).read(since, until);
+	const filter = {
+		...(value("--host") ? { host: value("--host") } : {}),
+		...(value("--trigger") ? { trigger: value("--trigger") } : {}),
+		...(value("--schedule") ? { schedule: value("--schedule")?.replace(/^#/, "") } : {}),
+		...(value("--channel") ? { channel: value("--channel") } : {}),
+		...(value("--tool") ? { tool: value("--tool") } : {}),
+		...(value("--decision") ? { decision: value("--decision") } : {}),
+		...(value("--status") ? { status: value("--status") } : {}),
+		...(args.includes("--external") ? { external: true } : {}),
+	};
+	const limit = Number(value("--limit") ?? 50);
+	const runs = filterRuns(groupRuns(records), filter).slice(0, Number.isFinite(limit) && limit > 0 ? limit : 50);
+	if (args.includes("--json")) {
+		const kind = value("--kind");
+		const ids = new Set(runs.map((run) => run.runId));
+		const tools = new Set(runs.flatMap((run) => run.tools.map((tool) => `${run.runId}:${tool.toolCallId}`)));
+		for (const record of records) {
+			if (!ids.has(record.runId) || (kind && record.kind !== kind)) continue;
+			if (record.kind === "tool" && !tools.has(`${record.runId}:${record.toolCallId}`)) continue;
+			console.log(JSON.stringify(record));
+		}
+		return 0;
+	}
+	console.log(runs.length === 0 ? "Nothing recorded for that range." : formatRuns(runs));
+	return 0;
+}
+
 export async function runToolCommand(
 	name: string,
 	args: string[],
@@ -296,6 +358,7 @@ export async function runToolCommand(
 ): Promise<number> {
 	if (name === "credentials") return credentialsCommand(args, context.home);
 	if (name === "mcp") return mcpCommand(args, context);
+	if (name === "audit") return auditCommand(args, context.home);
 	console.error(`Unknown command ${name}`);
 	return 1;
 }

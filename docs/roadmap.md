@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-18（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；**当前工作 = 发 0.4.0（含 P22–P31）**）
+> 最后更新：2026-10-18（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -281,9 +281,15 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 669 个测试，666 通过、3 跳过；新增时间与 cron 6、存储 5、网关调度 9、CLI 端到端 1、时间行 1。smoke-tui（WSL）、pack smoke 通过；新增测试在 WSL Linux 上也通过。真实 DeepSeek 下用假渠道跑通：两分钟后的提醒按时送达；「每天 9 点汇总提交」存为 `0 9 * * *`，确认消息与 `/schedules`、取消都正确；「每 5 分钟看有没有 done.txt」建了目标并挂上任务，第一次静默，文件出现后通知、目标完成、任务停止。偏差见规格书「实施记录」，使用说明见 [gateway.md](gateway.md) 的「定时任务与目标」。
 
+## Phase 32 ✅ 跨对话记忆、凭据与审计（2026-10-19）
+
+规格书：[specs/phase-32-memory-credentials-audit.md](specs/phase-32-memory-credentials-audit.md)（2026-10-19 确认；用户裁定记忆写入不需要审批）。三步：32a 记忆分人分层（个人、项目索引加主题、网关访客各自一份；上限逼合并；会话开始时冻结；`session_search`），第一个提交修掉网关访客能看到主人记忆的漏洞；32b 凭据库与 `${cred:…}`、`~/.tau/mcp.json` 连接器（pi 格式，所有模式，网关只给主人）、密钥不给模型看（去环境变量、拦读凭据文件、输出打码）、MCP OAuth（移植 pi-mcp，`tau mcp login`）；32c 本地审计账本（`tau audit`、`/runs`、今日汇总）。D36，D24 改写。
+
+**完成记录**：全量 698 个测试，695 通过、3 跳过；smoke-tui（WSL）、pack smoke 通过；新增测试在 WSL Linux 上也通过。真实 DeepSeek：终端里记住的偏好在另一个项目的新会话里生效，另一个项目里用 `session_search` 找回上次聊的细节；网关里主人记住的家事，访客的对话搜了记忆和会话也不知道；`env` 看不到密钥类变量，读凭据文件被拦（账本记为 hook），模型如实说明；`${cred:…}` 注入的 MCP 连接器调用成功；`/runs` 显示触发者、工具、`chat_owner by boss`、token 与费用。偏差见规格书「实施记录」，使用说明见 [memory.md](memory.md)、[connectors.md](connectors.md)、[audit.md](audit.md)。
+
 ## 产品层后续 ⬜ 待定
 
-P32 跨对话记忆、凭据与连接器、审计（规格书草拟：[specs/phase-32-memory-credentials-audit.md](specs/phase-32-memory-credentials-audit.md)）。主动模式等见 Backlog D。
+主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
 
 ## 未排期（Backlog）
 

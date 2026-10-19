@@ -27,6 +27,7 @@ tau gateway run                 # 常驻；Ctrl+C 或 tau gateway stop 停止
 | `tau gateway revoke <渠道> <账号> <用户>` | 移出名单 |
 | `tau gateway schedules [cancel <编号>]` | 所有对话的定时任务，或取消一个（网关没在跑也能用） |
 | `tau gateway goals` | 所有对话的目标 |
+| `tau audit --host gateway` | 网关做过什么：哪轮由谁或哪个定时任务触发、调了什么、谁批的、花了多少（见 [audit.md](audit.md)） |
 
 账号和用户 id 在 `tau gateway status` 和日志里能看到（日志里每条入站记 `in <渠道>/<账号>/<对端>`）。
 
@@ -94,6 +95,7 @@ supervised 档下需要审批的调用，网关发一条消息给主人：
 | `/status` | 主人 | 网关状态 |
 | `/schedules [cancel <编号>]` | 主人 | 本对话的定时任务，或取消一个 |
 | `/goals [all \| done <编号> \| drop <编号>]` | 主人 | 本对话的目标；`all` 连已结束的一起列，`done`/`drop` 手动结束 |
+| `/runs [n]` | 主人 | 最近几轮（缺省 5）：触发者、工具、审批、花费 |
 | `/help` | 所有人 | 帮助 |
 
 其余以 `/` 开头的消息原样交给模型。扩展命令、skill、提示模板不在聊天里开放。

@@ -210,6 +210,29 @@ describe("tau gateway (e2e)", { timeout: 120_000 }, () => {
 			chat.say("boss", `批准 ${id}`);
 			await until(() => chat.texts("boss").includes("ran it"), "the run to finish");
 			assert.match(JSON.stringify(mock.requests[3]), /approved-run/, "the approved command ran");
+			// The audit ledger (P32c): who triggered the run, who approved bash, what went out.
+			const audit = cli(["audit", "--host", "gateway", "--json"], workspace, home, mock.baseUrl);
+			const records = audit.output
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as Record<string, unknown>);
+			const bash = records.find((record) => record.kind === "tool" && record.name === "bash");
+			assert.deepEqual(bash?.decision, { source: "chat_owner", by: "boss" });
+			const bashRun = records.find((record) => record.kind === "run" && record.runId === bash?.runId);
+			assert.deepEqual(bashRun?.trigger, {
+				type: "chat",
+				channel: "fake",
+				account: "acc",
+				peer: "boss",
+				role: "owner",
+			});
+			assert.ok(
+				records.some((record) => record.kind === "message" && record.type === "notice"),
+				"the approval request",
+			);
+			assert.ok(
+				records.some((record) => record.kind === "message" && record.type === "text" && record.runId === bash?.runId),
+			);
 
 			const status = cli(["gateway", "status"], workspace, home, mock.baseUrl);
 			assert.match(status.output, /Gateway running/);
@@ -297,6 +320,11 @@ describe("tau gateway (e2e)", { timeout: 120_000 }, () => {
 			assert.match(JSON.stringify(mock.requests[2]), /\[定时任务 #\w{4}「喝水」，计划 .* 执行\]\\n提醒用户喝水/);
 			// The reminder's run sends no tool progress and no 「[静默]」 hint (it is a one-off).
 			assert.doesNotMatch(JSON.stringify(mock.requests[2]), /静默/);
+			// The audit knows the reminder's run came from the schedule (P32c).
+			const scheduled = cli(["audit", "--trigger", "schedule"], workspace, home, mock.baseUrl);
+			assert.match(scheduled.output, /gateway {2}schedule #\w{4} fake\/boss/);
+			chat.say("boss", "/runs 2");
+			await until(() => chat.texts("boss").some((text) => /schedule #\w{4} fake\/boss/.test(text)), "the /runs reply");
 
 			chat.say("boss", "每天九点汇总提交");
 			await until(() => chat.texts("boss").includes("每天九点"), "the daily schedule");

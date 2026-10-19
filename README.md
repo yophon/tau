@@ -328,6 +328,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, credentials, OAuth, keeping secrets from the model
+- [docs/audit.md](docs/audit.md) — the audit ledger: what tau did, who approved it, what it cost (`tau audit`)
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

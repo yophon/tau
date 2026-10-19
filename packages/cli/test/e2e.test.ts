@@ -620,6 +620,63 @@ async function connectorScenario(
 	}
 }
 
+test("the audit ledger records the run, its tools and who decided; tau audit reads it back (P32c)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await writeFile(join(cwd, "a.txt"), "hello\n");
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("read", { path: "a.txt" }),
+			() => mockToolCallTurn("bash", { command: "echo hi" }),
+			() => mockToolCallTurn("read", { path: join(home, ".tau", "models.json") }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const cli = startCli(["--permission-mode", "supervised", "-p", "go", "--no-session"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+				env: { TAU_PRICING: "in=1,out=2" },
+			});
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const json = startCli(["audit", "--json"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await json.waitForExit(), 0, json.output());
+			const records = json
+				.output()
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as Record<string, unknown>);
+			const runs = records.filter((record) => record.kind === "run");
+			assert.deepEqual(
+				runs.map((record) => record.phase),
+				["start", "end"],
+			);
+			assert.equal(runs[0]?.host, "print");
+			assert.deepEqual(runs[0]?.trigger, { type: "user" });
+			assert.equal(runs[1]?.status, "ok");
+			assert.equal(runs[1]?.toolCalls, 3);
+			assert.equal(typeof runs[1]?.cost, "number", "priced with TAU_PRICING");
+			const tools = records.filter((record) => record.kind === "tool");
+			assert.deepEqual(
+				tools.map((record) => [record.name, (record.decision as { source: string }).source, record.ok]),
+				[
+					["read", "mode", true],
+					["bash", "no_approver", false],
+					["read", "hook", false],
+				],
+			);
+			assert.equal(tools[1]?.summary, "echo hi");
+			const text = startCli(["audit"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await text.waitForExit(), 0, text.output());
+			assert.match(text.output(), /print {2}user {2}mock-model {2}3 tool\(s\)/);
+			assert.match(text.output(), /✗ bash \(medium\) {2}no_approver {2}echo hi/);
+			const none = startCli(["audit", "--decision", "chat_owner"], { cwd, home, baseUrl: mock.baseUrl });
+			await none.waitForExit();
+			assert.match(none.output(), /Nothing recorded/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("the built-in subagent tool delegates to a child agent (P26b)", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([

@@ -63,6 +63,7 @@ export const TEXT = {
 						"/status 网关状态",
 						"/schedules 定时任务（/schedules cancel <编号> 取消）",
 						"/goals 目标（/goals all 含已结束的；/goals done|drop <编号> 结束）",
+						"/runs [n] 最近几轮做了什么（触发者、工具、审批、花费）",
 					]
 				: []),
 			"/help 显示这条帮助",
@@ -106,6 +107,7 @@ export const TEXT = {
 		`目标 #${id}「${title}」已${state === "done" ? "完成" : "放弃"}。${ended.length > 0 ? `同时结束了定时任务 ${ended.map((entry) => `#${entry}`).join("、")}。` : ""}`,
 	goalsUsage: "用法：/goals 列出进行中的目标，/goals all 含已结束的，/goals done <编号> 或 /goals drop <编号> 结束。",
 	noGoals: "本对话没有进行中的目标。",
+	noAudit: "没有运行记录。",
 	/** What the model is handed when a schedule fires. */
 	scheduledTask: (options: {
 		id: string;

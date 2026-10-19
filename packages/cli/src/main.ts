@@ -62,6 +62,15 @@ import {
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
+import {
+	ApprovalLog,
+	type AuditHost,
+	AuditLedger,
+	type AuditTrigger,
+	auditedApproval,
+	createAuditExtension,
+	noteApprovalSource,
+} from "./audit.ts";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { MemoryScope } from "./memory.ts";
@@ -757,11 +766,14 @@ async function loadExtensionRegistry(
 	hostExtensions: readonly Extension[] = [],
 	memory?: MemoryScope,
 	mcp = true,
+	audit?: Extension,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
 	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
 	const registry = await ExtensionRegistry.load([
+		// P32c: the audit first, so it sees every call, including ones the guard blocks.
+		...(audit ? [audit] : []),
 		...builtinExtensions(memory !== undefined ? { memory } : {}),
 		...hostExtensions,
 		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
@@ -1057,9 +1069,9 @@ function modelEnvironment(): Record<string, string> {
 }
 
 async function main(): Promise<void> {
-	// `tau credentials …` and `tau mcp …` (P32b) need neither a model nor the usual options.
+	// `tau credentials …`, `tau mcp …` (P32b) and `tau audit …` (P32c) need neither a model nor the usual options.
 	const subcommand = process.argv[2];
-	if (subcommand === "credentials" || subcommand === "mcp") {
+	if (subcommand === "credentials" || subcommand === "mcp" || subcommand === "audit") {
 		const { runToolCommand } = await import("./tool-commands.ts");
 		process.exitCode = await runToolCommand(subcommand, process.argv.slice(3), {
 			home: userHome(),
@@ -1316,6 +1328,13 @@ async function main(): Promise<void> {
 		options.print === undefined &&
 		!options.repl &&
 		(options.tui || terminal);
+	// The audit's host and default trigger (P32c); the gateway sets its own per conversation.
+	const auditHost: AuditHost =
+		options.gateway !== undefined
+			? "gateway"
+			: (options.mode ?? (options.print !== undefined ? "print" : useTui ? "tui" : "repl"));
+	const defaultTrigger: AuditTrigger =
+		options.mode === "rpc" ? { type: "rpc" } : options.mode === "acp" ? { type: "acp" } : { type: "user" };
 	// The JSON, RPC and ACP modes read stdin themselves (or not at all).
 	const readline =
 		useTui || options.mode !== undefined || options.gateway !== undefined
@@ -1401,7 +1420,10 @@ async function main(): Promise<void> {
 		ui === undefined
 			? undefined
 			: async (request: ApprovalRequest): Promise<boolean> => {
-					if (isAlwaysAllowed(request)) return true;
+					if (isAlwaysAllowed(request)) {
+						noteApprovalSource(request.toolCallId, "user_session");
+						return true;
+					}
 					const choice = approvalPromptRef.current
 						? await approvalPromptRef.current(request)
 						: (await ui.confirm(
@@ -1410,7 +1432,10 @@ async function main(): Promise<void> {
 								))
 							? "once"
 							: "deny";
-					if (choice === "always") recordAlwaysAllow(request);
+					if (choice === "always") {
+						recordAlwaysAllow(request);
+						noteApprovalSource(request.toolCallId, "user_session");
+					}
 					return choice !== "deny";
 				};
 	// RPC: approvals are a select on the client (P29).
@@ -1454,10 +1479,41 @@ async function main(): Promise<void> {
 		memory?: MemoryScope;
 		/** P32b: load ~/.tau/mcp.json servers (default true; off for a gateway guest, and ACP merges its own). */
 		mcp?: boolean;
+		/** P32c: the audit's host, trigger and approval kind for this workspace (the gateway's chats). */
+		audit?: {
+			host?: AuditHost;
+			approvals?: "terminal" | "chat";
+			decidedBy?: (toolCallId: string) => string | undefined;
+			current?: () => { runId?: string; trigger: AuditTrigger };
+		};
 	}) => {
 		const cwd = spec.cwd;
 		let workspaceMode = spec.permissionMode;
-		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions, spec.memory, spec.mcp ?? true);
+		// The audit ledger (P32c): who decided each approval, and a record per run and tool call.
+		const approvals = new ApprovalLog();
+		const settings = readSettings(join(userHome(), ".tau", "settings.json"));
+		const auditExtension = createAuditExtension({
+			ledger: AuditLedger.at(userHome()),
+			host: spec.audit?.host ?? auditHost,
+			workspace: cwd,
+			approvals,
+			details: settings.auditDetails ?? "summary",
+			current: spec.audit?.current ?? (() => ({ trigger: defaultTrigger })),
+		});
+		const onWorkspaceApproval = auditedApproval(
+			spec.onApproval,
+			approvals,
+			spec.audit?.approvals ?? "terminal",
+			spec.audit?.decidedBy,
+		);
+		const loaded = await loadExtensionRegistry(
+			cwd,
+			spec.ui,
+			spec.extensions,
+			spec.memory,
+			spec.mcp ?? true,
+			auditExtension,
+		);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
@@ -1465,7 +1521,14 @@ async function main(): Promise<void> {
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 			projectContext = await loadProjectContext();
-			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions, spec.memory, spec.mcp ?? true);
+			const next = await loadExtensionRegistry(
+				cwd,
+				reloadUi,
+				spec.extensions,
+				spec.memory,
+				spec.mcp ?? true,
+				auditExtension,
+			);
 			projectTrusted = next.projectTrusted;
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
 			return next.registry;
@@ -1532,7 +1595,7 @@ async function main(): Promise<void> {
 				thinkingLevel,
 				permissionMode: mode,
 				toolExecution,
-				onApproval: spec.onApproval,
+				onApproval: onWorkspaceApproval,
 			});
 			// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
 			const active = selectActiveTools(

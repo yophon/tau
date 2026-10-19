@@ -20,6 +20,7 @@ import {
 	describeSchedule,
 	describeStatus,
 	FileAccessStore,
+	type GatewayAuditView,
 	gatewayPaths,
 	isPermissionMode,
 	loadGatewayConfig,
@@ -39,6 +40,16 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import { restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import {
+	type AuditHost,
+	AuditLedger,
+	type AuditTrigger,
+	formatRuns,
+	groupRuns,
+	startOfToday,
+	totals,
+	totalsText,
+} from "./audit.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { GatewayCommand } from "./main.ts";
 import type { MemoryScope } from "./memory.ts";
@@ -59,6 +70,12 @@ export interface GatewayHost {
 		extensions?: Extension[];
 		memory?: MemoryScope;
 		mcp?: boolean;
+		audit?: {
+			host?: AuditHost;
+			approvals?: "terminal" | "chat";
+			decidedBy?: (toolCallId: string) => string | undefined;
+			current?: () => { runId?: string; trigger: AuditTrigger };
+		};
 	}): Promise<HeadlessWorkspace & { extensions: ExtensionRegistry; setPermissionMode(mode: PermissionMode): void }>;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
@@ -68,6 +85,25 @@ export interface GatewayHost {
 }
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** The gateway's view of the audit ledger (P32c): /runs, today's totals, a schedule's runs today. */
+function gatewayAuditView(ledger: AuditLedger): GatewayAuditView {
+	const gatewayRuns = (since: number) => groupRuns(ledger.read(since)).filter((run) => run.host === "gateway");
+	return {
+		runs: (count) => {
+			const runs = gatewayRuns(Date.now() - 7 * 86_400_000).slice(0, count);
+			return runs.length === 0 ? "最近 7 天没有运行记录。" : formatRuns(runs).replace(/\n {4}session .*/g, "");
+		},
+		today: () => totalsText(totals(gatewayRuns(startOfToday()))),
+		scheduleToday: (id) => {
+			const runs = gatewayRuns(startOfToday()).filter((run) => {
+				const trigger = run.start?.trigger ?? run.end?.trigger;
+				return trigger?.type === "schedule" && trigger.scheduleId === id;
+			});
+			return runs.length > 0 ? totalsText(totals(runs)) : undefined;
+		},
+	};
+}
 
 /** ${cred:<name>} in config.json channel sections reads ~/.tau/credentials.json (P32b). */
 function credentialLookup(home: string): (name: string) => string | undefined {
@@ -163,6 +199,9 @@ export async function openConversation(
 	policy: ConversationPolicy,
 	hooks: ConversationHooks,
 ): Promise<Conversation> {
+	// The audit's trigger for the run in progress: a chat message or a schedule firing (P32c).
+	const chat: AuditTrigger = { type: "chat", ...key, role: policy.role };
+	let current: { runId?: string; trigger: AuditTrigger } = { trigger: chat };
 	const ws = await host.openWorkspace({
 		cwd: policy.workspace,
 		ui: undefined,
@@ -171,6 +210,12 @@ export async function openConversation(
 		permissionMode: policy.permissionMode,
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
+		audit: {
+			host: "gateway",
+			approvals: "chat",
+			...(hooks.decidedBy ? { decidedBy: (toolCallId: string) => hooks.decidedBy?.(toolCallId) } : {}),
+			current: () => current,
+		},
 		// Someone other than the owner never sees the owner's memory, only their own (P32).
 		// Connectors carry the owner's credentials: not in someone else's conversation (P32b).
 		...(policy.role === "owner" ? {} : { memory: guestMemoryScope(host.home, sessionsDir, key), mcp: false }),
@@ -197,7 +242,23 @@ export async function openConversation(
 	);
 	await headless.start(existing ? "resume" : "startup");
 	return {
-		run: (input) => headless.run(conversationContent(input, host.supportsImages())),
+		run: (input) => {
+			current = {
+				...(input.runId ? { runId: input.runId } : {}),
+				trigger:
+					input.trigger?.type === "schedule"
+						? {
+								type: "schedule",
+								scheduleId: input.trigger.scheduleId,
+								...(input.trigger.goalId ? { goalId: input.trigger.goalId } : {}),
+								channel: key.channel,
+								account: key.account,
+								peer: key.peer,
+							}
+						: chat,
+			};
+			return headless.run(conversationContent(input, host.supportsImages()));
+		},
 		abort: () => headless.abort(),
 		async command(name, args) {
 			if (name === "mode" && args !== "") {
@@ -222,10 +283,26 @@ export async function openConversation(
 
 export async function runGateway(command: GatewayCommand, host: GatewayHost): Promise<void> {
 	const paths = gatewayPaths(host.home);
+	const ledger = AuditLedger.at(host.home);
 	let booted: Awaited<ReturnType<typeof bootGateway>>;
 	try {
 		booted = await bootGateway({
 			credential: credentialLookup(host.home),
+			audit: gatewayAuditView(ledger),
+			onOutbound: (key, reply) => {
+				ledger.write({
+					v: 1,
+					at: Date.now(),
+					runId: reply.runId ?? "",
+					host: "gateway",
+					pid: process.pid,
+					kind: "message",
+					channel: key.channel,
+					account: key.account,
+					peer: key.peer,
+					type: reply.kind === "progress" ? "progress" : reply.notice ? "notice" : "text",
+				});
+			},
 			home: host.home,
 			cwd: host.cwd,
 			env: host.env,
@@ -302,6 +379,10 @@ export async function runGatewayCommand(
 		}
 		case "status": {
 			console.log(describeStatus(readStatus(paths.status), Date.now()));
+			const today = groupRuns(AuditLedger.at(context.home).read(startOfToday())).filter(
+				(run) => run.host === "gateway",
+			);
+			console.log(`Today: ${totalsText(totals(today))} (tau audit --host gateway for details)`);
 			const entries = access().list();
 			console.log(`Access (${paths.access}):`);
 			if (entries.length === 0)

@@ -1,6 +1,6 @@
 # Phase 32：跨对话记忆、凭据与审计 规格书
 
-> 状态：已确认（2026-10-19；用户裁定记忆写入不需要审批，其余四项按建议，见文末「已定的方向」）
+> 状态：已完成（2026-10-19；用户裁定记忆写入不需要审批，其余四项按建议，见「已定的方向」）。真机验收待用户执行；实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 32（产品层第三步）
 > 输入：2026-10-19 对 Claude Code、Claude memory tool、Hermes Agent、OpenClaw、Codex、Gemini CLI、pi 1.2、Anthropic Managed Agents、Microsoft Entra Agent ID 的调研（结论见各节「参照」）。
 
@@ -290,15 +290,15 @@ interface MessageRecord extends Base {
 
 ## 验收清单
 
-- [ ] 记忆单测：三层文件与上限（超限报错、文字说明用量）；`memory_edit` 的唯一匹配、删除、找不到；主题文件名校验；冻结快照（会话中途写入不改变本会话的提示词，`memory_read` 看到新内容，下一次会话生效）；旧的 `MEMORY.md` 超限时截断加载。
-- [ ] 隐私：网关单测与 CLI 端到端——主人让它记住一件事，名单内的人问起时，他的请求里没有这条记忆；他自己的 `USER.md` 只进他的对话。
-- [ ] `session_search` 单测：多词全部命中、中文、`since`、`limit`、跳过工具结果和当前会话、只搜自己的会话（网关里的其他人搜不到主人的）、超出扫描上限时注明未搜完；`session_read` 拒绝搜索范围以外的文件。
-- [ ] 凭据单测：0600、`set` 不回显（通过管道输入测试）、`list` 不含值、`${cred:…}` 在 models.json、mcp.json、网关配置里展开、取不到时报名字、项目级配置里的 `${cred:…}` 被拒、项目级配置里的密钥类 `${VAR}` 读成空、`credentials audit` 发现明文。
-- [ ] 隔离单测：bash 子进程里没有 `OPENAI_API_KEY`、`*_TOKEN`，`shell.envAllow` 生效；read 和 bash 读受保护文件被拦，审计记为 `hook`；工具输出里的已知密钥被打码，会话日志里也是打码后的。
-- [ ] 连接器：用仓库里的测试 MCP 服务器（stdio 一个、HTTP 一个，HTTP 校验 Bearer 头），从 `~/.tau/mcp.json` 加载，`${cred:…}` 填入请求头；`toolRisk` 生效；项目级配置写的 `toolRisk` 被忽略；网关里只有主人的对话有这些工具；`tau mcp list --check`。
-- [ ] OAuth：用一个 mock 授权服务器（动态注册、授权码加 PKCE、refresh）跑 `tau mcp login`（粘贴回调地址的路径）、连接时带 token、401 后刷新、`logout`。
-- [ ] 审计单测与端到端：一轮的 start/end、工具记录、审批来源六种以上（mode、user_once、chat_owner、timeout、non_owner、hook、policy_deny）、定时任务触发、费用按 cost 计算、摘要打码、30 天清理；`tau audit` 的各个筛选条件与 `--json`；`/runs`；`/schedules` 的今日汇总。
-- [ ] 真实模型验收（我来做，DeepSeek）：
+- [x] 记忆单测：三层文件与上限（超限报错、文字说明用量）；`memory_edit` 的唯一匹配、删除、找不到；主题文件名校验；冻结快照（会话中途写入不改变本会话的提示词，`memory_read` 看到新内容，下一次会话生效）；旧的 `MEMORY.md` 超限时截断加载。
+- [x] 隐私：网关单测与 CLI 端到端——主人让它记住一件事，名单内的人问起时，他的请求里没有这条记忆；他自己的 `USER.md` 只进他的对话。
+- [x] `session_search` 单测：多词全部命中、中文、`since`、`limit`、跳过工具结果和当前会话、只搜自己的会话（网关里的其他人搜不到主人的）、超出扫描上限时注明未搜完；`session_read` 拒绝搜索范围以外的文件。
+- [x] 凭据单测：0600、`set` 不回显（通过管道输入测试）、`list` 不含值、`${cred:…}` 在 models.json、mcp.json、网关配置里展开、取不到时报名字、项目级配置里的 `${cred:…}` 被拒、项目级配置里的密钥类 `${VAR}` 读成空、`credentials audit` 发现明文。
+- [x] 隔离单测：bash 子进程里没有 `OPENAI_API_KEY`、`*_TOKEN`，`shell.envAllow` 生效；read 和 bash 读受保护文件被拦，审计记为 `hook`；工具输出里的已知密钥被打码，会话日志里也是打码后的。
+- [x] 连接器：用仓库里的测试 MCP 服务器（stdio 一个、HTTP 一个，HTTP 校验 Bearer 头），从 `~/.tau/mcp.json` 加载，`${cred:…}` 填入请求头；`toolRisk` 生效；项目级配置写的 `toolRisk` 被忽略；网关里只有主人的对话有这些工具；`tau mcp list --check`。
+- [x] OAuth：用一个 mock 授权服务器（动态注册、授权码加 PKCE、refresh）跑 `tau mcp login`（粘贴回调地址的路径）、连接时带 token、401 后刷新、`logout`。
+- [x] 审计单测与端到端：一轮的 start/end、工具记录、审批来源六种以上（mode、user_once、chat_owner、timeout、non_owner、hook、policy_deny）、定时任务触发、费用按 cost 计算、摘要打码、30 天清理；`tau audit` 的各个筛选条件与 `--json`；`/runs`；`/schedules` 的今日汇总。
+- [x] 真实模型验收（我来做，DeepSeek）：
   - 终端里说「记住我喜欢简短的回答」，写进个人记忆；换一个目录开新会话，它照做。
   - 网关里主人让它记住一件私事，名单内的人问起时，它不知道。
   - 上一次会话里聊过一个细节，新会话里问起，模型调 `session_search` 找回来。
@@ -306,7 +306,7 @@ interface MessageRecord extends Base {
   - 接一个本地测试 MCP 服务器，凭据走 `${cred:…}`，调用成功，账本里有记录。
   - 跑一次定时任务，加一次聊天审批后，用 `tau audit --trigger schedule` 和 `/runs` 能看出谁触发、谁批的、花了多少。
 - [ ] 真机验收（用户，可选）：接一个你真的在用的服务（比如 GitHub 的 MCP，用你的 token），在微信里让它查一下 issue。
-- [ ] DoD 通用项（见 development.md）
+- [x] DoD 通用项（见 development.md）
 
 ## 风险与开放问题
 
@@ -324,3 +324,31 @@ interface MessageRecord extends Base {
 3. **记忆写入不需要审批**（用户裁定）：三个记忆工具都是 low。
 4. **审计的参数摘要**：缺省开（打过码）。
 5. **OAuth 放进本阶段**：在 32b 的最后做，照抄 pi。D24 改写。
+
+## 实施记录
+
+分六个提交：隐私修复（ba3d6b2）、32a 记忆（624d3f3）、32b 凭据（08ae468）、隔离（789498a）、连接器（df093bd）、OAuth（8e86b35），32c 审计随本记录提交。全量 698 个测试，695 通过、3 跳过；check、纯度门禁、pinned-deps、shrinkwrap、pack smoke 通过；smoke-tui 十二个场景（WSL）通过；新增测试在 WSL Linux 上也全部通过（含 0600 权限断言）。新增测试：记忆 6（加 TUI 冻结快照一个）、会话检索 5、凭据与密钥 6、mcp.json 4、MCP OAuth 2（mock 授权服务器：发现、动态注册、授权码加 PKCE、浏览器回调与粘贴两条路、401 后刷新）、审计 5，CLI 端到端 6（访客看不到主人记忆、个人记忆跨项目、密钥隔离、连接器、审计账本、网关审计与 `/runs`）。
+
+**真实验收**（DeepSeek）：
+- 32a（`tau -p`）：在项目 A 说「记住我喜欢简短的回答，叫我老王」，写进 `USER.md`（target user）；项目 B 的新会话里直接按老王、简短来回答。项目 A 里定下的「代号青鸟、周四晚上发布」写进项目记忆；项目 B 的新会话问起，模型调 `session_search` 找回来。
+- 网关（假渠道，两人）：主人说「记住我女儿叫小米」，模型写进 `USER.md`（之后自己用 `memory_edit` 改了两次年龄的写法）；访客 bob 问起，模型调了 `memory_read` 和三次 `session_search`，都搜不到，回答不知道。
+- 密钥：主人让模型 `env` 找带 KEY/TOKEN 的变量，三条命令（都经聊天审批）都没有；让它读 `models.json`、`credentials.json`，两次 bash（含 python 解析）被守卫拦下，账本记为 `hook`，模型说明读不到，并主动建议不要把密钥贴进聊天。聊天记录里没有任何密钥值。
+- 连接器：`${cred:demo}` 注入 stdio MCP 服务器的环境，`echo`（`toolRisk` low）不经审批调用成功，账本标 `external`。
+- 审计：`/runs 3` 列出三轮，含触发者、模型、工具、`chat_owner by boss`、被拦的 `hook`、token 与费用。验收脚本在等 `/runs` 时卡住（它等的是模型回复，`/runs` 是网关通知），所以 `tau audit`、`tau gateway status` 两步没在这次真实运行里跑；这两条路径由端到端测试覆盖。
+
+与规格书不同、或规格书没写到的地方：
+
+- **记忆写入不需要审批**（用户裁定），三个记忆工具都是 low；P26c 的 medium 调低。
+- **记忆作用域按工作区传入**（`openWorkspace({ memory })`），网关给非主人的对话传 `guestMemoryScope`；同时不加载 `mcp.json`（`openWorkspace({ mcp: false })`）。
+- **网关会话的「主人的」判定**：`session_search` 用每个网关会话第一条 `tau.gateway.conversation` 记录的 role，而不是实时查名单。之后才认主的人，早先的会话不算主人的。
+- **`expandRefs` 遇到取不到的 `${VAR}` 也会让服务器跳过**（规格书只说了凭据）：宁可不启动，也不带着空的请求头去连。
+- **环境变量的缺省保留名单**：`SSH_AUTH_SOCK`、`SSH_AGENT_PID`、`XAUTHORITY`、`GPG_AGENT_INFO` 名字里有 AUTH 或 KEY，但不是密钥，去掉会弄坏 git over SSH，所以缺省保留。
+- **输出打码只在 `tool_result` 阶段**：被拦下或拒绝的调用没有输出，不需要打码；子代理的工具结果经父注册表转发，同样打码。
+- **ACP 的编辑器服务器也去环境变量**（`stdioServer`），并和 `mcp.json` 合并，同名时编辑器优先。
+- **`Biome` 的 `noTemplateCurlyInString` 关掉**：`${…}` 是 tau 的配置语法，测试和文档里大量出现。
+- **OAuth 是移植不是依赖**：把 pi-mcp 1.2 的 `oauth/`（约 1400 行，只依赖 `node:http` 和 `node:crypto`）复制进 `ext-mcp/src/oauth/`，只改了导入；登录与刷新的胶水 `session.ts` 是按 pi coding-agent 的 `oauth.ts` 改写的，去掉了 Client ID Metadata Documents 和 proper-lockfile 的跨进程锁。ext-mcp-http 的 HTTP 传输加 `McpAuth`（纯 ES）。
+- **审计的 `risk` 是可选的**：问过审批的取自请求，内置工具按缺省策略算，扩展工具没问过审批时不记（扩展 API 拿不到声明的风险）。**`external`** 标所有 MCP 工具和 `web_fetch`/`web_search`，没有按风险区分。
+- **审计的工具收尾**：执行过的在 `tool_result`，没执行的在 `turn_end` 按内核的结果文字归类（「Tool call blocked」→ hook，「no approval handler」→ no_approver，其余拒绝 → policy_deny），子代理被拒的在 `agent_end` 结清。耗时从 `tool_call` 算起，包含等审批的时间。
+- **网关消息类型**：`OutboundReply` 的文本加可选的 `notice`，区分网关自己的通知（审批请求、确认、错误）和模型回复；审批请求带上发起它的那一轮的 runId。规格书写的四类（text、progress、approval、notice）合并为三类，审批请求归入 notice。
+- **审批来源 `user_session`**：终端里「总是允许」以及之后被它放行的调用，由主处理函数用 `noteApprovalSource` 标明。
+- **`/runs` 只列网关的运行**，最近 7 天；终端里的运行用 `tau audit` 看。

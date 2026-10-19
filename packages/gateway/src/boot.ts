@@ -27,6 +27,10 @@ export interface BootOptions {
 	statusIntervalMs?: number;
 	/** Resolves ${cred:<name>} in config.json channel sections (P32b). */
 	credential?: (name: string) => string | undefined;
+	/** P32c: each message a channel accepted (the host's audit). */
+	onOutbound?: GatewayOptions["onOutbound"];
+	/** P32c: the host's audit ledger for /runs, /status and /schedules. */
+	audit?: GatewayOptions["audit"];
 }
 
 export interface BootedGateway {
@@ -131,6 +135,8 @@ export async function bootGateway(options: BootOptions): Promise<BootedGateway> 
 		},
 		unavailable: failed,
 		onChange: () => soon(),
+		...(options.onOutbound ? { onOutbound: options.onOutbound } : {}),
+		...(options.audit ? { audit: options.audit } : {}),
 		schedules: new ScheduleStore(paths.schedules, { timeZone: config.timeZone }),
 		...(options.pairingCode !== undefined ? { pairingCode: options.pairingCode } : {}),
 	});

@@ -46,6 +46,10 @@ export interface GatewayOptions {
 	schedules?: ScheduleStore;
 	/** How often due schedules are checked. Default 30 s. */
 	scheduleTickMs?: number;
+	/** P32c: called after each message a channel accepted (the host's audit). */
+	onOutbound?: (key: ConversationKey, reply: OutboundReply) => void;
+	/** P32c: the host's audit ledger, read for /runs, /status and /schedules. */
+	audit?: GatewayAuditView;
 	now?: () => number;
 }
 
@@ -67,10 +71,21 @@ export interface GatewayStatus {
 	schedules?: { active: number; next?: { id: string; title: string; at: number } };
 }
 
+/** What the gateway shows from the host's audit ledger (P32c). */
+export interface GatewayAuditView {
+	/** The latest gateway runs, one line each. */
+	runs(count: number): string;
+	/** Today's totals: 「3 轮，5 次工具调用，$0.02」. */
+	today(): string;
+	/** Today's totals for one schedule, or undefined when it has not run today. */
+	scheduleToday(id: string): string | undefined;
+}
+
 /** A schedule firing, as the gateway marks the message it queues (channels never set it). */
 interface ScheduledMark {
 	id: string;
 	recurring: boolean;
+	goalId?: string;
 	/** When it was due: a one-off dropped at shutdown is put back with this time. */
 	due: number;
 }
@@ -173,7 +188,7 @@ export class Gateway {
 		for (const channel of options.channels) this.channels.set(channel.name, channel);
 		this.approvals = new ChatApprovals({
 			timeoutMs: options.config.approvalTimeoutSec * 1000,
-			send: (owner, text) => this.sendText(owner, text),
+			send: (owner, text, runId) => this.sendText(owner, text, runId),
 		});
 	}
 
@@ -481,6 +496,15 @@ export class Gateway {
 				reply(this.statusText(slot));
 				return true;
 			}
+			case "runs": {
+				if (!owner) {
+					reply(TEXT.noPermission);
+					return true;
+				}
+				const count = Math.max(1, Math.min(20, Number.parseInt(args, 10) || 5));
+				reply(this.options.audit?.runs(count) ?? TEXT.noAudit);
+				return true;
+			}
 			case "schedules":
 			case "goals": {
 				const store = this.options.schedules;
@@ -510,6 +534,7 @@ export class Gateway {
 				`定时任务：${status.schedules.active} 个进行中${next ? `，下一个 ${this.formatTime(next.at)}（#${next.id}）` : ""}`,
 			);
 		}
+		if (this.options.audit) lines.push(`今天：${this.options.audit.today()}`);
 		if (slot?.conversation) lines.push(`本对话：${slot.conversation.describe()}`);
 		return lines.join("\n");
 	}
@@ -532,7 +557,10 @@ export class Gateway {
 		if (entries.length === 0) return TEXT.noSchedules;
 		return [
 			"定时任务：",
-			...entries.map((entry) => describeSchedule(store, entry, this.now())),
+			...entries.map((entry) => {
+				const today = this.options.audit?.scheduleToday(entry.id);
+				return `${describeSchedule(store, entry, this.now())}${today ? ` · 今天 ${today}` : ""}`;
+			}),
 			TEXT.schedulesHint,
 		].join("\n");
 	}
@@ -632,6 +660,7 @@ export class Gateway {
 		return {
 			onApproval: (request) => this.approve(slot, request),
 			onEvent: (event) => this.onEvent(slot, event),
+			decidedBy: (toolCallId) => this.approvals.decidedBy(toolCallId),
 			...(store && slot.role === "owner"
 				? {
 						extensions: [
@@ -656,7 +685,7 @@ export class Gateway {
 		}));
 		if (owners.length === 0) return Promise.reject(new Error(TEXT.needsOwner));
 		this.log(`approval asked: ${request.toolName} (${request.risk}) in ${slot.id}`);
-		return this.approvals.ask(request, owners, slot.key);
+		return this.approvals.ask(request, owners, slot.key, slot.runId);
 	}
 
 	private onEvent(slot: Slot, event: AgentEvent): void {
@@ -669,7 +698,7 @@ export class Gateway {
 					slot.runKind.silent = true;
 					return;
 				}
-				if (text !== "") this.sendText(slot.key, text, runId);
+				if (text !== "") this.sendText(slot.key, text, runId, false);
 			}
 			return;
 		}
@@ -725,7 +754,15 @@ export class Gateway {
 				void this.typing(slot.key, true);
 				let result: Awaited<ReturnType<Conversation["run"]>>;
 				try {
-					result = await conversation.run({ ...mergeInputs(batch), time: this.timeLine() });
+					const firing = kind.quiet ? scheduled[0] : undefined;
+					result = await conversation.run({
+						...mergeInputs(batch),
+						time: this.timeLine(),
+						runId: slot.runId,
+						trigger: firing
+							? { type: "schedule", scheduleId: firing.id, ...(firing.goalId ? { goalId: firing.goalId } : {}) }
+							: { type: "chat" },
+					});
 				} catch (error) {
 					result = {
 						stopReason: "error",
@@ -890,7 +927,7 @@ export class Gateway {
 			messageId: `schedule:${entry.id}:${now}`,
 			text,
 			receivedAt: now,
-			scheduled: { id: entry.id, recurring, due },
+			scheduled: { id: entry.id, recurring, due, ...(entry.goalId ? { goalId: entry.goalId } : {}) },
 		});
 		slot.lastActive = now;
 		this.log(`schedule ${entry.id} fired in ${keyId(entry.key)}`);
@@ -908,10 +945,11 @@ export class Gateway {
 		}
 	}
 
-	sendText(key: ConversationKey, text: string, runId?: string): void {
+	/** Send text in channel-sized chunks; `notice` false marks the model's own reply (the audit tells them apart). */
+	sendText(key: ConversationKey, text: string, runId?: string, notice = true): void {
 		const limit = this.channels.get(key.channel)?.textLimit ?? 2000;
 		for (const chunk of chunkText(text, limit)) {
-			this.send(key, { kind: "text", text: chunk, ...(runId ? { runId } : {}) });
+			this.send(key, { kind: "text", text: chunk, ...(runId ? { runId } : {}), ...(notice ? { notice: true } : {}) });
 		}
 	}
 
@@ -924,6 +962,7 @@ export class Gateway {
 		const next = previous
 			.then(() => channel.send(key, reply))
 			.then(() => {
+				this.options.onOutbound?.(key, reply);
 				this.log(
 					`out ${key.channel}/${key.account}/${key.peer} ${reply.kind}${reply.runId ? ` run=${reply.runId}` : ""}`,
 				);

@@ -40,7 +40,8 @@ export interface InboundMessage {
 }
 
 export type OutboundReply =
-	| { kind: "text"; text: string; runId?: string }
+	/** `notice`: the gateway's own text (approvals, confirmations, errors), not the model's reply (P32c). */
+	| { kind: "text"; text: string; runId?: string; notice?: boolean }
 	| {
 			kind: "progress";
 			toolName: string;
@@ -110,6 +111,9 @@ export interface ConversationInput {
 	attachments: Attachment[];
 	/** P31: the current time, 「10月18日 周六 15:02 Asia/Shanghai」; the host puts it first in the user turn. */
 	time?: string;
+	/** P32c: this run's id (the one outbound messages carry) and what started it, for the audit. */
+	runId?: string;
+	trigger?: { type: "chat" } | { type: "schedule"; scheduleId: string; goalId?: string };
 }
 
 export interface RunResult {
@@ -136,4 +140,6 @@ export interface ConversationHooks {
 	onEvent(event: AgentEvent): void;
 	/** P31: extensions the gateway gives this conversation (the schedule and goal tools in an owner's); the host adds them after the built-ins. */
 	extensions?: Extension[];
+	/** P32c: the owner who answered the approval for this tool call (the audit's `by`). */
+	decidedBy?(toolCallId: string): string | undefined;
 }

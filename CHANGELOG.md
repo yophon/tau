@@ -4,6 +4,20 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P32c)
+- CLI: an audit ledger in `~/.tau/audit/YYYY-MM-DD.jsonl` (kept 30 days),
+  written by every mode and the gateway: each run's start and end (host,
+  trigger, model, tokens, cost from models.json prices, status, session
+  file), each tool call (risk, masked argument summary, who decided:
+  mode, user_once/user_session/user_reject, chat_owner with the owner,
+  chat_reject, timeout, non_owner, policy_deny, hook, no_approver) and each
+  gateway message. `tau audit` with filters and `--json`; `/runs` in chat;
+  today's totals in `tau gateway status`, `/status` and `/schedules`.
+  `audit.details: "none"` in settings drops the argument summaries.
+- gateway: `ConversationInput.runId`/`trigger`, `ConversationHooks.decidedBy`,
+  `GatewayOptions.onOutbound`/`audit`; `OutboundReply` text may carry
+  `notice` (the gateway's own messages).
+
 ### Added (P32b)
 - CLI: `tau credentials set|list|remove|audit` and `${cred:<name>}` references
   in `~/.tau/models.json`, `~/.tau/mcp.json` and the gateway's channel

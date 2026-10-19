@@ -13,11 +13,12 @@ interface Pending {
 	resolve(approved: boolean): void;
 	reject(error: Error): void;
 	timer: ReturnType<typeof setTimeout>;
+	toolCallId: string;
 }
 
 export interface ApprovalOptions {
 	timeoutMs: number;
-	send(owner: ConversationKey, text: string): void;
+	send(owner: ConversationKey, text: string, runId?: string): void;
 	random?: () => number;
 }
 
@@ -30,6 +31,8 @@ const sameKey = (a: ConversationKey, b: ConversationKey): boolean =>
 
 export class ChatApprovals {
 	private readonly pending = new Map<string, Pending>();
+	/** Who settled each request, by tool call id (P32c: the audit's `by`), read once. */
+	private readonly deciders = new Map<string, string>();
 	private readonly options: ApprovalOptions;
 
 	constructor(options: ApprovalOptions) {
@@ -53,7 +56,7 @@ export class ChatApprovals {
 	 * Ask the owners. Resolves true/false on a reply; rejects with a readable
 	 * reason on timeout, which the kernel hands the model.
 	 */
-	ask(request: ApprovalRequest, owners: ConversationKey[], from: ConversationKey): Promise<boolean> {
+	ask(request: ApprovalRequest, owners: ConversationKey[], from: ConversationKey, runId?: string): Promise<boolean> {
 		const id = this.newId();
 		const timeoutMin = Math.max(1, Math.round(this.options.timeoutMs / 60_000));
 		return new Promise<boolean>((resolve, reject) => {
@@ -61,7 +64,7 @@ export class ChatApprovals {
 				this.pending.delete(id);
 				reject(new Error(TEXT.approvalTimeout(timeoutMin)));
 			}, this.options.timeoutMs);
-			this.pending.set(id, { id, owners, resolve, reject, timer });
+			this.pending.set(id, { id, owners, resolve, reject, timer, toolCallId: request.toolCallId });
 			for (const owner of owners) {
 				// An owner reading another person's conversation is told whose it is.
 				const text = TEXT.approval({
@@ -72,7 +75,7 @@ export class ChatApprovals {
 					...(sameKey(owner, from) ? {} : { from: `${from.channel}/${from.peer}` }),
 					timeoutMin,
 				});
-				this.options.send(owner, text);
+				this.options.send(owner, text, runId);
 			}
 		});
 	}
@@ -97,6 +100,7 @@ export class ChatApprovals {
 			entry = mine[0];
 		}
 		if (!entry) return undefined;
+		this.deciders.set(entry.toolCallId, owner.peer);
 		this.settle(entry, approve);
 		return approve ? TEXT.approved(entry.id) : TEXT.denied(entry.id);
 	}
@@ -105,6 +109,13 @@ export class ChatApprovals {
 		clearTimeout(entry.timer);
 		this.pending.delete(entry.id);
 		entry.resolve(approved);
+	}
+
+	/** The owner who answered the request for this tool call, if one did. */
+	decidedBy(toolCallId: string): string | undefined {
+		const peer = this.deciders.get(toolCallId);
+		this.deciders.delete(toolCallId);
+		return peer;
 	}
 
 	/** Deny everything still waiting (shutdown). */

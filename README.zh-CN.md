@@ -290,6 +290,7 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
 - [docs/memory.md](docs/memory.md)——长期记忆与会话检索
 - [docs/connectors.md](docs/connectors.md)——MCP 连接器、凭据、OAuth、不给模型看密钥
+- [docs/audit.md](docs/audit.md)——审计账本：做了什么、谁批的、花了多少（`tau audit`）
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证
