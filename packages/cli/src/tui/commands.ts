@@ -18,12 +18,14 @@ import {
 	type ThinkingLevel,
 	type Usage,
 } from "@yophon/tau-kernel";
+import { relativeTime, sessionLabel } from "../session-title.ts";
 import type { TuiController } from "./controller.ts";
 import { conversationLength } from "./controller.ts";
 import { sessionHtml } from "./export-html.ts";
 import { entryRendererMatches, isRenderComponent } from "./extensions.ts";
 import { errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
 import type { CompletionItem } from "./input/completion.ts";
+import { truncateCells } from "./input/width.ts";
 import type { PickerItem } from "./model.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
 
@@ -191,8 +193,8 @@ const BUILTINS: BuiltinCommand[] = [
 				prefix,
 				(await tui.options.sessionRepo.list()).map((session) => ({
 					value: session.name ?? session.id,
-					label: session.name ?? session.id.slice(0, 8),
-					hint: session.modified ?? session.timestamp,
+					label: truncateCells(sessionLabel(session), 50),
+					hint: relativeTime(session.modified ?? session.timestamp),
 				})),
 			),
 		run: async (tui, args) => {
@@ -207,10 +209,8 @@ const BUILTINS: BuiltinCommand[] = [
 				const id = await tui.pick(
 					"Resume a session",
 					sessions.map((session) => ({
-						label: `${session.id === current?.id ? "● " : "  "}${session.name ?? session.id.slice(0, 8)}`,
-						hint: [session.modified ?? session.timestamp, session.name ? session.id.slice(0, 8) : ""]
-							.filter((part) => part !== "")
-							.join("  "),
+						label: `${session.id === current?.id ? "● " : "  "}${truncateCells(sessionLabel(session), 50)}`,
+						hint: sessionHint(session),
 						value: session.id,
 					})),
 				);
@@ -634,6 +634,12 @@ const BUILTINS: BuiltinCommand[] = [
 		},
 	},
 	{
+		name: "search",
+		args: "[text]",
+		description: "Search the conversation (full screen; same as Ctrl+F)",
+		run: (tui, args) => tui.openSearch(args),
+	},
+	{
 		name: "hotkeys",
 		description: "Show keyboard shortcuts",
 		run: (tui) => tui.lines(hotkeyLines(tui.extensions)),
@@ -937,15 +943,29 @@ async function presentEntry(
 	return fallback;
 }
 
+/** "5 min ago · 42 messages" (P34f). */
+function sessionHint(session: SessionMetadata): string {
+	const when = relativeTime(session.modified ?? session.timestamp);
+	const count = session.messageCount ?? 0;
+	return `${when} · ${count} message${count === 1 ? "" : "s"}`;
+}
+
+/** A session by id, time, name, file or title: exact, then prefix, then (P34f) a piece of its title. */
 function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
-	const matches = (session: SessionMetadata, prefix: boolean): boolean => {
+	const values = (session: SessionMetadata): string[] => {
 		const fileName = session.filePath?.split(/[\\/]/).at(-1);
-		return [session.id, session.timestamp, session.name, session.filePath, fileName]
-			.filter((value): value is string => value !== undefined && value !== "")
-			.some((value) => (prefix ? value.startsWith(selector) : value === selector));
+		return [session.id, session.timestamp, session.name, sessionLabel(session), session.filePath, fileName].filter(
+			(value): value is string => value !== undefined && value !== "",
+		);
 	};
-	for (const prefix of [false, true]) {
-		const found = sessions.filter((session) => matches(session, prefix));
+	const needle = selector.toLowerCase();
+	const tiers: Array<(value: string) => boolean> = [
+		(value) => value === selector,
+		(value) => value.startsWith(selector),
+		(value) => value.toLowerCase().includes(needle),
+	];
+	for (const test of tiers) {
+		const found = sessions.filter((session) => values(session).some(test));
 		if (found.length === 1) return found[0];
 		if (found.length > 1) return "ambiguous";
 	}
@@ -967,6 +987,11 @@ const KEYS: Array<[string, string]> = [
 	["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],
 	["#fact", "save a fact to long-term project memory"],
 	["Ctrl+A/E/U/K/W", "line editing"],
+	["Ctrl+F", "full screen: search the conversation (Enter/↓ next, ↑ previous, Esc close)"],
+	["Ctrl+↑ / Ctrl+↓", "full screen: jump to the previous / next message you sent"],
+	["PgUp/PgDn, wheel", "full screen: scroll; Ctrl+Home / Ctrl+End to the start / end"],
+	["Drag, double/triple click", "full screen: select text, a word, a line; copied on release"],
+	["Click", "full screen: a tool's title row opens or shuts it; menu, picker and approval items choose"],
 ];
 
 function helpLines(extensions: ExtensionRegistry): StyledLine[] {

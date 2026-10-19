@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-10-19（P33：TUI 缺省全屏，块按宽度渲染成行）
+> 最后更新：2026-10-19（P34：全屏里的搜索、选中复制、点击；会话标题；补全列全）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -125,6 +125,10 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - 交互式终端下 `tau`（不带 `-p`）进 TUI，`--repl` 用逐行 REPL，非 TTY 走 REPL，`--tui` 是显式要求（非 TTY 拒绝）。基于 Ink 5 + React 18（D31），代码在 `packages/cli/src/tui/`。
 - **两种画面**（P33，D37）：缺省全屏（`fullscreen.ts`：备用屏幕、关自动换行、鼠标上报滚轮和按键；Ink 的每次写出都改写成从左上角整屏重画、包在同步输出里，从不先清屏（`paintFrame`）；对话视图自己滚动，用 flex 占满底部区剩下的高度，跟随底部时只取填满一屏的块；调整大小时排版后立刻画一帧，不等 Ink 的渲染节流；退出或收到信号时恢复终端，并把整段对话按当时宽度写回主屏幕）。`--inline`、`--fullscreen`、`TAU_TUI_MODE`、settings 的 `tui.mode`（`/settings` → Screen 写入，下次启动生效）选择；inline 是 P25 的主屏幕界面（`app.ts` 的 `App`，`<Static>` 写进滚动记录，调整宽度时 `takeOverResize` 重画）。两种画面共用控制器、底部区与块的渲染。
   - `model.ts`：纯 reducer。AgentEvent 与本地交互折叠成区块（user / assistant / reasoning / tool / notice / lines）；区块先进 live，已完成的最长前缀移入 committed（inline 由 `<Static>` 一次性写进回滚，全屏进视图）；流式 markdown 在围栏外的空行处切分提前提交。审批、选择器、编辑器内问答、队列、状态栏数据、全屏视图的滚动位置都在 UiState 里。
+  - 输入（P34）：Ink 读的 stdin 经过 `input/stdin.ts` 过滤，每次读入先交给 `controller.filterInput`：SGR 鼠标报告与焦点进出（`input/mouse.ts`）、Ink 会丢掉的键（PgUp/PgDn、Home/End、Ctrl+Home/End、Ctrl+↑/↓）在这里处理，剩下的才进 Ink 的按键解析。鼠标：滚轮滚对话或列表；在对话里拖动、双击、三击选中，松开复制（`transcript.ts` 的选区与取字）；单击工具标题行只展开这一块（`UiState.expanded`）；单击菜单、选择器、审批选项等同于选中确认（全屏视图在每次布局后把它们在屏幕上的位置报给控制器）。Ctrl+F 搜索整段对话（`render/search.ts`，移植 pi），命中与选区用 `highlightColumns` 叠在行上。
+  - 列表（P34）：补全菜单与选择器列出全部项，按 `render/list.ts` 的窗口滚动（全屏最多半屏，inline 12 行）。
+  - 提醒（P34）：`terminal-status.ts` 管终端标题的转圈与 Windows Terminal 的标签进度（OSC 9;4）；窗口不在前台时（焦点报告），一轮结束或审批出现发桌面通知（Windows Terminal 下用 PowerShell 弹系统通知，Kitty 用 OSC 99，其他 OSC 777）。
+  - 会话标题（P34）：`session-title.ts`（TUI 与 REPL 共用）在第一轮后用 `Agent.completeText` 让模型起标题，存成 `session_info`；`/resume` 按标题、多久以前、几条消息列出。
   - `render/lines.ts`：块按宽度渲染成终端行（`blockLines`，含块上方的空行、前缀列的悬挂缩进、Ink 的样式嵌套顺序），已完成的块按宽度与显示开关缓存（`LineCache`）；两种画面都用它。`render/wrap.ts` 是 wrap-ansi 在 Ink 那一档（`trim: false, hard: true`）的移植，输出逐字节相同（测试拿 wrap-ansi 对照），快二十多倍。
   - `controller.ts`：不依赖 Ink 的控制器，持有 Agent、会话、扩展注册表，跑 prompt 与任务（turn / compaction / bash / navigate / reload，一次一个），把事件和扩展渲染结果派发成 action；会话切换清屏并按 `replay.ts` 重放对话。`store.ts` 同步 reduce、按帧通知订阅者。
   - `keymap.ts`（纯路由）、`input/`（字素簇编辑器、括号粘贴解码、粘贴折叠、`~/.tau/history.jsonl` 历史、`/` 与 `@` 补全）、`render/`（markdown、diff、按工具的视图、审批正文、区块与底部区）、`commands.ts`（内置命令表，扩展命令并入、内置优先）、`startup.ts`（启动期信任对话框）、`console-capture.ts`、`clipboard.ts`。
@@ -133,7 +137,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - 宿主契约（P23e，照旧）：先挂宿主动作再发 `session_start`（启动与 `/reload`）；压缩、bash、导航期间扩展的 `submitPrompt` 抛 `busy`，轮收尾时的提交与 `resumeTurn` 排到当前任务之后；run 结束时 `agent.clearQueue()`，排队文本回填编辑器；`/tree` 摘要失败可选择不摘要导航。
 - 扩展 surfaces：message / entry / tool renderer、widgets（输入框上下）、header / footer items（进状态栏）、shortcuts、diagnostics、`ctx.ui` confirm / select / input / notify / editor（外部编辑器）；错误隔离降级。组件只渲染（D31）。
 - 终端只属于 TUI：运行期间 `console.*` 与 stderr 写 `~/.tau/logs/tui-<日期>.log`，警告、错误、stderr 各显示一行（相同的连续行合并）；只有显示、隐藏光标的控制序列（Ink 经 cli-cursor 写到 stderr）原样交给终端。
-- 测试：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent（Windows 本机可跑）；`npm run smoke:tui` 在 tmux 里跑十七个场景，缺省全屏，`SMOKE_TUI_MODE=inline` 全部换成 inline 再跑一遍（CI 两遍都跑；本机可在 WSL 里跑，`SMOKE_ONLY` 过滤）。Themes 已否决（2026-07-20）。
+- 测试：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent（Windows 本机可跑）；`npm run smoke:tui` 在 tmux 里跑二十三个场景，缺省全屏，`SMOKE_TUI_MODE=inline` 全部换成 inline 再跑一遍（CI 两遍都跑；本机可在 WSL 里跑，`SMOKE_ONLY` 过滤）。Themes 已否决（2026-07-20）。
 
 ## 浏览器宿主（P9）
 

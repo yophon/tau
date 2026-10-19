@@ -17,6 +17,7 @@ import type { EditorState } from "./input/editor.ts";
 import { EMPTY } from "./input/editor.ts";
 import { splitCompletedMarkdown } from "./render/markdown.ts";
 import type { StyledLine } from "./render/spans.ts";
+import type { Selection } from "./transcript.ts";
 
 export type ToolStatus = "running" | "ok" | "error" | "aborted";
 
@@ -74,6 +75,8 @@ export interface PickerView {
 	title: string;
 	items: PickerItem[];
 	selected: number;
+	/** First item shown (P34g: the list scrolls); 0 when absent. */
+	start?: number;
 	/** What Ctrl+S does with the selected item (e.g. "save as default"); absent = nothing. */
 	alt?: string;
 }
@@ -125,7 +128,8 @@ export interface UiState {
 	picker?: PickerView;
 	prompt?: PromptView;
 	editor: EditorState;
-	menu: { selected: number; suppressedToken?: string };
+	/** The completion menu: selection, first item shown (P34g), the token Esc closed it for. */
+	menu: { selected: number; start: number; suppressedToken?: string };
 	verbose: boolean;
 	showReasoning: boolean;
 	exitArmed: boolean;
@@ -135,6 +139,14 @@ export interface UiState {
 	widgets: { above: StyledLine[][]; below: StyledLine[][] };
 	/** Full-screen transcript (P33): the first row shown, or undefined to follow the end. */
 	scroll: { top?: number };
+	/** Tool blocks clicked open or shut (P34d), overriding Ctrl+O; cleared by Ctrl+O. */
+	expanded: Record<string, boolean>;
+	/** The text selected with the mouse (P34c), in transcript rows and columns. */
+	selection?: Selection;
+	/** Transcript search (P34b): the query and the current match's index. */
+	search?: { query: string; current: number };
+	/** A short message in the hint line ("Copied 128 characters"), cleared after a moment. */
+	flash?: string;
 }
 
 export function initialState(status: StatusInfo): UiState {
@@ -147,7 +159,7 @@ export function initialState(status: StatusInfo): UiState {
 		queued: [],
 		approvalQueue: [],
 		editor: EMPTY,
-		menu: { selected: 0 },
+		menu: { selected: 0, start: 0 },
 		verbose: false,
 		showReasoning: true,
 		exitArmed: false,
@@ -155,6 +167,7 @@ export function initialState(status: StatusInfo): UiState {
 		status,
 		widgets: { above: [], below: [] },
 		scroll: {},
+		expanded: {},
 	};
 }
 
@@ -176,12 +189,13 @@ export type UiAction =
 	| { type: "approval-move"; delta: 1 | -1 }
 	| { type: "approval-close"; id: number }
 	| { type: "picker-open"; picker: PickerView }
-	| { type: "picker-move"; delta: 1 | -1 }
+	| { type: "picker-select"; index: number; start: number }
 	| { type: "picker-close"; id: number }
 	| { type: "prompt-open"; prompt: PromptView }
 	| { type: "prompt-close"; id: number }
 	| { type: "editor"; editor: EditorState }
-	| { type: "menu-select"; index: number }
+	/** Without a start the window keeps its place, moving up only as far as the selection needs. */
+	| { type: "menu-select"; index: number; start?: number }
 	| { type: "menu-suppress"; token: string | undefined }
 	| { type: "toggle-verbose" }
 	| { type: "toggle-reasoning" }
@@ -195,6 +209,11 @@ export type UiAction =
 	| { type: "relayout" }
 	/** Full screen: show from this row, or follow the end (top undefined). */
 	| { type: "scroll"; top?: number }
+	/** Open or shut one tool block (P34d). */
+	| { type: "toggle-block"; id: string; verbose: boolean }
+	| { type: "selection"; selection?: Selection }
+	| { type: "search"; search?: { query: string; current: number } }
+	| { type: "flash"; text?: string }
 	/** Another session: drop everything shown and start a new screen. */
 	| { type: "reset" }
 	/** Finished blocks rebuilt from a restored conversation. */
@@ -370,11 +389,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		}
 		case "picker-open":
 			return { ...state, picker: action.picker };
-		case "picker-move": {
-			if (!state.picker || state.picker.items.length === 0) return state;
-			const n = state.picker.items.length;
-			return { ...state, picker: { ...state.picker, selected: (state.picker.selected + action.delta + n) % n } };
-		}
+		case "picker-select":
+			if (!state.picker) return state;
+			return { ...state, picker: { ...state.picker, selected: action.index, start: action.start } };
 		case "picker-close":
 			return state.picker?.id === action.id ? { ...state, picker: undefined } : state;
 		case "prompt-open":
@@ -383,16 +400,33 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return state.prompt?.id === action.id ? promoteApproval({ ...state, prompt: undefined }) : state;
 		case "editor":
 			return state.editor === action.editor ? state : { ...state, editor: action.editor };
-		case "menu-select":
-			return state.menu.selected === action.index
+		case "menu-select": {
+			const start = action.start ?? Math.min(state.menu.start, action.index);
+			return state.menu.selected === action.index && state.menu.start === start
 				? state
-				: { ...state, menu: { ...state.menu, selected: action.index } };
+				: { ...state, menu: { ...state.menu, selected: action.index, start } };
+		}
 		case "menu-suppress":
 			return state.menu.suppressedToken === action.token
 				? state
 				: { ...state, menu: { ...state.menu, suppressedToken: action.token } };
 		case "toggle-verbose":
-			return { ...state, verbose: !state.verbose };
+			// Ctrl+O sets every block again (P34d).
+			return { ...state, verbose: !state.verbose, expanded: {} };
+		case "toggle-block": {
+			const expanded = { ...state.expanded };
+			const open = !(expanded[action.id] ?? action.verbose);
+			if (open === action.verbose) delete expanded[action.id];
+			else expanded[action.id] = open;
+			// Rows below move: a selection no longer points at the same text.
+			return { ...state, expanded, selection: undefined };
+		}
+		case "selection":
+			return { ...state, selection: action.selection };
+		case "search":
+			return { ...state, search: action.search };
+		case "flash":
+			return state.flash === action.text ? state : { ...state, flash: action.text };
 		case "toggle-reasoning":
 			return { ...state, showReasoning: !state.showReasoning };
 		case "armed":
@@ -407,7 +441,15 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, widgets: { above: action.above, below: action.below } };
 		case "clear":
 			// Live blocks carry over so a running turn keeps drawing.
-			return { ...state, committed: [], epoch: state.epoch + 1, scroll: {} };
+			return {
+				...state,
+				committed: [],
+				epoch: state.epoch + 1,
+				scroll: {},
+				expanded: {},
+				selection: undefined,
+				search: undefined,
+			};
 		case "scroll":
 			return { ...state, scroll: action.top === undefined ? {} : { top: action.top } };
 		case "relayout":
@@ -417,7 +459,16 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			// A new <Static> writes every committed block again at the new width.
 			return { ...state, epoch: state.epoch + 1 };
 		case "reset":
-			return { ...state, committed: [], live: [], epoch: state.epoch + 1, scroll: {} };
+			return {
+				...state,
+				committed: [],
+				live: [],
+				epoch: state.epoch + 1,
+				scroll: {},
+				expanded: {},
+				selection: undefined,
+				search: undefined,
+			};
 		case "replay": {
 			let next = state;
 			const blocks: Block[] = [];

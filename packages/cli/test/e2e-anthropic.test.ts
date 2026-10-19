@@ -40,6 +40,7 @@ function startCli(
 			TAU_MODEL: "mock-model",
 			TAU_API_KEY: "test",
 			TAU_PERMISSION_MODE: "autonomous",
+			TAU_AUTO_TITLE: "0",
 			// TAU_BASE_URL/TAU_API_KEY only feed the protocol TAU_PROVIDER names (HF-2).
 			...(args.includes("anthropic") ? { TAU_PROVIDER: "anthropic" } : {}),
 			// Never let the developer's real vendor env leak into a test run.

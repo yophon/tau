@@ -6,7 +6,7 @@ import { render } from "ink-testing-library";
 import React from "react";
 import type { Block } from "../src/tui/model.ts";
 import type { RenderOptions } from "../src/tui/render/blocks.ts";
-import { blockLines, LineCache, styled, wrapLine } from "../src/tui/render/lines.ts";
+import { blockLines, expandTabs, LineCache, styled, wrapLine } from "../src/tui/render/lines.ts";
 import { BlockView } from "./ink-blocks.ts";
 
 const LONG_EN =
@@ -106,7 +106,7 @@ const SAMPLES: Array<[string, Block]> = [
 	],
 	[
 		"tool read",
-		tool({ name: "read", args: { path: "packages/cli/src/tui/render/lines.ts" }, result: "1\tline\n2\tline" }),
+		tool({ name: "read", args: { path: "packages/cli/src/tui/render/lines.ts" }, result: "1  line\n2  line" }),
 	],
 	[
 		"tool rendered",
@@ -142,6 +142,30 @@ describe("blockLines matches Ink", () => {
 		const block: Block = { kind: "reasoning", id: "r", text: "x", done: true };
 		assert.deepEqual(blockLines(block, { width: 80, verbose: false, showReasoning: false }), []);
 		assert.deepEqual(inkRows(block, { width: 80, verbose: false, showReasoning: false }), []);
+	});
+});
+
+// The P25 renderer lost a character per tab (string-width counts a tab as no cells): no oracle here.
+describe("tabs", () => {
+	it("expands tabs to the next stop, ignoring escape codes, so no character is lost", () => {
+		assert.equal(expandTabs("1\talpha"), "1   alpha");
+		assert.equal(expandTabs("\x1b[2m12\x1b[22m\tx\ty"), "\x1b[2m12\x1b[22m  x   y");
+		assert.equal(expandTabs("中\tz"), "中  z");
+		const block: Block = {
+			kind: "tool",
+			id: "t",
+			callId: "c",
+			name: "read",
+			args: { path: "a" },
+			status: "ok",
+			output: "",
+			result: "1\talpha\n2\tbeta",
+		};
+		const rows = blockLines(block, { width: 80, verbose: true, showReasoning: true, colors: false });
+		assert.ok(
+			rows.some((row) => row.includes("1   alpha")),
+			rows.join("\n"),
+		);
 	});
 });
 

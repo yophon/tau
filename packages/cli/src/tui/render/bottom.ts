@@ -5,7 +5,7 @@
  * it: one hint line that follows the state, and one status line.
  */
 
-import { Box, Text } from "ink";
+import { Box, type DOMElement, Text } from "ink";
 import React, { useEffect, useState } from "react";
 import { fmtCost, fmtElapsed, fmtInt, riskColor, SPINNER_FRAMES, shortPath } from "../format.ts";
 import type { Completion } from "../input/completion.ts";
@@ -14,6 +14,7 @@ import { strWidth, truncateCells } from "../input/width.ts";
 import { APPROVAL_OPTIONS, type ApprovalView, type PickerView, type StatusInfo, type UiState } from "../model.ts";
 import { approvalBody, approvalTitle } from "./approval.ts";
 import { styledLine } from "./blocks.ts";
+import { INLINE_LIST_ROWS, listWindow } from "./list.ts";
 import type { StyledLine } from "./spans.ts";
 
 const h = React.createElement;
@@ -86,33 +87,93 @@ export function renderInputBox(
 	);
 }
 
-function renderPicker(picker: PickerView): React.ReactElement {
-	const visible = 10;
-	const start = Math.max(0, Math.min(picker.selected - visible + 1, picker.items.length - visible));
-	const items = picker.items.slice(start, start + visible);
+/** Where the bottom area's clickable parts are (P34g): how many list rows fit, and boxes to hit-test in full screen. */
+export interface BottomLayout {
+	listRows: number;
+	/** The box holding the visible list items (completion menu or picker). */
+	listRef?: React.Ref<DOMElement>;
+	/** The box holding the approval options. */
+	approvalRef?: React.Ref<DOMElement>;
+	/** The transcript search (P34b): the query, how many matches, which one is current. */
+	search?: { query: string; count: number; current: number };
+}
+
+const INLINE_LAYOUT: BottomLayout = { listRows: INLINE_LIST_ROWS };
+
+/** The visible items of a list, one row each, with "more" lines above and below when it scrolls. */
+function renderList(
+	key: string,
+	items: ReadonlyArray<{ label: string; hint?: string | undefined }>,
+	selected: number,
+	start: number,
+	rows: number,
+	ref: React.Ref<DOMElement> | undefined,
+): React.ReactElement[] {
+	const window = listWindow(items.length, selected, rows, start);
+	const out: React.ReactElement[] = [];
+	if (window.above > 0) out.push(h(Text, { key: `${key}-above`, dimColor: true }, `  ↑ ${window.above} more`));
+	out.push(
+		h(
+			Box,
+			{ key: `${key}-items`, ref, flexDirection: "column" },
+			...items.slice(window.start, window.end).map((item, i) => {
+				const index = window.start + i;
+				const isSelected = index === selected;
+				return h(
+					Text,
+					{ key: `i${index}`, color: isSelected ? "cyan" : undefined, wrap: "truncate-end" },
+					isSelected ? "❯ " : "  ",
+					item.label,
+					item.hint ? h(Text, { key: "h", dimColor: true }, `  ${item.hint}`) : null,
+				);
+			}),
+		),
+	);
+	if (window.below > 0 || window.above > 0) {
+		out.push(
+			h(
+				Text,
+				{ key: `${key}-below`, dimColor: true },
+				`  ${window.below > 0 ? `↓ ${window.below} more · ` : ""}${selected + 1}/${items.length}`,
+			),
+		);
+	}
+	return out;
+}
+
+function renderSearchBar(
+	search: { query: string; count: number; current: number },
+	columns: number,
+): React.ReactElement {
+	const where =
+		search.query.trim() === "" ? "" : search.count === 0 ? "no match" : `${search.current + 1}/${search.count}`;
+	return h(
+		Text,
+		{ key: "search", wrap: "truncate-end" },
+		h(Text, { key: "l", color: "cyan", bold: true }, "Find: "),
+		truncateCells(search.query, Math.max(10, columns - 24)),
+		h(Text, { key: "c", inverse: true }, " "),
+		where
+			? h(
+					Text,
+					{ key: "w", dimColor: search.count > 0, color: search.count === 0 ? "yellow" : undefined },
+					`  ${where}`,
+				)
+			: null,
+	);
+}
+
+function renderPicker(picker: PickerView, layout: BottomLayout): React.ReactElement {
 	return h(
 		Box,
 		{ key: "picker", flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 1 },
 		h(Text, { key: "t", bold: true }, picker.title),
-		...items.map((item, i) => {
-			const index = start + i;
-			const selected = index === picker.selected;
-			return h(
-				Text,
-				{ key: `i${index}`, color: selected ? "cyan" : undefined },
-				selected ? "❯ " : "  ",
-				item.label,
-				item.hint ? h(Text, { key: "h", dimColor: true }, `  ${item.hint}`) : null,
-			);
-		}),
-		picker.items.length > visible
-			? h(Text, { key: "more", dimColor: true }, `${picker.selected + 1}/${picker.items.length}`)
-			: null,
+		...renderList("picker", picker.items, picker.selected, picker.start ?? 0, layout.listRows, layout.listRef),
 		picker.items.length === 0 ? h(Text, { key: "none", dimColor: true }, "Nothing to choose from.") : null,
 	);
 }
 
-function renderApproval(view: ApprovalView, queued: number): React.ReactElement {
+function renderApproval(view: ApprovalView, queued: number, layout: BottomLayout): React.ReactElement {
 	const color = riskColor(view.request.risk);
 	return h(
 		Box,
@@ -125,11 +186,15 @@ function renderApproval(view: ApprovalView, queued: number): React.ReactElement 
 		),
 		...approvalBody(view.request).map((line, i) => styledLine(line, `b${i}`, { text: "  " })),
 		h(Text, { key: "sp" }, " "),
-		...APPROVAL_OPTIONS.map((option, i) =>
-			h(
-				Text,
-				{ key: `o${i}`, color: i === view.selected ? "cyan" : undefined },
-				`${i === view.selected ? "❯" : " "} ${i + 1}. ${option.label}`,
+		h(
+			Box,
+			{ key: "options", ref: layout.approvalRef, flexDirection: "column" },
+			...APPROVAL_OPTIONS.map((option, i) =>
+				h(
+					Text,
+					{ key: `o${i}`, color: i === view.selected ? "cyan" : undefined },
+					`${i === view.selected ? "❯" : " "} ${i + 1}. ${option.label}`,
+				),
 			),
 		),
 		queued > 0
@@ -138,21 +203,20 @@ function renderApproval(view: ApprovalView, queued: number): React.ReactElement 
 	);
 }
 
-function renderMenu(completion: Completion, selected: number): React.ReactElement {
+function renderMenu(completion: Completion, selected: number, start: number, layout: BottomLayout): React.ReactElement {
 	if (completion.items.length === 0) {
 		return h(Box, { key: "menu", paddingX: 2 }, h(Text, { dimColor: true }, "Loading files…"));
 	}
 	return h(
 		Box,
 		{ key: "menu", flexDirection: "column", paddingX: 2 },
-		...completion.items.map((item, i) =>
-			h(
-				Text,
-				{ key: `m${i}`, color: i === selected ? "cyan" : undefined },
-				i === selected ? "❯ " : "  ",
-				item.label,
-				item.hint ? h(Text, { key: "h", dimColor: true }, `  ${item.hint}`) : null,
-			),
+		...renderList(
+			"menu",
+			completion.items,
+			Math.min(selected, completion.items.length - 1),
+			start,
+			layout.listRows,
+			layout.listRef,
 		),
 	);
 }
@@ -162,7 +226,9 @@ export function hintText(state: UiState, completion: Completion | undefined): st
 	if (state.picker) {
 		return `↑↓ to choose · Enter to confirm${state.picker.alt ? ` · Ctrl+S to ${state.picker.alt}` : ""} · Esc to cancel`;
 	}
-	if (completion && completion.items.length > 0) return "Tab or Enter to complete · Esc to close";
+	if (state.flash) return state.flash;
+	if (state.search) return "Typing searches the conversation · Enter or ↓ next · ↑ previous · Esc to close";
+	if (completion && completion.items.length > 0) return "Tab, Enter or a click to complete · Esc to close";
 	if (state.prompt?.kind === "tell") return "Enter to deny and send this · Esc to go back to the approval";
 	if (state.prompt) return "Enter to submit · Esc to cancel";
 	if (state.task === "turn") return "Enter to steer · Alt+Enter to queue · Esc to interrupt · Ctrl+O details";
@@ -200,12 +266,17 @@ function widgetLines(widgets: StyledLine[][], key: string): React.ReactElement |
 	return h(Box, { key, flexDirection: "column" }, ...widgets.flat().map((line, i) => styledLine(line, `w${i}`)));
 }
 
-export function renderBottom(state: UiState, columns: number, completion: Completion | undefined): React.ReactElement {
+export function renderBottom(
+	state: UiState,
+	columns: number,
+	completion: Completion | undefined,
+	layout: BottomLayout = INLINE_LAYOUT,
+): React.ReactElement {
 	const children: (React.ReactElement | null)[] = [];
 	if (state.approval) {
-		children.push(renderApproval(state.approval, state.approvalQueue.length));
+		children.push(renderApproval(state.approval, state.approvalQueue.length, layout));
 	} else if (state.picker) {
-		children.push(renderPicker(state.picker));
+		children.push(renderPicker(state.picker, layout));
 	} else {
 		if (state.task) {
 			children.push(h(ActivityLine, { key: "activity", activity: state.activity, startedAt: state.taskStartedAt }));
@@ -228,6 +299,7 @@ export function renderBottom(state: UiState, columns: number, completion: Comple
 				),
 			);
 		}
+		if (layout.search) children.push(renderSearchBar(layout.search, columns));
 		children.push(widgetLines(state.widgets.above, "wa"));
 		children.push(
 			renderInputBox(state.editor, columns, {
@@ -235,7 +307,7 @@ export function renderBottom(state: UiState, columns: number, completion: Comple
 				...(state.prompt?.placeholder !== undefined ? { placeholder: state.prompt.placeholder } : {}),
 			}),
 		);
-		if (completion) children.push(renderMenu(completion, state.menu.selected));
+		if (completion) children.push(renderMenu(completion, state.menu.selected, state.menu.start, layout));
 		children.push(widgetLines(state.widgets.below, "wb"));
 	}
 	if (state.exitArmed) {

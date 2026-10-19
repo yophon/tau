@@ -141,8 +141,9 @@ npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "你好"
 ```
 
 TUI 缺省全屏：在终端的备用屏幕上显示自己的可滚动对话（滚轮、PgUp/PgDn、
-Ctrl+Home/Ctrl+End；按住 Shift 拖动可选中文字），调整窗口大小时干净地重画，
-退出后整段对话留在终端里。`--inline` 用原来的界面，历史在终端的滚动记录里；
+Ctrl+Home/Ctrl+End；Ctrl+F 搜索；拖动选中即复制；点工具调用展开它），调整
+窗口大小时干净地重画，退出后整段对话留在终端里。会话在第一轮之后由模型起
+标题，`/resume` 按标题列出。`--inline` 用原来的界面，历史在终端的滚动记录里；
 想缺省用它，在 `~/.tau/settings.json` 写 `"tui": { "mode": "inline" }`（或在
 `/settings` → Screen 里选，或设 `TAU_TUI_MODE=inline`）。
 

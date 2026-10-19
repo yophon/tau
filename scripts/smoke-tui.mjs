@@ -40,6 +40,12 @@ async function main() {
 		await run("fullscreen-scroll", runFullscreenScrollSmoke);
 		await run("fullscreen-exit", runFullscreenExitSmoke);
 		await run("fullscreen-signal", runFullscreenSignalSmoke);
+		await run("fullscreen-search", runFullscreenSearchSmoke);
+		await run("fullscreen-select", runFullscreenSelectSmoke);
+		await run("fullscreen-click", runFullscreenClickSmoke);
+		await run("fullscreen-menu", runFullscreenMenuSmoke);
+		await run("notify", runNotifySmoke);
+		await run("session-title", runSessionTitleSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -267,6 +273,10 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 	const name = `tau-smoke-${label}-${process.pid}-${Math.random().toString(16).slice(2)}`;
 	const command = [
 		"env",
+		"-u",
+		"WT_SESSION",
+		"-u",
+		"KITTY_WINDOW_ID",
 		`HOME=${shellQuote(dirs.home)}`,
 		`TAU_BASE_URL=${shellQuote(baseUrl)}`,
 		"TAU_MODEL=mock-model",
@@ -274,6 +284,8 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		// Pre-P15 behavior for scenarios that are not about permissions; the
 		// approval scenario overrides with an explicit --permission-mode flag.
 		"TAU_PERMISSION_MODE=autonomous",
+		// A session title request would take the next scripted response (P34f); the title scenario turns it on.
+		"TAU_AUTO_TITLE=0",
 		"TAU_HISTORY=",
 		// SMOKE_TUI_MODE=inline runs every scenario in the inline TUI (P33); a scenario's own env wins.
 		...(process.env.SMOKE_TUI_MODE ? [`TAU_TUI_MODE=${shellQuote(process.env.SMOKE_TUI_MODE)}`] : []),
@@ -610,6 +622,186 @@ async function deadPaneModes(session) {
 	return pane;
 }
 
+/** The 0-based screen row and column of the first occurrence of `text`. */
+function cellOf(screen, text) {
+	const lines = screen.split("\n");
+	const y = lines.findIndex((line) => line.includes(text));
+	return y < 0 ? undefined : { x: lines[y].indexOf(text), y };
+}
+const mouse = (code, x, y, final = "M") => `\x1b[<${code};${x + 1};${y + 1}${final}`;
+
+// P34b: Ctrl+F finds a line in a long answer; Esc closes the bar and keeps the view there.
+async function runFullscreenSearchSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-search", false);
+	const session = await startTui("fs-search", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	const screen = () => tmux(["capture-pane", "-t", session.name, "-p"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("long smoke", "Enter");
+		await session.waitFor("LINE_080", 10_000);
+		await session.send("C-f");
+		await sleep(200);
+		await session.send("-l", "LINE_012");
+		await sleep(500);
+		let shown = await screen();
+		if (!shown.includes("1/1") || !shown.includes("LINE_012") || shown.includes("LINE_080")) {
+			throw new Error(`Ctrl+F did not find LINE_012:\n${shown}`);
+		}
+		await session.send("Escape");
+		await sleep(300);
+		shown = await screen();
+		if (!shown.includes("LINE_012") || shown.includes("Find:")) throw new Error(`Esc did not keep the view:\n${shown}`);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok fullscreen search");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P34c: dragging over text selects it and copies it on release (OSC 52 when no clipboard tool).
+async function runFullscreenSelectSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-select", false);
+	const session = await startTui("fs-select", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		const at = cellOf(await tmux(["capture-pane", "-t", session.name, "-p"]), "SMOKE_PRICING_OK");
+		if (!at) throw new Error("SMOKE_PRICING_OK is not on screen");
+		const raw = join(dirs.home, "fs-select-output.bin");
+		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await sleep(200);
+		await session.send("-l", mouse(0, at.x, at.y) + mouse(32, at.x + 8, at.y) + mouse(0, at.x + 16, at.y, "m"));
+		await session.waitFor("Copied 16 characters", 5_000);
+		await tmux(["pipe-pane", "-t", session.name]);
+		const written = await readFile(raw, "utf8").catch(() => "");
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 52 starts with ESC and ends with BEL
+		const osc52 = written.match(/\x1b\]52;c;([A-Za-z0-9+/=]+)\x07/);
+		if (osc52 && Buffer.from(osc52[1], "base64").toString("utf8") !== "SMOKE_PRICING_OK") {
+			throw new Error(`OSC 52 copied the wrong text: ${osc52[1]}`);
+		}
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log(`ok fullscreen select${osc52 ? " (OSC 52)" : ""}`);
+	} finally {
+		await session.kill();
+	}
+}
+
+// P34d: a click on a tool's title row opens that block (read shows "N lines" until opened).
+async function runFullscreenClickSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-click", false);
+	await writeFile(
+		join(dirs.cwd, "smoke-read.txt"),
+		`${Array.from({ length: 5 }, (_, i) => `READ_SMOKE_LINE_${i + 1}`).join("\n")}\n`,
+	);
+	const session = await startTui("fs-click", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	const screen = () => tmux(["capture-pane", "-t", session.name, "-p"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("read smoke", "Enter");
+		await session.waitFor("SMOKE_READ_DONE", 15_000);
+		const before = await screen();
+		const at = cellOf(before, "● read(");
+		if (!at || before.includes("READ_SMOKE_LINE_3")) throw new Error(`No collapsed read block on screen:\n${before}`);
+		await session.send("-l", mouse(0, at.x + 2, at.y) + mouse(0, at.x + 2, at.y, "m"));
+		await sleep(400);
+		const after = await screen();
+		if (!after.includes("READ_SMOKE_LINE_3")) throw new Error(`The click did not open the read block:\n${after}`);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok fullscreen click");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P34g: a bare slash lists every command; a click on one completes it.
+async function runFullscreenMenuSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-menu", false);
+	const session = await startTui("fs-menu", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	const screen = () => tmux(["capture-pane", "-t", session.name, "-p"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("-l", "/");
+		await sleep(400);
+		const menu = await screen();
+		if (!/↓ \d+ more · 1\/\d+/.test(menu)) throw new Error(`The slash menu does not show it scrolls:\n${menu}`);
+		const at = cellOf(menu, "/compact");
+		if (!at) throw new Error(`/compact is not in the menu:\n${menu}`);
+		await session.send("-l", mouse(0, at.x, at.y) + mouse(0, at.x, at.y, "m"));
+		await sleep(400);
+		const after = await screen();
+		if (!after.includes("› /compact")) throw new Error(`The click did not complete /compact:\n${after}`);
+		await session.send("C-u");
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok fullscreen menu");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P34e: with the window in the background, a finished run sends a notification; the title spins.
+async function runNotifySmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "notify", false);
+	const session = await startTui("notify", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		const raw = join(dirs.home, "notify-output.bin");
+		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await sleep(200);
+		await session.send("-l", "\x1b[O");
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await sleep(400);
+		await tmux(["pipe-pane", "-t", session.name]);
+		const written = await readFile(raw, "utf8").catch(() => "");
+		if (!written.includes("\x1b]777;notify;tau · done;SMOKE_PRICING_OK\x07")) {
+			throw new Error(`No notification for the finished run: ${JSON.stringify(written.slice(-300))}`);
+		}
+		if (!written.includes("\x1b]0;")) throw new Error("The terminal title was not set");
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok notify");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P34f: after the first turn the model names the session; /resume lists it by that title.
+async function runSessionTitleSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "title", false);
+	const first = await startTui("title", dirs, baseUrl, [], ["TAU_TUI_MODE=fullscreen", "TAU_AUTO_TITLE=1"]);
+	try {
+		await first.waitFor("tau ·", 10_000);
+		await first.send("pricing smoke", "Enter");
+		await first.waitFor("SMOKE_PRICING_OK", 10_000);
+		await first.waitFor("SMOKE_TITLE", 10_000);
+		await first.send("exit", "Enter");
+		await first.waitForExit();
+	} finally {
+		await first.kill();
+	}
+	const second = await startTui("title2", dirs, baseUrl, [], ["TAU_TUI_MODE=fullscreen"]);
+	try {
+		await second.waitFor("tau ·", 10_000);
+		await second.send("/resume", "Enter");
+		await second.waitFor("Resume a session", 10_000);
+		const shown = await tmux(["capture-pane", "-t", second.name, "-p"]);
+		if (!shown.includes("SMOKE_TITLE") || !/\d+ messages/.test(shown)) {
+			throw new Error(`/resume does not list the session by its title:\n${shown}`);
+		}
+		await second.send("Escape");
+		await second.send("exit", "Enter");
+		await second.waitForExit();
+		console.log("ok session title");
+	} finally {
+		await second.kill();
+	}
+}
+
 // P15 验收：supervised 档下高风险 bash 触发审批选择器——Allow once 执行 / Deny 拒绝
 // / Always allow 持久化到 ~/.tau/permissions.json，且第二个 TUI 进程直接放行。
 async function runApprovalSmoke(root, baseUrl) {
@@ -846,6 +1038,7 @@ async function startMockOpenAI() {
 
 function responseFor(request) {
 	const messages = Array.isArray(request.messages) ? request.messages : [];
+	if (String(messages[0]?.content ?? "").includes("You name conversations")) return textTurn("SMOKE_TITLE");
 	const toolContents = messages
 		.filter((message) => message.role === "tool")
 		.map((message) => String(message.content ?? ""));
@@ -859,6 +1052,7 @@ function responseFor(request) {
 	if (lastMessage?.role === "tool") {
 		const content = String(lastMessage.content ?? "");
 		if (content.includes("BASH_SMOKE_LINE_3")) return textTurn("SMOKE_BASH_DONE");
+		if (content.includes("READ_SMOKE_LINE_5")) return textTurn("SMOKE_READ_DONE");
 		if (content.includes("SMOKE_TOOL_OUTPUT")) return textTurn("SMOKE_CUSTOM_TOOL_DONE");
 		if (content.includes("APPROVAL_RAN_42")) return textTurn(`SMOKE_APPROVAL_DONE_${++approvalDoneCount}`);
 		if (content.includes("Denied by policy")) return textTurn(`SMOKE_APPROVAL_DENIED_${++approvalDenyCount}`);
@@ -885,6 +1079,7 @@ function responseFor(request) {
 		});
 	}
 	if (content.includes("custom smoke tool")) return toolCallTurn("smoke_tool", {});
+	if (content.includes("read smoke")) return toolCallTurn("read", { path: "smoke-read.txt" });
 	if (content.includes("parallel smoke")) {
 		return {
 			payloads: [

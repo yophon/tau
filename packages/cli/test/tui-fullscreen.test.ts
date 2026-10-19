@@ -19,42 +19,64 @@ import {
 	transcriptText,
 	viewSlice,
 } from "../src/tui/fullscreen.ts";
-import { scrollCommands, takeMouseReports, WHEEL_ROWS } from "../src/tui/input/scroll.ts";
+import { rawKey, takeInputEvents, WHEEL_ROWS } from "../src/tui/input/mouse.ts";
 import type { Block } from "../src/tui/model.ts";
 import { DOWN, ENTER, type Harness, pause, harness as start } from "./tui-harness.ts";
 
 const WHEEL_UP = "\x1b[<64;10;5M";
 const WHEEL_DOWN = "\x1b[<65;10;5M";
-const up = { kind: "rows", delta: -WHEEL_ROWS };
-const down = { kind: "rows", delta: WHEEL_ROWS };
+const PAGE_UP = "\x1b[5~";
+const PAGE_DOWN = "\x1b[6~";
+const CTRL_HOME = "\x1b[1;5H";
+const CTRL_END = "\x1b[1;5F";
+const none = { shift: false, alt: false, ctrl: false };
 
-describe("P33 scroll input", () => {
-	it("reads PgUp/PgDn and Ctrl+Home/End from raw input", () => {
-		assert.deepEqual(scrollCommands("\x1b[5~"), [{ kind: "page", direction: -1 }]);
-		assert.deepEqual(scrollCommands("\x1b[6~"), [{ kind: "page", direction: 1 }]);
-		assert.deepEqual(scrollCommands("\x1b[1;5H"), [{ kind: "edge", to: "top" }]);
-		assert.deepEqual(scrollCommands("\x1b[1;5F"), [{ kind: "edge", to: "bottom" }]);
-		assert.deepEqual(scrollCommands(WHEEL_UP), []);
-		assert.deepEqual(scrollCommands("hello"), []);
+describe("P34 terminal reports", () => {
+	it("decodes SGR mouse reports into 0-based presses, drags, releases and wheel notches", () => {
+		assert.deepEqual(takeInputEvents("", "\x1b[<0;10;5M\x1b[<32;12;5M\x1b[<0;12;5m").events, [
+			{ kind: "press", button: 0, x: 9, y: 4, ...none },
+			{ kind: "drag", x: 11, y: 4, ...none },
+			{ kind: "release", x: 11, y: 4, ...none },
+		]);
+		assert.deepEqual(takeInputEvents("", `${WHEEL_UP}${WHEEL_DOWN}`).events, [
+			{ kind: "wheel", delta: -1, x: 9, y: 4, ...none },
+			{ kind: "wheel", delta: 1, x: 9, y: 4, ...none },
+		]);
+		// Shift (4), Alt (8), Ctrl (16); horizontal wheel (66/67) is ignored.
+		assert.deepEqual(takeInputEvents("", "\x1b[<20;1;1M").events, [
+			{ kind: "press", button: 0, x: 0, y: 0, shift: true, alt: false, ctrl: true },
+		]);
+		assert.deepEqual(takeInputEvents("", "\x1b[<66;1;1M").events, []);
 	});
 
-	it("takes wheel reports out of the input (ESC stripped or not) and drops clicks", () => {
-		assert.deepEqual(takeMouseReports("", "[<64;10;5M"), { commands: [up], rest: "", pending: "" });
-		assert.deepEqual(takeMouseReports("", `${WHEEL_DOWN}[<65;1;1M`), { commands: [down, down], rest: "", pending: "" });
-		assert.deepEqual(takeMouseReports("", "[<0;3;4M\x1b[<0;3;4m"), { commands: [], rest: "", pending: "" });
-		assert.deepEqual(takeMouseReports("", "hello"), { commands: [], rest: "hello", pending: "" });
-		assert.deepEqual(takeMouseReports("", "["), { commands: [], rest: "[", pending: "" });
+	it("takes focus reports and leaves the rest for Ink", () => {
+		const taken = takeInputEvents("", "a\x1b[Ob\x1b[I");
+		assert.deepEqual(taken.events, [
+			{ kind: "focus", focused: false },
+			{ kind: "focus", focused: true },
+		]);
+		assert.equal(taken.rest, "ab");
+		assert.deepEqual(takeInputEvents("", "hello"), { events: [], rest: "hello", pending: "" });
 	});
 
 	it("holds a report cut off at the end of a read until the next one completes it", () => {
-		const first = takeMouseReports("", "[<64;10");
-		assert.deepEqual(first, { commands: [], rest: "", pending: "[<64;10" });
-		assert.deepEqual(takeMouseReports(first.pending, ";5M"), { commands: [up], rest: "", pending: "" });
-		const two = takeMouseReports("", "[<65;1;1M\x1b[<65;1");
-		assert.deepEqual(two, { commands: [down], rest: "", pending: "\x1b[<65;1" });
-		assert.deepEqual(takeMouseReports(two.pending, ";1M"), { commands: [down], rest: "", pending: "" });
-		// Not a report after all: the held text goes to the editor in order.
-		assert.deepEqual(takeMouseReports("[<6", "x"), { commands: [], rest: "[<6x", pending: "" });
+		const first = takeInputEvents("", "\x1b[<64;10");
+		assert.deepEqual(first, { events: [], rest: "", pending: "\x1b[<64;10" });
+		assert.equal(takeInputEvents(first.pending, ";5M").events[0]?.kind, "wheel");
+		const two = takeInputEvents("", `${WHEEL_DOWN}\x1b[<65;1`);
+		assert.equal(two.events.length, 1);
+		assert.equal(two.pending, "\x1b[<65;1");
+	});
+
+	it("knows the keys Ink drops or swallows", () => {
+		assert.deepEqual(rawKey(PAGE_UP), { kind: "page", direction: -1 });
+		assert.deepEqual(rawKey(PAGE_DOWN), { kind: "page", direction: 1 });
+		assert.deepEqual(rawKey("\x1b[H"), { kind: "edge", to: "top", ctrl: false });
+		assert.deepEqual(rawKey("\x1b[4~"), { kind: "edge", to: "bottom", ctrl: false });
+		assert.deepEqual(rawKey(CTRL_HOME), { kind: "edge", to: "top", ctrl: true });
+		assert.deepEqual(rawKey(CTRL_END), { kind: "edge", to: "bottom", ctrl: true });
+		assert.deepEqual(rawKey("\x1b[1;5A"), { kind: "prompt", direction: -1 });
+		assert.equal(rawKey("x"), undefined);
 	});
 });
 
@@ -222,18 +244,17 @@ describe("P33 controller scrolling", () => {
 		controller.setViewport(10, 50);
 		await h.key(WHEEL_UP);
 		assert.equal(controller.state.scroll.top, 40 - WHEEL_ROWS);
-		controller.handleScrollInput("\x1b[5~");
+		await h.key(PAGE_UP);
 		assert.equal(controller.state.scroll.top, 40 - WHEEL_ROWS - 8);
-		controller.handleScrollInput("\x1b[1;5H");
+		await h.key(CTRL_HOME);
 		assert.equal(controller.state.scroll.top, 0);
-		controller.handleScrollInput("\x1b[6~");
+		await h.key(PAGE_DOWN);
 		assert.equal(controller.state.scroll.top, 8);
 		controller.scrollBy(100);
 		assert.equal(controller.state.scroll.top, undefined);
 		await h.key(WHEEL_UP);
-		controller.handleScrollInput("\x1b[1;5F");
+		await h.key(CTRL_END);
 		assert.equal(controller.state.scroll.top, undefined);
-		assert.equal(controller.handleScrollInput("x"), false);
 	});
 
 	it("counts the transcript only when scrolling needs it", async () => {
@@ -268,7 +289,7 @@ describe("P33 controller scrolling", () => {
 		const h = await harness();
 		h.controller.setViewport(10, 6);
 		await h.key(WHEEL_UP);
-		h.controller.handleScrollInput("\x1b[1;5H");
+		await h.key(CTRL_HOME);
 		assert.equal(h.controller.state.scroll.top, undefined);
 	});
 

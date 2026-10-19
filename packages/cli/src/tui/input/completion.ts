@@ -20,7 +20,8 @@ export interface Completion {
 	items: CompletionItem[];
 }
 
-export const COMPLETION_LIMIT = 8;
+/** `@` file matches listed at most (a project can hold tens of thousands of files); typing narrows the rest. */
+export const FILE_MATCH_LIMIT = 200;
 
 /** Prefix > path-segment prefix > substring > ordered subsequence; -1 = no match. Shorter wins ties. */
 export function fuzzyScore(candidate: string, query: string): number {
@@ -39,7 +40,8 @@ export function fuzzyScore(candidate: string, query: string): number {
 	return -1;
 }
 
-export function fuzzyFilter(candidates: readonly string[], query: string, limit = COMPLETION_LIMIT): string[] {
+/** Matches best first; an empty query keeps the given order (the sort is stable). */
+export function fuzzyFilter(candidates: readonly string[], query: string, limit = Number.POSITIVE_INFINITY): string[] {
 	return candidates
 		.map((value) => ({ value, score: fuzzyScore(value, query) }))
 		.filter((entry) => entry.score >= 0)
@@ -78,7 +80,7 @@ export function computeCompletion(text: string, cursor: number, sources: Complet
 	if (argument && sources.argumentCompletions) {
 		const name = argument[1] ?? "";
 		const prefix = argument[2] ?? "";
-		const items = sources.argumentCompletions(name, prefix)?.slice(0, COMPLETION_LIMIT);
+		const items = sources.argumentCompletions(name, prefix);
 		if (items && items.length > 0) {
 			return { kind: "argument", tokenStart: before.length - prefix.length, token: prefix, items: [...items] };
 		}
@@ -89,7 +91,10 @@ export function computeCompletion(text: string, cursor: number, sources: Complet
 		const token = `@${file[1] ?? ""}`;
 		const tokenStart = cursor - token.length;
 		if (sources.files === undefined) return { kind: "file", tokenStart, token, items: [] };
-		const items = fuzzyFilter(sources.files, file[1] ?? "").map((path) => ({ value: `@${path}`, label: path }));
+		const items = fuzzyFilter(sources.files, file[1] ?? "", FILE_MATCH_LIMIT).map((path) => ({
+			value: `@${path}`,
+			label: path,
+		}));
 		return items.length > 0 ? { kind: "file", tokenStart, token, items } : undefined;
 	}
 	return undefined;

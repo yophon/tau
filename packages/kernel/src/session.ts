@@ -115,6 +115,10 @@ export interface SessionMetadata {
 	name?: string;
 	/** Fork lineage: source file path (JSONL) or source session id (in-memory). */
 	parentSession?: string;
+	/** Text of the first user message, at most 500 characters (pi SessionInfo.firstMessage); absent when there is none. */
+	firstMessage?: string;
+	/** Message entries in the file, every branch included (pi SessionInfo.messageCount). */
+	messageCount?: number;
 }
 
 /** Mirrors pi's SessionStorage (harness/types.ts), minus find/label (P5). */
@@ -233,7 +237,11 @@ export class InMemorySessionStore implements SessionStore {
 	}
 
 	async getMetadata(): Promise<SessionMetadata> {
-		return { ...this.metadata, name: lastSessionName(this.tree.entries) ?? this.metadata.name };
+		return {
+			...this.metadata,
+			name: lastSessionName(this.tree.entries) ?? this.metadata.name,
+			...messageSummary(this.tree.entries),
+		};
 	}
 
 	async getLeafId(): Promise<string | null> {
@@ -375,6 +383,28 @@ function parseEntryLine(line: string, filePath: string, lineNumber: number): Ses
 	return parsed as unknown as SessionEntry;
 }
 
+/** First user message text and message count over all entries, as pi's session list reads them. */
+function messageSummary(entries: readonly SessionEntry[]): { firstMessage?: string; messageCount: number } {
+	let firstMessage: string | undefined;
+	let messageCount = 0;
+	for (const entry of entries) {
+		if (entry.type !== "message") continue;
+		messageCount++;
+		if (firstMessage !== undefined || entry.message.role !== "user") continue;
+		const content = entry.message.content;
+		const text = (
+			typeof content === "string"
+				? content
+				: content
+						.filter((part): part is { type: "text"; text: string } => part.type === "text")
+						.map((part) => part.text)
+						.join(" ")
+		).trim();
+		if (text !== "") firstMessage = text.slice(0, 500);
+	}
+	return { ...(firstMessage !== undefined ? { firstMessage } : {}), messageCount };
+}
+
 function lastSessionName(entries: SessionEntry[]): string | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
@@ -425,6 +455,7 @@ class JsonlSessionStore implements SessionStore {
 			filePath: this.filePath,
 			name: lastSessionName(this.tree.entries),
 			parentSession: this.header.parentSession,
+			...messageSummary(this.tree.entries),
 		};
 	}
 

@@ -7,17 +7,37 @@
  * write. On exit the terminal is restored and the conversation is written to
  * the main screen, where it stays in the scrollback.
  */
-import { Box, measureElement, Text, useInput, useStdin, useStdout } from "ink";
+import { Box, type DOMElement, measureElement, Text, useInput, useStdout } from "ink";
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
 import type { Block } from "./model.ts";
 import { renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineCache, type LineOptions } from "./render/lines.ts";
+import { listRows } from "./render/list.ts";
+import {
+	buildTranscript,
+	type Highlight,
+	highlightColumns,
+	rangeOnRow,
+	selectionRange,
+	type TranscriptRows,
+} from "./transcript.ts";
 
 const h = React.createElement;
 
-export const ENTER_FULLSCREEN = "\x1b[?1049h\x1b[?7l\x1b[?1000h\x1b[?1006h\x1b[2J\x1b[H";
-export const LEAVE_FULLSCREEN = "\x1b[?1006l\x1b[?1000l\x1b[?7h\x1b[?1049l";
+// Mouse: buttons (1000), motion while a button is held (1002, for drag selection), SGR encoding (1006).
+export const ENTER_FULLSCREEN = "\x1b[?1049h\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?1006h\x1b[2J\x1b[H";
+export const LEAVE_FULLSCREEN = "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?7h\x1b[?1049l";
+
+/** A node's row on screen: the Yoga tops of it and its parents (the frame starts at row 0). */
+export function screenTop(node: DOMElement | null | undefined): number | undefined {
+	if (!node) return undefined;
+	let top = 0;
+	for (let current: DOMElement | undefined = node; current; current = current.parentNode) {
+		top += current.yogaNode?.getComputedTop() ?? 0;
+	}
+	return top;
+}
 export const SYNC_BEGIN = "\x1b[?2026h";
 export const SYNC_END = "\x1b[?2026l";
 
@@ -190,19 +210,27 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	const { controller, cache } = props;
 	const state = useSyncExternalStore(controller.store.subscribe, controller.store.getState);
 	const { stdout } = useStdout();
-	const { internal_eventEmitter } = useStdin();
 	const columns = stdout?.columns ?? 80;
 	const screenRows = stdout?.rows ?? 24;
 
+	// Mouse and focus reports never get here: the filtered stdin hands them to the controller.
 	useInput((input, key) => controller.handleInput(input, key));
-	// Mouse reports and Ctrl+Home/End have to be read before Ink's key parsing drops them.
+
+	// Where the lists and approval options are on screen, for clicks (after each layout).
+	const listRef = useRef<DOMElement>(null);
+	const approvalRef = useRef<DOMElement>(null);
+	const rowsForLists = listRows(screenRows);
+	controller.setListHeight(rowsForLists);
+	const viewRef = useRef<DOMElement>(null);
 	useEffect(() => {
-		const onData = (data: string) => controller.handleScrollInput(data);
-		internal_eventEmitter?.on("input", onData);
-		return () => {
-			internal_eventEmitter?.off("input", onData);
-		};
-	}, [controller, internal_eventEmitter]);
+		const list = screenTop(listRef.current);
+		const approval = screenTop(approvalRef.current);
+		controller.setLayout({
+			view: { top: screenTop(viewRef.current) ?? 0, height: viewHeight },
+			...(list !== undefined ? { list: { top: list } } : {}),
+			...(approval !== undefined ? { approval: { top: approval } } : {}),
+		});
+	});
 
 	const options: LineOptions = {
 		width: columns,
@@ -217,16 +245,30 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 		epoch.current = state.epoch;
 		cache.clear();
 	}
-	const committedLines = (block: Block) => cache.lines(block, options);
-	const liveRows = state.live.flatMap((block) => blockLines(block, options));
+	// A tool block clicked open or shut (P34d) overrides Ctrl+O; the cache keys on the result.
+	const optionsFor = (block: Block): LineOptions => {
+		const verbose = state.expanded[block.id];
+		return verbose === undefined ? options : { ...options, verbose };
+	};
+	const committedLines = (block: Block) => cache.lines(block, optionsFor(block));
+	const liveLines = (block: Block) => blockLines(block, optionsFor(block));
+	const liveRows = state.live.flatMap(liveLines);
+	// The whole transcript, built at most once a render and only when something needs it.
+	let full: TranscriptRows | undefined;
+	const transcript = (): TranscriptRows => {
+		full ??= buildTranscript([...state.committed, ...state.live], (block) =>
+			state.live.includes(block) ? liveLines(block) : committedLines(block),
+		);
+		return full;
+	};
+	controller.setTranscript(transcript);
 
 	// One row less than the screen: Ink writes a newline after the frame.
 	const frameHeight = Math.max(3, screenRows - 1);
 	// The view takes what the bottom area leaves, in the same layout pass: it is given up to a
 	// frame of rows and clips the rest (the top while following, the bottom when scrolled), so a
-	// resize never draws a frame with the old split. Its measured height only feeds scrolling
+	// resize never draws a frame with the old split. Its measured height feeds scrolling, clicks
 	// and the "below" count.
-	const viewRef = useRef(null);
 	const [viewHeight, setViewHeight] = useState(Math.max(1, frameHeight - 6));
 	useEffect(() => {
 		if (!viewRef.current) return;
@@ -234,19 +276,40 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 		if (measured > 0 && measured !== viewHeight) setViewHeight(measured);
 	});
 	// Following the end needs only the blocks that fill the screen, so a resize wraps a
-	// screenful, not the whole history; the total is counted when scrolling asks for it.
+	// screenful, not the whole history; a selection, a search or a scrolled view uses it all.
 	const following = state.scroll.top === undefined;
-	const rows = following
-		? tailRows(state.committed, liveRows, frameHeight, committedLines)
-		: state.committed.flatMap(committedLines).concat(liveRows);
-	controller.setViewport(
-		viewHeight,
-		following
-			? () => state.committed.reduce((total, block) => total + committedLines(block).length, liveRows.length)
-			: rows.length,
-	);
+	const whole = !following || state.selection !== undefined || state.search !== undefined;
+	const rows = whole ? transcript().rows : tailRows(state.committed, liveRows, frameHeight, committedLines);
+	controller.setViewport(viewHeight, whole ? rows.length : () => transcript().rows.length);
 	const { top, below } = viewSlice(rows, state.scroll.top, viewHeight);
-	const shown = following ? rows.slice(-frameHeight) : rows.slice(top, top + frameHeight);
+	const first = following ? Math.max(0, rows.length - frameHeight) : top;
+	const shown = rows.slice(first, first + frameHeight);
+
+	// Search matches and the selection, laid over the rows shown.
+	const matches = whole ? controller.searchMatches(rows) : [];
+	const range = whole && state.selection ? selectionRange(state.selection, rows) : undefined;
+	const highlights = new Map<number, Highlight[]>();
+	const add = (row: number, highlight: Highlight) => {
+		if (row < first || row >= first + shown.length) return;
+		const list = highlights.get(row) ?? [];
+		list.push(highlight);
+		highlights.set(row, list);
+	};
+	for (const [index, match] of matches.entries()) {
+		const style = index === state.search?.current ? "current" : "match";
+		for (const segment of match.segments) add(segment.row, { start: segment.startCol, end: segment.endCol, style });
+	}
+	if (range) {
+		for (let row = Math.max(first, range.start.row); row <= Math.min(range.end.row, first + shown.length - 1); row++) {
+			const span = rangeOnRow(range, row);
+			if (span) add(row, { ...span, style: "selection" });
+		}
+	}
+	const painted =
+		highlights.size === 0 ? shown : shown.map((row, i) => highlightColumns(row, highlights.get(first + i) ?? []));
+	const search = state.search
+		? { query: state.search.query, count: matches.length, current: state.search.current }
+		: undefined;
 
 	return h(
 		Box,
@@ -264,7 +327,7 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 				justifyContent: following && rows.length >= viewHeight ? "flex-end" : "flex-start",
 			},
 			// One <Text> in a box that does not shrink: the view clips it instead of squeezing rows.
-			shown.length > 0 ? h(Box, { key: "rows", flexShrink: 0 }, h(Text, null, shown.join("\n"))) : null,
+			painted.length > 0 ? h(Box, { key: "rows", flexShrink: 0 }, h(Text, null, painted.join("\n"))) : null,
 		),
 		h(
 			Box,
@@ -276,7 +339,12 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 						`↓ ${below} more line${below === 1 ? "" : "s"} below · Ctrl+End or PgDn to go down`,
 					)
 				: null,
-			renderBottom(state, columns, controller.completion()),
+			renderBottom(state, columns, controller.completion(), {
+				listRows: rowsForLists,
+				listRef,
+				approvalRef,
+				...(search ? { search } : {}),
+			}),
 		),
 	);
 }

@@ -42,6 +42,12 @@ export interface RunTuiOptions {
 	resolveModelSwitch?(
 		requested: string,
 	): { model: string; display: string; options: SetModelOptions; commit(): void } | { error: string };
+	/** After the first turn the model names an unnamed session (P34f; settings session.autoTitle); default true. */
+	autoTitle?: boolean;
+	/** Desktop notifications while the window is in the background (P34e; tui.notify); default "auto". */
+	notify?: "auto" | "off";
+	/** Spinner in the terminal title and tab progress (P34e; tui.title); default true. */
+	terminalTitle?: boolean;
 	/** /settings → Screen: save tui.mode in settings.json for the next start (P33). */
 	saveTuiMode?(mode: "fullscreen" | "inline"): void;
 	/** Ctrl+S in the /model picker: save `provider/id` as the default in settings.json. */
@@ -80,4 +86,6 @@ export interface TuiDeps {
 	clearScreen?: () => void;
 	/** Git branch for the status line. */
 	readBranch?: (cwd: string) => string | undefined;
+	/** A desktop notification (P34e); defaults to notifyDesktop. */
+	notify?: (heading: string, body: string) => void;
 }

@@ -16,6 +16,8 @@ export interface KeyLike {
 	downArrow?: boolean;
 	leftArrow?: boolean;
 	rightArrow?: boolean;
+	pageUp?: boolean;
+	pageDown?: boolean;
 	return?: boolean;
 	escape?: boolean;
 	ctrl?: boolean;
@@ -35,6 +37,12 @@ export interface KeyContext {
 	menuOpen: boolean;
 	/** The editor answers a prompt (deny-and-tell, ctx.ui.input): Esc cancels it. */
 	promptActive: boolean;
+	/** Full screen (P34): Ctrl+F searches the transcript instead of moving the cursor. */
+	fullscreen?: boolean;
+	/** The transcript search bar is open: typing edits the query. */
+	searchOpen?: boolean;
+	/** Text is selected in the transcript: Esc clears it first. */
+	selectionActive?: boolean;
 	/** A turn, compaction, bash command or navigation is running. */
 	running: boolean;
 	bufferEmpty: boolean;
@@ -55,6 +63,15 @@ export type KeyCommand =
 	| { type: "picker-cancel" }
 	| { type: "picker-key"; key: string }
 	| { type: "picker-alt" }
+	/** PgUp/PgDn in the open list (picker or completion menu). */
+	| { type: "list-page"; direction: 1 | -1 }
+	| { type: "search-open" }
+	| { type: "search-insert"; text: string }
+	| { type: "search-backspace" }
+	| { type: "search-next" }
+	| { type: "search-prev" }
+	| { type: "search-close" }
+	| { type: "selection-clear" }
 	| { type: "menu-up" }
 	| { type: "menu-down" }
 	| { type: "menu-accept" }
@@ -102,6 +119,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 	if (ctx.pickerOpen) {
 		if (key.upArrow) return { type: "picker-up" };
 		if (key.downArrow) return { type: "picker-down" };
+		if (key.pageUp || key.pageDown) return { type: "list-page", direction: key.pageUp ? -1 : 1 };
 		if (key.return) return { type: "picker-confirm" };
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
 		if (key.ctrl && ch === "s") return { type: "picker-alt" };
@@ -109,10 +127,22 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		return undefined;
 	}
 
-	// ③ Completion menu: only navigation, accept and close; other keys keep filtering.
+	// ③ The search bar (P34b): typing edits the query; Enter/↓ and ↑ move between matches.
+	if (ctx.searchOpen) {
+		if (key.escape || (key.ctrl && ch === "c")) return { type: "search-close" };
+		if (key.return || key.downArrow || (key.ctrl && (ch === "g" || ch === "f"))) return { type: "search-next" };
+		if (key.upArrow) return { type: "search-prev" };
+		if (key.backspace || key.delete) return { type: "search-backspace" };
+		if (ch !== "" && !key.ctrl && !key.meta && !key.tab) return { type: "search-insert", text: ch };
+		return undefined;
+	}
+	if (ctx.fullscreen && key.ctrl && ch === "f") return { type: "search-open" };
+
+	// Completion menu: only navigation, accept and close; other keys keep filtering.
 	if (ctx.menuOpen) {
 		if (key.upArrow) return { type: "menu-up" };
 		if (key.downArrow) return { type: "menu-down" };
+		if (key.pageUp || key.pageDown) return { type: "list-page", direction: key.pageUp ? -1 : 1 };
 		if (key.tab || key.return) return { type: "menu-accept" };
 		if (key.escape) return { type: "menu-close" };
 	}
@@ -120,7 +150,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 	// ④ A prompt answered in the editor: Esc gives it up.
 	if (ctx.promptActive && key.escape) return { type: "prompt-cancel" };
 
-	// ⑤ Ctrl+C / Esc: interrupt while running; idle Ctrl+C asks to exit, Esc clears the input.
+	// ⑤ Esc clears a transcript selection first. Ctrl+C / Esc: interrupt while running; idle Ctrl+C asks to exit, Esc clears the input.
+	if (key.escape && ctx.selectionActive) return { type: "selection-clear" };
 	if (key.ctrl && ch === "c") return ctx.running ? { type: "interrupt" } : { type: "exit-request" };
 	if (key.escape) return ctx.running ? { type: "interrupt" } : { type: "clear-input" };
 

@@ -4,6 +4,37 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P34)
+- CLI TUI, full screen: Ctrl+F (or `/search`) searches the whole
+  conversation (pi's matching: case-insensitive, across wrapped rows),
+  Enter/↓ and ↑ step through matches; drag, double-click and triple-click
+  select text, a word or a line and copy it on release (OSC 52 when no
+  clipboard tool); a click on a tool's title row opens or shuts just that
+  block; Ctrl+↑/Ctrl+↓ jump between the messages you sent; clicks choose in
+  the completion menu, pickers and the approval panel.
+- CLI TUI: the terminal title spins while a run works and Windows Terminal
+  shows tab progress; with the window in the background a finished run or a
+  waiting approval sends a desktop notification (Windows toast under
+  Windows Terminal, OSC 99 for Kitty, OSC 777 elsewhere). `tui.notify`
+  (`"auto"`/`"off"`) and `tui.title` in settings.json.
+- CLI: sessions get a title from the model after their first turn (TUI and
+  REPL; `session.autoTitle`, `TAU_AUTO_TITLE=0`); `/resume` lists
+  sessions by title (else their first message), how long ago and how many
+  messages, and `/resume <text>` matches titles.
+- kernel: `SessionMetadata.firstMessage` and `messageCount` (pi's
+  SessionInfo fields); `Agent.completeText()` for a one-off request with the
+  current model that is not recorded in the session.
+
+### Changed (P34)
+- CLI TUI: the completion menu and pickers list every item and scroll
+  (PgUp/PgDn, Home/End, the wheel) instead of stopping at eight.
+- CLI TUI: mouse and focus reports are taken from stdin before Ink parses
+  keys (both views).
+
+### Fixed (P34)
+- CLI TUI: tool output with tabs (read's numbered lines) lost its last
+  character on every line; tabs are expanded to spaces.
+
 ### Changed (P33)
 - CLI: the TUI runs full screen by default: the alternate screen with
   auto-wrap off (narrowing the window clips, then redraws at the new width,

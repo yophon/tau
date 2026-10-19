@@ -22,6 +22,12 @@ export interface TauSettings {
 	auditDetails?: "summary" | "none";
 	/** P33: tui.mode, the TUI's screen. */
 	tuiMode?: "fullscreen" | "inline";
+	/** P34f: session.autoTitle — the model names a session after its first turn (default true). */
+	autoTitle?: boolean;
+	/** P34e: tui.notify — desktop notifications when the window is in the background ("auto", default) or none. */
+	tuiNotify?: "auto" | "off";
+	/** P34e: tui.title — a terminal title with a spinner and Windows Terminal progress (default true). */
+	tuiTitle?: boolean;
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -74,6 +80,14 @@ export function readSettings(path: string): TauSettings {
 	if (typeof tui === "object" && tui !== null) {
 		const mode = (tui as Record<string, unknown>).mode;
 		if (mode === "fullscreen" || mode === "inline") settings.tuiMode = mode;
+		const { notify, title } = tui as Record<string, unknown>;
+		if (notify === "auto" || notify === "off") settings.tuiNotify = notify;
+		if (typeof title === "boolean") settings.tuiTitle = title;
+	}
+	const session = raw.session;
+	if (typeof session === "object" && session !== null) {
+		const autoTitle = (session as Record<string, unknown>).autoTitle;
+		if (typeof autoTitle === "boolean") settings.autoTitle = autoTitle;
 	}
 	const audit = raw.audit;
 	if (typeof audit === "object" && audit !== null) {

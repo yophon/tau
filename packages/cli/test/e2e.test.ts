@@ -48,6 +48,8 @@ function startCli(
 		// permission tests override with an explicit --permission-mode flag
 		// (flags take precedence over the env).
 		TAU_PERMISSION_MODE: "autonomous",
+		// A session title request would take the next scripted response (P34f).
+		TAU_AUTO_TITLE: "0",
 		...options.env,
 	};
 	for (const key of Object.keys(env)) if (env[key] === undefined) delete env[key];

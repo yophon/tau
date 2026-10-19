@@ -83,11 +83,50 @@ const spanText = (part: Span, colors: boolean) => styled(part.text, part, colors
 
 /** One <Text> of spans, wrapped to `width` as Ink wraps it; empty text takes no rows (Ink measures it as 0 tall). */
 export function wrapLine(line: StyledLine, width: number, colors = true, outer: TextStyle = {}): string[] {
-	const text = styled(line.map((part) => spanText(part, colors)).join(""), outer, colors);
+	const text = expandTabs(styled(line.map((part) => spanText(part, colors)).join(""), outer, colors));
 	if (text === "") return [];
 	// A line that fits comes back unchanged.
 	if (!text.includes("\n") && visibleWidth(text) <= width) return [text];
 	return wrapText(text, Math.max(1, width)).split("\n");
+}
+
+export const TAB_WIDTH = 4;
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: SGR codes are what this skips
+const SGR_RUN = /\x1b\[[0-9;]*m/y;
+
+/**
+ * Tabs as spaces up to the next stop (P34): string-width counts a tab as no cells while the
+ * terminal moves to a tab stop, so a row with tabs (read's numbered lines) was measured too
+ * narrow and lost characters at its end.
+ */
+export function expandTabs(text: string): string {
+	if (!text.includes("\t")) return text;
+	let out = "";
+	let col = 0;
+	for (let i = 0; i < text.length; ) {
+		SGR_RUN.lastIndex = i;
+		const code = SGR_RUN.exec(text);
+		if (code) {
+			out += code[0];
+			i += code[0].length;
+			continue;
+		}
+		const ch = String.fromCodePoint(text.codePointAt(i) as number);
+		i += ch.length;
+		if (ch === "\t") {
+			const spaces = TAB_WIDTH - (col % TAB_WIDTH);
+			out += " ".repeat(spaces);
+			col += spaces;
+		} else if (ch === "\n") {
+			out += ch;
+			col = 0;
+		} else {
+			out += ch;
+			col += visibleWidth(ch);
+		}
+	}
+	return out;
 }
 
 /** A prefix column with a hanging indent: the prefix on the first row, its width in spaces after. */

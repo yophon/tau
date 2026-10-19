@@ -195,13 +195,34 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 		logFile: defaultLogFile(homedir()),
 		onProblem: (tone, text) => controller.notice(tone, text),
 	});
+	// P34e: the title spins while a run works, the tab shows progress (Windows Terminal).
+	const { basename } = await import("node:path");
+	const { TerminalStatus, supportsProgress } = await import("./terminal-status.ts");
+	const status = new TerminalStatus(
+		(data) => process.stdout.write(data),
+		{ title: options.terminalTitle !== false, progress: supportsProgress() },
+		() => {
+			const name = controller.state.status.sessionName;
+			const dir = basename(options.cwd) || options.cwd;
+			return name ? `tau · ${name} · ${dir}` : `tau · ${dir}`;
+		},
+	);
+	controller.setTerminalStatus(status);
 	// Bracketed paste: pasted newlines arrive inside 200~/201~ markers instead of submitting.
-	process.stdout.write("\x1b[?2004h");
+	// Focus reports (P34e): notifications only while the window is in the background.
+	process.stdout.write("\x1b[?2004h\x1b[?1004h");
+	// However the process ends, the shell must not get focus reports or our title.
+	const restoreTerminal = (): void => {
+		status.dispose();
+		process.stdout.write("\x1b[?1004l\x1b[?2004l");
+	};
+	process.once("exit", restoreTerminal);
 	try {
 		if (options.screen === "inline") await runInline(controller, render);
 		else await runFullscreen(controller, render);
 	} finally {
-		process.stdout.write("\x1b[?2004l");
+		process.off("exit", restoreTerminal);
+		restoreTerminal();
 		restoreConsole();
 	}
 }
@@ -212,7 +233,12 @@ type InkRender = typeof import("ink").render;
 async function runInline(controller: TuiController, render: InkRender): Promise<void> {
 	// Ctrl+C belongs to the TUI (interrupt, or press twice to exit).
 	const before = new Set(process.stdout.listeners("resize"));
-	const instance = render(h(App, { controller }), { exitOnCtrlC: false, patchConsole: false });
+	const { filteredStdin } = await import("./input/stdin.ts");
+	const instance = render(h(App, { controller }), {
+		stdin: filteredStdin(process.stdin, (data) => controller.filterInput(data)),
+		exitOnCtrlC: false,
+		patchConsole: false,
+	});
 	// A width change re-wraps the screen under Ink: repaint it all in one synchronized frame.
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
 	const ink = await inkFrameState(process.stdout);
@@ -259,8 +285,11 @@ async function runFullscreen(controller: TuiController, render: InkRender): Prom
 	const guard = fullscreen.restoreOnExit((data) => process.stdout.write(data));
 	const stdout = fullscreen.fullscreenStdout(process.stdout);
 	const before = new Set(process.stdout.listeners("resize"));
+	const { filteredStdin } = await import("./input/stdin.ts");
 	const instance = render(h(fullscreen.FullscreenApp, { controller, cache }), {
 		stdout,
+		// Mouse and focus reports go to the controller before Ink parses keys.
+		stdin: filteredStdin(process.stdin, (data) => controller.filterInput(data)),
 		exitOnCtrlC: false,
 		patchConsole: false,
 	});
@@ -279,7 +308,7 @@ async function runFullscreen(controller: TuiController, render: InkRender): Prom
 		await controller.start();
 		controller.notice(
 			"dim",
-			"Full screen: the wheel, PgUp/PgDn scroll · Ctrl+End jumps back down · Shift+drag selects text · tau --inline for the classic view",
+			"Full screen: wheel or PgUp/PgDn to scroll · Ctrl+F to search · drag to select and copy · click a tool to open it · tau --inline for the classic view",
 		);
 		await controller.done;
 		controller.store.flush();

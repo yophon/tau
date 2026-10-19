@@ -93,6 +93,7 @@ import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
 import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
+import { autoTitle, autoTitleOn } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSettings, writeTuiMode } from "./settings.ts";
 import { conversationLength } from "./tui/controller.ts";
 
@@ -1741,6 +1742,8 @@ async function main(): Promise<void> {
 		}
 	}
 	let recorder = store ? await SessionRecorder.open(store) : undefined;
+	/** Session ids whose title was requested (P34f). */
+	const titled = new Set<string>();
 
 	let agent = buildAgent(initialMessages, recorder);
 
@@ -1791,6 +1794,9 @@ async function main(): Promise<void> {
 			extensions,
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
+			autoTitle: autoTitleOn(userSettings.autoTitle),
+			notify: userSettings.tuiNotify ?? "auto",
+			terminalTitle: userSettings.tuiTitle !== false,
 			model: activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model,
 			modelChoices,
 			...(configuredModels.length > 0
@@ -2053,6 +2059,8 @@ async function main(): Promise<void> {
 			continue;
 		}
 		await runTurn(agent, input, readline);
+		// P34f: name the session after its first turn (in the background; failures are silent).
+		if (recorder && autoTitleOn(userSettings.autoTitle)) void autoTitle(agent, recorder, titled);
 	}
 	await extensions.notifySessionShutdown("quit", agent.extensionContext());
 	readline.close();

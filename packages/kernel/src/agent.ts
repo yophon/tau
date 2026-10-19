@@ -5,6 +5,7 @@ import {
 	type CompactionSettings,
 	type ContextUsageEstimate,
 	compactionSettingsForWindow,
+	completeText,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateProjectedContextTokens,
 	prepareCompaction,
@@ -1306,6 +1307,22 @@ export class Agent {
 				onRetryFinished: () => emit({ type: "summarization_retry_finished" }),
 			},
 		};
+	}
+
+	/**
+	 * One request with the current model and transport, outside the conversation: nothing
+	 * is recorded or added to the context, and the agent is not held (P34f: session titles).
+	 * Throws on a failed or truncated reply.
+	 */
+	async completeText(
+		systemPrompt: string,
+		prompt: string,
+		options: { maxTokens?: number; signal?: TauAbortSignal } = {},
+	): Promise<string> {
+		const result = await completeText(this.transport, systemPrompt, prompt, options.maxTokens ?? 256, options.signal, {
+			label: "Request",
+		});
+		return result.text;
 	}
 
 	/**

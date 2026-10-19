@@ -25,6 +25,8 @@ import React from "react";
 import { fakePlatform } from "../../kernel/test/helpers.ts";
 import { App } from "../src/tui/app.ts";
 import { TuiController } from "../src/tui/controller.ts";
+import { FullscreenApp } from "../src/tui/fullscreen.ts";
+import { LineCache } from "../src/tui/render/lines.ts";
 import type { ApprovalAnswer, RunTuiOptions } from "../src/tui/types.ts";
 
 export type Response = Parameters<typeof fakePlatform>[0][number];
@@ -35,6 +37,8 @@ export interface Harness {
 	repo?: JsonlSessionRepo;
 	/** Text /copy put on the clipboard. */
 	copied: string[];
+	/** Desktop notifications sent (P34e). */
+	notified: string[];
 	/** What Ctrl+G returns from the external editor. */
 	editorResult: { value: string | undefined };
 	frame(): string;
@@ -66,6 +70,8 @@ export interface HarnessOptions {
 	reloadExtensions?: Extension[];
 	/** Extra RunTuiOptions (P28: the model table hooks). */
 	tui?: Partial<RunTuiOptions>;
+	/** Render the full-screen view (P33/P34) instead of the inline one. */
+	fullscreen?: boolean;
 }
 
 export async function harness(options: HarnessOptions): Promise<Harness> {
@@ -134,9 +140,12 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		buildAgent: (messages, session, registry) => buildAgent(messages, session, registry),
 		reloadExtensions: async () => ExtensionRegistry.load(options.reloadExtensions ?? options.extensions ?? []),
 		sessionReason: initial ? "resume" : "startup",
+		// A title request would take the next scripted response: tests that want it turn it on.
+		autoTitle: false,
 		...options.tui,
 	};
 	const copied: string[] = [];
+	const notified: string[] = [];
 	const editorResult: { value: string | undefined } = { value: undefined };
 	const controller = new TuiController(tuiOptions, {
 		columns: () => 100,
@@ -147,8 +156,13 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 			return "the test clipboard";
 		},
 		editText: () => editorResult.value,
+		notify: (heading, body) => notified.push(`${heading}: ${body}`),
 	});
-	const ink = render(React.createElement(App, { controller }));
+	const ink = render(
+		options.fullscreen
+			? React.createElement(FullscreenApp, { controller, cache: new LineCache() })
+			: React.createElement(App, { controller }),
+	);
 	const cleanup = (): void => {
 		ink.unmount();
 		void controller.stop();
@@ -171,21 +185,27 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 			await pause(10);
 		}
 	};
+	// Like the TUI's filtered stdin: the controller takes terminal reports before Ink sees a read.
+	const write = (data: string): void => {
+		const rest = controller.filterInput(data);
+		if (rest !== "") ink.stdin.write(rest);
+	};
 	const type = async (text: string): Promise<void> => {
 		for (const ch of text) {
-			ink.stdin.write(ch);
+			write(ch);
 			await pause(1);
 		}
 		await pause(5);
 	};
 	const key = async (sequence: string): Promise<void> => {
-		ink.stdin.write(sequence);
+		write(sequence);
 		await pause(10);
 	};
 	return {
 		controller,
 		requests,
 		copied,
+		notified,
 		editorResult,
 		...(repo !== undefined ? { repo } : {}),
 		frame,

@@ -157,9 +157,11 @@ npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
 ```
 
 The TUI runs full screen: its own scrollable transcript on the terminal's
-alternate screen (mouse wheel, PgUp/PgDn, Ctrl+Home/Ctrl+End; Shift+drag
-selects text), redrawn cleanly when the window is resized, and written back
-to the terminal when you leave. `--inline` keeps the classic view with the
+alternate screen (mouse wheel, PgUp/PgDn, Ctrl+Home/Ctrl+End; Ctrl+F
+searches; drag to select and copy; click a tool call to open it), redrawn
+cleanly when the window is resized, and written back to the terminal when
+you leave. Sessions are named by the model after their first turn, and
+`/resume` lists them by name. `--inline` keeps the classic view with the
 history in the terminal's scrollback; to make it the default, set
 `"tui": { "mode": "inline" }` in `~/.tau/settings.json` (or pick it in
 `/settings` → Screen, or set `TAU_TUI_MODE=inline`).
