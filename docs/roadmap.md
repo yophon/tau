@@ -299,6 +299,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 866 个测试，863 通过、3 跳过；smoke-tui 二十三个场景（新增搜索、拖选复制、点开工具块、补全菜单点选、通知与标题、会话标题）在全屏和 inline 下各跑一遍都通过；pack smoke 通过；TUI 测试在 WSL Linux 上也通过。鼠标、焦点报告与 Ink 丢掉的键改为在过滤过的 stdin 里先拿走（两种模式都是）；搜索移植 pi 的语料与匹配；会话的第一条消息与消息数进了内核的 `SessionMetadata`，`Agent.completeText` 发不进会话的单次请求。顺带修了 `read` 输出的制表符让每行少显示一个字。真机验收待用户执行。偏差见规格书「实施记录」。
 
+## Phase 35 ⬜ 提问工具与用户钩子
+
+规格书（2026-10-19 确认；缺省不等待回答，钩子可批准调用，限制尽量放宽）：[specs/phase-35-ask-hooks.md](specs/phase-35-ask-hooks.md)。`ask_user` 工具：模型给出带选项的问题（可多选，缺省不等待回答），TUI 里点选或自己写，网关里是聊天消息，没人能回答的场合不提供；用户钩子：在 settings.json 里配 shell 命令，挂在工具执行前后、发出提示、一轮结束等时机，格式照抄 Claude Code。
+
 ## 产品层后续 ⬜ 待定
 
 主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
@@ -335,13 +339,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 ### E. 扩展与 TUI 候选（2026-10-19 整理，用户：「其他的想法可以先记着，后续考虑」）
 
-对照 tau 现有内置扩展、pi 1.2 的示例扩展（`packages/coding-agent/examples/extensions/`）与 Claude Code、Codex 的功能整理。建议顺序：计划模式加提问工具一组，用户钩子加改完自动诊断一组，`/review`、`/commit` 可并入其中之一。
+对照 tau 现有内置扩展、pi 1.2 的示例扩展（`packages/coding-agent/examples/extensions/`）与 Claude Code、Codex 的功能整理。2026-10-19 用户裁决：提问工具与用户钩子进 P35。
 
-- **计划模式**：先用只读工具调查、写出计划，用户批准后再动手（`/plan` 或 Shift+Tab 的一档）。参照 pi 的 plan-mode 示例、Claude Code 的同名功能。
-- **向用户提问的工具**：模型遇到不确定的地方给出带选项的问题，TUI 里是选择器，网关里是聊天消息，ACP 交给编辑器。参照 Claude Code 的 AskUserQuestion、pi 的 question/questionnaire 示例。
-- **用户钩子**：在 settings.json 里配置 shell 命令，挂在工具执行前后、一轮结束、通知等时机（Claude Code 的 hooks）；把配置映射到现有的扩展事件。
-- **改完代码自动报诊断**：edit/write 之后跑类型检查或 linter，把新出现的错误附在工具结果里；可以接 LSP，也可以先按语言跑命令。
-- **`/review` 与 `/commit`**：审当前改动或某个分支（Codex 有 `/review`）；按改动写提交说明并提交（pi 的 auto-commit 示例是退出时自动提交，这里改成手动）。
 - **预设**：一个名字打包模型、思考深度、工具集与额外说明，`--preset`、`/preset`（pi 的 preset 示例）。
 - **转交新会话**：`/handoff <目标>` 把上下文压成摘要开新会话（pi 的 handoff 示例）。
 - **受保护路径**：禁止写 `.env`、`.git/`、`node_modules/`，仓库有未提交改动时提醒（pi 的 protected-paths、dirty-repo-guard）；可并进权限配置。
@@ -349,7 +348,7 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - **扩展安装命令**：`tau install <包>` 生成 `.tau/extensions` 里的导入文件；有外部扩展之后再做。
 - **提示里内联命令**：`!{git diff}` 发送前展开成命令输出（pi 的 inline-bash 示例）。
 - **TUI 余项**（P33、P34 范围外）：滚动条、Ctrl+Z 挂起、按终端类型自动退回 inline、复制开关。
-- 不做：自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
+- 不做：计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；改完自动诊断（用户在钩子里配类型检查即可）；`/review`、`/commit`；自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
 
 ## 技术债登记
 
