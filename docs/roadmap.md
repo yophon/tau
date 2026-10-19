@@ -293,6 +293,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 829 个测试，826 通过、3 跳过；smoke-tui 十七个场景（新增全屏的调整大小、滚动、退出、SIGTERM）在全屏和 inline 下各跑一遍都通过，CI 两遍都跑；pack smoke 通过；TUI 测试在 WSL Linux 上也通过。块按宽度渲染成行（`blockLines`，与改造前的 Ink 渲染逐行对比 105 个用例），折行移植 wrap-ansi（逐字节相同，快 27 倍），跟随底部时只渲染末尾的块：200 轮的对话里调整宽度一次 0.5–3 毫秒。顺带修了自 P25 起退出 TUI 时进程以退出码 13 结束（没关括号粘贴），以及 Ink 写到 stderr 的光标序列被当成警告。真机验收中发现调整大小时偶尔闪一下（先清屏、再等 Ink 节流后的帧），改为每帧整屏重画、调整大小时立刻出帧后，用户在 Windows Terminal 验收通过。偏差见规格书「实施记录」。
 
+## Phase 34 ⬜ 全屏 TUI 的交互补全与会话标题
+
+规格书草拟：[specs/phase-34-fullscreen-interaction.md](specs/phase-34-fullscreen-interaction.md)。P33 之后 pi 全屏里有、tau 还没有的四样：Ctrl+F 搜索对话；拖选、双击、三击后松开即复制（不再按 Shift）；单击工具标题行只展开这一块，Ctrl+↑/↓ 按你发的消息跳转；运行时标题转圈、Windows Terminal 标签进度，窗口不在前台时跑完或等审批发桌面通知；会话标题（第一轮后模型自动起，`/resume` 列表显示标题、多久以前、几条消息，不再显示 id）；补全菜单与选择器列全、可滚动，全屏下能用鼠标点选（原来输入 `/` 只列 8 个命令）。
+
 ## 产品层后续 ⬜ 待定
 
 主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
@@ -312,6 +316,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 ### C. 已裁决推迟
 
+- 0.4.0 发版（P22–P33）：2026-10-19 用户裁决推迟，现在没有外部用户；技术债 #13 的首发随之推迟
+
 - P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
 - P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
@@ -324,6 +330,24 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - **主动模式**：没人布置任务、模型自己定期醒来看看有没有该说的（P31 移出，D35）。业界做法是只读工具、限频、限预算，结果只进收件箱不外发。等定时任务用一段时间、看清实际用法后再定边界。
 - **微信群聊**：P30 跳过（每个群只记一次日志）。待定的是群里的触发方式（@ 才回？）和群级权限。
 - **运行预算**：每天的 token 上限、每个任务每天最多跑几次，超了暂停定时任务并通知主人。运行记录部分并入 P32 的审计考虑。
+
+### E. 扩展与 TUI 候选（2026-10-19 整理，用户：「其他的想法可以先记着，后续考虑」）
+
+对照 tau 现有内置扩展、pi 1.2 的示例扩展（`packages/coding-agent/examples/extensions/`）与 Claude Code、Codex 的功能整理。建议顺序：计划模式加提问工具一组，用户钩子加改完自动诊断一组，`/review`、`/commit` 可并入其中之一。
+
+- **计划模式**：先用只读工具调查、写出计划，用户批准后再动手（`/plan` 或 Shift+Tab 的一档）。参照 pi 的 plan-mode 示例、Claude Code 的同名功能。
+- **向用户提问的工具**：模型遇到不确定的地方给出带选项的问题，TUI 里是选择器，网关里是聊天消息，ACP 交给编辑器。参照 Claude Code 的 AskUserQuestion、pi 的 question/questionnaire 示例。
+- **用户钩子**：在 settings.json 里配置 shell 命令，挂在工具执行前后、一轮结束、通知等时机（Claude Code 的 hooks）；把配置映射到现有的扩展事件。
+- **改完代码自动报诊断**：edit/write 之后跑类型检查或 linter，把新出现的错误附在工具结果里；可以接 LSP，也可以先按语言跑命令。
+- **`/review` 与 `/commit`**：审当前改动或某个分支（Codex 有 `/review`）；按改动写提交说明并提交（pi 的 auto-commit 示例是退出时自动提交，这里改成手动）。
+- **预设**：一个名字打包模型、思考深度、工具集与额外说明，`--preset`、`/preset`（pi 的 preset 示例）。
+- **转交新会话**：`/handoff <目标>` 把上下文压成摘要开新会话（pi 的 handoff 示例）。
+- **受保护路径**：禁止写 `.env`、`.git/`、`node_modules/`，仓库有未提交改动时提醒（pi 的 protected-paths、dirty-repo-guard）；可并进权限配置。
+- **远程执行**：工具跑在另一台机器上，会话与凭据留在本地（pi 的 ssh 示例与 pi-env）；与 D 组的 bash 沙箱、网关放在哪台机器一起考虑。
+- **扩展安装命令**：`tau install <包>` 生成 `.tau/extensions` 里的导入文件；有外部扩展之后再做。
+- **提示里内联命令**：`!{git diff}` 发送前展开成命令输出（pi 的 inline-bash 示例）。
+- **TUI 余项**（P33、P34 范围外）：滚动条、Ctrl+Z 挂起、按终端类型自动退回 inline、复制开关。
+- 不做：自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
 
 ## 技术债登记
 
