@@ -5,6 +5,7 @@
  * stays a thin view (the logic the P8 TUI kept in one closure).
  */
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,7 @@ import {
 } from "@yophon/tau-kernel";
 import { autoTitle } from "../session-title.ts";
 import { copyToClipboard } from "./clipboard.ts";
+import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
 import { commandList, runCommand } from "./commands.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, shortPath, type Tone } from "./format.ts";
@@ -55,6 +57,16 @@ import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import { blockAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
 import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "./types.ts";
+
+/** Image types models take as they are (P36b); others are converted to PNG before saving. */
+const PASTEABLE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+
+/** A pasted image as `tau-clipboard-<uuid>.<ext>` in the system temp directory (pi); returns the path. */
+function saveClipboardImage(bytes: Uint8Array, extension: string): string {
+	const path = join(tmpdir(), `tau-clipboard-${randomUUID()}.${extension}`);
+	writeFileSync(path, bytes);
+	return path;
+}
 
 const ARM_WINDOW_MS = 3000;
 
@@ -260,6 +272,12 @@ export class TuiController {
 		// session_start after the host actions are in place (P23e, pi bindExtensions order).
 		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
 		await this.refreshSurfaces();
+		// Command-line prompts (P36c, pi initialMessage + initialMessages): the first now, the rest after it.
+		const [first, ...rest] = this.options.initialPrompts ?? [];
+		if (first !== undefined) {
+			this.pendingStarts.push(...rest);
+			void this.runPrompt(first);
+		}
 	}
 
 	async stop(): Promise<void> {
@@ -1115,6 +1133,9 @@ export class TuiController {
 			case "external-editor":
 				this.openExternalEditor();
 				return;
+			case "paste-clipboard":
+				void this.pasteClipboard();
+				return;
 			case "history-prev":
 				this.historyPrev();
 				return;
@@ -1123,6 +1144,49 @@ export class TuiController {
 				return;
 			default:
 				return;
+		}
+	}
+
+	/**
+	 * The paste key (P36b, pi handleClipboardPaste): copied files go in as their paths
+	 * (one per line, or quoted on one line in a `!` command), an image is saved to a
+	 * temporary file and its path goes in (the model reads it), else the text.
+	 */
+	async pasteClipboard(): Promise<void> {
+		try {
+			const content = await (this.deps.readClipboard ?? readClipboard)();
+			if (!content) return;
+			if (content.kind === "text") {
+				this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(content.text))));
+				return;
+			}
+			let inserted: string;
+			if (content.kind === "files") {
+				if (content.paths.some((path) => /\p{Cc}/u.test(path))) {
+					throw new Error("Clipboard file path contains control characters");
+				}
+				inserted = this.state.editor.text.trimStart().startsWith("!")
+					? content.paths.map(quoteIfNeeded).join(" ")
+					: content.paths.join("\n");
+				const { text, cursor } = this.state.editor;
+				const before = text[cursor - 1] ?? "";
+				const after = text[cursor] ?? "";
+				inserted = `${before && !/\s/.test(before) ? " " : ""}${inserted}${after && !/\s/.test(after) ? " " : ""}`;
+			} else {
+				let { bytes, mimeType } = content;
+				if (!PASTEABLE_IMAGES.has(mimeType)) {
+					// The Windows DIB/BMP kind: models take none of these (pi converts to PNG).
+					const { convertImageToPng } = await import("@yophon/tau-host-node");
+					const png = await convertImageToPng(bytes);
+					if (!png) throw new Error(`unsupported image type ${mimeType}`);
+					bytes = png;
+					mimeType = "image/png";
+				}
+				inserted = (this.deps.saveImage ?? saveClipboardImage)(bytes, imageExtension(mimeType));
+			}
+			this.setEditor(ed.insert(this.state.editor, inserted));
+		} catch (error) {
+			this.notice("error", `Failed to paste from clipboard: ${errorText(error)}`);
 		}
 	}
 

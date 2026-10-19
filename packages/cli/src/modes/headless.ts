@@ -9,6 +9,7 @@ import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
+	type BackgroundShell,
 	type ExtensionRegistry,
 	messageText,
 	type PermissionMode,
@@ -36,6 +37,8 @@ export interface HeadlessWorkspace {
 		): Promise<SessionStore>;
 	};
 	shell: Shell;
+	/** P36a: the workspace's background commands (RPC lists and stops them). */
+	background?: BackgroundShell;
 	buildAgent(
 		messages: AgentMessage[] | undefined,
 		session: SessionRecorder | undefined,

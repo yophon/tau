@@ -188,7 +188,8 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 			getInlineBudget: () => state.codemode.inlineBudget,
 		}),
 		// P26b: subagents (single, parallel, chain, background) over agent definitions; active by default.
-		createSubagentsExtension(),
+		// Its /tasks is replaced by the CLI's, which also lists background commands (P36a).
+		createSubagentsExtension({ tasksCommand: false }),
 		// P26c: the todo list and long-term memory.
 		todoExtension,
 		createMemoryExtension(() => options.memory ?? state.memory),

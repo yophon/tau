@@ -305,6 +305,12 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 896 个测试，893 通过、3 跳过；check、pack smoke 通过；smoke-tui 新增 ask-user、hooks 两个场景，全部场景在全屏和 inline 下各跑一遍都通过。真 DeepSeek 验收：经 RPC 让模型用 `ask_user` 问按钮颜色，模型问完结束这一轮，回答以 `[Answer q1]` 送达后开始新的一轮并按答案写出 CSS；`-p` 下 PreToolUse 钩子（Claude Code 写法的 `"matcher": "Bash"`）拦下 `rm`、模型转述理由，PostToolUse 的补充信息到达模型。顺带修了 NodeShell 转给 cmd.exe 的命令丢引号的老问题。D38。真机验收待用户执行。偏差见规格书「实施记录」。
 
+## Phase 36 ✅ 后台命令与图片输入（2026-10-19）
+
+规格书（2026-10-19 确认；开放问题全部按建议，用户指出 DeepSeek V4.1 Flash 已原生支持图片）：[specs/phase-36-background-images.md](specs/phase-36-background-images.md)。后台命令照抄 Claude Code（pi 没有）：`bash` 的 `run_in_background` 立即返回任务编号和输出文件，模型用 `read` 看输出，命令结束时作为消息通知模型，`task_stop` 结束，`/tasks` 查看与结束，tau 退出时全部结束。图片照抄 pi：Alt+V（或 Ctrl+V）粘贴，复制的文件插入路径、图片存成临时文件插入路径，由模型 `read`；`tau @shot.png "问题"` 带文件；`read` 读大图先缩小（photon），BMP 转 PNG，模型不收图片时写明。
+
+**完成记录**：全量测试、check、pack smoke（新增 host-node 从发布包缩图与跑后台命令）通过；smoke-tui 新增 background 场景，全部二十六个场景在全屏和 inline 下各跑一遍都通过。真 DeepSeek（官方 `deepseek-flash`）验收：后台启动服务器、读输出文件拿端口、`curl`、`task_stop`；`read` 看 4000×3000 的图（缩成 2000×1500，模型答对形状、颜色并换算坐标）；`@shot.png` 答对。验收中发现并照 pi 修了 OpenAI 兼容线上工具结果图片被换成 `[image omitted]`；models.json 的 `input` 现在也用到请求上（没写 = 只收文字，pi 同）；内核加了 pi 的扩展间事件总线 `api.events`。D39。真机验收待用户执行（Windows 上真实的 Alt+V 粘贴截图我这边无权读剪贴板，未能实测）。偏差见规格书「实施记录」。
+
 ## 产品层后续 ⬜ 待定
 
 主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
@@ -329,7 +335,7 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
 - P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
 - pi parity 延期小项：compact `overflow` reason、`before_tree` 的 label/userWantsSummary（session_before_switch/deliverAs/ctx.abort 已于 P11 完成）
-- pi parity 📍Backlog 行（P21）：`before_provider_request`/`after_provider_response`、`provider_stream_event`、`ui_prompt_start/end`、`registerMarkdownTransformer`、`pi.events`
+- pi parity 📍Backlog 行（P21）：`before_provider_request`/`after_provider_response`、`provider_stream_event`、`ui_prompt_start/end`、`registerMarkdownTransformer`（`pi.events` 已于 P36 完成）
 - MCP 2026-07-28 新规范适配（pi 1.2.0 仍协商 2025-11-25，单独立项）
 
 ### D. 产品层候选（2026-10-19 用户：「先不着急，记下来」）

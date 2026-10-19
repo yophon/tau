@@ -48,3 +48,45 @@ export interface Shell {
 		},
 	): Promise<ShellExecResult>;
 }
+
+/** One command started with `bash` run_in_background (P36a, Claude Code's background tasks). */
+export interface BackgroundTaskInfo {
+	/** "b1", "b2", … */
+	id: string;
+	command: string;
+	/** What the command does, in a few words (bash `description`). */
+	description?: string;
+	/** stdout and stderr, in arrival order, for as long as the command runs. */
+	outputPath: string;
+	pid?: number;
+	status: "running" | "completed" | "failed" | "killed";
+	exitCode?: number;
+	startedAt: number;
+	endedAt?: number;
+}
+
+/**
+ * Background command capability (P36a). The host starts the process, writes its
+ * output to a file and stops it on request; hosts without one offer no
+ * run_in_background and no task_stop.
+ */
+export interface BackgroundShell {
+	/** Start a command and return at once. */
+	start(command: string, options?: { cwd?: string; description?: string }): Promise<BackgroundTaskInfo>;
+	/** Stop a running task and its child processes. Rejects for unknown or finished ids. */
+	stop(id: string): Promise<BackgroundTaskInfo>;
+	list(): BackgroundTaskInfo[];
+}
+
+/** pi ProcessImageResult: an image ready to send (base64), or why it cannot be. */
+export type ProcessedImage =
+	| { ok: true; data: string; mimeType: string; hints: string[] }
+	| { ok: false; message: string };
+
+/**
+ * Image processing capability (P36d, pi processImage): convert formats models do
+ * not take (BMP) and shrink images over the inline limits. The kernel has no codec.
+ */
+export interface ImageProcessor {
+	process(bytes: Uint8Array, mimeType: string): Promise<ProcessedImage>;
+}

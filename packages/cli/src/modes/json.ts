@@ -5,7 +5,7 @@
  * one to ask, so calls that would need approval are denied (headless D20).
  */
 import { randomUUID } from "node:crypto";
-import type { Agent, ExtensionRegistry, SessionStore } from "@yophon/tau-kernel";
+import type { Agent, ExtensionRegistry, SessionStore, UserContent } from "@yophon/tau-kernel";
 import { agentEventRecord, sessionEventStream } from "./events.ts";
 import type { RecordWriter } from "./jsonl.ts";
 
@@ -14,7 +14,7 @@ export interface JsonModeOptions {
 	extensions: ExtensionRegistry;
 	store: SessionStore | undefined;
 	cwd: string;
-	prompt: string;
+	prompt: UserContent;
 	sessionReason: "startup" | "resume";
 	out: RecordWriter;
 }

@@ -39,7 +39,15 @@ export interface SubagentsOptions {
 	maxTurnsPerPrompt?: number;
 	/** Override where agent definitions are looked up (defaults come from ctx.capabilities.paths). */
 	directories?: AgentDirectories;
+	/**
+	 * Register /tasks (default true). A host that lists background subagents together with
+	 * its own background work turns it off and follows {@link SUBAGENT_TASK_CHANNEL} instead.
+	 */
+	tasksCommand?: boolean;
 }
+
+/** Event bus channel (api.events) carrying a {@link BackgroundTask} copy whenever one starts or ends (P36a). */
+export const SUBAGENT_TASK_CHANNEL = "subagents:task";
 
 interface Step {
 	agent: string;
@@ -267,6 +275,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 										startedAt: Date.now(),
 									};
 									background.set(id, record);
+									api.events.emit(SUBAGENT_TASK_CHANNEL, { ...record });
 									const controller = new AbortController();
 									controllers.add(controller);
 									started.push(`${id} (${step.agent})`);
@@ -284,6 +293,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 										.finally(() => {
 											controllers.delete(controller);
 											record.endedAt = Date.now();
+											api.events.emit(SUBAGENT_TASK_CHANNEL, { ...record });
 											if (controller.signal.aborted) return;
 											api.sendMessage(
 												{
@@ -388,25 +398,26 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 			},
 		});
 
-		api.registerCommand("tasks", {
-			description: "Show background subagents and their results",
-			handler: async (_args, ctx) => {
-				const list = [...background.values()];
-				if (list.length === 0) return "No background subagents in this session.";
-				const label = (task: BackgroundTask): string => {
-					const seconds = Math.round(((task.endedAt ?? Date.now()) - task.startedAt) / 1000);
-					return `${task.status === "running" ? "◐" : task.status === "done" ? "●" : "✗"} ${task.id} ${task.agent} · ${task.status} · ${seconds}s · ${firstLine(task.task, 50)}`;
-				};
-				if (!ctx.ui) return list.map(label).join("\n");
-				const labels = list.map(label);
-				const picked = await ctx.ui.select("Background subagents", labels);
-				const task = picked === undefined ? undefined : list[labels.indexOf(picked)];
-				if (!task) return undefined;
-				return task.status === "running"
-					? `${task.id} is still running: ${task.task}`
-					: `${task.id} (${task.agent}) ${task.status}:\n\n${task.result ?? ""}`;
-			},
-		});
+		if (options.tasksCommand !== false)
+			api.registerCommand("tasks", {
+				description: "Show background subagents and their results",
+				handler: async (_args, ctx) => {
+					const list = [...background.values()];
+					if (list.length === 0) return "No background subagents in this session.";
+					const label = (task: BackgroundTask): string => {
+						const seconds = Math.round(((task.endedAt ?? Date.now()) - task.startedAt) / 1000);
+						return `${task.status === "running" ? "◐" : task.status === "done" ? "●" : "✗"} ${task.id} ${task.agent} · ${task.status} · ${seconds}s · ${firstLine(task.task, 50)}`;
+					};
+					if (!ctx.ui) return list.map(label).join("\n");
+					const labels = list.map(label);
+					const picked = await ctx.ui.select("Background subagents", labels);
+					const task = picked === undefined ? undefined : list[labels.indexOf(picked)];
+					if (!task) return undefined;
+					return task.status === "running"
+						? `${task.id} is still running: ${task.task}`
+						: `${task.id} (${task.agent}) ${task.status}:\n\n${task.result ?? ""}`;
+				},
+			});
 	};
 }
 

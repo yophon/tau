@@ -27,7 +27,7 @@ import { App } from "../src/tui/app.ts";
 import { TuiController } from "../src/tui/controller.ts";
 import { FullscreenApp } from "../src/tui/fullscreen.ts";
 import { LineCache } from "../src/tui/render/lines.ts";
-import type { ApprovalAnswer, RunTuiOptions } from "../src/tui/types.ts";
+import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "../src/tui/types.ts";
 
 export type Response = Parameters<typeof fakePlatform>[0][number];
 
@@ -72,6 +72,8 @@ export interface HarnessOptions {
 	tui?: Partial<RunTuiOptions>;
 	/** Render the full-screen view (P33/P34) instead of the inline one. */
 	fullscreen?: boolean;
+	/** Extra TuiDeps (P36b: the clipboard). */
+	deps?: Partial<TuiDeps>;
 }
 
 export async function harness(options: HarnessOptions): Promise<Harness> {
@@ -157,6 +159,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		},
 		editText: () => editorResult.value,
 		notify: (heading, body) => notified.push(`${heading}: ${body}`),
+		...options.deps,
 	});
 	const ink = render(
 		options.fullscreen

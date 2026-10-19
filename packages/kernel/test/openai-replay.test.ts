@@ -250,3 +250,59 @@ test("tool-call fragments without index are attributed by id, never merged (pi e
 	);
 	assert.equal(final?.rawStopReason, "tool_calls");
 });
+
+test("tool result images ride in a user message after the results; text-only models get the placeholder (P36d, pi)", async () => {
+	const history: AgentMessage[] = [
+		{ role: "user", content: "look", timestamp: 1 },
+		assistant({
+			stopReason: "toolUse",
+			content: [
+				{ type: "toolCall", id: "c1", name: "read", arguments: { path: "a.png" } },
+				{ type: "toolCall", id: "c2", name: "read", arguments: { path: "b.txt" } },
+			],
+		}),
+		{
+			role: "toolResult",
+			toolCallId: "c1",
+			toolName: "read",
+			content: [{ type: "image", data: "QUJD", mimeType: "image/png" }],
+			isError: false,
+			timestamp: 2,
+		},
+		{
+			role: "toolResult",
+			toolCallId: "c2",
+			toolName: "read",
+			content: [{ type: "text", text: "hello" }],
+			isError: false,
+			timestamp: 3,
+		},
+	];
+	const send = async (input?: ("text" | "image")[]) => {
+		const requests: unknown[] = [];
+		for await (const _event of streamChatCompletion(
+			fakePlatform([makeSseResponse(textTurn("ok"))], requests),
+			{ baseUrl: "https://fake.test/v1", model: "fake", ...(input ? { input } : {}) },
+			history,
+		)) {
+			// drain
+		}
+		return wireMessages(requests[0]).slice(-3);
+	};
+	assert.deepEqual(await send(), [
+		{ role: "tool", tool_call_id: "c1", content: "(see attached image)" },
+		{ role: "tool", tool_call_id: "c2", content: "hello" },
+		{
+			role: "user",
+			content: [
+				{ type: "text", text: "Attached image(s) from tool result:" },
+				{ type: "image_url", image_url: { url: "data:image/png;base64,QUJD" } },
+			],
+		},
+	]);
+	const textOnly = await send(["text"]);
+	assert.deepEqual(textOnly.slice(1), [
+		{ role: "tool", tool_call_id: "c1", content: "(tool image omitted: model does not support images)" },
+		{ role: "tool", tool_call_id: "c2", content: "hello" },
+	]);
+});

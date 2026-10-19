@@ -20,9 +20,12 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   （`ChatTransport`）：`--provider anthropic` 原生说 Anthropic Messages 协议——
   thinking 原生流式（带 signature）、prompt 缓存（`cache_control`）、工具结果
   携带图片、cacheRead/cacheWrite 真实用量。
-- **编码工具**——read（文本与图片）、write、edit（一次调用做多处精确替换）、
-  bash，以及纯 ES 实现、走宿主文件系统的 grep / find / ls（照 `.gitignore`
-  过滤，所有宿主可用，包括 OPFS）。CLI 另带 `todo_write`（TUI 里显示清单）、
+- **编码工具**——read（文本与图片，大图照 pi 缩小）、write、edit（一次调用做多处
+  精确替换）、bash（`run_in_background` 跑开发服务器、监听这类不结束的命令：
+  模型读输出文件看进度，命令结束会收到通知，用 `task_stop` 结束；`/tasks`
+  查看），以及纯 ES 实现、走宿主文件系统的 grep / find / ls（照 `.gitignore`
+  过滤，所有宿主可用，包括 OPFS）。TUI 里按 Alt+V 粘贴截图，或者
+  `tau @shot.png "这里为什么错位"`，模型就能看图。CLI 另带 `todo_write`（TUI 里显示清单）、
   关于你和关于项目的长期记忆（`memory_write`，TUI 里输入 `#事实`，见
   [docs/memory.md](docs/memory.md)）、在历史会话里查找的 `session_search`、`web_fetch` /
   `web_search`、`ask_user`（带选项的提问；缺省模型问完接着干，你什么时候答、
@@ -165,7 +168,7 @@ Ctrl+Home/Ctrl+End；Ctrl+F 搜索；拖动选中即复制；点工具调用展�
       "baseUrl": "https://api.deepseek.com/v1",
       "api": "openai-completions",
       "apiKey": "$DEEPSEEK_API_KEY",
-      "models": [{ "id": "deepseek-chat", "contextWindow": 128000, "cost": { "input": 0.27, "output": 1.1 } }]
+      "models": [{ "id": "deepseek-flash", "input": ["text", "image"], "contextWindow": 1000000 }]
     },
     "anthropic": {
       "api": "anthropic-messages",
@@ -176,8 +179,8 @@ Ctrl+Home/Ctrl+End；Ctrl+F 搜索；拖动选中即复制；点工具调用展�
 }
 ```
 
-写了上下文窗口就有自动压缩和上下文占用显示；`cost`（美元/百万 token）用来算会话
-费用。`/model` 列出所有密钥可用的模型，会话中途可以切换，协议不同也行；选择器里
+写了上下文窗口就有自动压缩和上下文占用显示；`cost`（美元/百万 token，如 `{ "input": 0.27, "output": 1.1 }`）用来算会话
+费用；`input` 说明模型收不收图片（与 pi 一样，没写就当只收文字，图片变成占位文字）。`/model` 列出所有密钥可用的模型，会话中途可以切换，协议不同也行；选择器里
 按 Ctrl+S 存为缺省（写进 `~/.tau/settings.json` 的 `defaultProvider` /
 `defaultModel`）。启动时用 `-m 供应商/模型` 指定。有可用的模型表时，
 `TAU_BASE_URL` 这类环境变量不再参与；`-b` / `-k` / `--provider` 仍然走临时端点。

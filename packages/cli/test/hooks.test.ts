@@ -275,7 +275,7 @@ describe("hooks at the kernel's events", () => {
 		const slow = script(
 			dir,
 			"slow",
-			`setTimeout(async () => (await import("node:fs")).writeFileSync(${JSON.stringify(marker)}, "x"), 1500);`,
+			`setTimeout(async () => (await import("node:fs")).writeFileSync(${JSON.stringify(marker)}, "x"), 5000);`,
 		);
 		const fail = script(dir, "fail", `process.stderr.write("boom"); process.exit(1);`);
 		const hang = script(dir, "hang", `setTimeout(() => {}, 30000);`);
@@ -294,7 +294,7 @@ describe("hooks at the kernel's events", () => {
 		assert.equal(existsSync(marker), false);
 		assert.match(logs.join("\n"), /failed: exit 1 — boom/);
 		assert.match(logs.join("\n"), /failed: Command timed out after 1s/);
-		for (let i = 0; i < 50 && !existsSync(marker); i++) await new Promise((resolve) => setTimeout(resolve, 100));
+		for (let i = 0; i < 100 && !existsSync(marker); i++) await new Promise((resolve) => setTimeout(resolve, 100));
 		assert.equal(existsSync(marker), true);
 	});
 

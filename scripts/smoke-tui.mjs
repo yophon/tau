@@ -48,6 +48,7 @@ async function main() {
 		await run("session-title", runSessionTitleSmoke);
 		await run("ask-user", runAskUserSmoke);
 		await run("hooks", runHooksSmoke);
+		await run("background", runBackgroundSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -794,6 +795,33 @@ async function runHooksSmoke(root, baseUrl) {
 	}
 }
 
+// P36a: a background command shows above the input, /tasks stops it; one that ends on its own tells the model.
+async function runBackgroundSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "background", false);
+	const session = await startTui("background", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("bg smoke", "Enter");
+		await session.waitFor("SMOKE_BG_STARTED", 10_000);
+		await session.waitFor("1 background command", 10_000);
+		await session.send("/tasks", "Enter");
+		await session.waitFor("b1 running", 10_000);
+		await session.send("Enter");
+		await session.waitFor("View output", 10_000);
+		await session.send("Down");
+		await sleep(200);
+		await session.send("Enter");
+		await session.waitFor("Stopped b1 (smoke ticker).", 10_000);
+		await session.send("bg end smoke", "Enter");
+		await session.waitFor("SMOKE_BG_NOTIFIED", 15_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok background");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P34e: with the window in the background, a finished run sends a notification; the title spins.
 async function runNotifySmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "notify", false);
@@ -1108,6 +1136,8 @@ function responseFor(request) {
 		if (content.includes("APPROVAL_RAN_42")) return textTurn(`SMOKE_APPROVAL_DONE_${++approvalDoneCount}`);
 		if (content.includes("Denied by policy")) return textTurn(`SMOKE_APPROVAL_DENIED_${++approvalDenyCount}`);
 		if (content.includes("Question q1 sent")) return textTurn("SMOKE_ASK_CONTINUED");
+		if (content.includes("Command running in background with ID: b1")) return textTurn("SMOKE_BG_STARTED");
+		if (content.includes("Command running in background with ID: b2")) return textTurn("SMOKE_BG_SECOND");
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
 	}
 	const lastUser = messages.findLast((message) => message.role === "user");
@@ -1123,6 +1153,19 @@ function responseFor(request) {
 		});
 	}
 	if (content.includes("hook smoke")) return toolCallTurn("bash", { command: "echo HOOK_BLOCK_ME" });
+	if (JSON.stringify(lastUser?.content ?? "").includes("[Background task b2 completed: exit code 0]")) {
+		return textTurn("SMOKE_BG_NOTIFIED");
+	}
+	if (content.includes("bg end smoke")) {
+		return toolCallTurn("bash", { command: "sleep 1; echo BG_DONE_OUT", run_in_background: true });
+	}
+	if (content.includes("bg smoke")) {
+		return toolCallTurn("bash", {
+			command: "while true; do echo BG_TICK; sleep 1; done",
+			run_in_background: true,
+			description: "smoke ticker",
+		});
+	}
 	if (content.includes("stream smoke")) return textTurn("SMOKE_STREAM_OK", 40);
 	if (content === "SCOUT_TASK") return textTurn("RESULT_SCOUT", 40);
 	if (content === "WORKER_TASK") return textTurn("RESULT_WORKER", 40);

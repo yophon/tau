@@ -307,6 +307,16 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					session.abort();
 					respond(id, type);
 					return;
+				// P36a: background commands the model started (tau addition, for editor clients).
+				case "list_background_tasks":
+					respond(id, type, { tasks: session.options.workspace.background?.list() ?? [] });
+					return;
+				case "stop_background_task": {
+					const background = session.options.workspace.background;
+					if (!background) throw new Error("This workspace has no background commands.");
+					respond(id, type, { task: await background.stop(text(command.taskId, "taskId")) });
+					return;
+				}
 				case "get_session_stats": {
 					const usage = session.agent.getSessionUsage();
 					const messages = session.agent.messages;

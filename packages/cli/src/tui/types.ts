@@ -11,13 +11,17 @@ import type {
 	Shell,
 	ThinkingLevel,
 	UiCapability,
+	UserContent,
 } from "@yophon/tau-kernel";
+import type { ClipboardContent } from "./clipboard-read.ts";
 
 export type ApprovalAnswer = "once" | "always" | "deny";
 
 /** What main.ts hands the TUI (the same shape the P8 TUI took). */
 export interface RunTuiOptions {
 	agent: Agent;
+	/** P36c: prompts from the command line (`tau @shot.png "why"`), run one after another at start. */
+	initialPrompts?: UserContent[];
 	extensions: ExtensionRegistry;
 	model: string;
 	modelChoices?: string[];
@@ -88,4 +92,8 @@ export interface TuiDeps {
 	readBranch?: (cwd: string) => string | undefined;
 	/** A desktop notification (P34e); defaults to notifyDesktop. */
 	notify?: (heading: string, body: string) => void;
+	/** The paste key (P36b); defaults to readClipboard. */
+	readClipboard?: () => Promise<ClipboardContent | undefined>;
+	/** Where a pasted image is saved; defaults to the system temp directory. */
+	saveImage?: (bytes: Uint8Array, extension: string) => string;
 }

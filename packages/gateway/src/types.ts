@@ -126,12 +126,17 @@ export interface RunResult {
 export interface Conversation {
 	run(input: ConversationInput): Promise<RunResult>;
 	abort(): void;
-	/** Gateway-level commands the session carries out: new, mode, model, compact. Returns the reply text. */
-	command(name: "new" | "mode" | "model" | "compact", args: string): Promise<string>;
+	/**
+	 * Gateway-level commands the session carries out: new, mode, model, compact, and
+	 * (P36a) tasks, which answers at once, also while a run is going. Returns the reply text.
+	 */
+	command(name: "new" | "mode" | "model" | "compact" | "tasks", args: string): Promise<string>;
 	/** One line for /status. */
 	describe(): string;
-	/** Unload: session_shutdown, extensions closed. */
+	/** Unload: session_shutdown, extensions closed, background commands stopped. */
 	close(): Promise<void>;
+	/** P36a: work still going on between runs (background commands): an idle conversation that is busy stays loaded. */
+	busy?(): boolean;
 }
 
 export interface ConversationHooks {

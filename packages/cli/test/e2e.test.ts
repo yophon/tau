@@ -1275,3 +1275,85 @@ test("--tools +codemode runs a script that reads files; codemode stays undeclare
 		}
 	});
 });
+
+test("@file arguments and further messages in -p (P36c, pi)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await writeFile(join(cwd, "note.txt"), "the build is red");
+		await writeFile(
+			join(cwd, "dot.png"),
+			Buffer.from(
+				"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+				"base64",
+			),
+		);
+		const mock = await startMockOpenAI([() => mockTextTurn("first answer"), () => mockTextTurn("second answer")]);
+		try {
+			const cli = startCli(["-p", "why?", "@note.txt", "@dot.png", "and then?"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+			});
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			assert.equal(mock.requests.length, 2, cli.output());
+			const firstUser = (mock.requests[0].messages as { role: string; content: unknown }[]).find(
+				(message) => message.role === "user",
+			);
+			const parts = firstUser?.content as { type: string; text?: string; image_url?: { url: string } }[];
+			assert.ok(Array.isArray(parts), JSON.stringify(firstUser));
+			assert.match(
+				parts[0].text ?? "",
+				/<file name=".*note\.txt">\nthe build is red\n<\/file>\n<file name=".*dot\.png"><\/file>\nwhy\?$/,
+			);
+			assert.match(parts[1].image_url?.url ?? "", /^data:image\/png;base64,/);
+			const lastUser = (mock.requests[1].messages as { role: string; content: unknown }[])
+				.filter((message) => message.role === "user")
+				.at(-1);
+			assert.equal(lastUser?.content, "and then?");
+			assert.ok(cli.output().includes("second answer"));
+			const missing = startCli(["-p", "x", "@nope.txt"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await missing.waitForExit(), 1);
+			assert.match(missing.output(), /File not found: .*nope\.txt/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("a background command started in -p ends when tau exits (P36a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const pidFile = join(cwd, "server.pid").replaceAll("\\", "/");
+		await writeFile(
+			join(cwd, "server.mjs"),
+			`import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); console.log("listening"); setInterval(() => {}, 1000);`,
+		);
+		const node = JSON.stringify(process.execPath.replaceAll("\\", "/"));
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("bash", { command: `${node} server.mjs`, run_in_background: true, description: "server" }),
+			() => mockToolCallTurn("bash", { command: "sleep 1; cat server.pid" }),
+			() => mockTextTurn("server is up"),
+		]);
+		try {
+			const cli = startCli(["-p", "start the server"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const started = (mock.requests[1].messages as { role: string; content: string }[]).find((m) => m.role === "tool");
+			assert.match(
+				started?.content ?? "",
+				/Command running in background with ID: b1\. Output is being written to: .*b1\.output/,
+			);
+			const pid = Number(await readFile(pidFile, "utf8"));
+			assert.ok(pid > 0);
+			let alive = true;
+			for (let i = 0; i < 50 && alive; i++) {
+				try {
+					process.kill(pid, 0);
+					await new Promise((resolve) => setTimeout(resolve, 100));
+				} catch {
+					alive = false;
+				}
+			}
+			assert.equal(alive, false, "the background server was stopped on exit");
+		} finally {
+			await mock.close();
+		}
+	});
+});

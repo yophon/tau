@@ -87,6 +87,8 @@ export type KeyCommand =
 	| { type: "toggle-verbose" }
 	| { type: "toggle-reasoning" }
 	| { type: "external-editor" }
+	/** Alt+V / Ctrl+V (P36b, pi pasteImage): copied files, an image or text from the clipboard. */
+	| { type: "paste-clipboard" }
 	| { type: "clear-input" }
 	| { type: "kill-line-start" }
 	| { type: "cursor-home" }
@@ -165,6 +167,9 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 	if (ch === "\r") return ctx.running ? { type: "queue" } : { type: "newline" };
 	if (ch === "\n") return { type: "newline" };
 
+	// pi's paste key is Alt+V on Windows (the terminal keeps Ctrl+V) and Ctrl+V elsewhere; both work everywhere here.
+	if ((key.ctrl || key.meta) && ch === "v") return { type: "paste-clipboard" };
+
 	// ⑦ Line editing (readline habits).
 	if (key.ctrl) {
 		switch (ch) {
@@ -225,7 +230,8 @@ export const BUILTIN_KEYS: ReadonlySet<string> = new Set([
 	"alt+f",
 	"alt+left",
 	"alt+right",
-	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "o", "t", "u", "w"].map((letter) => `ctrl+${letter}`),
+	"alt+v",
+	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "o", "t", "u", "v", "w"].map((letter) => `ctrl+${letter}`),
 ]);
 
 /** A key as an extension shortcut id (`ctrl+x`, `alt+k`, `shift+tab`, `f`); undefined for text. */

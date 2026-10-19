@@ -24,10 +24,14 @@ inject a small adapter instead of polyfilling globals.
   (`ChatTransport`): `--provider anthropic` speaks the Anthropic Messages API
   natively — thinking streams with signatures, prompt caching
   (`cache_control`), images in tool results, true cacheRead/cacheWrite usage.
-- **Coding tools** — read (text and images), write, edit (several exact
-  replacements in one call), bash, and grep / find / ls in pure ES over the
-  host filesystem (they honor `.gitignore` and work on every host, OPFS
-  included). The CLI adds `todo_write` (a checklist in the TUI), long-term
+- **Coding tools** — read (text, and images shrunk to fit like pi's), write,
+  edit (several exact replacements in one call), bash (with
+  `run_in_background` for dev servers and watchers: the model reads the
+  output file, hears when the command ends, stops it with `task_stop`; see
+  `/tasks`), and grep / find / ls in pure ES over the host filesystem (they
+  honor `.gitignore` and work on every host, OPFS included). Show the model a
+  screenshot with Alt+V in the TUI or `tau @shot.png "what's wrong?"`. The
+  CLI adds `todo_write` (a checklist in the TUI), long-term
   memory about you and about the project (`memory_write`, `#fact` in the TUI;
   see [docs/memory.md](docs/memory.md)), `session_search` over your earlier
   sessions, `web_fetch` /
@@ -185,7 +189,7 @@ tau: `apiKey` reads `$NAME` / `${NAME}` from the environment, runs
       "baseUrl": "https://api.deepseek.com/v1",
       "api": "openai-completions",
       "apiKey": "$DEEPSEEK_API_KEY",
-      "models": [{ "id": "deepseek-chat", "contextWindow": 128000, "cost": { "input": 0.27, "output": 1.1 } }]
+      "models": [{ "id": "deepseek-flash", "input": ["text", "image"], "contextWindow": 1000000 }]
     },
     "anthropic": {
       "api": "anthropic-messages",
@@ -197,7 +201,9 @@ tau: `apiKey` reads `$NAME` / `${NAME}` from the environment, runs
 ```
 
 The context window turns on auto-compaction and the context meter; `cost`
-(USD per million tokens) prices the session. `/model` lists every model with
+(USD per million tokens, `{ "input": 0.27, "output": 1.1 }`) prices the session; `input` says whether the model
+takes images (as in pi, a model without it is text-only: images become a
+placeholder). `/model` lists every model with
 a usable key and switches between them mid-session, protocol included; Ctrl+S
 in its picker saves the default (`defaultProvider` / `defaultModel` in
 `~/.tau/settings.json`). `-m provider/id` picks one at startup. With a usable

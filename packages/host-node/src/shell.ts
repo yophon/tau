@@ -6,7 +6,7 @@ import { type Shell, ShellError, type ShellExecResult, type TauAbortSignal, toEr
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
-interface ShellSpec {
+export interface ShellSpec {
 	shell: string;
 	args: string[];
 	/** cmd.exe: the command goes quoted and verbatim (Node escapes quotes as \\", which cmd does not read). */
@@ -47,7 +47,7 @@ export function isWindowsStyleCommand(command: string): boolean {
 }
 
 /** Remove a redundant nested `cmd /c` wrapper before invoking ComSpec itself. */
-function unwrapCmdWrapper(command: string): string {
+export function unwrapCmdWrapper(command: string): string {
 	const match = /^\s*cmd(?:\.exe)?(?:\s+\/[dD])?(?:\s+\/[sS])?\s+\/[cC]\s+([\s\S]*)$/i.exec(command);
 	if (!match) return command;
 	const inner = match[1].trim();
@@ -103,7 +103,7 @@ function findGitBash(): string | undefined {
 	return candidates.find((candidate) => existsSync(candidate));
 }
 
-function findShell(command: string): ShellSpec {
+export function findShell(command: string): ShellSpec {
 	if (process.platform !== "win32") {
 		if (existsSync("/bin/bash")) return { shell: "/bin/bash", args: ["-c"] };
 		return { shell: "sh", args: ["-c"] };
@@ -116,7 +116,7 @@ function findShell(command: string): ShellSpec {
 	return { shell: comspec, args: ["/d", "/s", "/c"], verbatim: true };
 }
 
-function killProcessTree(pid: number): void {
+export function killProcessTree(pid: number): void {
 	if (process.platform === "win32") {
 		try {
 			const result = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {

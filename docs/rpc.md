@@ -32,6 +32,7 @@ tau --mode rpc --no-session
 | 状态 | `get_state`、`get_messages`、`get_session_stats`、`get_last_assistant_text`、`get_commands` |
 | 模型 | `set_model`（`provider` + `modelId`，跨供应商时连协议一起换）、`get_available_models`、`set_thinking_level`、`get_available_thinking_levels` |
 | 其他 | `compact`、`bash`、`abort_bash` |
+| 后台命令（tau 补充，P36） | `list_background_tasks`（回 `{ tasks }`，每项 `id`、`command`、`description`、`outputPath`、`pid`、`status`、`exitCode`、`startedAt`、`endedAt`）、`stop_background_task`（参数 `taskId`，回 `{ task }`） |
 | tau 增加 | `set_permission_mode`、`get_permission_mode` |
 
 其余 pi 命令（`cycle_model`、`cycle_thinking_level`、队列模式、`set_auto_compaction`、`set_auto_retry`、`abort_retry`）返回 `success: false, error: "unsupported command: …"`。

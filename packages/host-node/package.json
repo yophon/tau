@@ -20,6 +20,7 @@
 		"access": "public"
 	},
 	"dependencies": {
+		"@silvia-odwyer/photon-node": "0.3.4",
 		"@yophon/tau-kernel": "^0.2.0"
 	}
 }

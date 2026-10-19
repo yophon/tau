@@ -29,6 +29,7 @@ import {
 	readStatus,
 	ScheduleStore,
 } from "@yophon/tau-gateway";
+import type { NodeBackgroundShell } from "@yophon/tau-host-node";
 import type {
 	ApprovalRequest,
 	Extension,
@@ -51,6 +52,7 @@ import {
 	totals,
 	totalsText,
 } from "./audit.ts";
+import { backgroundTasksText } from "./background.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { GatewayCommand } from "./main.ts";
 import type { MemoryScope } from "./memory.ts";
@@ -80,7 +82,13 @@ export interface GatewayHost {
 			decidedBy?: (toolCallId: string) => string | undefined;
 			current?: () => { runId?: string; trigger: AuditTrigger };
 		};
-	}): Promise<HeadlessWorkspace & { extensions: ExtensionRegistry; setPermissionMode(mode: PermissionMode): void }>;
+	}): Promise<
+		HeadlessWorkspace & {
+			extensions: ExtensionRegistry;
+			setPermissionMode(mode: PermissionMode): void;
+			background: NodeBackgroundShell;
+		}
+	>;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
 	resolveModelSwitch?: (requested: string) => ModelSwitch;
@@ -271,6 +279,8 @@ export async function openConversation(
 		},
 		abort: () => headless.abort(),
 		async command(name, args) {
+			// Straight to the list: no run slot needed, so it answers while the model works (P36a).
+			if (name === "tasks") return backgroundTasksText(ws.background, args);
 			if (name === "mode" && args !== "") {
 				const allowed = policy.role === "owner" ? OWNER_MODES : ALLOWED_MODES;
 				if (!isPermissionMode(args) || !allowed.includes(args)) return `可选档位：${allowed.join("、")}`;
@@ -287,7 +297,11 @@ export async function openConversation(
 		},
 		describe: () =>
 			`${headless.modelDisplay} · ${headless.agent.getPermissionMode()} · ${headless.agent.messages.length} 条消息`,
-		close: () => headless.stop(),
+		close: async () => {
+			ws.background.stopAll();
+			await headless.stop();
+		},
+		busy: () => ws.background.running > 0,
 	};
 }
 

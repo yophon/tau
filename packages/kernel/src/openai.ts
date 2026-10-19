@@ -176,12 +176,23 @@ function userContentToWire(content: string | (TextContent | ImageContent)[]): un
 	return parts.length === 0 ? undefined : parts;
 }
 
+/**
+ * A tool message's text (pi convertMessages): Chat Completions tool messages are
+ * text-only, so images travel in a user message after the results (P36d). An
+ * image-only result says "(see attached image)"; an empty one "(no tool output)"
+ * (pi 0.80.4: some endpoints reject empty tool content).
+ */
 function toolResultContentToWire(content: (TextContent | ImageContent)[]): string {
-	// OpenAI-compatible tool messages are text-only; images degrade to a marker.
-	const text = content.map((block) => (block.type === "text" ? block.text : "[image omitted]")).join("\n");
-	// An empty result is "(no tool output)", not "" (pi 0.80.4): some endpoints reject empty tool content.
-	return text === "" ? "(no tool output)" : sanitizeSurrogates(text);
+	const text = content
+		.filter((block): block is TextContent => block.type === "text")
+		.map((block) => block.text)
+		.join("\n");
+	if (text !== "") return sanitizeSurrogates(text);
+	return content.some((block) => block.type === "image") ? "(see attached image)" : "(no tool output)";
 }
+
+/** pi's user message carrying the images of the tool results just before it. */
+export const TOOL_RESULT_IMAGES_TEXT = "Attached image(s) from tool result:";
 
 /**
  * Tool call ids for Chat Completions replay, from pi's normalizeToolCallId:
@@ -308,11 +319,25 @@ function toWireMessages(
 ): Record<string, unknown>[] {
 	const wire: Record<string, unknown>[] = [];
 	if (systemPrompt !== "") wire.push({ role: "system", content: sanitizeSurrogates(systemPrompt) });
+	// Images of a run of tool results go in one user message after the run (pi).
+	let images: ImageContent[] = [];
+	const flushImages = (): void => {
+		if (images.length === 0) return;
+		wire.push({
+			role: "user",
+			content: userContentToWire([{ type: "text", text: TOOL_RESULT_IMAGES_TEXT }, ...images]),
+		});
+		images = [];
+	};
 	for (const message of messages) {
+		if (message.role !== "toolResult") flushImages();
+		// Images the model cannot take were already replaced by transformMessages.
+		else images.push(...message.content.filter((block): block is ImageContent => block.type === "image"));
 		const converted = toWireMessage(message, replayEmptyReasoning);
 		// A user message left with no content (only empty text parts) is skipped, as in pi.
 		if (converted) wire.push(converted);
 	}
+	flushImages();
 	return wire;
 }
 

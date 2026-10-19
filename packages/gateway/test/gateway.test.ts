@@ -116,6 +116,11 @@ describe("gateway routing and queues", () => {
 		await gateway.sweep();
 		assert.equal(conversations[0]?.closed, false);
 		now += 61_000;
+		// P36a: background commands keep it loaded.
+		if (conversations[0]) conversations[0].working = true;
+		await gateway.sweep();
+		assert.equal(conversations[0]?.closed, false, "busy with background commands");
+		if (conversations[0]) conversations[0].working = false;
 		await gateway.sweep();
 		assert.equal(conversations[0]?.closed, true);
 		await gateway.stop();
@@ -338,6 +343,22 @@ describe("gateway chat commands", () => {
 		await gateway.idle();
 		assert.match(channel.texts("boss")[0] ?? "", /待批请求：0/);
 		assert.deepEqual(channel.texts("bob"), [TEXT.noPermission, TEXT.help(false)]);
+		await gateway.stop();
+	});
+
+	it("/tasks goes to the conversation's background commands, also while it runs; owners only (P36a)", async () => {
+		const { channel, conversationOf, gateway } = setup({ allowed: ["bob"] });
+		await until(() => channel.sink !== undefined);
+		await gateway.receive(channel.message("boss", "/tasks"));
+		await gateway.receive(channel.message("bob", "/tasks"));
+		await gateway.receive(channel.message("boss", "start the server"));
+		await until(() => conversationOf("boss")?.runs.length === 1);
+		await gateway.receive(channel.message("boss", "/tasks stop b1"));
+		await until(() => channel.texts("boss").length === 2);
+		assert.deepEqual(conversationOf("boss")?.commands, ["tasks stop b1"]);
+		assert.deepEqual(channel.texts("boss"), [TEXT.noTasks, "did tasks"]);
+		assert.deepEqual(channel.texts("bob"), [TEXT.noPermission]);
+		conversationOf("boss")?.runs[0]?.finish();
 		await gateway.stop();
 	});
 

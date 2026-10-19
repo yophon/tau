@@ -4,6 +4,50 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P36)
+- kernel: `bash` takes `run_in_background` (and `description`) when the
+  host provides a `BackgroundShell`: it returns at once with a task ID and
+  an output file the model reads with `read`. New `task_stop` tool.
+  `createCodingTools` takes `background` and `images` capabilities and a
+  `supportsImages` option.
+- kernel: `read` sends images through the host's `ImageProcessor` (pi's
+  limits: 2000x2000, 4.5 MB of base64; BMP becomes PNG), says when the
+  current model takes no images (pi's note), and forgives a leading `@` and
+  quotes around the path.
+- kernel: `api.events` — pi's event bus between extensions.
+- host-node: `NodeBackgroundShell` (output straight to a file, whole
+  process tree stopped, everything stopped when the process exits) and
+  `NodeImageProcessor` (pi's photon pipeline in a worker;
+  `@silvia-odwyer/photon-node` 0.3.4).
+- CLI: when a background command ends on its own, the model gets a message
+  with its exit code and the last lines of output. `/tasks` lists
+  background commands and subagents, shows output and stops commands; a line
+  above the input box counts running commands. Background commands end when
+  tau exits. Gateway: a conversation with running commands is not unloaded
+  while idle; owners have `/tasks` in chat (also while a run is going).
+- CLI: `@file` arguments and messages on the command line (pi):
+  `tau @shot.png "what is wrong here?"`, `tau -p "why?" @log.txt`. Text files
+  go into the first message, images are attached to it.
+- CLI TUI: Alt+V (or Ctrl+V where the terminal passes it on) pastes from the
+  clipboard as pi does: copied files as their paths, an image saved to a
+  temporary file as its path (the model reads it), else the text.
+- RPC: `list_background_tasks`, `stop_background_task`.
+- ext-subagents: background subagents are reported on the
+  `subagents:task` event channel; `tasksCommand: false` leaves `/tasks` to
+  the host.
+- gateway: `Conversation.busy()`; the `tasks` conversation command.
+
+### Changed (P36)
+- kernel: on OpenAI-compatible endpoints, images in tool results go in a
+  user message right after the results (pi) instead of becoming
+  "[image omitted]".
+- CLI: a model from models.json without `input` is treated as text-only on
+  the wire, as in pi (its images become a placeholder); add
+  `"input": ["text", "image"]` for models that take images. Before, only the
+  gateway read `input`.
+- CLI: words on the command line that are not options are messages to send
+  (pi); before they were rejected as unexpected arguments.
+
 ### Added (P35)
 - CLI: `ask_user` tool — the model asks one or more questions, each with
   options (single or multiple choice), and the user can always answer in

@@ -26,7 +26,9 @@ import {
 	importExtensionFiles,
 	listExtensionFiles,
 	loadExtensionsFromDir,
+	NodeBackgroundShell,
 	NodeFileSystem,
+	NodeImageProcessor,
 	NodeShell,
 } from "@yophon/tau-host-node";
 import {
@@ -72,8 +74,10 @@ import {
 	createAuditExtension,
 	noteApprovalSource,
 } from "./audit.ts";
+import { createBackgroundExtension } from "./background.ts";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
+import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
 import { createHooksExtension, HookRunner, loadHookConfig, withHookApprovals } from "./hooks.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
@@ -106,8 +110,13 @@ const CLI_VERSION = (
 
 const USAGE = `tau - minimal OpenAI-compatible coding agent
 
-Usage: tau [options] [-p "prompt"]
+Usage: tau [options] [@files...] [messages...]
+       tau [options] -p "prompt" [@files...]
        tau gateway <run|status|login|channels|allow|revoke> ...   (see tau gateway help)
+
+@file: a text file goes into the first message, an image is attached to it
+(converted and shrunk like read's). Messages: the first starts the session,
+the others follow one after another.
 
 Options:
   -b, --base-url <url>   API base URL (env: TAU_BASE_URL, then OPENAI_BASE_URL /
@@ -212,8 +221,10 @@ interface CliOptions {
 	/** P30: `tau gateway <command>`. */
 	gateway?: GatewayCommand;
 	help: boolean;
-	/** Unrecognized tokens, matched against extension-declared flags after loading. */
+	/** Unrecognized tokens, matched against extension-declared flags after loading; the rest are messages (pi). */
 	extras: string[];
+	/** P36c: `@file` arguments (pi): text inlined, images attached to the first message. */
+	files: string[];
 }
 
 /** `tau gateway <command> [args]` (P30). run also takes the usual tau options (model, flags). */
@@ -255,6 +266,7 @@ function parseArgs(argv: string[]): CliOptions {
 	const options: CliOptions = {
 		help: false,
 		extras: [],
+		files: [],
 		continue: false,
 		noSession: false,
 		tui: false,
@@ -393,7 +405,8 @@ function parseArgs(argv: string[]): CliOptions {
 				options.help = true;
 				break;
 			default:
-				options.extras.push(arg);
+				if (arg.startsWith("@") && arg.length > 1) options.files.push(arg.slice(1));
+				else options.extras.push(arg);
 		}
 	}
 	return options;
@@ -572,13 +585,18 @@ function uniqueStrings(values: string[]): string[] {
 	return [...new Set(values)];
 }
 
-function resolveExtensionFlags(registry: ExtensionRegistry, extras: string[]): Record<string, boolean | string> {
+/** Extension flag values, and the other words: messages to send (pi `pi [options] [messages...]`, P36c). */
+function resolveExtensionFlags(
+	registry: ExtensionRegistry,
+	extras: string[],
+): { values: Record<string, boolean | string>; messages: string[] } {
 	const values: Record<string, boolean | string> = {};
+	const messages: string[] = [];
 	for (let i = 0; i < extras.length; i++) {
 		const token = extras[i];
 		if (!token.startsWith("--")) {
-			console.error(`Unexpected argument: ${token}`);
-			process.exit(1);
+			messages.push(token);
+			continue;
 		}
 		const equals = token.indexOf("=", 2);
 		const name = token.slice(2, equals === -1 ? undefined : equals);
@@ -605,7 +623,7 @@ function resolveExtensionFlags(registry: ExtensionRegistry, extras: string[]): R
 			values[name] = value;
 		}
 	}
-	return values;
+	return { values, messages };
 }
 
 const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
@@ -885,6 +903,8 @@ function firstLine(text: string, max = 120): string {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
+/** P36d: converts and shrinks images for read, `@file` and pasted screenshots (pi). */
+const imageProcessor = new NodeImageProcessor();
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
 /** A REPL command holding the agent outside a turn (P23e): extension prompts are refused meanwhile. */
@@ -1257,6 +1277,8 @@ async function main(): Promise<void> {
 		contextWindow: number | undefined;
 		maxTokens: number | undefined;
 		headers: Record<string, string>;
+		/** P36: a table model's `input` (pi: omitted = text only); undefined for an endpoint from env/flags. */
+		input?: ("text" | "image")[];
 	}): { config: OpenAICompatConfig; anthropic: AnthropicTransportConfig | undefined } => {
 		const headers = Object.keys(spec.headers).length > 0 ? { headers: spec.headers } : {};
 		const config: OpenAICompatConfig = {
@@ -1271,6 +1293,8 @@ async function main(): Promise<void> {
 					: {}),
 			...headers,
 			...stallTimeout,
+			// TAU_INPUT (in dialect) still wins over the table.
+			...(spec.input ? { input: spec.input } : {}),
 			...dialect,
 		};
 		const anthropic: AnthropicTransportConfig | undefined =
@@ -1299,6 +1323,7 @@ async function main(): Promise<void> {
 		contextWindow,
 		maxTokens: tableEntry?.maxTokens,
 		headers: activeModel ? resolveHeaders(activeModel, valueResolver) : {},
+		...(activeModel ? { input: activeModel.input ?? ["text"] } : {}),
 	});
 	let config = startupEndpoint.config;
 	let anthropicConfig = startupEndpoint.anthropic;
@@ -1422,6 +1447,7 @@ async function main(): Promise<void> {
 			contextWindow: window,
 			maxTokens: found.maxTokens,
 			headers: resolveHeaders(found, valueResolver),
+			input: found.input ?? ["text"],
 		});
 		const nextTransport = endpoint.anthropic ? createAnthropicTransport(endpoint.anthropic, platform) : undefined;
 		return {
@@ -1487,6 +1513,8 @@ async function main(): Promise<void> {
 			});
 		};
 	}
+	/** Whether the current model takes images (P36d: read says so when it does not). */
+	const modelTakesImages = (): boolean => config.input === undefined || config.input.includes("image");
 	/**
 	 * Everything rooted at one working directory (P29): the extensions and the
 	 * project trust decision, the filesystem and shell, the project context, the
@@ -1558,7 +1586,13 @@ async function main(): Promise<void> {
 						onAsk: () => hookRunner.notify("Tau has a question for you", "elicitation_dialog"),
 					})
 				: undefined;
-		const hostExtensions = [...(askUser ? [askUser] : []), ...(spec.extensions ?? [])];
+		// P36a: background commands, one list per workspace (a gateway conversation has its own).
+		const background = new NodeBackgroundShell(cwd, { env: modelEnvironment() });
+		const hostExtensions = [
+			...(askUser ? [askUser] : []),
+			createBackgroundExtension(background),
+			...(spec.extensions ?? []),
+		];
 		const trustUi = spec.trustPrompt === false ? undefined : spec.ui;
 		const loaded = await loadExtensionRegistry(
 			cwd,
@@ -1579,7 +1613,7 @@ async function main(): Promise<void> {
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
-		extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras));
+		extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras).values);
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 			projectContext = await loadProjectContext();
@@ -1593,7 +1627,7 @@ async function main(): Promise<void> {
 				hookRunner,
 			);
 			projectTrusted = next.projectTrusted;
-			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
+			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras).values);
 			return next.registry;
 		};
 
@@ -1621,7 +1655,10 @@ async function main(): Promise<void> {
 			agentExtensions = extensions,
 		): Agent => {
 			const mode = workspaceMode ?? permissionMode;
-			const codingTools = createCodingTools({ fs, shell: toolShell }, { mode });
+			const codingTools = createCodingTools(
+				{ fs, shell: toolShell, background, images: imageProcessor },
+				{ mode, supportsImages: modelTakesImages },
+			);
 			const built = new Agent({
 				config,
 				transport,
@@ -1681,6 +1718,8 @@ async function main(): Promise<void> {
 			sessionRepo,
 			buildAgent,
 			reloadExtensions,
+			/** P36a: this workspace's background commands. */
+			background,
 			isProjectTrusted: () => projectTrusted,
 			/** Agents built later (session switches) use this mode; only for a workspace opened with one. */
 			setPermissionMode: (next: PermissionMode) => {
@@ -1757,6 +1796,28 @@ async function main(): Promise<void> {
 	}
 	const workspace: Workspace = await openWorkspace({ cwd, ui, onApproval });
 	const { extensions, sessionRepo, shell, buildAgent, reloadExtensions } = workspace;
+	// P36c (pi): `@file` arguments and messages given as words on the command line.
+	const messages = resolveExtensionFlags(extensions, options.extras).messages;
+	if ((options.mode === "rpc" || options.mode === "json") && messages.length > 0) {
+		console.error(`Unexpected argument: ${messages[0]} (--mode ${options.mode} takes the prompt with -p or on stdin)`);
+		process.exit(1);
+	}
+	if (options.mode === "rpc" && options.files.length > 0) {
+		console.error("@file arguments are not supported in --mode rpc.");
+		process.exit(1);
+	}
+	let files: ProcessedFiles = { text: "", images: [] };
+	if (options.files.length > 0) {
+		try {
+			files = await processFileArguments(options.files, cwd, imageProcessor);
+		} catch (error) {
+			console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+			process.exit(1);
+		}
+		if (files.images.length > 0 && !modelTakesImages()) {
+			console.error(dim("The current model does not take images: they are sent as a placeholder."));
+		}
+	}
 	let store: SessionStore | undefined;
 	let sessionReason: "startup" | "resume" = "startup";
 	let initialMessages = undefined as Awaited<ReturnType<typeof restoreSession>>["messages"] | undefined;
@@ -1801,8 +1862,9 @@ async function main(): Promise<void> {
 	let agent = buildAgent(initialMessages, recorder);
 
 	if (options.mode === "json") {
-		const prompt = options.print ?? (process.stdin.isTTY ? "" : (await readAllStdin()).trim());
-		if (prompt === "") {
+		const typed = options.print ?? (process.stdin.isTTY ? "" : (await readAllStdin()).trim());
+		const prompt = initialContent(files, typed === "" ? undefined : typed);
+		if (prompt === undefined) {
 			console.error("--mode json needs a prompt: -p <prompt>, or the prompt on stdin.");
 			process.exit(1);
 		}
@@ -1832,7 +1894,12 @@ async function main(): Promise<void> {
 		if (!readline) throw new Error("print mode requires readline");
 		// -p is one shot: no submitPrompt/resumeTurn, so an extension cannot start a second run.
 		await extensions.notifySessionStart(sessionReason, agent.extensionContext());
-		const ok = await runTurn(agent, options.print, readline);
+		// The files and -p first, then any further messages, one run each (pi).
+		let ok = await runTurn(agent, initialContent(files, options.print) ?? options.print, readline);
+		for (const message of messages) {
+			if (!ok) break;
+			ok = await runTurn(agent, message, readline);
+		}
 		await extensions.notifySessionShutdown("quit", agent.extensionContext());
 		readline.close();
 		// Scripts read the exit code: an error, abort or truncated reply is a failure (pi print mode).
@@ -1842,9 +1909,11 @@ async function main(): Promise<void> {
 
 	if (useTui) {
 		const { runTui } = await import("./tui/app.ts");
+		const firstPrompt = initialContent(files, messages[0]);
 		await runTui({
 			agent,
 			extensions,
+			...(firstPrompt !== undefined ? { initialPrompts: [firstPrompt, ...messages.slice(1)] } : {}),
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
 			autoTitle: autoTitleOn(userSettings.autoTitle),
@@ -1951,6 +2020,13 @@ async function main(): Promise<void> {
 			readline.close();
 		}
 	});
+	// Command-line prompts (P36c) before the first "tau> ".
+	const replFirst = initialContent(files, messages[0]);
+	if (replFirst !== undefined) {
+		for (const prompt of [replFirst, ...messages.slice(1)]) {
+			if (!(await runTurn(agent, prompt, readline))) break;
+		}
+	}
 	while (true) {
 		let line: string;
 		try {

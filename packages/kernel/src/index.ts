@@ -20,13 +20,27 @@ export {
 	generateBranchSummary,
 	prepareBranchEntries,
 } from "./branch.ts";
-export type { FileInfo, FileKind, FileSystem, Shell, ShellExecResult } from "./capabilities.ts";
+export type {
+	BackgroundShell,
+	BackgroundTaskInfo,
+	FileInfo,
+	FileKind,
+	FileSystem,
+	ImageProcessor,
+	ProcessedImage,
+	Shell,
+	ShellExecResult,
+} from "./capabilities.ts";
 export {
 	applyEdits,
 	BASH_STRUCTURED_OUTPUT_MAX_BYTES,
+	backgroundStartedText,
+	cleanReadPath,
 	createCodingTools,
+	imageMimeType,
 	limitOutputBytes,
 	mutationQueueKey,
+	NON_VISION_IMAGE_NOTE,
 } from "./coding-tools.ts";
 export {
 	type CompactionPreparation,
@@ -98,6 +112,7 @@ export {
 	type ContextEventResult,
 	type ContextWithSystemEvent,
 	type CustomMessageInput,
+	type EventBus,
 	type Extension,
 	type ExtensionAPI,
 	type ExtensionCapabilities,
@@ -232,6 +247,7 @@ export {
 	resolveTranscript,
 	sanitizeSurrogates,
 	streamChatCompletion,
+	TOOL_RESULT_IMAGES_TEXT,
 	type ToolDefinition,
 	type TransportRequest,
 	withStallTimeout,

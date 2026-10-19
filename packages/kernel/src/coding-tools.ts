@@ -1,5 +1,5 @@
 import { encodeBase64 } from "./base64.ts";
-import type { FileSystem, Shell } from "./capabilities.ts";
+import type { BackgroundShell, FileSystem, ImageProcessor, Shell } from "./capabilities.ts";
 import { ShellError } from "./errors.ts";
 import type { PermissionMode } from "./policy.ts";
 import { createFindTool, createGrepTool, createLsTool } from "./search-tools.ts";
@@ -138,11 +138,16 @@ const IMAGE_TYPES: Record<string, string> = {
 	jpeg: "image/jpeg",
 	gif: "image/gif",
 	webp: "image/webp",
+	bmp: "image/bmp",
 };
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-/** The image MIME type when the bytes start with that format's signature. */
-function imageMimeType(bytes: Uint8Array): string | undefined {
+/** pi read's note for a model without image input. */
+export const NON_VISION_IMAGE_NOTE =
+	"[Current model does not support images. The image will be omitted from this request.]";
+
+/** The image MIME type when the bytes start with that format's signature (pi detectSupportedImageMimeType). */
+export function imageMimeType(bytes: Uint8Array): string | undefined {
 	const starts = (...signature: number[]): boolean => signature.every((byte, i) => bytes[i] === byte);
 	if (starts(0x89, 0x50, 0x4e, 0x47)) return "image/png";
 	if (starts(0xff, 0xd8, 0xff)) return "image/jpeg";
@@ -156,40 +161,100 @@ function imageMimeType(bytes: Uint8Array): string | undefined {
 	) {
 		return "image/webp";
 	}
+	if (starts(0x42, 0x4d) && isBmp(bytes)) return "image/bmp";
 	return undefined;
 }
 
+/** pi mime.ts isBmp: a BMP header with a plausible layout. */
+function isBmp(bytes: Uint8Array): boolean {
+	if (bytes.length < 26) return false;
+	const u16 = (at: number): number => (bytes[at] ?? 0) + ((bytes[at + 1] ?? 0) << 8);
+	const u32 = (at: number): number => u16(at) + u16(at + 2) * 0x10000;
+	const declaredFileSize = u32(2);
+	const pixelDataOffset = u32(10);
+	const dibHeaderSize = u32(14);
+	if (declaredFileSize !== 0 && declaredFileSize < 26) return false;
+	if (pixelDataOffset < 14 + dibHeaderSize) return false;
+	if (declaredFileSize !== 0 && pixelDataOffset >= declaredFileSize) return false;
+	let colorPlanes: number;
+	let bitsPerPixel: number;
+	if (dibHeaderSize === 12) {
+		colorPlanes = u16(22);
+		bitsPerPixel = u16(24);
+	} else if (dibHeaderSize >= 40 && dibHeaderSize <= 124) {
+		if (bytes.length < 30) return false;
+		colorPlanes = u16(26);
+		bitsPerPixel = u16(28);
+	} else {
+		return false;
+	}
+	return colorPlanes === 1 && [1, 4, 8, 16, 24, 32].includes(bitsPerPixel);
+}
+
+interface ImageOptions {
+	/** P36d: converts and shrinks images; without it images over 5 MB and BMP files are refused. */
+	images?: ImageProcessor;
+	/** False when the current model takes no images (read then says so, pi). */
+	supportsImages?: () => boolean;
+}
+
 /**
- * An image file as an image block (pi read). Deviation: no resizing — the
- * kernel has no image codec; files over 5 MB are refused instead.
+ * An image file as an image block (pi read): converted and resized by the host's
+ * image processor when there is one. Without it, files over 5 MB are refused.
  */
-async function readImage(fs: FileSystem, path: string, expected: string) {
+async function readImage(fs: FileSystem, path: string, expected: string, options: ImageOptions) {
 	if (!fs.readBinaryFile) {
 		return errorResult(`Cannot read image ${path}: this host does not provide binary file reads.`);
 	}
 	const bytes = await fs.readBinaryFile(path);
+	const mimeType = imageMimeType(bytes) ?? expected;
+	const nonVision = options.supportsImages?.() === false ? `\n${NON_VISION_IMAGE_NOTE}` : "";
+	if (options.images) {
+		const processed = await options.images.process(bytes, mimeType);
+		if (!processed.ok) return textResult(`Read image file [${mimeType}]\n${processed.message}${nonVision}`);
+		const hints = processed.hints.length > 0 ? `\n${processed.hints.join("\n")}` : "";
+		return {
+			content: [
+				{ type: "text" as const, text: `Read image file [${processed.mimeType}]${hints}${nonVision}` },
+				{ type: "image" as const, data: processed.data, mimeType: processed.mimeType },
+			],
+		};
+	}
+	if (mimeType === "image/bmp") {
+		return errorResult(`Cannot read image ${path}: this host cannot convert BMP images.`);
+	}
 	if (bytes.length > MAX_IMAGE_BYTES) {
 		return errorResult(
 			`Image ${path} is ${Math.round(bytes.length / 1024)} KB; images over ${MAX_IMAGE_BYTES / 1024 / 1024} MB are not read.`,
 		);
 	}
-	const mimeType = imageMimeType(bytes) ?? expected;
 	return {
 		content: [
-			{ type: "text" as const, text: `Read image file [${mimeType}]` },
+			{ type: "text" as const, text: `Read image file [${mimeType}]${nonVision}` },
 			{ type: "image" as const, data: encodeBase64(bytes), mimeType },
 		],
 	};
 }
 
-function createReadTool(fs: FileSystem): Tool {
+/**
+ * A path as the model wrote it, without a leading "@" (pi stripAtPrefix: the model
+ * copies `@file` references) and without the quotes a terminal adds around a
+ * dropped file with spaces ("C:\My Shots\a.png", a tau addition, P36b).
+ */
+export function cleanReadPath(path: string): string {
+	let cleaned = path.trim();
+	if (cleaned.length >= 2 && /^(["']).*\1$/s.test(cleaned)) cleaned = cleaned.slice(1, -1);
+	return cleaned.startsWith("@") ? cleaned.slice(1) : cleaned;
+}
+
+function createReadTool(fs: FileSystem, imageOptions: ImageOptions = {}): Tool {
 	return {
 		name: "read",
 		promptSnippet: "Read file contents",
 		promptGuidelines: ["Use read to examine files instead of cat or sed."],
 		description:
 			"Read a file. Text files return numbered lines; use offset/limit to page through files longer than " +
-			`${MAX_READ_LINES} lines. Images (png, jpg, gif, webp) are returned as attachments.`,
+			`${MAX_READ_LINES} lines. Images (png, jpg, gif, webp, bmp) are returned as attachments.`,
 		parameters: {
 			type: "object",
 			properties: {
@@ -200,10 +265,10 @@ function createReadTool(fs: FileSystem): Tool {
 			required: ["path"],
 		},
 		execute: wrapExecute(async (args) => {
-			const path = requireString(args, "path");
+			const path = cleanReadPath(requireString(args, "path"));
 			const extension = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
 			const imageType = IMAGE_TYPES[extension];
-			if (imageType) return readImage(fs, path, imageType);
+			if (imageType) return readImage(fs, path, imageType, imageOptions);
 			const offset = optionalNumber(args, "offset") ?? 1;
 			const limit = optionalNumber(args, "limit") ?? MAX_READ_LINES;
 			const lines = (await fs.readTextFile(path)).split("\n");
@@ -344,17 +409,37 @@ function createEditTool(fs: FileSystem): Tool {
 	};
 }
 
-function createBashTool(shell: Shell): Tool {
+/** What bash returns for a command started in the background (Claude Code's wording). */
+export function backgroundStartedText(id: string, outputPath: string): string {
+	return `Command running in background with ID: ${id}. Output is being written to: ${outputPath}`;
+}
+
+function createBashTool(shell: Shell, background?: BackgroundShell): Tool {
 	return {
 		name: "bash",
 		description:
 			"Run a shell command in the working directory and return its output. " +
-			`Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; pass timeoutSeconds for longer builds or tests.`,
+			`Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; pass timeoutSeconds for longer builds or tests.` +
+			(background
+				? " Set run_in_background for commands that keep running (dev servers, watchers) or that you do not need to wait for: it returns at once with a task ID and an output file. Read the output file with read to see progress; you are notified when the command exits, so do not poll with sleep. Stop it with task_stop. Do not add '&' to the command. Background commands end when tau exits."
+				: ""),
 		parameters: {
 			type: "object",
 			properties: {
 				command: { type: "string", description: "Command to execute" },
 				timeoutSeconds: { type: "number", description: "Timeout in seconds" },
+				...(background
+					? {
+							run_in_background: {
+								type: "boolean",
+								description: "Run the command in the background and return at once (timeoutSeconds does not apply)",
+							},
+							description: {
+								type: "string",
+								description: 'What the command does in a few words, e.g. "Start the dev server"',
+							},
+						}
+					: {}),
 			},
 			required: ["command"],
 		},
@@ -363,6 +448,17 @@ function createBashTool(shell: Shell): Tool {
 		outputSchema: BASH_OUTPUT_SCHEMA,
 		execute: wrapExecute(async (args, signal, onUpdate) => {
 			const command = requireString(args, "command");
+			if (background && args.run_in_background === true) {
+				const description = typeof args.description === "string" ? args.description.trim() : "";
+				const task = await background.start(command, description === "" ? {} : { description });
+				const text = backgroundStartedText(task.id, task.outputPath);
+				return {
+					...textResult(text),
+					details: { background: { id: task.id, outputPath: task.outputPath } },
+					// Programmatic callers get the same shape as a foreground run that exited cleanly.
+					structuredContent: { output: text, truncated: false, exit_code: 0, wall_time_seconds: 0 },
+				};
+			}
 			const timeoutSeconds = optionalNumber(args, "timeoutSeconds") ?? DEFAULT_BASH_TIMEOUT_SECONDS;
 			const startedAt = Date.now();
 			// Kept so a command stopped by the timeout still reports what it printed.
@@ -385,7 +481,7 @@ function createBashTool(shell: Shell): Tool {
 				if (!(error instanceof ShellError) || error.code !== "timeout") throw error;
 				const printed = truncateTail(streamed.join(""));
 				return errorResult(
-					`${printed === "" ? "" : `${printed}\n`}Command stopped after the ${timeoutSeconds}s timeout. If it needs longer, run it again with a larger timeoutSeconds; start servers and watchers in the background instead.`,
+					`${printed === "" ? "" : `${printed}\n`}Command stopped after the ${timeoutSeconds}s timeout. If it needs longer, run it again with a larger timeoutSeconds${background ? "; start servers and watchers with run_in_background instead" : ""}.`,
 				);
 			}
 			const parts: string[] = [];
@@ -411,6 +507,28 @@ function createBashTool(shell: Shell): Tool {
 	};
 }
 
+/** Stop a background command (P36a, Claude Code TaskStop). */
+function createTaskStopTool(background: BackgroundShell): Tool {
+	return {
+		name: "task_stop",
+		description: "Stop a background command started with bash run_in_background, by its task ID.",
+		promptSnippet: "Stop a background command",
+		parameters: {
+			type: "object",
+			properties: { task_id: { type: "string", description: 'The task ID, e.g. "b1"' } },
+			required: ["task_id"],
+		},
+		risk: "low",
+		execute: wrapExecute(async (args) => {
+			const task = await background.stop(requireString(args, "task_id"));
+			return {
+				...textResult(`Stopped ${task.id} (${task.description ?? task.command})`),
+				details: { id: task.id, status: task.status },
+			};
+		}),
+	};
+}
+
 /**
  * Build the default coding tool set from whatever capabilities the host
  * provides. Missing capabilities simply mean fewer tools — the kernel never
@@ -420,19 +538,27 @@ function createBashTool(shell: Shell): Tool {
  * registered by other paths.
  */
 export function createCodingTools(
-	capabilities: { fs?: FileSystem; shell?: Shell },
-	options?: { mode?: PermissionMode },
+	capabilities: { fs?: FileSystem; shell?: Shell; background?: BackgroundShell; images?: ImageProcessor },
+	options?: { mode?: PermissionMode; supportsImages?: () => boolean },
 ): Tool[] {
 	const readOnly = options?.mode === "read-only";
 	const tools: Tool[] = [];
 	if (capabilities.fs) {
-		tools.push(createReadTool(capabilities.fs));
+		tools.push(
+			createReadTool(capabilities.fs, {
+				...(capabilities.images ? { images: capabilities.images } : {}),
+				...(options?.supportsImages ? { supportsImages: options.supportsImages } : {}),
+			}),
+		);
 		// Searching and listing only read, so read-only keeps them (P26a).
 		tools.push(createGrepTool(capabilities.fs), createFindTool(capabilities.fs), createLsTool(capabilities.fs));
 		if (!readOnly) tools.push(createWriteTool(capabilities.fs), createEditTool(capabilities.fs));
 	}
 	if (capabilities.shell && !readOnly) {
-		tools.push(createBashTool(capabilities.shell));
+		// P36a: background commands come with the shell; read-only has neither.
+		const background = capabilities.background;
+		tools.push(createBashTool(capabilities.shell, background));
+		if (background) tools.push(createTaskStopTool(background));
 	}
 	return tools;
 }

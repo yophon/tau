@@ -510,6 +510,19 @@ export class Gateway {
 				reply(this.statusText(slot));
 				return true;
 			}
+			// P36a: background commands of this conversation; works while a run is going.
+			case "tasks": {
+				if (!owner) {
+					reply(TEXT.noPermission);
+					return true;
+				}
+				if (!slot?.conversation) {
+					reply(TEXT.noTasks);
+					return true;
+				}
+				reply(await slot.conversation.command("tasks", args));
+				return true;
+			}
 			case "runs": {
 				if (!owner) {
 					reply(TEXT.noPermission);
@@ -639,7 +652,9 @@ export class Gateway {
 			const resident = [...this.slots.values()].filter((slot) => slot.conversation !== undefined);
 			if (resident.length < this.options.config.maxResident) return;
 			const idle = resident
-				.filter((slot) => slot !== except && !slot.running && slot.queue.length === 0)
+				.filter(
+					(slot) => slot !== except && !slot.running && slot.queue.length === 0 && slot.conversation?.busy?.() !== true,
+				)
 				.sort((a, b) => a.lastActive - b.lastActive)[0];
 			if (!idle) return;
 			await this.unload(idle);
@@ -664,7 +679,13 @@ export class Gateway {
 	async sweep(): Promise<void> {
 		const limit = this.options.config.idleMinutes * 60_000;
 		for (const slot of this.slots.values()) {
-			if (slot.conversation && !slot.running && slot.queue.length === 0 && this.now() - slot.lastActive > limit) {
+			if (
+				slot.conversation &&
+				!slot.running &&
+				slot.queue.length === 0 &&
+				slot.conversation.busy?.() !== true &&
+				this.now() - slot.lastActive > limit
+			) {
 				await this.unload(slot);
 			}
 		}

@@ -87,7 +87,7 @@
 | `getMcpServers` | 1.2 | ❌D21 | 同上 |
 | `registerVirtualModel` | 1.2 | ❌D21 | 按请求路由到不同物理 provider，等于会话内换协议；同协议路由由宿主装配一个路由 transport |
 | `unregisterVirtualModel` | 1.2 | ❌D21 | 同上 |
-| `events` | 0.80 | 📍Backlog | 扩展间事件总线；无消费者 |
+| `events` | 0.80 | ✅ P36 | 扩展间事件总线，每个 registry 一条，`emit`/`on`（返回取消订阅）；处理器出错报给错误汇报处（`events:<频道>`），不影响其他订阅者。第一个用处：子代理经 `subagents:task` 报告后台任务，CLI 的 `/tasks` 合并列出 |
 
 ## ExtensionContext
 
@@ -157,7 +157,10 @@
 | codemode（`builtin:codemode`） | ✅ P24e | `@yophon/tau-ext-codemode`：照抄 pi 1.2.0 的工具契约、脚本全局、输出约定、`on`/`only` 呈现与 `inlineBudget`、`store()`/`load()`（`codemode-store` 条目）；沙箱精确钉版消费 `@earendil-works/pi-codemode`（D30），纯 ES 入口注入沙箱，`./node` 接 worker 沙箱。CLI 作为 inactive 内置扩展装配，`--tools +codemode` 激活，`codemode.mode`/`inlineBudget` 读 settings.json。偏离：无 `models` 全局（D21）、无约束采样语法（D25）、`image()` 不落临时文件、预算用 `estimateStringTokens`（D19-1）、进度经 onUpdate 文本、内置不可被用户扩展替换 |
 | 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3）；P26d 加 accept-edits 档（yo-agent / Claude Code） |
 | 内置工具 grep、find、ls | ✅ P26a | 参数、输出、上限提示照抄 pi 1.2.0。偏离：纯 ES 走 FileSystem，不调 rg/fd、不自动下载（D32）；单文件超过 1 MB 跳过 |
-| edit 的 `edits[]`、read 读图片 | ✅ P26a | 照抄 pi 1.x 的多段替换与 promptGuidelines；保留单对 oldText/newText。read 图片偏离：不缩放，超过 5 MB 拒读，需宿主的 `readBinaryFile` |
+| edit 的 `edits[]`、read 读图片 | ✅ P26a、P36d | 照抄 pi 1.x 的多段替换与 promptGuidelines；保留单对 oldText/newText。read 图片：按文件头识别（含 BMP），经宿主的 `ImageProcessor` 转格式、缩放（pi 的参数与 photon，P36d），模型不收图片时加 pi 的说明；路径去掉开头的 `@`（pi）与首尾引号（tau 补充）。没有处理器的宿主仍是超过 5 MB 拒读 |
+| `@file` 参数、命令行消息 | ✅ P36c | 照抄 pi file-processor 与 `pi [options] [@files...] [messages...]`：文字文件包成 `<file name>` 内联，图片缩放后附在第一条消息上，空文件跳过、不存在报错退出；第一条消息带上文件，其余依次发。偏离：`-p` 带值（pi 的 `-p` 是开关） |
+| 粘贴键（`app.clipboard.pasteImage`） | ✅ P36b | 照抄 pi 的顺序：复制的文件插入路径、图片存成临时文件插入路径、文字。偏离：Alt+V 与 Ctrl+V 在所有系统都认（pi 按系统二选一）；Windows 与 macOS 不用原生模块，改用 PowerShell（pi 的 WSL 脚本）与 osascript |
+| OpenAI 兼容线上的工具结果图片 | ✅ P36d | 照抄 pi convertMessages：tool 消息只放文字（只有图片时 `(see attached image)`），图片放进紧跟其后的用户消息「Attached image(s) from tool result:」 |
 | 子代理（pi 为示例扩展 `examples/extensions/subagent`） | ✅ P26b | 照抄工具形状（单个、并行、串联）与 agent 定义格式，内置 pi 的四个示例 agent。偏离：进程内运行（`ctx.runSubagent`）而非独立 pi 进程；加 yo-agent 的后台模式、只收紧、禁止递归、`/tasks`；agent 定义多一个可选 `mode`（D32） |
 | 待办（pi 为示例扩展 `todo.ts`） | ✅ P26c | 采用 yo-agent / Claude Code 的 `todo_write` 整表替换，不用 pi 示例的增删勾（D32） |
 | 长期记忆 | ✅ P26c | pi 无对应物；照 yo-agent 的 memory_write 与 `#remember`，存用户目录（D32） |

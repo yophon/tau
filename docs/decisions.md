@@ -239,6 +239,15 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D39：后台命令照抄 Claude Code，图片照抄 pi（2026-10-19，P36，用户确认）
+
+- **后台命令照 Claude Code**：pi 没有后台命令（它让用户自己开 tmux）。`bash` 加 `run_in_background`，立即返回编号与输出文件；看输出就用 `read` 读文件，不另设读输出的工具；命令自己结束时作为后续消息告诉模型（与后台子代理同一条路）；`task_stop` 结束；`/tasks` 查看与结束。个数与输出大小不设上限（取最宽）。tau 退出即结束全部后台命令，后台进程不拖住 tau 退出。内核只有 `BackgroundShell` 缝，进程、文件与清理在宿主。
+- **图片照 pi**：粘贴时图片存成临时文件、插入路径，由模型用 `read` 看，与模型主动看本地图片同一条路；不做 Claude Code 的 `[Image #N]` 附件。`@file` 参数、`read` 的缩放参数与策略（2000×2000、base64 4.5 MB）照抄 pi，用同一个 photon（`@silvia-odwyer/photon-node` 0.3.4 精确钉版，纯 WebAssembly）。photon 只进 host-node，内核经 `ImageProcessor` 缝调用，没有它时退回原来的 5 MB 上限。
+- **剪贴板不用原生模块**：pi 在 Windows、macOS 上用自带的 `.node` 模块读剪贴板；tau 发布纯 JS，Windows 用 pi 在 WSL 里跑的那段 PowerShell，macOS 用 osascript，Linux 与 WSL 照 pi。
+- **模型收不收图片照 pi 看 `input`**：models.json 里的模型没写 `input` 就当只收文字，图片变占位文字（原来只有网关看它）；OpenAI 兼容线上，工具结果的图片照 pi 放进紧跟其后的一条用户消息。
+- **扩展间事件总线照 pi**（`api.events`）：第一个用处是 `/tasks` 同时列出后台子代理。
+- 不做：把正在跑的命令转到后台（Claude Code 的 Ctrl+B）、给后台进程写输入（Codex 的 `write_stdin`）、后台命令在 tau 退出后继续、TUI 里显示图片、截屏工具。
+
 ## D38：提问缺省不等待，钩子照抄 Claude Code（2026-10-19，P35，用户确认）
 
 - **`ask_user` 缺省不等待回答**：模型问完继续做不依赖答案的事，答案以后以 `[Answer qN]` 消息送到（运行中插进下一轮，空闲时开始新的一轮）；`askUser.wait` 可以改回等待。Claude Code 与 pi 的提问都会停下等你；用户要的是问了不耽误干活。等不等只看设置，不让模型每次自己选。

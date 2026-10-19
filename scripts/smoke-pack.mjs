@@ -12,6 +12,8 @@
 // (5) P30: the Feishu channel plugin installs the way docs/gateway.md says
 // (npm install --prefix <gateway dir>) and the packed gateway loads it from
 // there; the CLI's shrinkwrap carries no Feishu SDK.
+// (6) P36: host-node from its tarball (smoke-pack-host-node.mjs): photon's wasm
+// and the image worker resolve from dist, and a background command runs.
 import { spawnSync } from "node:child_process";
 import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -256,6 +258,26 @@ try {
 	const tui = run("node", ["main.mjs"], { cwd: tuiDir });
 	if (!tui.stdout.includes("pack smoke tui ok")) throw new Error(`tui smoke failed:\n${tui.stdout}`);
 
+	// P36: host-node's image worker, photon wasm and background commands from an installed layout.
+	const hostBefore = new Set(readdirSync(workDir));
+	await withPublishManifest(packageDir("host-node"), "host-node", async () => {
+		run("npm", ["pack", "--ignore-scripts", "--pack-destination", workDir], { cwd: packageDir("host-node") });
+	});
+	const hostTarball = readdirSync(workDir).find((file) => file.endsWith(".tgz") && !hostBefore.has(file));
+	if (!hostTarball) throw new Error("npm pack produced no tarball for host-node");
+	const hostDir = join(workDir, "host-node-consumer");
+	mkdirSync(hostDir);
+	writeFileSync(
+		join(hostDir, "package.json"),
+		JSON.stringify({ name: "host-node-consumer", type: "module" }, null, "\t"),
+	);
+	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, join(workDir, hostTarball)], {
+		cwd: hostDir,
+	});
+	cpSync(fileURLToPath(new URL("./smoke-pack-host-node.mjs", import.meta.url)), join(hostDir, "main.mjs"));
+	const host = run("node", ["main.mjs"], { cwd: hostDir });
+	if (!host.stdout.includes("pack smoke host-node ok")) throw new Error(`host-node smoke failed:\n${host.stdout}`);
+
 	// P30: a channel plugin installed under a gateway directory loads through the packed gateway.
 	const gatewayTarballs = [tarball];
 	for (const [dir, name] of [
@@ -292,7 +314,7 @@ ${plugin.stdout}`);
 	if (shrinkwrap.includes("@larksuiteoapi")) throw new Error("the CLI's shrinkwrap pulls in the Feishu SDK");
 
 	console.log(
-		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout; a channel plugin installs under a gateway directory and loads",
+		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout; host-node resizes images and runs background commands from its tarball; a channel plugin installs under a gateway directory and loads",
 	);
 } finally {
 	rmSync(workDir, { recursive: true, force: true });

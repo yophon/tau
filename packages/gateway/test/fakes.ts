@@ -107,6 +107,11 @@ export class FakeConversation implements Conversation {
 	runs: FakeRun[] = [];
 	commands: string[] = [];
 	closed = false;
+	/** P36a: background commands still running. */
+	working = false;
+	busy(): boolean {
+		return this.working;
+	}
 	/** Called inside run() before it waits; tests use it to request approvals. */
 	onRun?: (conversation: FakeConversation, input: ConversationInput) => Promise<void> | void;
 	private current: { resolve(value: { stopReason: string; aborted: boolean }): void } | undefined;

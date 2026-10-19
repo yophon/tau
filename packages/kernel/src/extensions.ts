@@ -479,6 +479,16 @@ export interface SessionCompactFailedEvent {
  */
 export type ExtensionErrorSink = (failure: { event: string; error: Error }) => void;
 
+/**
+ * Extensions talking to each other (pi EventBus): one bus per registry, shared by
+ * all its extensions. Handlers run synchronously in subscription order; a throwing
+ * or rejecting handler is reported to the error sink as `events:<channel>`.
+ */
+export interface EventBus {
+	emit(channel: string, data: unknown): void;
+	on(channel: string, handler: (data: unknown) => void): () => void;
+}
+
 /** Fired before forking a session; may cancel the fork. */
 export interface SessionBeforeForkEvent {
 	type: "session_before_fork";
@@ -972,6 +982,9 @@ export interface ExtensionAPI {
 	 */
 	registerTool(tool: Tool, options?: { risk?: RiskLevel }): void;
 
+	/** The registry's event bus, shared with the other extensions (pi `pi.events`). */
+	readonly events: EventBus;
+
 	/** Register a custom command. */
 	registerCommand(name: string, options: Omit<RegisteredCommand, "name" | "invocationName">): void;
 
@@ -1133,6 +1146,33 @@ export class ExtensionRegistry {
 	private invalidated = false;
 	private hostActions: ExtensionHostActions | undefined;
 	private errorSink: ExtensionErrorSink | undefined;
+	private readonly channels = new Map<string, Array<(data: unknown) => void>>();
+	/** pi EventBus over a plain map (the kernel has no node:events). */
+	readonly events: EventBus = {
+		emit: (channel, data) => {
+			for (const handler of [...(this.channels.get(channel) ?? [])]) {
+				const report = (error: unknown) => this.errorSink?.({ event: `events:${channel}`, error: toError(error) });
+				try {
+					const result = handler(data) as unknown;
+					if (result && typeof (result as Promise<unknown>).then === "function") {
+						(result as Promise<unknown>).then(undefined, report);
+					}
+				} catch (error) {
+					report(error);
+				}
+			}
+		},
+		on: (channel, handler) => {
+			const registered = (data: unknown) => handler(data);
+			const list = this.channels.get(channel) ?? [];
+			list.push(registered);
+			this.channels.set(channel, list);
+			return () => {
+				const index = list.indexOf(registered);
+				if (index >= 0) list.splice(index, 1);
+			};
+		},
+	};
 	private readonly handlers: HandlerLists = {
 		agent_start: [],
 		agent_end: [],
@@ -1302,6 +1342,7 @@ export class ExtensionRegistry {
 		};
 		const api: ExtensionAPI = {
 			on: on as ExtensionAPI["on"],
+			events: this.events,
 			registerTool: (tool, options) => {
 				assertToolSchema(tool);
 				// First registration wins across extensions; a later one is reported, not applied

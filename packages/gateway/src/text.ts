@@ -64,10 +64,12 @@ export const TEXT = {
 						"/schedules 定时任务（/schedules cancel <编号> 取消）",
 						"/goals 目标（/goals all 含已结束的；/goals done|drop <编号> 结束）",
 						"/runs [n] 最近几轮做了什么（触发者、工具、审批、花费）",
+						"/tasks 后台命令（/tasks <编号> 看输出，/tasks stop <编号> 结束）",
 					]
 				: []),
 			"/help 显示这条帮助",
 		].join("\n"),
+	noTasks: "这个对话没有后台命令。",
 	runFailed: (message: string) => `这一轮出错了：${message}`,
 	approval: (options: {
 		id: string;
