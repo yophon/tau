@@ -94,6 +94,8 @@ export interface BottomLayout {
 	listRef?: React.Ref<DOMElement>;
 	/** The box holding the approval options. */
 	approvalRef?: React.Ref<DOMElement>;
+	/** The widgets above the input box (P35: a widget can be clicked). */
+	widgetsRef?: React.Ref<DOMElement>;
 	/** The transcript search (P34b): the query, how many matches, which one is current. */
 	search?: { query: string; count: number; current: number };
 }
@@ -168,7 +170,19 @@ function renderPicker(picker: PickerView, layout: BottomLayout): React.ReactElem
 		Box,
 		{ key: "picker", flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 1 },
 		h(Text, { key: "t", bold: true }, picker.title),
-		...renderList("picker", picker.items, picker.selected, picker.start ?? 0, layout.listRows, layout.listRef),
+		...renderList(
+			"picker",
+			picker.checked
+				? picker.items.map((item, index) => ({
+						...item,
+						label: `${picker.checked?.includes(index) ? "[x]" : "[ ]"} ${item.label}`,
+					}))
+				: picker.items,
+			picker.selected,
+			picker.start ?? 0,
+			layout.listRows,
+			layout.listRef,
+		),
 		picker.items.length === 0 ? h(Text, { key: "none", dimColor: true }, "Nothing to choose from.") : null,
 	);
 }
@@ -223,6 +237,7 @@ function renderMenu(completion: Completion, selected: number, start: number, lay
 
 export function hintText(state: UiState, completion: Completion | undefined): string {
 	if (state.approval) return "↑↓ or 1-4 to choose · Enter to confirm · Esc twice to deny";
+	if (state.picker?.checked) return "↑↓ to move · Space or a click to check · Enter to confirm · Esc to cancel";
 	if (state.picker) {
 		return `↑↓ to choose · Enter to confirm${state.picker.alt ? ` · Ctrl+S to ${state.picker.alt}` : ""} · Esc to cancel`;
 	}
@@ -261,9 +276,13 @@ export function statusText(status: StatusInfo, width: number): string {
 	return truncateCells(kept.join(" · "), max);
 }
 
-function widgetLines(widgets: StyledLine[][], key: string): React.ReactElement | null {
+function widgetLines(widgets: StyledLine[][], key: string, ref?: React.Ref<DOMElement>): React.ReactElement | null {
 	if (widgets.length === 0) return null;
-	return h(Box, { key, flexDirection: "column" }, ...widgets.flat().map((line, i) => styledLine(line, `w${i}`)));
+	return h(
+		Box,
+		{ key, flexDirection: "column", ...(ref ? { ref } : {}) },
+		...widgets.flat().map((line, i) => styledLine(line, `w${i}`)),
+	);
 }
 
 export function renderBottom(
@@ -300,7 +319,7 @@ export function renderBottom(
 			);
 		}
 		if (layout.search) children.push(renderSearchBar(layout.search, columns));
-		children.push(widgetLines(state.widgets.above, "wa"));
+		children.push(widgetLines(state.widgets.above, "wa", layout.widgetsRef));
 		children.push(
 			renderInputBox(state.editor, columns, {
 				active: true,

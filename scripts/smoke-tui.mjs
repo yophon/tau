@@ -46,6 +46,8 @@ async function main() {
 		await run("fullscreen-menu", runFullscreenMenuSmoke);
 		await run("notify", runNotifySmoke);
 		await run("session-title", runSessionTitleSmoke);
+		await run("ask-user", runAskUserSmoke);
+		await run("hooks", runHooksSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -743,6 +745,55 @@ async function runFullscreenMenuSmoke(root, baseUrl) {
 	}
 }
 
+// P35: ask_user does not stop the run; the question stays open, and the answer starts a new turn.
+async function runAskUserSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "ask-user", false);
+	const session = await startTui("ask-user", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("ask smoke", "Enter");
+		await session.waitFor("SMOKE_ASK_CONTINUED", 10_000);
+		await session.waitFor("Smoke · Which smoke?", 10_000);
+		await session.send("Down");
+		await sleep(200);
+		await session.send("Enter");
+		await session.waitFor("SMOKE_ANSWER_GOT_B", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok ask-user");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P35: a PreToolUse hook in ~/.tau/settings.json blocks a bash call; the model reads the reason.
+async function runHooksSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "hooks", false);
+	const script = join(dirs.home, "block.mjs");
+	await writeFile(
+		script,
+		'let raw = ""; process.stdin.on("data", (c) => (raw += c)); process.stdin.on("end", () => { if (raw.includes("HOOK_BLOCK_ME")) { process.stderr.write("SMOKE_HOOK_BLOCKED"); process.exit(2); } });\n',
+		"utf8",
+	);
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	await writeFile(
+		join(dirs.home, ".tau", "settings.json"),
+		`${JSON.stringify({ hooks: { PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: `node ${shellQuote(script)}` }] }] } })}\n`,
+		"utf8",
+	);
+	const session = await startTui("hooks", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("hook smoke", "Enter");
+		await session.waitFor("SMOKE_HOOK_SAW_BLOCK", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok hooks");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P34e: with the window in the background, a finished run sends a notification; the title spins.
 async function runNotifySmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "notify", false);
@@ -1056,10 +1107,22 @@ function responseFor(request) {
 		if (content.includes("SMOKE_TOOL_OUTPUT")) return textTurn("SMOKE_CUSTOM_TOOL_DONE");
 		if (content.includes("APPROVAL_RAN_42")) return textTurn(`SMOKE_APPROVAL_DONE_${++approvalDoneCount}`);
 		if (content.includes("Denied by policy")) return textTurn(`SMOKE_APPROVAL_DENIED_${++approvalDenyCount}`);
+		if (content.includes("Question q1 sent")) return textTurn("SMOKE_ASK_CONTINUED");
+		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
 	}
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("which model")) return textTurn(`MODEL_IS_${request.model}`);
+	if (content.includes("[Answer q1]") && content.includes("user selected 2. SMOKE_OPT_B"))
+		return textTurn("SMOKE_ANSWER_GOT_B");
+	if (content.includes("ask smoke")) {
+		return toolCallTurn("ask_user", {
+			questions: [
+				{ question: "Which smoke?", header: "Smoke", options: [{ label: "SMOKE_OPT_A" }, { label: "SMOKE_OPT_B" }] },
+			],
+		});
+	}
+	if (content.includes("hook smoke")) return toolCallTurn("bash", { command: "echo HOOK_BLOCK_ME" });
 	if (content.includes("stream smoke")) return textTurn("SMOKE_STREAM_OK", 40);
 	if (content === "SCOUT_TASK") return textTurn("RESULT_SCOUT", 40);
 	if (content === "WORKER_TASK") return textTurn("RESULT_WORKER", 40);

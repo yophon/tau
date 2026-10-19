@@ -27,6 +27,7 @@ export {
 	SILENT_REPLY,
 } from "./gateway.ts";
 export { isChannelPlugin, loadChannelPlugin, resolvePlugin } from "./plugins.ts";
+export { type ChatQuestionOptions, ChatQuestions, REPLIED_IN_CHAT } from "./questions.ts";
 export {
 	type Goal,
 	type NewGoal,

@@ -44,6 +44,8 @@ export interface UiCapability {
 	notify(message: string, level?: "info" | "warning" | "error"): void;
 	/** Edit text in a full editor (pi ui.editor); undefined when cancelled. Hosts without one omit it. */
 	editor?(title: string, prefill?: string): Promise<string | undefined>;
+	/** Pick any number of options (tau, P35); undefined when cancelled. Hosts without one omit it. */
+	selectMany?(title: string, options: string[]): Promise<string[] | undefined>;
 }
 
 /** Host capabilities exposed to extensions through a facade. Every host capability is optional. */
@@ -595,6 +597,13 @@ export interface ToolCallEventResult {
 	 * batch asks for it; policy and approval denials never do (D20).
 	 */
 	terminate?: boolean;
+	/**
+	 * Settle the approval step (tau, P35; Claude Code's PreToolUse permissionDecision):
+	 * "allow" runs the call without asking where the policy would ask, "ask" asks where
+	 * it would allow. The policy's own denials (read-only mode, deny rules) still deny.
+	 * Across handlers "ask" wins over "allow".
+	 */
+	permission?: "allow" | "ask";
 }
 
 /** Fired after a tool executed, before the result enters the conversation. */
@@ -794,6 +803,8 @@ export interface RegisteredWidget {
 	description?: string;
 	placement?: WidgetPlacement;
 	handler: (ctx: ExtensionContext) => Promise<RegisteredWidgetRenderResult> | RegisteredWidgetRenderResult;
+	/** A click on the widget (tau, P35: full-screen TUI); hosts without a pointer never call it. */
+	onClick?: (ctx: ExtensionContext) => void | Promise<void>;
 }
 
 export type RegisteredStatusItemResult = string | undefined;
@@ -1485,16 +1496,20 @@ export class ExtensionRegistry {
 		return { handled: false, text: current, ...(images ? { images } : {}) };
 	}
 
-	/** Run tool_call handlers. Handlers may mutate event.input; a block short-circuits. */
+	/** Run tool_call handlers. Handlers may mutate event.input; a block short-circuits; "ask" beats "allow". */
 	async runToolCall(
 		event: ToolCallEvent,
 		ctx: ExtensionContext,
-	): Promise<{ blocked: boolean; reason?: string; terminate?: boolean }> {
+	): Promise<{ blocked: boolean; reason?: string; terminate?: boolean; permission?: "allow" | "ask" }> {
+		let permission: "allow" | "ask" | undefined;
 		for (const handler of [...this.handlers.tool_call]) {
 			const result = await handler(event, ctx);
 			if (result?.block) return { blocked: true, reason: result.reason, terminate: result.terminate === true };
+			if (result?.permission === "ask" || (result?.permission === "allow" && permission === undefined)) {
+				permission = result.permission;
+			}
 		}
-		return { blocked: false };
+		return { blocked: false, ...(permission ? { permission } : {}) };
 	}
 
 	/** Run tool_result handlers. Partial overrides chain onto the event. */

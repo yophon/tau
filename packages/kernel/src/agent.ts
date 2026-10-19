@@ -1040,9 +1040,8 @@ export class Agent {
 					(api) => {
 						api.on("tool_call", async (event, ctx) => {
 							const decision = await parent.runToolCall(event, ctx);
-							return decision.blocked
-								? { block: true, reason: decision.reason, terminate: decision.terminate }
-								: undefined;
+							if (decision.blocked) return { block: true, reason: decision.reason, terminate: decision.terminate };
+							return decision.permission ? { permission: decision.permission } : undefined;
 						});
 						api.on("tool_result", (event, ctx) => parent.runToolResult(event, ctx));
 					},

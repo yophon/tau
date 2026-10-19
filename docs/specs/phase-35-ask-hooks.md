@@ -1,6 +1,6 @@
 # Phase 35：提问工具与用户钩子 规格书
 
-> 状态：已确认（2026-10-19）。用户定：提问支持多选，缺省不等待回答（可配置为等待）；钩子照 Claude Code，钩子可以批准调用（「别自己整花活」）；各种拦截与数量限制尽量放宽（「开发资源有限，没时间测真正的边界」）；其余开放问题按建议。
+> 状态：已完成（2026-10-19）。用户定：提问支持多选，缺省不等待回答（可配置为等待）；钩子照 Claude Code，钩子可以批准调用（「别自己整花活」）；各种拦截与数量限制尽量放宽（「开发资源有限，没时间测真正的边界」）；其余开放问题按建议。真机验收待用户执行；实施偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 35
 > 起因：2026-10-19 用户从 Backlog E 里选了这两项；计划模式、改完自动诊断、`/review` 与 `/commit` 裁决不做（自动诊断由用户在钩子里配类型检查实现）。
 
@@ -357,3 +357,20 @@ interface HookOutput {
 - 钩子用你的完整环境变量执行，项目钩子能读到你的密钥，还能批准调用；靠信任门把关（与项目扩展同等），文档里写明。
 - 限制放宽后的边界没有逐一测过（用户裁决）：Stop 钩子可能让模型一直不停（Esc 可停）、补充信息过长会占满上下文（之后由压缩处理）、后台钩子过多会占资源。出了问题再加限制。
 - `updatedInput` 改出的参数照常走审批与权限模式，但审批面板显示的是改后的参数；文档写明。
+
+## 实施记录
+
+一个提交完成 35a–35d 与文档。全量测试与 check 全绿；smoke-tui 新增 `ask-user`、`hooks` 两个场景，全屏与 inline 下各跑一遍。新增测试：钩子 10（`hooks.test.ts`）、`ask_user` 7（`ask-user.test.ts`）、TUI 的多选列表、可点击 widget 与不等待的提问 4（`tui-p35.test.ts`）、网关的聊天提问 3、内核的 `permission` 2、NodeShell 引号 1。
+
+与规格的偏差：
+
+- **NodeShell 修了一个老问题**：Windows 上转给 cmd.exe 的命令，Node 会把引号转义成 cmd 不认识的 `\"`，`node "C:/x.mjs"` 这样带引号路径的命令跑不起来（bash 工具同样受影响）。钩子测试里撞出来；现在按 Node 自己 `shell: true` 的做法整条加引号、原样传参。
+- **stdin 里没有 `agent_type`**：内核的 `tool_call` 事件不带子代理身份，子代理的调用照常经过钩子，但分不出是谁。
+- **`SessionStart` 的 `source`** 用 tau 的 `session_start` 原因：`startup`、`resume`、`reload`（没有 new、fork）。
+- **`statusMessage`** 可以写，目前不显示。
+- **`PostToolUse` 的反馈**作为一个文字块 `PostToolUse hook:\n…` 附在工具结果后面；补充信息是不显示的 `hook_context` 消息。
+- **`Stop` 的 `stop_hook_active`** 在提示整个结束（`agent_settled`）时才复位：续跑在内核里是新的一次 run，按 run 复位会让钩子反复拦停。
+- **网关的问题消息不带编号 q1**：`ask_user` 同一时刻只开一个问题，编号回复总是答当前那个，`q2 1` 的写法用不上，没有做。`/stop` 取消打开的问题时不另回消息。
+- **网关等待模式超时**：`ask_user` 收到的是带理由的错误（`No answer within N minutes. Decide yourself and say what you assumed.`），模型看到的是这条工具错误。
+- **TUI 里按 Esc 放下问题**时除了输入框上方的一行，还有一条提示「Question q1 is waiting. Ctrl+Q (or click it) to answer.」。
+- **不等待的回答**经 `sendUserMessage` 送达，运行中按 steer 插入。

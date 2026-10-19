@@ -62,6 +62,7 @@ import {
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
+import { createAskUserExtension } from "./ask-user.ts";
 import {
 	ApprovalLog,
 	type AuditHost,
@@ -73,6 +74,7 @@ import {
 } from "./audit.ts";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
+import { createHooksExtension, HookRunner, loadHookConfig, withHookApprovals } from "./hooks.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
 	availableModels,
@@ -630,6 +632,16 @@ function createUi(readline: Readline): UiCapability {
 			const index = Number.parseInt(answer.trim(), 10) - 1;
 			return options[index];
 		},
+		// P35: numbers separated by spaces or commas; nothing valid = cancelled.
+		selectMany: async (title, options) => {
+			console.log(title);
+			for (const [i, option] of options.entries()) console.log(`  ${i + 1}. ${option}`);
+			const answer = await readline.question("numbers, separated by spaces > ");
+			const picked = [...new Set(answer.split(/[\s,，、]+/).map((part) => Number.parseInt(part, 10) - 1))]
+				.filter((index) => index >= 0 && index < options.length)
+				.map((index) => options[index] as string);
+			return picked.length > 0 ? picked : undefined;
+		},
 		notify: (message, level) => {
 			const paint = level === "error" ? red : level === "warning" ? cyan : dim;
 			console.log(paint(message));
@@ -779,6 +791,7 @@ async function loadExtensionRegistry(
 	memory?: MemoryScope,
 	mcp = true,
 	audit?: Extension,
+	hooks?: HookRunner,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
@@ -833,6 +846,12 @@ async function loadExtensionRegistry(
 			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
 			await registry.add([createMcpExtension({ servers: withOAuth(loadedMcp.servers, userHome()) })]);
 		}
+	}
+	// User hooks (P35): ~/.tau/settings.json and, when trusted, the project's.
+	if (hooks) {
+		hooks.configure(loadHookConfig({ home: userHome(), cwd, projectTrusted }));
+		for (const diagnostic of hooks.diagnostics) console.log(dim(`hooks: ${diagnostic}`));
+		await registry.add([createHooksExtension(hooks)]);
 	}
 	reportExtensionLoad(registry);
 	return { registry, projectTrusted };
@@ -1491,6 +1510,13 @@ async function main(): Promise<void> {
 		memory?: MemoryScope;
 		/** P32b: load ~/.tau/mcp.json servers (default true; off for a gateway guest, and ACP merges its own). */
 		mcp?: boolean;
+		/**
+		 * P35: ask_user for this workspace. Offered whenever there is a UI; `freeAnswer: false` when the
+		 * UI has no text input (ACP), `unavailable` says when nobody can answer (a gateway schedule), false = none.
+		 */
+		askUser?: false | { freeAnswer?: boolean; unavailable?: () => string | undefined };
+		/** P35: ask the trust question through `ui` (default true; the gateway's chat UI does not). */
+		trustPrompt?: boolean;
 		/** P32c: the audit's host, trigger and approval kind for this workspace (the gateway's chats). */
 		audit?: {
 			host?: AuditHost;
@@ -1512,19 +1538,43 @@ async function main(): Promise<void> {
 			details: settings.auditDetails ?? "summary",
 			current: spec.audit?.current ?? (() => ({ trigger: defaultTrigger })),
 		});
-		const onWorkspaceApproval = auditedApproval(
-			spec.onApproval,
-			approvals,
-			spec.audit?.approvals ?? "terminal",
-			spec.audit?.decidedBy,
-		);
+		const workspaceHost = spec.audit?.host ?? auditHost;
+		const hookRunner = new HookRunner({
+			cwd,
+			permissionMode: () => workspaceMode ?? permissionMode ?? "supervised",
+			log: (level, text) => process.stderr.write(`${level === "warning" ? "warning: " : ""}${text}\n`),
+			// The gateway tells its owners in chat; Notification hooks are for a person at this machine.
+			notifications: spec.ui !== undefined && (spec.audit?.approvals ?? "terminal") !== "chat",
+			idleNotification: workspaceHost === "tui" || workspaceHost === "repl",
+			onHookApproval: (toolCallId) => approvals.record(toolCallId, { source: "hook_allow" }),
+		});
+		// ask_user (P35) leads the host's extensions: wherever there is someone to ask.
+		const askUser =
+			spec.ui !== undefined && spec.askUser !== false
+				? createAskUserExtension({
+						wait: () => readSettings(join(userHome(), ".tau", "settings.json")).askUserWait === true,
+						freeAnswer: spec.askUser?.freeAnswer ?? true,
+						...(spec.askUser?.unavailable ? { unavailable: spec.askUser.unavailable } : {}),
+						onAsk: () => hookRunner.notify("Tau has a question for you", "elicitation_dialog"),
+					})
+				: undefined;
+		const hostExtensions = [...(askUser ? [askUser] : []), ...(spec.extensions ?? [])];
+		const trustUi = spec.trustPrompt === false ? undefined : spec.ui;
 		const loaded = await loadExtensionRegistry(
 			cwd,
-			spec.ui,
-			spec.extensions,
+			trustUi,
+			hostExtensions,
 			spec.memory,
 			spec.mcp ?? true,
 			auditExtension,
+			hookRunner,
+		);
+		// After the hooks are loaded: PermissionRequest hooks may answer before the host asks (P35).
+		const onWorkspaceApproval = auditedApproval(
+			withHookApprovals(spec.onApproval, hookRunner),
+			approvals,
+			spec.audit?.approvals ?? "terminal",
+			spec.audit?.decidedBy,
 		);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
@@ -1535,11 +1585,12 @@ async function main(): Promise<void> {
 			projectContext = await loadProjectContext();
 			const next = await loadExtensionRegistry(
 				cwd,
-				reloadUi,
-				spec.extensions,
+				spec.trustPrompt === false ? undefined : reloadUi,
+				hostExtensions,
 				spec.memory,
 				spec.mcp ?? true,
 				auditExtension,
+				hookRunner,
 			);
 			projectTrusted = next.projectTrusted;
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));

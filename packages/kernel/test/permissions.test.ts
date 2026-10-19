@@ -313,3 +313,60 @@ test("accept-edits: an edit inside the working directory runs without approval; 
 		["bash"],
 	);
 });
+
+test("tool_call permission (P35): allow skips the approval, ask forces it, read-only still denies", async () => {
+	const run = async (mode: "supervised" | "bypass" | "read-only", permission: "allow" | "ask") => {
+		const { tool, executions } = probeTool("bash");
+		const requests: ApprovalRequest[] = [];
+		const registry = await ExtensionRegistry.load([
+			(api) => {
+				api.on("tool_call", () => ({ permission }));
+			},
+		]);
+		const agent = new Agent({
+			config,
+			platform: scripted(toolCallTurn("bash", { command: "npm test" }), textTurn("done")),
+			tools: [tool],
+			extensions: registry,
+			permissionMode: mode,
+			onApproval: async (request) => {
+				requests.push(request);
+				return false;
+			},
+		});
+		const events = await drain(agent, "go");
+		return { executions: executions.length, asked: requests.length, output: toolResultOutputs(events)[0] };
+	};
+	assert.deepEqual(await run("supervised", "allow"), { executions: 1, asked: 0, output: "executed" });
+	const forced = await run("bypass", "ask");
+	assert.equal(forced.asked, 1);
+	assert.equal(forced.executions, 0);
+	const readOnly = await run("read-only", "allow");
+	assert.equal(readOnly.executions, 0);
+	assert.match(readOnly.output, /^Denied by policy/);
+});
+
+test("tool_call permission (P35): ask from one handler beats allow from another", async () => {
+	const { tool, executions } = probeTool("bash");
+	let asked = 0;
+	const registry = await ExtensionRegistry.load([
+		(api) => {
+			api.on("tool_call", () => ({ permission: "allow" }));
+			api.on("tool_call", () => ({ permission: "ask" }));
+		},
+	]);
+	const agent = new Agent({
+		config,
+		platform: scripted(toolCallTurn("bash", { command: "ls" }), textTurn("done")),
+		tools: [tool],
+		extensions: registry,
+		permissionMode: "supervised",
+		onApproval: async () => {
+			asked++;
+			return true;
+		},
+	});
+	await drain(agent, "go");
+	assert.equal(asked, 1);
+	assert.equal(executions.length, 1);
+});

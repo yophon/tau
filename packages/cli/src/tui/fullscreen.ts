@@ -219,16 +219,19 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	// Where the lists and approval options are on screen, for clicks (after each layout).
 	const listRef = useRef<DOMElement>(null);
 	const approvalRef = useRef<DOMElement>(null);
+	const widgetsRef = useRef<DOMElement>(null);
 	const rowsForLists = listRows(screenRows);
 	controller.setListHeight(rowsForLists);
 	const viewRef = useRef<DOMElement>(null);
 	useEffect(() => {
 		const list = screenTop(listRef.current);
 		const approval = screenTop(approvalRef.current);
+		const widgets = screenTop(widgetsRef.current);
 		controller.setLayout({
 			view: { top: screenTop(viewRef.current) ?? 0, height: viewHeight },
 			...(list !== undefined ? { list: { top: list } } : {}),
 			...(approval !== undefined ? { approval: { top: approval } } : {}),
+			...(widgets !== undefined ? { widgets: { top: widgets } } : {}),
 		});
 	});
 
@@ -343,6 +346,7 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 				listRows: rowsForLists,
 				listRef,
 				approvalRef,
+				widgetsRef,
 				...(search ? { search } : {}),
 			}),
 		),

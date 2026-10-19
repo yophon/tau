@@ -230,6 +230,7 @@ export interface AcpHost {
 		onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 		fs?: FileSystem;
 		mcp?: boolean;
+		askUser?: false | { freeAnswer?: boolean };
 	}): Promise<HeadlessWorkspace & { isProjectTrusted(): boolean }>;
 	/** P32b: the ~/.tau/mcp.json servers (and the project's when trusted); the editor's win on a name clash. */
 	configuredMcpServers?(cwd: string, projectTrusted: boolean): McpServerConfig[];
@@ -343,6 +344,8 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 			ui,
 			fs,
 			mcp: false,
+			// ACP has buttons but no text input: ask_user offers only the options (P35).
+			askUser: { freeAnswer: false },
 			onApproval: async (request) => {
 				if (host.isAlwaysAllowed(request)) return true;
 				const sessionId = holder.session?.id ?? "";

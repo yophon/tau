@@ -31,8 +31,14 @@ inject a small adapter instead of polyfilling globals.
   memory about you and about the project (`memory_write`, `#fact` in the TUI;
   see [docs/memory.md](docs/memory.md)), `session_search` over your earlier
   sessions, `web_fetch` /
-  `web_search`, and five permission modes (read-only, supervised,
-  accept-edits, autonomous, bypass).
+  `web_search`, `ask_user` (questions with options; by default the model
+  goes on working and your answer arrives when you give it), and five
+  permission modes (read-only, supervised, accept-edits, autonomous, bypass).
+- **Hooks** — shell commands in `settings.json` at fixed points of a run
+  (before and after tools, on approval, when you send a prompt, when a turn
+  ends…), in Claude Code's format: block a call, approve it, rewrite its
+  arguments, or hand the model a type checker's errors. See
+  [docs/hooks.md](docs/hooks.md).
 - **Models** — describe providers and models once in `~/.tau/models.json`
   (pi's format); `/model` switches between them mid-session, across
   protocols, with per-model context windows and prices.
@@ -333,12 +339,13 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D37)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D38)
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, credentials, OAuth, keeping secrets from the model
 - [docs/audit.md](docs/audit.md) — the audit ledger: what tau did, who approved it, what it cost (`tau audit`)
+- [docs/hooks.md](docs/hooks.md) — user hooks: shell commands at fixed points of a run (Claude Code's format)
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

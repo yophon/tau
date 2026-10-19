@@ -40,6 +40,7 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import { restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import { OWN_ANSWER, SKIP_QUESTION } from "./ask-user.ts";
 import {
 	type AuditHost,
 	AuditLedger,
@@ -54,6 +55,7 @@ import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { GatewayCommand } from "./main.ts";
 import type { MemoryScope } from "./memory.ts";
 import { HeadlessSession, type HeadlessWorkspace, type ModelSwitch } from "./modes/headless.ts";
+import { readSettings } from "./settings.ts";
 
 /** What main.ts hands the gateway: its workspace factory and the model state. */
 export interface GatewayHost {
@@ -70,6 +72,8 @@ export interface GatewayHost {
 		extensions?: Extension[];
 		memory?: MemoryScope;
 		mcp?: boolean;
+		askUser?: false | { freeAnswer?: boolean; unavailable?: () => string | undefined };
+		trustPrompt?: boolean;
 		audit?: {
 			host?: AuditHost;
 			approvals?: "terminal" | "chat";
@@ -204,7 +208,13 @@ export async function openConversation(
 	let current: { runId?: string; trigger: AuditTrigger } = { trigger: chat };
 	const ws = await host.openWorkspace({
 		cwd: policy.workspace,
-		ui: undefined,
+		// Questions in chat (P35); the trust question is never asked there.
+		ui: hooks.ui,
+		trustPrompt: false,
+		askUser: {
+			unavailable: () =>
+				current.trigger.type === "schedule" ? "This run is a scheduled task; nobody is waiting to answer." : undefined,
+		},
 		onApproval: hooks.onApproval,
 		sessionDir: join(sessionsDir, segment(key.channel), segment(key.account), segment(key.peer)),
 		permissionMode: policy.permissionMode,
@@ -311,6 +321,11 @@ export async function runGateway(command: GatewayCommand, host: GatewayHost): Pr
 			...(host.env.TAU_GATEWAY_PAIRING_CODE ? { pairingCode: host.env.TAU_GATEWAY_PAIRING_CODE } : {}),
 			print: (line) => console.log(line),
 			openConversation: (key, policy, hooks) => openConversation(host, paths.sessions, key, policy, hooks),
+			questions: {
+				wait: () => readSettings(join(host.home, ".tau", "settings.json")).askUserWait === true,
+				freeAnswer: OWN_ANSWER,
+				skip: SKIP_QUESTION,
+			},
 		});
 	} catch (error) {
 		console.error(`tau gateway: ${error instanceof Error ? error.message : String(error)}`);

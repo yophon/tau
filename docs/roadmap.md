@@ -299,9 +299,11 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 866 个测试，863 通过、3 跳过；smoke-tui 二十三个场景（新增搜索、拖选复制、点开工具块、补全菜单点选、通知与标题、会话标题）在全屏和 inline 下各跑一遍都通过；pack smoke 通过；TUI 测试在 WSL Linux 上也通过。鼠标、焦点报告与 Ink 丢掉的键改为在过滤过的 stdin 里先拿走（两种模式都是）；搜索移植 pi 的语料与匹配；会话的第一条消息与消息数进了内核的 `SessionMetadata`，`Agent.completeText` 发不进会话的单次请求。顺带修了 `read` 输出的制表符让每行少显示一个字。真机验收待用户执行。偏差见规格书「实施记录」。
 
-## Phase 35 ⬜ 提问工具与用户钩子
+## Phase 35 ✅ 提问工具与用户钩子（2026-10-19）
 
 规格书（2026-10-19 确认；缺省不等待回答，钩子可批准调用，限制尽量放宽）：[specs/phase-35-ask-hooks.md](specs/phase-35-ask-hooks.md)。`ask_user` 工具：模型给出带选项的问题（可多选，缺省不等待回答），TUI 里点选或自己写，网关里是聊天消息，没人能回答的场合不提供；用户钩子：在 settings.json 里配 shell 命令，挂在工具执行前后、发出提示、一轮结束等时机，格式照抄 Claude Code。
+
+**完成记录**：全量 896 个测试，893 通过、3 跳过；check、pack smoke 通过；smoke-tui 新增 ask-user、hooks 两个场景，全部场景在全屏和 inline 下各跑一遍都通过。真 DeepSeek 验收：经 RPC 让模型用 `ask_user` 问按钮颜色，模型问完结束这一轮，回答以 `[Answer q1]` 送达后开始新的一轮并按答案写出 CSS；`-p` 下 PreToolUse 钩子（Claude Code 写法的 `"matcher": "Bash"`）拦下 `rm`、模型转述理由，PostToolUse 的补充信息到达模型。顺带修了 NodeShell 转给 cmd.exe 的命令丢引号的老问题。D38。真机验收待用户执行。偏差见规格书「实施记录」。
 
 ## 产品层后续 ⬜ 待定
 

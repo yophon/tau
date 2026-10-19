@@ -89,6 +89,16 @@ export const TEXT = {
 	approvalUnknown: (id: string) => `没有编号为 ${id} 的待批请求（可能已超时）。`,
 	needsOwner: "需要主人批准，这个对话不能执行这项操作",
 	approvalTimeout: (min: number) => `主人没有在 ${min} 分钟内批准`,
+	question: (options: { title: string; options: string[]; many: boolean; free: boolean; input: boolean }) =>
+		options.input
+			? `✏️ ${options.title}`
+			: [
+					`❓ ${options.title}`,
+					...options.options.map((option, index) => `${index + 1}. ${option}`),
+					`${options.many ? "可多选，回复编号，比如 1 3" : "回复编号"}${options.free ? "，或直接写你的回答" : ""}。`,
+				].join("\n"),
+	questionBadNumber: (count: number, many: boolean) =>
+		many ? `请回复 1–${count} 之间的编号，可以写几个，比如 1 3。` : `请回复 1–${count} 之间的一个编号。`,
 	scheduleCreated: (options: { id: string; title: string; timing: string; next?: string; recurring: boolean }) =>
 		[
 			`⏰ 已设置 #${options.id}：${options.recurring ? `${options.timing} ` : ""}${options.title}`,

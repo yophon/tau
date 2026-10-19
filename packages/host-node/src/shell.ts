@@ -9,6 +9,8 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
 interface ShellSpec {
 	shell: string;
 	args: string[];
+	/** cmd.exe: the command goes quoted and verbatim (Node escapes quotes as \\", which cmd does not read). */
+	verbatim?: boolean;
 }
 
 // Only names that are unambiguously Windows-native. Names that also exist in Git Bash
@@ -108,10 +110,10 @@ function findShell(command: string): ShellSpec {
 	}
 
 	const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
-	if (isWindowsStyleCommand(command)) return { shell: comspec, args: ["/d", "/s", "/c"] };
+	if (isWindowsStyleCommand(command)) return { shell: comspec, args: ["/d", "/s", "/c"], verbatim: true };
 	const gitBash = findGitBash();
 	if (gitBash) return { shell: gitBash, args: ["--noprofile", "--norc", "-c"] };
-	return { shell: comspec, args: ["/d", "/s", "/c"] };
+	return { shell: comspec, args: ["/d", "/s", "/c"], verbatim: true };
 }
 
 function killProcessTree(pid: number): void {
@@ -162,6 +164,8 @@ export class NodeShell implements Shell {
 			signal?: TauAbortSignal;
 			onStdout?: (chunk: string) => void;
 			onStderr?: (chunk: string) => void;
+			/** Written to the command's stdin, then closed (P35: hook commands read their event JSON). */
+			input?: string;
 		},
 	): Promise<ShellExecResult> {
 		if (options?.signal?.aborted) throw new ShellError("aborted", "aborted");
@@ -172,7 +176,7 @@ export class NodeShell implements Shell {
 		const timeoutMs = timeoutSeconds === undefined ? undefined : Math.min(timeoutSeconds * 1000, MAX_TIMEOUT_MS);
 		const cwd = options?.cwd ? (isAbsolute(options.cwd) ? options.cwd : resolve(this.cwd, options.cwd)) : this.cwd;
 		const shellCommand = process.platform === "win32" ? unwrapCmdWrapper(command) : command;
-		const { shell, args } = findShell(shellCommand);
+		const { shell, args, verbatim } = findShell(shellCommand);
 
 		return await new Promise((resolvePromise, rejectPromise) => {
 			let stdout = "";
@@ -181,14 +185,16 @@ export class NodeShell implements Shell {
 			let timedOut = false;
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-			const child = spawn(shell, [...args, shellCommand], {
+			// What Node itself does for shell: true on Windows: /s strips the outer quotes again.
+			const child = spawn(shell, [...args, verbatim ? `"${shellCommand}"` : shellCommand], {
+				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd,
 				...(this.env ? { env: this.env } : {}),
 				// Unix uses a process group so abort/timeout can kill descendants;
 				// Windows uses taskkill /T below and detached children can otherwise
 				// inherit handles that keep commands such as where/findstr alive.
 				detached: process.platform !== "win32",
-				stdio: ["ignore", "pipe", "pipe"],
+				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: process.platform === "win32",
 			});
 
@@ -213,6 +219,10 @@ export class NodeShell implements Shell {
 			}
 			options?.signal?.addEventListener("abort", onAbort, { once: true });
 
+			// stdin: the input when given (P35 hooks), else closed at once, as /dev/null would be.
+			// A command that never reads its stdin closes the pipe early: not an error.
+			child.stdin.on("error", () => undefined);
+			child.stdin.end(options?.input ?? "");
 			child.stdout.setEncoding("utf8");
 			child.stderr.setEncoding("utf8");
 			child.stdout.on("data", (chunk: string) => {

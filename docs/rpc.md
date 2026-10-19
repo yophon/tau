@@ -38,7 +38,7 @@ tau --mode rpc --no-session
 
 `prompt` 里的 `/命令`：扩展命令（含 `/skill:<名字>`、提示模板）立即执行；`/compact`、`/model`、`/thinking`、`/mode`、`/name`、`/new` 由宿主执行；纯终端命令（`/clear`、`/hotkeys` 等）返回 `handled` 并发一条通知说明不适用。
 
-**扩展 UI 与审批。** `ctx.ui` 的 select、confirm、input、editor 发 `extension_ui_request` 并等待同 id 的 `extension_ui_response`；notify 只发不等。tau 有工具审批（D20）而 pi 没有：审批借用 `method: "select"`，标题如 `bash wants to run: npm test (high risk)`，选项是 `["Allow once", "Always allow", "Deny"]`，另带 `approval` 字段（`toolCallId`、`toolName`、`args`、`risk`、`subagent`）。pi 的客户端把它当普通选择框即可，懂 tau 的客户端可以读 `approval` 画得更好。
+**扩展 UI 与审批。** `ctx.ui` 的 select、confirm、input、editor 发 `extension_ui_request` 并等待同 id 的 `extension_ui_response`；notify 只发不等。tau 另有 `method: "multiselect"`（P35，`ask_user` 的多选问题；字段 `title`、`options`），回应 `{ "values": ["…"] }`，空数组或取消算没回答；pi 的客户端不认识它时，回一个 `cancelled` 即可。tau 有工具审批（D20）而 pi 没有：审批借用 `method: "select"`，标题如 `bash wants to run: npm test (high risk)`，选项是 `["Allow once", "Always allow", "Deny"]`，另带 `approval` 字段（`toolCallId`、`toolName`、`args`、`risk`、`subagent`）。pi 的客户端把它当普通选择框即可，懂 tau 的客户端可以读 `approval` 画得更好。
 
 ## `--mode acp`
 

@@ -25,8 +25,13 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   过滤，所有宿主可用，包括 OPFS）。CLI 另带 `todo_write`（TUI 里显示清单）、
   关于你和关于项目的长期记忆（`memory_write`，TUI 里输入 `#事实`，见
   [docs/memory.md](docs/memory.md)）、在历史会话里查找的 `session_search`、`web_fetch` /
-  `web_search` 和五档权限
+  `web_search`、`ask_user`（带选项的提问；缺省模型问完接着干，你什么时候答、
+  答案什么时候送到）和五档权限
   （read-only、supervised、accept-edits、autonomous、bypass）。
+- **钩子**——在 `settings.json` 里写 shell 命令，挂在运行的固定时机（工具执行
+  前后、审批时、发出提示时、一轮结束时……），格式与 Claude Code 相同：可以拦下
+  调用、批准调用、改参数，或者把类型检查的报错交给模型。见
+  [docs/hooks.md](docs/hooks.md)。
 - **模型**——在 `~/.tau/models.json`（pi 的格式）里把供应商和模型写一次；
   `/model` 在会话中途切换，可以跨协议，上下文窗口和单价按模型生效。
 - **子代理**——`subagent` 工具把任务交给拥有独立上下文的子代理：单个、多个
@@ -292,12 +297,13 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D37）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D38）
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
 - [docs/memory.md](docs/memory.md)——长期记忆与会话检索
 - [docs/connectors.md](docs/connectors.md)——MCP 连接器、凭据、OAuth、不给模型看密钥
 - [docs/audit.md](docs/audit.md)——审计账本：做了什么、谁批的、花了多少（`tau audit`）
+- [docs/hooks.md](docs/hooks.md)——用户钩子：在运行的固定时机执行 shell 命令（Claude Code 的格式）
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

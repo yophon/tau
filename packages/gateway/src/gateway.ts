@@ -9,6 +9,7 @@ import type { AgentEvent, ApprovalRequest, AssistantMessage, PermissionMode } fr
 import type { AccessStore } from "./access.ts";
 import { ChatApprovals } from "./approvals.ts";
 import { ALLOWED_MODES, type GatewayConfig, OWNER_MODES } from "./config.ts";
+import { ChatQuestions } from "./questions.ts";
 import type { Schedule, ScheduleResult, ScheduleStore } from "./schedule.ts";
 import { createScheduleTools, describeGoal, describeSchedule } from "./schedule-tools.ts";
 import { chunkText, summarizeArgs, TEXT } from "./text.ts";
@@ -50,6 +51,8 @@ export interface GatewayOptions {
 	onOutbound?: (key: ConversationKey, reply: OutboundReply) => void;
 	/** P32c: the host's audit ledger, read for /runs, /status and /schedules. */
 	audit?: GatewayAuditView;
+	/** P35: ask_user in chat — whether a run waits for the answer, and the items not shown with numbers. */
+	questions?: { wait(): boolean; freeAnswer?: string; skip?: string };
 	now?: () => number;
 }
 
@@ -120,6 +123,8 @@ interface Slot {
 	stopRequested: boolean;
 	runId?: string;
 	lastActive: number;
+	/** P35: the question open in this chat (ask_user). */
+	questions?: ChatQuestions;
 }
 
 const PAIR_RE = /^\s*(?:配对|\/pair)\s+(\S+)\s*$/i;
@@ -373,6 +378,11 @@ export class Gateway {
 		if (OWNER_RE.test(text) && (await this.claimOwner(message, text))) return;
 
 		const slot = this.slotFor(message.key, role);
+		// An open question (P35): the reply answers it, or goes on as an ordinary message.
+		if (slot.questions?.waiting && slot.questions.offer(text) === "answer") {
+			slot.lastActive = this.now();
+			return;
+		}
 		const { scheduled: _ignored, ...inbound } = message as QueuedMessage;
 		slot.queue.push(inbound);
 		slot.lastActive = this.now();
@@ -457,7 +467,11 @@ export class Gateway {
 				reply(TEXT.help(owner));
 				return true;
 			case "stop": {
+				// An open question counts as not answered (P35).
+				const asked = slot?.questions?.waiting === true;
+				slot?.questions?.cancel();
 				if (!slot || (!slot.running && slot.queue.length === 0)) {
+					if (asked) return true;
 					reply(TEXT.nothingToStop);
 					return true;
 				}
@@ -635,6 +649,7 @@ export class Gateway {
 	private async unload(slot: Slot): Promise<void> {
 		const conversation = slot.conversation;
 		if (!conversation) return;
+		slot.questions?.cancel();
 		slot.conversation = undefined;
 		this.changed();
 		try {
@@ -657,7 +672,17 @@ export class Gateway {
 
 	private hooksFor(slot: Slot): ConversationHooks {
 		const store = this.options.schedules;
+		const asks = this.options.questions;
+		slot.questions = new ChatQuestions({
+			send: (text) => this.sendText(slot.key, text, slot.runId),
+			wait: () => asks?.wait() === true,
+			timeoutMs: this.options.config.approvalTimeoutSec * 1000,
+			...(asks?.freeAnswer ? { freeAnswer: asks.freeAnswer } : {}),
+			...(asks?.skip ? { skip: asks.skip } : {}),
+			log: (line) => this.log(`[${slot.key.channel}/${slot.key.peer}] ${line}`),
+		});
 		return {
+			ui: slot.questions.ui,
 			onApproval: (request) => this.approve(slot, request),
 			onEvent: (event) => this.onEvent(slot, event),
 			decidedBy: (toolCallId) => this.approvals.decidedBy(toolCallId),

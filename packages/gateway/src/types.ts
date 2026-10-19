@@ -3,7 +3,7 @@
  * conversations are built by the host (the CLI wraps a HeadlessSession). Queues,
  * access, approvals and persistence live in the gateway, once.
  */
-import type { AgentEvent, ApprovalRequest, Extension, PermissionMode } from "@yophon/tau-kernel";
+import type { AgentEvent, ApprovalRequest, Extension, PermissionMode, UiCapability } from "@yophon/tau-kernel";
 
 /** A conversation's stable key: the same key always lands on the same session. */
 export interface ConversationKey {
@@ -142,4 +142,6 @@ export interface ConversationHooks {
 	extensions?: Extension[];
 	/** P32c: the owner who answered the approval for this tool call (the audit's `by`). */
 	decidedBy?(toolCallId: string): string | undefined;
+	/** P35: questions in chat (ask_user): the conversation's UI. */
+	ui?: UiCapability;
 }

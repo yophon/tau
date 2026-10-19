@@ -167,3 +167,16 @@ test(
 		});
 	},
 );
+
+test(
+	"a cmd.exe command keeps its quotes (P35: Node's escaping broke quoted paths)",
+	{ skip: process.platform !== "win32" },
+	async () => {
+		const dir = await mkdtemp(join(tmpdir(), "tau-cmd-"));
+		const script = join(dir, "say.mjs");
+		await writeFile(script, 'process.stdout.write("said " + process.argv[2]);');
+		const result = await new NodeShell(dir).exec(`node "${script.replaceAll("\\", "/")}" "two words"`);
+		assert.equal(result.stdout, "said two words");
+		assert.equal(result.exitCode, 0);
+	},
+);

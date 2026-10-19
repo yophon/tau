@@ -44,6 +44,14 @@ export class RpcUiBridge {
 				const response = await this.request({ method: "select", title, options });
 				return typeof response?.value === "string" ? response.value : undefined;
 			},
+			// P35: tau's own method (pi's RPC has none): the client answers { values: string[] }.
+			selectMany: async (title, options) => {
+				const response = await this.request({ method: "multiselect", title, options });
+				const values = Array.isArray(response?.values)
+					? response.values.filter((value): value is string => typeof value === "string")
+					: undefined;
+				return values && values.length > 0 ? values : undefined;
+			},
 			input: async (title, placeholder) => {
 				const response = await this.request({ method: "input", title, ...(placeholder ? { placeholder } : {}) });
 				return typeof response?.value === "string" ? response.value : undefined;

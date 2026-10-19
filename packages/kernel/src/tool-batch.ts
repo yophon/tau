@@ -289,6 +289,8 @@ export class ToolBatchRunner {
 		// Deep copy: a handler rewriting nested arguments in place must not reach the
 		// logged assistant message (P22: the log is what the model saw).
 		let args: Record<string, unknown> = JSON.parse(JSON.stringify(toolCall.arguments)) as Record<string, unknown>;
+		// An extension's say on the approval step (P35): skip it or force it.
+		let permission: "allow" | "ask" | undefined;
 		if (this.host.extensions) {
 			const event: ToolCallEvent = {
 				type: "tool_call",
@@ -303,6 +305,7 @@ export class ToolBatchRunner {
 				return { kind: "immediate", toolCall, result: decision.terminate ? { ...blocked, terminate: true } : blocked };
 			}
 			args = event.input;
+			permission = decision.permission;
 		}
 
 		// Abort check (pi v0.80.3 prepareToolCall): once the run is aborted, no further
@@ -347,7 +350,8 @@ export class ToolBatchRunner {
 		if (policyDecision.action === "deny") {
 			return { kind: "immediate", toolCall, result: errorResult(`Denied by policy: ${riskText}`) };
 		}
-		if (policyDecision.action === "ask") {
+		const ask = permission === undefined ? policyDecision.action === "ask" : permission === "ask";
+		if (ask) {
 			const handler = this.host.onApproval ?? this.uiApprovalHandler();
 			if (!handler) {
 				return {

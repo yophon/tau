@@ -125,6 +125,9 @@
 | `registerWidget` / `registerHeaderItem` / `registerFooterItem` / `registerDiagnostic` | TUI 周边组件、状态段、诊断（P8） |
 | `auto_retry_start` / `auto_retry_end` 事件 | pi 是 AgentSessionEvent，tau 提为扩展事件（P11） |
 | `ExtensionRegistry.setErrorSink()` | 宿主侧：通知类处理器的错误隔离（P21-HF-12）；加载失败回滚、`loadErrors`/`warnings`、`invalidate()` 见 P23c |
+| `ui.selectMany()` | 多选（P35，`ask_user` 的多选问题）；pi 的 UI 只有单选 |
+| `tool_call` 结果的 `permission` | `"allow"` 跳过审批、`"ask"` 强制审批（P35，用户钩子的 permissionDecision）；pi 没有审批 |
+| `registerWidget` 的 `onClick` | 全屏 TUI 点击 widget 时调用（P35，等待中的问题） |
 
 ## 扩展面之外的生命周期能力
 

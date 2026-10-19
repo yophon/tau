@@ -14,6 +14,7 @@ import {
 	loadGatewayConfig,
 	loadPlugins,
 	mergeInputs,
+	REPLIED_IN_CHAT,
 	TEXT,
 } from "../src/index.ts";
 import { config, FakeChannel, FakeConversation, setup, tempDir, tick, until } from "./fakes.ts";
@@ -521,6 +522,88 @@ describe("channel plugins", () => {
 		conversations[0]?.runs[0]?.finish("yes");
 		await gateway.idle();
 		assert.deepEqual(good.texts("boss"), ["yes"]);
+		await gateway.stop();
+	});
+});
+
+describe("questions in chat (P35)", () => {
+	const OWN = "Write my own answer…";
+	const SKIP = "Skip this question";
+	const questions = (wait: boolean) => ({ wait: () => wait, freeAnswer: OWN, skip: SKIP });
+
+	it("waiting: numbers pick, text is the own answer, and neither reaches the model as a message", async () => {
+		const { channel, conversationOf, gateway } = setup({ gateway: { questions: questions(true) } });
+		await until(() => channel.sink !== undefined);
+		await gateway.receive(channel.message("boss", "plan it"));
+		await until(() => conversationOf("boss") !== undefined);
+		const ui = conversationOf("boss")?.hooks.ui;
+		assert.ok(ui?.selectMany);
+		const one = ui.select("Scope · Which packages?", ["All", "cli only", OWN]);
+		await until(() => channel.texts("boss").length === 1);
+		assert.equal(
+			channel.texts("boss")[0],
+			"❓ Scope · Which packages?\n1. All\n2. cli only\n回复编号，或直接写你的回答。",
+		);
+		await gateway.receive(channel.message("boss", "3"));
+		assert.equal(channel.texts("boss").at(-1), TEXT.questionBadNumber(2, false));
+		await gateway.receive(channel.message("boss", "2"));
+		assert.equal(await one, "cli only");
+		const many = ui.selectMany("Checks", ["lint", "types", "smoke", OWN, SKIP]);
+		await until(() => channel.texts("boss").length === 3);
+		assert.match(
+			channel.texts("boss")[2] ?? "",
+			/^❓ Checks\n1\. lint\n2\. types\n3\. smoke\n可多选，回复编号，比如 1 3，或直接写你的回答。$/,
+		);
+		await gateway.receive(channel.message("boss", "1，3"));
+		assert.deepEqual(await many, ["lint", "smoke"]);
+		const own = ui.select("Scope", ["All", OWN]);
+		await until(() => channel.texts("boss").length === 4);
+		await gateway.receive(channel.message("boss", "只改 tui"));
+		assert.equal(await own, OWN);
+		assert.equal(await ui.input("Scope"), "只改 tui");
+		assert.equal(conversationOf("boss")?.runs.length, 1, "answers do not reach the model as messages");
+		await gateway.stop();
+	});
+
+	it("not waiting: numbers answer, other text goes on as a message and closes the question", async () => {
+		const { channel, conversationOf, gateway } = setup({ gateway: { questions: questions(false) } });
+		await until(() => channel.sink !== undefined);
+		await gateway.receive(channel.message("boss", "plan it"));
+		await until(() => conversationOf("boss") !== undefined);
+		const boss = conversationOf("boss");
+		const ui = boss?.hooks.ui;
+		assert.ok(ui);
+		await until(() => boss?.runs.length === 1);
+		boss?.runs[0]?.finish("asked");
+		await until(() => channel.texts("boss").length === 1);
+		const first = ui.select("Scope", ["All", "cli only", OWN, SKIP]);
+		await until(() => channel.texts("boss").length === 2);
+		await gateway.receive(channel.message("boss", "1"));
+		assert.equal(await first, "All");
+		const second = ui.select("Tests", ["fast", OWN, SKIP]);
+		await until(() => channel.texts("boss").length === 3);
+		await gateway.receive(channel.message("boss", "先别管测试，改一下 README"));
+		assert.equal(await second, OWN);
+		assert.equal(await ui.input("Tests"), REPLIED_IN_CHAT);
+		await until(() => (boss?.runs.length ?? 0) === 2);
+		assert.equal(boss?.runs[1]?.input.text, "先别管测试，改一下 README");
+		await gateway.stop();
+	});
+
+	it("waiting: no answer in time rejects with a reason for the model; /stop counts as not answered", async () => {
+		const { channel, conversationOf, gateway } = setup({
+			config: { approvalTimeoutSec: 0.05 },
+			gateway: { questions: questions(true) },
+		});
+		await until(() => channel.sink !== undefined);
+		await gateway.receive(channel.message("boss", "plan it"));
+		await until(() => conversationOf("boss") !== undefined);
+		const ui = conversationOf("boss")?.hooks.ui;
+		assert.ok(ui);
+		await assert.rejects(ui.select("Scope", ["All", OWN]), /No answer within 1 minutes\. Decide yourself/);
+		const stopped = ui.select("Scope", ["All", OWN]);
+		await gateway.receive(channel.message("boss", "/stop"));
+		assert.equal(await stopped, undefined);
 		await gateway.stop();
 	});
 });

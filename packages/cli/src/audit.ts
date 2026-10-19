@@ -33,6 +33,8 @@ export type DecisionSource =
 	| "timeout"
 	| "non_owner"
 	| "hook"
+	/** P35: a hook approved the call (PreToolUse permissionDecision allow, PermissionRequest allow). */
+	| "hook_allow"
 	| "no_approver";
 
 interface Base {
@@ -159,13 +161,13 @@ export class AuditLedger {
 
 /** Who decided each approval, by tool call id: the host's approval wrapper writes, the audit reads. */
 export class ApprovalLog {
-	private readonly decisions = new Map<string, { source: DecisionSource; by?: string; risk: RiskLevel }>();
+	private readonly decisions = new Map<string, { source: DecisionSource; by?: string; risk?: RiskLevel }>();
 
-	record(toolCallId: string, decision: { source: DecisionSource; by?: string; risk: RiskLevel }): void {
+	record(toolCallId: string, decision: { source: DecisionSource; by?: string; risk?: RiskLevel }): void {
 		this.decisions.set(toolCallId, decision);
 	}
 
-	take(toolCallId: string): { source: DecisionSource; by?: string; risk: RiskLevel } | undefined {
+	take(toolCallId: string): { source: DecisionSource; by?: string; risk?: RiskLevel } | undefined {
 		const decision = this.decisions.get(toolCallId);
 		this.decisions.delete(toolCallId);
 		return decision;
@@ -224,7 +226,9 @@ export function createAuditExtension(context: AuditContext): Extension {
 			const entry = pending.get(toolCallId);
 			if (!entry) return;
 			pending.delete(toolCallId);
-			const decided = context.approvals.take(toolCallId);
+			let decided = context.approvals.take(toolCallId);
+			// A hook's approval does not get past the policy's own denials (P35): the refusal decides.
+			if (refusal !== undefined && decided?.source === "hook_allow") decided = undefined;
 			const source: DecisionSource = decided?.source ?? (refusal !== undefined ? classifyRefusal(refusal) : "mode");
 			const risk =
 				decided?.risk ??

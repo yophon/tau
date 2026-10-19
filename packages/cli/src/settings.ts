@@ -30,6 +30,8 @@ export interface TauSettings {
 	tuiNotify?: "auto" | "off";
 	/** P34e: tui.title — a terminal title with a spinner and Windows Terminal progress (default true). */
 	tuiTitle?: boolean;
+	/** P35: askUser.wait — ask_user waits for the answer (default false: the model goes on and the answer arrives later). */
+	askUserWait?: boolean;
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -98,12 +100,22 @@ export function readSettings(path: string): TauSettings {
 		const autoTitle = (session as Record<string, unknown>).autoTitle;
 		if (typeof autoTitle === "boolean") settings.autoTitle = autoTitle;
 	}
+	const askUser = raw.askUser;
+	if (typeof askUser === "object" && askUser !== null) {
+		const wait = (askUser as Record<string, unknown>).wait;
+		if (typeof wait === "boolean") settings.askUserWait = wait;
+	}
 	const audit = raw.audit;
 	if (typeof audit === "object" && audit !== null) {
 		const details = (audit as Record<string, unknown>).details;
 		if (details === "summary" || details === "none") settings.auditDetails = details;
 	}
 	return settings;
+}
+
+/** One top-level key of a settings file as written (P35: the hooks block, parsed by hooks.ts). */
+export function readSettingsKey(path: string, key: string): unknown {
+	return readJson(path)[key];
 }
 
 /**

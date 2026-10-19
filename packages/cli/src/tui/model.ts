@@ -79,6 +79,8 @@ export interface PickerView {
 	start?: number;
 	/** What Ctrl+S does with the selected item (e.g. "save as default"); absent = nothing. */
 	alt?: string;
+	/** A multi-select list (P35, ctx.ui.selectMany): the checked items. Absent = pick one. */
+	checked?: number[];
 }
 
 /** A question answered in the editor: ctx.ui.input, or the text after "deny and tell". */
@@ -191,6 +193,7 @@ export type UiAction =
 	| { type: "picker-open"; picker: PickerView }
 	| { type: "picker-select"; index: number; start: number }
 	| { type: "picker-close"; id: number }
+	| { type: "picker-toggle"; id: number; index: number }
 	| { type: "prompt-open"; prompt: PromptView }
 	| { type: "prompt-close"; id: number }
 	| { type: "editor"; editor: EditorState }
@@ -394,6 +397,14 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, picker: { ...state.picker, selected: action.index, start: action.start } };
 		case "picker-close":
 			return state.picker?.id === action.id ? { ...state, picker: undefined } : state;
+		case "picker-toggle": {
+			const picker = state.picker;
+			if (picker?.id !== action.id || !picker.checked) return state;
+			const checked = picker.checked.includes(action.index)
+				? picker.checked.filter((index) => index !== action.index)
+				: [...picker.checked, action.index].sort((a, b) => a - b);
+			return { ...state, picker: { ...picker, checked } };
+		}
 		case "prompt-open":
 			return { ...state, prompt: action.prompt };
 		case "prompt-close":

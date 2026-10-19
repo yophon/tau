@@ -66,9 +66,15 @@ export interface ScreenLayout {
 	list?: { top: number };
 	/** The first approval option. */
 	approval?: { top: number };
+	/** The first row of the widgets above the input box (P35). */
+	widgets?: { top: number };
 }
 
-type PointerTarget = { kind: "list"; index: number } | { kind: "approval"; index: number } | { kind: "view"; index: 0 };
+type PointerTarget =
+	| { kind: "list"; index: number }
+	| { kind: "approval"; index: number }
+	| { kind: "widget"; index: number }
+	| { kind: "view"; index: 0 };
 
 /** Clicks this close together on the same row count as a double or triple click (pi). */
 const MULTI_CLICK_MS = 500;
@@ -118,6 +124,10 @@ export class TuiController {
 	 */
 	private readonly shownCustom = new Set<string>();
 	private readonly pickers = new Map<number, (value: string | undefined, alt?: boolean) => void>();
+	/** Multi-select lists (P35, ctx.ui.selectMany): the checked values. */
+	private readonly multiPickers = new Map<number, (values: string[] | undefined) => void>();
+	/** The widget each row above the input box belongs to, for clicks (P35). */
+	private widgetRows: string[] = [];
 	private readonly prompts = new Map<number, (value: string | undefined) => void>();
 	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
 	private tellFor: ApprovalView | undefined;
@@ -165,14 +175,30 @@ export class TuiController {
 					{ label: "Yes", value: "yes", key: "y" },
 					{ label: "No", value: "no", key: "n" },
 				])) === "yes",
-			input: (title, placeholder) => this.ask("input", title, placeholder),
-			select: (title, values) =>
-				this.pick(
+			// An extension asking (ask_user, say) gets the window's attention like an approval (P35).
+			input: (title, placeholder) => {
+				this.attention("question", title);
+				return this.ask("input", title, placeholder);
+			},
+			select: (title, values) => {
+				this.attention("question", title);
+				return this.pick(
 					title,
 					values.map((value) => ({ label: value, value })),
-				),
-			notify: (message, level) =>
-				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message),
+				);
+			},
+			selectMany: (title, values) => {
+				this.attention("question", title);
+				return this.pickMany(
+					title,
+					values.map((value) => ({ label: value, value })),
+				);
+			},
+			notify: (message, level) => {
+				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message);
+				// What a widget shows may follow what the extension just did (ask_user's waiting question).
+				if (this.extensions.widgets.size > 0) void this.refreshWidgets().catch(() => undefined);
+			},
 			// pi ui.editor: the external editor ($VISUAL / $EDITOR); the title has nowhere to go.
 			editor: async (_title, prefill) => {
 				try {
@@ -337,16 +363,31 @@ export class TuiController {
 	private async refreshWidgets(): Promise<void> {
 		const above: StyledLine[][] = [];
 		const below: StyledLine[][] = [];
+		const rows: string[] = [];
 		for (const widget of this.extensions.widgets.values()) {
 			const target = widget.placement === "below-editor" ? below : above;
 			try {
 				const lines = renderResultLines(await widget.handler(this.agent.extensionContext()), this.columns() - 2);
-				if (lines) target.push(lines);
+				if (lines) {
+					target.push(lines);
+					if (target === above) rows.push(...lines.map(() => widget.name));
+				}
 			} catch (error) {
 				target.push([[span(`Widget ${widget.name} failed: ${errorText(error)}`, { color: "red" })]]);
+				if (target === above) rows.push(widget.name);
 			}
 		}
+		this.widgetRows = rows;
 		this.dispatch({ type: "widgets", above, below });
+	}
+
+	/** A click on a widget above the input box (P35): its onClick, then a fresh look. */
+	private clickWidget(row: number): void {
+		const widget = this.extensions.widgets.get(this.widgetRows[row] ?? "");
+		if (!widget?.onClick) return;
+		void Promise.resolve(widget.onClick(this.agent.extensionContext()))
+			.catch((error) => this.notice("error", `Widget ${widget.name} failed: ${errorText(error)}`))
+			.finally(() => void this.refreshWidgets().catch(() => undefined));
 	}
 
 	// ── input ────────────────────────────────────────────────────────────────
@@ -385,12 +426,16 @@ export class TuiController {
 		return true;
 	}
 
-	/** A click on item `index` of the open list: a menu item completes (Tab), a picker item confirms (Enter). */
+	/**
+	 * A click on item `index` of the open list: a menu item completes (Tab), a picker item
+	 * confirms (Enter), a multi-select item is checked or unchecked (Space).
+	 */
 	clickList(index: number): void {
 		const list = this.openList();
 		if (!list || index < 0 || index >= list.count) return;
 		this.moveList({ kind: "index", index });
-		this.execute({ type: list.kind === "picker" ? "picker-confirm" : "menu-accept" });
+		if (list.kind === "picker" && this.state.picker?.checked) this.execute({ type: "picker-toggle" });
+		else this.execute({ type: list.kind === "picker" ? "picker-confirm" : "menu-accept" });
 	}
 
 	/** A click on approval option `index`: the same as pressing its number. */
@@ -511,6 +556,7 @@ export class TuiController {
 		if (!press?.target || !target || target.kind !== press.target.kind || target.index !== press.target.index) return;
 		if (target.kind === "list") this.clickList(target.index);
 		else if (target.kind === "approval") this.clickApproval(target.index);
+		else if (target.kind === "widget") this.clickWidget(target.index);
 	}
 
 	// ── transcript: clicks, selection, prompts, search (P34a–d) ───────────
@@ -722,6 +768,10 @@ export class TuiController {
 		}
 		const item = this.listItemAt(y);
 		if (item !== undefined) return { kind: "list", index: item };
+		const widgets = this.layout.widgets;
+		if (widgets && y >= widgets.top && y < widgets.top + this.widgetRows.length) {
+			return { kind: "widget", index: y - widgets.top };
+		}
 		const view = this.layout.view;
 		if (view && y >= view.top && y < view.top + view.height) return { kind: "view", index: 0 };
 		return undefined;
@@ -963,9 +1013,24 @@ export class TuiController {
 			case "selection-clear":
 				this.dispatch({ type: "selection" });
 				return;
+			case "picker-toggle": {
+				const picker = state.picker;
+				if (picker?.checked) this.dispatch({ type: "picker-toggle", id: picker.id, index: picker.selected });
+				return;
+			}
 			case "picker-confirm": {
 				const picker = state.picker;
 				if (!picker) return;
+				if (picker.checked) {
+					// Nothing checked: Enter does nothing (Esc cancels).
+					if (picker.checked.length === 0) return;
+					this.dispatch({ type: "picker-close", id: picker.id });
+					this.settleMany(
+						picker.id,
+						picker.checked.map((index) => picker.items[index]?.value).filter((value) => value !== undefined),
+					);
+					return;
+				}
 				this.dispatch({ type: "picker-close", id: picker.id });
 				this.settlePicker(picker.id, picker.items[picker.selected]?.value);
 				return;
@@ -989,7 +1054,8 @@ export class TuiController {
 			case "picker-cancel":
 				if (!state.picker) return;
 				this.dispatch({ type: "picker-close", id: state.picker.id });
-				this.settlePicker(state.picker.id, undefined);
+				if (state.picker.checked) this.settleMany(state.picker.id, undefined);
+				else this.settlePicker(state.picker.id, undefined);
 				return;
 			case "menu-up":
 			case "menu-down":
@@ -1874,11 +1940,18 @@ export class TuiController {
 	 * approval waits. A terminal that never reported focus gets one only after a long run (and
 	 * for approvals).
 	 */
-	private attention(kind: "done" | "approval" | "error", body: string, elapsedMs = 0): void {
+	private attention(kind: "done" | "approval" | "question" | "error", body: string, elapsedMs = 0): void {
 		if (this.options.notify === "off" || this.focused === true) return;
-		if (this.focused === undefined && kind !== "approval" && elapsedMs < LONG_RUN_MS) return;
+		const waiting = kind === "approval" || kind === "question";
+		if (this.focused === undefined && !waiting && elapsedMs < LONG_RUN_MS) return;
 		const heading =
-			kind === "done" ? "tau · done" : kind === "approval" ? "tau · waiting for your approval" : "tau · failed";
+			kind === "done"
+				? "tau · done"
+				: kind === "approval"
+					? "tau · waiting for your approval"
+					: kind === "question"
+						? "tau · has a question for you"
+						: "tau · failed";
 		(this.deps.notify ?? notifyDesktop)(heading, body || heading);
 	}
 
@@ -1955,6 +2028,22 @@ export class TuiController {
 			});
 			this.store.flush();
 		});
+	}
+
+	/** A multi-select list (P35, ctx.ui.selectMany): the checked values, undefined when cancelled. */
+	pickMany(title: string, items: PickerItem[]): Promise<string[] | undefined> {
+		const id = this.nextDialogId++;
+		return new Promise((resolve) => {
+			this.multiPickers.set(id, resolve);
+			this.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0, checked: [] } });
+			this.store.flush();
+		});
+	}
+
+	private settleMany(id: number, values: string[] | undefined): void {
+		const resolve = this.multiPickers.get(id);
+		this.multiPickers.delete(id);
+		resolve?.(values);
 	}
 
 	private settlePicker(id: number, value: string | undefined, alt = false): void {

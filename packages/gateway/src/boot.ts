@@ -31,6 +31,8 @@ export interface BootOptions {
 	onOutbound?: GatewayOptions["onOutbound"];
 	/** P32c: the host's audit ledger for /runs, /status and /schedules. */
 	audit?: GatewayOptions["audit"];
+	/** P35: ask_user in chat. */
+	questions?: GatewayOptions["questions"];
 }
 
 export interface BootedGateway {
@@ -137,6 +139,7 @@ export async function bootGateway(options: BootOptions): Promise<BootedGateway> 
 		onChange: () => soon(),
 		...(options.onOutbound ? { onOutbound: options.onOutbound } : {}),
 		...(options.audit ? { audit: options.audit } : {}),
+		...(options.questions ? { questions: options.questions } : {}),
 		schedules: new ScheduleStore(paths.schedules, { timeZone: config.timeZone }),
 		...(options.pairingCode !== undefined ? { pairingCode: options.pairingCode } : {}),
 	});

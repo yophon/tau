@@ -4,6 +4,37 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P35)
+- CLI: `ask_user` tool — the model asks one or more questions, each with
+  options (single or multiple choice), and the user can always answer in
+  their own words. By default the model does not wait: the tool returns at
+  once, the question stays open, and the answer arrives later as a
+  "[Answer qN]" message (steered into a running turn, or starting a new
+  one). settings.json `askUser.wait: true` makes it wait. TUI: a picker
+  (multi-select lists check with Space or a click); Esc puts a question
+  aside, a line above the input box shows it, Ctrl+Q or a click reopens it.
+  Gateway: a numbered chat message; reply with numbers or text. RPC: the new
+  `multiselect` UI request. ACP: the editor's permission buttons. Not
+  offered where nobody can answer (`-p`, json mode, gateway schedules).
+- CLI: user hooks — shell commands in settings.json `hooks` in Claude
+  Code's format (PreToolUse, PermissionRequest, PostToolUse,
+  UserPromptSubmit, Stop, SessionStart, SessionEnd, PreCompact,
+  Notification): event JSON on stdin, exit 2 blocks, stdout JSON can approve
+  (`permissionDecision`), rewrite arguments (`updatedInput`) or add context;
+  `async` hooks run in the background. The trusted project's
+  `.tau/settings.json` counts too. `/hooks` lists them. See docs/hooks.md.
+- kernel: `ToolCallEventResult.permission` (`"allow"` skips the approval
+  where the policy would ask, `"ask"` asks where it would allow; the
+  policy's own denials stand); `UiCapability.selectMany`;
+  `RegisteredWidget.onClick`.
+- gateway: `ChatQuestions` (a conversation's UI in chat),
+  `ConversationHooks.ui`, `GatewayOptions.questions`.
+- host-node: `NodeShell.exec` takes `input` for the command's stdin.
+
+### Fixed (P35)
+- host-node: commands routed to cmd.exe on Windows lost their quotes (Node
+  escaped them as \" which cmd does not read): `node "C:/x.mjs"` failed.
+
 ### Added (P34)
 - CLI TUI, full screen: Ctrl+F (or `/search`) searches the whole
   conversation (pi's matching: case-insensitive, across wrapped rows),

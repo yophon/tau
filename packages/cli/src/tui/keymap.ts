@@ -63,6 +63,8 @@ export type KeyCommand =
 	| { type: "picker-cancel" }
 	| { type: "picker-key"; key: string }
 	| { type: "picker-alt" }
+	/** Space in a multi-select list (P35): check or uncheck the selected item. */
+	| { type: "picker-toggle" }
 	/** PgUp/PgDn in the open list (picker or completion menu). */
 	| { type: "list-page"; direction: 1 | -1 }
 	| { type: "search-open" }
@@ -123,6 +125,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.return) return { type: "picker-confirm" };
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
 		if (key.ctrl && ch === "s") return { type: "picker-alt" };
+		if (ch === " ") return { type: "picker-toggle" };
 		if (ch.length === 1 && ch.trim() !== "" && !key.ctrl && !key.meta) return { type: "picker-key", key: ch };
 		return undefined;
 	}
