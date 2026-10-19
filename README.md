@@ -46,8 +46,11 @@ inject a small adapter instead of polyfilling globals.
 - **Extensions** — pi-mirrored API: 25+ lifecycle events, tools, slash
   commands, flags, renderers, widgets, shortcuts. Standard packs: subagents,
   MCP client bridges (a zero-dependency pure-`Platform` MCP core, plus a stdio
-  transport on Node), tool_search and codemode, skills & prompt templates
-  (pi-file-compatible).
+  transport and OAuth sign-in on Node), tool_search and codemode, skills &
+  prompt templates (pi-file-compatible). The CLI reads MCP servers from
+  `~/.tau/mcp.json` (pi's format) with secrets kept in `tau credentials` and
+  referenced as `${cred:name}`, out of the model's reach (see
+  [docs/connectors.md](docs/connectors.md)).
 - **Hosts** — terminal (REPL / product-grade TUI / one-shot `-p`), browser
   (OPFS), WeChat mini-program, React Native (Expo), a phone (Flutter via
   `flutter_js`, kernel running in QuickJS), and a bare QuickJS engine with zero
@@ -323,6 +326,8 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/decisions.md](docs/decisions.md) — design decision records (D1–D34)
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
+- [docs/memory.md](docs/memory.md) — long-term memory and session search
+- [docs/connectors.md](docs/connectors.md) — MCP connectors, credentials, OAuth, keeping secrets from the model
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

@@ -6,7 +6,7 @@
 // server it names, or lower the risk of tools it brings (Claude Code, pi).
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { McpServerConfig } from "@yophon/tau-ext-mcp";
+import { createMcpOAuth, McpOAuthFileStore, type McpServerConfig } from "@yophon/tau-ext-mcp";
 import type { RiskLevel } from "@yophon/tau-kernel";
 import { CredentialStore, credentialsPath, expandRefs } from "./credentials.ts";
 import { stdioServer } from "./secrets.ts";
@@ -21,8 +21,8 @@ export interface LoadedMcpServer extends McpServerConfig {
 	source: string;
 	/** Credentials it references (for `tau mcp list`). */
 	credentials: string[];
-	/** "oauth" for servers that sign in with `tau mcp login`. */
-	auth?: "oauth";
+	/** `"auth": "oauth"`: the server signs in with `tau mcp login`; withOAuth attaches the tokens. */
+	usesOAuth?: boolean;
 	/** Pre-registered OAuth client (optional; dynamic registration otherwise). */
 	oauth?: { clientId?: string; clientSecret?: string; scopes?: string[]; callbackPort?: number };
 }
@@ -173,7 +173,7 @@ export function loadMcpConfig(options: {
 				...base,
 				url: expand(raw.url),
 				headers: expandMap(raw.headers),
-				...(auth ? { auth } : {}),
+				...(auth ? { usesOAuth: true } : {}),
 				...(oauth
 					? {
 							oauth: {
@@ -197,4 +197,36 @@ export function loadMcpConfig(options: {
 		servers.push(server);
 	}
 	return { servers, diagnostics };
+}
+
+/** ~/.tau/mcp-auth.json: OAuth client registrations and tokens per server (0600, protected from the model). */
+export function mcpAuthStore(home: string): McpOAuthFileStore {
+	return new McpOAuthFileStore(join(home, ".tau", "mcp-auth.json"));
+}
+
+/** The settings `tau mcp login` and connections use for a server's OAuth. */
+export function oauthSettings(server: LoadedMcpServer) {
+	return {
+		...(server.oauth?.clientId ? { clientId: server.oauth.clientId } : {}),
+		...(server.oauth?.clientSecret ? { clientSecret: server.oauth.clientSecret } : {}),
+		...(server.oauth?.scopes ? { scope: server.oauth.scopes.join(" ") } : {}),
+		...(server.oauth?.callbackPort ? { callbackPort: server.oauth.callbackPort } : {}),
+	};
+}
+
+/** Attach the OAuth token provider to servers that sign in; the others pass through. */
+export function withOAuth(servers: LoadedMcpServer[], home: string): McpServerConfig[] {
+	const store = mcpAuthStore(home);
+	return servers.map((server) =>
+		server.usesOAuth && server.url
+			? {
+					...server,
+					auth: createMcpOAuth({
+						serverUrl: server.url,
+						store: store.forServer(server.name, server.url),
+						settings: oauthSettings(server),
+					}),
+				}
+			: server,
+	);
 }

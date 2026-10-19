@@ -33,6 +33,7 @@ export {
 	toToolExposure,
 } from "./exposure.ts";
 export {
+	type McpAuth,
 	McpHttpError,
 	McpSessionExpiredError,
 	StreamableHttpTransport,

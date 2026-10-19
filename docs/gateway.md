@@ -60,7 +60,7 @@ tau gateway run                 # 常驻；Ctrl+C 或 tau gateway stop 停止
 - `progress`：工具进度消息。
 - `timeZone`：定时任务按哪个时区排（IANA 名），缺省是运行网关的机器的时区。网关跑在 UTC 的服务器上时填 `Asia/Shanghai`。
 - `plugins`：外装渠道插件，包名或绝对路径。
-- `channels.<名字>`：交给插件的配置段，`false` 关掉这个渠道。字符串值支持 `$NAME`/`${NAME}` 读环境变量。
+- `channels.<名字>`：交给插件的配置段，`false` 关掉这个渠道。字符串值支持 `$NAME`/`${NAME}` 读环境变量，`${cred:名字}` 读凭据库（见 [connectors.md](connectors.md)）。
 
 模型、密钥、思考档沿用 `~/.tau/models.json` 与 `~/.tau/settings.json`。模型在 models.json 的 `input` 里声明了 `"image"` 时，用户发来的图片直接给模型看，否则只给文件路径。
 

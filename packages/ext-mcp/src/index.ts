@@ -15,6 +15,15 @@ import { defaultPlatform, type Extension } from "@yophon/tau-kernel";
 import { StdioTransport } from "./stdio.ts";
 
 export { MCP_OUTPUT_MAX_BYTES } from "@yophon/tau-ext-mcp-http";
+export { McpOAuthAuthorizationRequiredError } from "./oauth/errors.ts";
+export {
+	createMcpOAuth,
+	McpOAuthFileStore,
+	type McpOAuthSettings,
+	McpSignInCancelledError,
+	type McpSignInPrompt,
+	signInMcpServer,
+} from "./oauth/session.ts";
 export { StdioTransport, type StdioTransportOptions } from "./stdio.ts";
 export type { McpServerConfig, McpServerStatus };
 
@@ -66,7 +75,13 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 				});
 			}
 			if (config.url) {
-				return new StreamableHttpTransport({ url: config.url, platform, headers: config.headers, openGetStream: true });
+				return new StreamableHttpTransport({
+					url: config.url,
+					platform,
+					headers: config.headers,
+					openGetStream: true,
+					...(config.auth ? { auth: config.auth } : {}),
+				});
 			}
 			throw new Error(`MCP server "${config.name}" must define command or url`);
 		},

@@ -1,5 +1,6 @@
 // `tau credentials …` and `tau mcp …` (P32b): commands that manage configuration and need
 // neither a model nor the agent.
+import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -116,6 +117,8 @@ const MCP_USAGE = `tau mcp - connectors (MCP servers) from ~/.tau/mcp.json and a
 
 Usage:
   tau mcp list [--check]     Servers, their source and the credentials they use; --check connects and counts tools
+  tau mcp login <server>     Sign in to a server with "auth": "oauth" (browser, or paste the redirect URL)
+  tau mcp logout <server>    Forget that sign-in
 
 Format (pi's mcp.json): { "mcpServers": { "<name>": { "url": "…", "headers": { "Authorization": "Bearer \${cred:<name>}" } },
                                           "<name>": { "command": "…", "args": […], "env": { … } } } }
@@ -161,12 +164,96 @@ async function checkServer(server: LoadedMcpServer): Promise<string> {
 	}
 }
 
+/** Open a URL in the default browser, best effort (nothing happens on a machine without one). */
+function openBrowser(url: string): void {
+	const [command, args] =
+		process.platform === "win32"
+			? ["cmd", ["/c", "start", "", url]]
+			: process.platform === "darwin"
+				? ["open", [url]]
+				: ["xdg-open", [url]];
+	try {
+		spawn(command, args, { stdio: "ignore", detached: true, windowsHide: true })
+			.on("error", () => {})
+			.unref();
+	} catch {
+		// No browser: the printed URL and the paste prompt remain.
+	}
+}
+
+/** `tau mcp login|logout <server>`: OAuth sign-in for a server with "auth": "oauth" in ~/.tau/mcp.json. */
+async function mcpSignIn(
+	command: "login" | "logout",
+	name: string | undefined,
+	context: { home: string; cwd: string },
+): Promise<number> {
+	const { loadMcpConfig, mcpAuthStore, oauthSettings } = await import("./mcp-config.ts");
+	const { servers } = loadMcpConfig({ home: context.home, cwd: context.cwd, projectTrusted: false });
+	const candidates = servers.filter((server) => server.usesOAuth && server.url);
+	const server = candidates.find((entry) => entry.name === name);
+	if (!name || !server?.url) {
+		console.error(
+			`Usage: tau mcp ${command} <server>  (servers with "auth": "oauth" in ~/.tau/mcp.json: ${candidates.map((entry) => entry.name).join(", ") || "none"})`,
+		);
+		return 1;
+	}
+	const store = mcpAuthStore(context.home);
+	if (command === "logout") {
+		const removed = store.remove(server.name, server.url);
+		console.log(removed ? `Signed out of ${server.name}.` : `${server.name} had no stored sign-in.`);
+		return 0;
+	}
+	const { signInMcpServer, McpSignInCancelledError } = await import("@yophon/tau-ext-mcp");
+	const controller = new AbortController();
+	const onSignal = () => controller.abort();
+	process.once("SIGINT", onSignal);
+	try {
+		await signInMcpServer({
+			serverUrl: server.url,
+			store: store.forServer(server.name, server.url),
+			settings: oauthSettings(server),
+			signal: controller.signal,
+			prompt: {
+				showAuthorizationUrl: (url) => {
+					console.log(`Open this link to sign in to ${server.name}:\n\n  ${url.href}\n`);
+					openBrowser(url.href);
+				},
+				promptForRedirectUrl: (signal) =>
+					new Promise((resolve) => {
+						// On a machine whose browser cannot reach this one, paste the address the browser ended on.
+						const rl = createInterface({ input: process.stdin, output: process.stdout });
+						signal.addEventListener("abort", () => {
+							rl.close();
+							resolve(undefined);
+						});
+						rl.question("Waiting for the browser… or paste the URL the browser was sent to: ", (answer) => {
+							rl.close();
+							resolve(answer);
+						});
+					}),
+			},
+		});
+		console.log(`\nSigned in to ${server.name}. Tokens are in ${store.file}.`);
+		return 0;
+	} catch (error) {
+		if (error instanceof McpSignInCancelledError) {
+			console.error("Sign-in cancelled.");
+			return 1;
+		}
+		console.error(`Sign-in failed: ${maskSecrets(error instanceof Error ? error.message : String(error))}`);
+		return 1;
+	} finally {
+		process.off("SIGINT", onSignal);
+	}
+}
+
 async function mcpCommand(args: string[], context: { home: string; cwd: string }): Promise<number> {
 	const [command = "help", ...rest] = args;
 	if (command === "help" || command === "--help") {
 		console.log(MCP_USAGE);
 		return 0;
 	}
+	if (command === "login" || command === "logout") return mcpSignIn(command, rest[0], context);
 	if (command !== "list") {
 		console.error(`Unknown mcp command "${command}".\n\n${MCP_USAGE}`);
 		return 1;
@@ -192,7 +279,7 @@ async function mcpCommand(args: string[], context: { home: string; cwd: string }
 						.map(([pattern, risk]) => `${pattern}=${risk}`)
 						.join(" ")}`
 				: "",
-			server.auth === "oauth" ? "OAuth" : "",
+			server.usesOAuth ? "OAuth" : "",
 		].filter(Boolean);
 		let line = `${server.name}  ${transport}  (${server.source}${extras.length > 0 ? `; ${extras.join("; ")}` : ""})`;
 		if (rest.includes("--check")) line += `  → ${await checkServer(server)}`;

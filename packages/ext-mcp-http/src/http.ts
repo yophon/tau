@@ -48,6 +48,20 @@ export interface StreamableHttpTransportOptions {
 	 * session is initialized; reopened up to 3 times when it drops (needs Platform.sleep).
 	 */
 	openGetStream?: boolean;
+	/** OAuth (P32b): a bearer token per request, and a refresh after a 401 before one retry (pi AuthProvider). */
+	auth?: McpAuth;
+}
+
+/** Supplies bearer tokens and may refresh them after a 401 (pi's AuthProvider, without its fetch). */
+export interface McpAuth {
+	token(): Promise<string | undefined>;
+	/** Refresh after a 401, or throw (for example "sign in again"); the request is retried once when it returns. */
+	onUnauthorized?(context: {
+		response: { status: number; headers?: { get(name: string): string | null | undefined } };
+		serverUrl: string;
+		/** The token the rejected request carried. */
+		token?: string;
+	}): Promise<void>;
 }
 
 const GET_STREAM_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
@@ -83,7 +97,15 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		this.protocolVersion = version;
 	}
 
-	async send(message: JsonRpcMessage, { signal }: McpTransportSendOptions = {}): Promise<void> {
+	async send(message: JsonRpcMessage, options: McpTransportSendOptions = {}): Promise<void> {
+		return this.sendOnce(message, options, false);
+	}
+
+	private async sendOnce(
+		message: JsonRpcMessage,
+		{ signal }: McpTransportSendOptions,
+		retried: boolean,
+	): Promise<void> {
 		if (!this.started || this.closed) throw new McpConnectionClosedError();
 		if (signal?.aborted) return;
 		const isInitialize = isJsonRpcRequest(message) && message.method === "initialize";
@@ -92,6 +114,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			accept: "application/json, text/event-stream",
 			...this.options.headers,
 		};
+		const token = await this.options.auth?.token();
+		if (token) headers.authorization = `Bearer ${token}`;
 		// The initialize request itself carries neither header (MCP spec).
 		if (!isInitialize) {
 			if (this.protocolVersion !== undefined) headers["mcp-protocol-version"] = this.protocolVersion;
@@ -114,6 +138,14 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		}
 		if (!response.ok) {
 			request.abort("settled");
+			if (response.status === 401 && !retried && this.options.auth?.onUnauthorized) {
+				await this.options.auth.onUnauthorized({
+					response,
+					serverUrl: this.options.url,
+					...(token ? { token } : {}),
+				});
+				return this.sendOnce(message, { signal }, true);
+			}
 			if (response.status === 404 && this.sessionIdValue !== undefined && !isInitialize) {
 				throw new McpSessionExpiredError();
 			}
@@ -151,6 +183,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			let delivered = false;
 			try {
 				const headers: Record<string, string> = { accept: "text/event-stream", ...this.options.headers };
+				const token = await this.options.auth?.token();
+				if (token) headers.authorization = `Bearer ${token}`;
 				if (this.protocolVersion !== undefined) headers["mcp-protocol-version"] = this.protocolVersion;
 				if (this.sessionIdValue !== undefined) headers["mcp-session-id"] = this.sessionIdValue;
 				const response = await this.options.platform.fetch(this.options.url, {

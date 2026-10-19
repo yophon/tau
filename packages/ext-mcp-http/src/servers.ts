@@ -33,7 +33,7 @@ import {
 	renderServersSection,
 	toToolExposure,
 } from "./exposure.ts";
-import { McpHttpError, McpSessionExpiredError } from "./http.ts";
+import { type McpAuth, McpHttpError, McpSessionExpiredError } from "./http.ts";
 import { McpAbortError, McpConnectionClosedError, McpError, McpTimeoutError } from "./jsonrpc.ts";
 import { createMcpToolName, mcpNamespace } from "./naming.ts";
 import { MCP_OUTPUT_MAX_BYTES, toolOutput } from "./result.ts";
@@ -78,6 +78,8 @@ export interface McpServerConfig extends McpExposureConfig {
 	 * should take it only from the user's configuration. A destructive hint still wins.
 	 */
 	toolRisk?: Record<string, RiskLevel>;
+	/** OAuth (P32b): the host's token provider for an HTTP server. */
+	auth?: McpAuth;
 }
 
 /** The risk `toolRisk` declares for a tool: the first matching pattern, exact names first. */

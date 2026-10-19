@@ -36,8 +36,10 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   （`/tree`）、分叉（`/fork`）、自动上下文压缩（算法与 prompt 逐字照抄 pi）。
 - **扩展**——镜像 pi 的扩展 API：25+ 生命周期事件、工具、slash 命令、flags、
   渲染器、widgets、快捷键。标准扩展包：子代理、MCP client 桥（零依赖、纯
-  `Platform` 的 MCP 核心，Node 上另加 stdio 传输）、tool_search 与 codemode、
-  skills 与 prompt templates（与 pi 文件格式兼容）。
+  `Platform` 的 MCP 核心，Node 上另加 stdio 传输和 OAuth 登录）、tool_search 与 codemode、
+  skills 与 prompt templates（与 pi 文件格式兼容）。CLI 从 `~/.tau/mcp.json`（pi 格式）读 MCP
+  服务器，密钥存进 `tau credentials`、配置里写 `${cred:名字}`，不给模型看（见
+  [docs/connectors.md](docs/connectors.md)）。
 - **宿主**——终端（REPL / 产品级 TUI / 单次 `-p`）、浏览器（OPFS）、微信小
   程序、React Native（Expo）、手机（Flutter 经 `flutter_js`，内核跑在 QuickJS
   里），以及零 WinterTC 全局的裸 QuickJS 引擎——每一个都做过端到端验证，大部
@@ -286,6 +288,8 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D34）
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
+- [docs/memory.md](docs/memory.md)——长期记忆与会话检索
+- [docs/connectors.md](docs/connectors.md)——MCP 连接器、凭据、OAuth、不给模型看密钥
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

@@ -797,7 +797,7 @@ async function loadExtensionRegistry(
 	configureBuiltins({ cwd, projectTrusted, home: userHome() });
 	// Connectors (P32b): MCP servers from ~/.tau/mcp.json and, when trusted, the project's.
 	if (mcp) {
-		const { loadMcpConfig } = await import("./mcp-config.ts");
+		const { loadMcpConfig, withOAuth } = await import("./mcp-config.ts");
 		const loadedMcp = loadMcpConfig({
 			home: userHome(),
 			cwd,
@@ -805,14 +805,9 @@ async function loadExtensionRegistry(
 			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
 		});
 		for (const diagnostic of loadedMcp.diagnostics) console.log(dim(`mcp: ${diagnostic}`));
-		const usable = loadedMcp.servers.filter((server) => {
-			if (server.auth !== "oauth") return true;
-			console.log(dim(`mcp: server "${server.name}" uses OAuth, which this build cannot sign in to yet`));
-			return false;
-		});
-		if (usable.length > 0) {
+		if (loadedMcp.servers.length > 0) {
 			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
-			await registry.add([createMcpExtension({ servers: usable })]);
+			await registry.add([createMcpExtension({ servers: withOAuth(loadedMcp.servers, userHome()) })]);
 		}
 	}
 	reportExtensionLoad(registry);
@@ -1607,7 +1602,7 @@ async function main(): Promise<void> {
 	if (options.mode === "acp") {
 		// One workspace per session/new, at the client's cwd (P29). Loaded on demand: it pulls in the MCP client.
 		const { runAcpMode } = await import("./modes/acp.ts");
-		const { loadMcpConfig } = await import("./mcp-config.ts");
+		const { loadMcpConfig, withOAuth } = await import("./mcp-config.ts");
 		await runAcpMode({
 			out,
 			host: {
@@ -1620,7 +1615,7 @@ async function main(): Promise<void> {
 						envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
 					});
 					for (const diagnostic of loaded.diagnostics) console.error(`mcp: ${diagnostic}`);
-					return loaded.servers.filter((server) => server.auth !== "oauth");
+					return withOAuth(loaded.servers, userHome());
 				},
 				isAlwaysAllowed,
 				recordAlwaysAllow,

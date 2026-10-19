@@ -4,6 +4,25 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P32b)
+- CLI: `tau credentials set|list|remove|audit` and `${cred:<name>}` references
+  in `~/.tau/models.json`, `~/.tau/mcp.json` and the gateway's channel
+  sections (`~/.tau/credentials.json`, 0600).
+- CLI: connectors from `~/.tau/mcp.json` and a trusted project's
+  `.tau/mcp.json` (pi's format) in every mode; the gateway loads them in the
+  owner's conversations only, ACP merges them with the editor's servers.
+  `toolRisk` (user file only) declares risk by tool name pattern. A project
+  file cannot reference credentials or secret-looking variables. `tau mcp
+  list [--check]`.
+- OAuth for MCP servers (`"auth": "oauth"`): `tau mcp login|logout <server>`,
+  tokens in `~/.tau/mcp-auth.json`, refreshed on expiry or a 401. The flow is
+  ported from pi-mcp 1.2 into ext-mcp; ext-mcp-http's HTTP transport takes an
+  `auth` token provider.
+- Secrets stay away from the model (not a security boundary): the bash tool
+  and stdio MCP servers get the environment without secret-looking variables
+  (`shell.envAllow` in settings keeps some), a built-in guard blocks reads of
+  tau's credential files, and known secrets are masked in tool results.
+
 ### Fixed (P32a)
 - gateway: a non-owner's conversation carried the owner's project memory in
   its prompt. Each guest now has only their own memory file.

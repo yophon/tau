@@ -174,7 +174,7 @@ tau 的 `ExtensionAPI`：官方 SDK WebSocket/REST、入站消息与媒体解析
 
 ## tau 原创面：常驻网关（P30）与定时任务（P31）
 
-pi 没有常驻宿主、渠道或聊天审批（D34）。`@yophon/tau-gateway` 是 tau 原创：每个对话一个 P29 的 `HeadlessSession`，渠道经 `ChannelPlugin` 接入（微信内置，飞书外装）。它不新增扩展面——对话里的扩展照常加载，网关只用内核既有的 `onApproval`、`setPermissionMode` 与会话 API。ext-feishu 保持 pi-feishu 镜像不变，网关的飞书渠道复用它的 `FeishuClient`。P31 的定时任务与目标（D35）同样是网关里的原创面：六个工具经 `ConversationHooks.extensions` 作为普通扩展装进主人的对话，不新增扩展 API。
+pi 没有常驻宿主、渠道或聊天审批（D34）。`@yophon/tau-gateway` 是 tau 原创：每个对话一个 P29 的 `HeadlessSession`，渠道经 `ChannelPlugin` 接入（微信内置，飞书外装）。它不新增扩展面——对话里的扩展照常加载，网关只用内核既有的 `onApproval`、`setPermissionMode` 与会话 API。ext-feishu 保持 pi-feishu 镜像不变，网关的飞书渠道复用它的 `FeishuClient`。P31 的定时任务与目标（D35）同样是网关里的原创面：六个工具经 `ConversationHooks.extensions` 作为普通扩展装进主人的对话，不新增扩展 API。P32（D36）的分层记忆、凭据库、密钥守卫与审计账本也是原创面，都以 CLI 内置扩展或宿主代码实现，不新增扩展 API；连接器配置照抄 pi 1.2 的 `mcp.json` 格式（P21 附录 A 的 `mcp-builtin-support`），MCP OAuth 移植自 pi-mcp 1.2（D24），`registerMcpServer` 一族仍按 D21 排除。
 
 ## 设计参考
 
