@@ -529,32 +529,47 @@ describe("redraw after a width change", () => {
 		assert.deepEqual(redrawn.live, state.live);
 	});
 
-	it("takes over Ink's resize listener: one redraw per burst of width changes, height changes still go to Ink", async () => {
+	it("takes over Ink's resize listener: repaints at once and again at the final size, height changes go to Ink", async () => {
 		const listeners = new Set<() => void>();
-		const stream = {
+		const os = { columns: 120, rows: 40 };
+		const stream: {
+			columns: number;
+			rows: number;
+			getWindowSize(): [number, number];
+			on(event: "resize", listener: () => void): unknown;
+			off(event: "resize", listener: () => void): unknown;
+		} = {
 			columns: 120,
-			on: (_event: "resize", listener: () => void) => listeners.add(listener),
-			off: (_event: "resize", listener: () => void) => listeners.delete(listener),
+			rows: 40,
+			getWindowSize: () => [os.columns, os.rows],
+			on: (_event, listener) => listeners.add(listener),
+			off: (_event, listener) => listeners.delete(listener),
 		};
 		let inkCalls = 0;
 		const ink = () => inkCalls++;
 		stream.on("resize", ink);
-		let redraws = 0;
-		const stop = takeOverResize(stream, [ink], () => redraws++);
+		const painted: number[] = [];
+		const stop = takeOverResize(stream, [ink], () => painted.push(stream.columns), 30);
 		assert.ok(!listeners.has(ink), "Ink no longer answers resizes itself");
 		const resize = (columns: number) => {
+			os.columns = columns;
 			stream.columns = columns;
 			for (const listener of [...listeners]) listener();
 		};
 		resize(110);
 		resize(100);
-		resize(90);
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.equal(redraws, 1, "a drag in one event-loop turn redraws once");
+		assert.deepEqual(painted, [100], "a drag in one event-loop turn repaints once, at the latest width");
+		// The window keeps narrowing without an event, and Node's cached columns are stale (Windows).
+		os.columns = 72;
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.deepEqual(painted, [100, 72], "the settle pass repaints at the size the OS reports");
+		assert.equal(stream.columns, 72);
 		assert.equal(inkCalls, 0);
-		resize(90);
-		assert.equal(inkCalls, 1, "same width (a height change) goes to Ink");
-		assert.equal(redraws, 1);
+		os.rows = 30;
+		for (const listener of [...listeners]) listener();
+		assert.equal(inkCalls, 1, "a height change goes to Ink");
+		assert.deepEqual(painted, [100, 72]);
 		stop();
 		assert.ok(listeners.has(ink), "Ink's listener is back after the TUI exits");
 		assert.equal(listeners.size, 1);
