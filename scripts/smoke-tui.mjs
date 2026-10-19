@@ -397,7 +397,22 @@ async function runResizeSmoke(root, baseUrl) {
 				() => 0,
 			);
 			await tmux(["resize-window", "-t", session.name, "-x", String(width)]);
-			await sleep(250);
+			// The live pass is immediate: one box well before the full rewrite (200 ms) runs.
+			await sleep(60);
+			const early = await boxes();
+			if (early.count !== 1) {
+				throw new Error(
+					`60 ms after resizing to ${width} columns there are ${early.count} input boxes:\n${early.screen}`,
+				);
+			}
+			// ...and it repainted only the live area: no clear screen yet (that is the full pass).
+			const live = (await readFile(raw)).subarray(offset).toString("utf8");
+			if (!live.startsWith("\x1b[?2026h") || live.includes("\x1b[2J")) {
+				throw new Error(
+					`The first pass after resizing to ${width} columns was not a live repaint: ${JSON.stringify(live.slice(0, 120))}`,
+				);
+			}
+			await sleep(400);
 			const { count, screen } = await boxes();
 			if (count !== 1) throw new Error(`After resizing to ${width} columns there are ${count} input boxes:\n${screen}`);
 			// One synchronized frame, and nothing before it: Ink's own erase-and-redraw no longer runs.

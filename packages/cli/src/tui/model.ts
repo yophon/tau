@@ -188,6 +188,8 @@ export type UiAction =
 	| { type: "clear" }
 	/** The terminal width changed: write everything again, re-wrapped (after the screen was cleared). */
 	| { type: "redraw" }
+	/** The width changed: lay the redrawn area out again (history stays as written until a redraw). */
+	| { type: "relayout" }
 	/** Another session: drop everything shown and start a new screen. */
 	| { type: "reset" }
 	/** Finished blocks rebuilt from a restored conversation. */
@@ -401,6 +403,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		case "clear":
 			// Live blocks carry over so a running turn keeps drawing.
 			return { ...state, committed: [], epoch: state.epoch + 1 };
+		case "relayout":
+			// A new state object is enough: the view re-renders at the current width.
+			return { ...state };
 		case "redraw":
 			// A new <Static> writes every committed block again at the new width.
 			return { ...state, epoch: state.epoch + 1 };

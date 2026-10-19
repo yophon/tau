@@ -1179,6 +1179,21 @@ export class TuiController {
 		if (sync) process.stdout.write("\x1b[?2026l");
 	}
 
+	/**
+	 * The width changed, right now: repaint only the area Ink redraws (live blocks, input box,
+	 * status) at the new width, in one synchronized frame. `prepare` erases what the terminal
+	 * re-wrapped of the previous frame. It takes a few milliseconds whatever the history's
+	 * length; the history itself is rewritten by redraw() once the resizing settles.
+	 */
+	repaintLive(prepare: () => void): void {
+		const sync = !this.deps.clearScreen;
+		if (sync) process.stdout.write("\x1b[?2026h");
+		prepare();
+		this.dispatch({ type: "relayout" });
+		this.store.flush();
+		if (sync) process.stdout.write("\x1b[?2026l");
+	}
+
 	/** A fresh screen with the current conversation, then a note. */
 	private showSession(note: string): void {
 		this.clearScreen();

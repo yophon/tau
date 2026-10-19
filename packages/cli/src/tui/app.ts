@@ -4,9 +4,11 @@
  * lives in the controller's store; this file only lays it out and forwards keys.
  */
 
+import { stripVTControlCharacters } from "node:util";
 import { Box, Static, useInput, useStdout } from "ink";
 import React, { useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
+import { strWidth } from "./input/width.ts";
 import type { Block } from "./model.ts";
 import { BlockView, type RenderOptions } from "./render/blocks.ts";
 import { renderBottom } from "./render/bottom.ts";
@@ -54,25 +56,31 @@ type ResizeStream = {
 	off(event: "resize", listener: () => void): unknown;
 };
 
-/** How long after the last resize event the screen is repainted once more at the final size. */
-export const RESIZE_SETTLE_MS = 150;
+/** How long after the last resize event the whole screen is rewritten at the final width. */
+export const RESIZE_SETTLE_MS = 200;
 
 /**
- * Take over Ink's resize handling (pi-tui's approach). Ink 5 answers a resize by erasing as
- * many lines as it last wrote and drawing again; after a width change the terminal has
- * re-wrapped that frame onto a different number of rows, so the erase leaves pieces of it
- * behind (copies of the input box) or eats into history. On a width change `redraw` repaints
- * everything instead: at once (at most once per event-loop turn while a window edge is
- * dragged), and again once the resizing settles. The second pass matters on Windows, where
- * an event can arrive before the window reaches its final width, or the last change sends
- * none: a frame drawn for a wider window wraps in the narrower one and leaves the same
- * pieces. Before each pass the size is read from the OS, not from the cached `columns`.
- * A height change does not re-wrap anything and still goes to Ink's own listeners.
+ * Take over Ink's resize handling. Ink 5 answers a resize by erasing as many lines as it
+ * last wrote and drawing again; after a width change the terminal has already re-wrapped
+ * that frame onto more rows (or fewer), so the erase leaves pieces of it behind (copies of
+ * the input box) or eats into history. On a width change, two passes instead:
+ *
+ * - `live` at once (at most once per event-loop turn while a window edge is dragged):
+ *   erase the re-wrapped frame and draw the redrawn area at the new width. It costs a few
+ *   milliseconds, so the input box is right before the eye notices.
+ * - `full` once the resizing settles: rewrite the whole conversation at the final width
+ *   (the terminal's own re-wrap of history is ragged). This one takes time in proportion to
+ *   the history (about 200 ms for 200 turns), which is why it waits; it is synchronized
+ *   output, so the switch is one frame.
+ *
+ * Each pass reads the size from the OS first: on Windows an event can arrive before the
+ * window reaches its final width, or the last change sends none. A height change does not
+ * re-wrap anything and still goes to Ink's own listeners.
  */
 export function takeOverResize(
 	stream: ResizeStream,
 	inkListeners: readonly (() => void)[],
-	redraw: () => void,
+	passes: { live: () => void; full: () => void },
 	settleMs = RESIZE_SETTLE_MS,
 ): () => void {
 	for (const listener of inkListeners) stream.off("resize", listener);
@@ -93,11 +101,6 @@ export function takeOverResize(
 	let drawn = width;
 	let scheduled = false;
 	let settle: ReturnType<typeof setTimeout> | undefined;
-	const paint = () => {
-		drawn = refresh();
-		width = drawn;
-		redraw();
-	};
 	const onResize = () => {
 		const next = refresh();
 		if (next === width && settle === undefined) {
@@ -108,13 +111,19 @@ export function takeOverResize(
 		if (settle) clearTimeout(settle);
 		settle = setTimeout(() => {
 			settle = undefined;
-			paint();
+			width = refresh();
+			drawn = width;
+			passes.full();
 		}, settleMs);
-		if (scheduled || next === drawn) return;
+		if (scheduled) return;
 		scheduled = true;
 		setImmediate(() => {
 			scheduled = false;
-			paint();
+			const now = refresh();
+			if (now === drawn) return;
+			drawn = now;
+			width = now;
+			passes.live();
 		});
 	};
 	stream.on("resize", onResize);
@@ -123,6 +132,39 @@ export function takeOverResize(
 		stream.off("resize", onResize);
 		for (const listener of inkListeners) stream.on("resize", listener);
 	};
+}
+
+/** Rows a frame occupies once the terminal re-wraps its lines to `width` columns. */
+export function rewrappedRows(frame: string, width: number): number {
+	let rows = 0;
+	for (const line of frame.split("\n")) {
+		rows += Math.max(1, Math.ceil(strWidth(stripVTControlCharacters(line)) / Math.max(1, width)));
+	}
+	return rows;
+}
+
+/** The parts of Ink's instance the live pass needs: the frame it drew last and its line counter. */
+interface InkFrameState {
+	lastOutput: string;
+	log: { done(): void };
+}
+
+/**
+ * Ink's instance for this stream (internal: `build/instances.js`, outside the package
+ * exports, imported by path so it is the module Ink itself uses). Undefined if a future Ink
+ * changes shape; the TUI then falls back to full redraws only.
+ */
+async function inkFrameState(stdout: NodeJS.WriteStream): Promise<InkFrameState | undefined> {
+	try {
+		const url = new URL("./instances.js", import.meta.resolve("ink"));
+		const instances = (await import(url.href)).default as WeakMap<object, unknown>;
+		const ink = instances.get(stdout) as Partial<InkFrameState> | undefined;
+		return ink && typeof ink.lastOutput === "string" && typeof ink.log?.done === "function"
+			? (ink as InkFrameState)
+			: undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Run the TUI until the user quits. Needs a TTY. */
@@ -148,7 +190,24 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	const instance = render(h(App, { controller }), { exitOnCtrlC: false, patchConsole: false });
 	// A width change re-wraps the screen under Ink: repaint it all in one synchronized frame.
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
-	const stopRedrawOnResize = takeOverResize(process.stdout, inkListeners, () => controller.redraw());
+	const ink = await inkFrameState(process.stdout);
+	const stopRedrawOnResize = takeOverResize(process.stdout, inkListeners, {
+		live: () => {
+			if (!ink) {
+				controller.redraw();
+				return;
+			}
+			controller.repaintLive(() => {
+				// The cursor sits on the line after Ink's frame: go up over its re-wrapped rows, clear
+				// to the end of the screen, and let Ink start counting again.
+				const rows = rewrappedRows(ink.lastOutput, process.stdout.columns ?? 80);
+				process.stdout.write(`\r\x1b[${rows}A\x1b[0J`);
+				ink.log.done();
+				ink.lastOutput = "";
+			});
+		},
+		full: () => controller.redraw(),
+	});
 	try {
 		await controller.start();
 		await controller.done;

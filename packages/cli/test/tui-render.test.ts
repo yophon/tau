@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AgentEvent, AssistantMessage, ToolCall } from "@yophon/tau-kernel";
-import { takeOverResize } from "../src/tui/app.ts";
+import { rewrappedRows, takeOverResize } from "../src/tui/app.ts";
 import { strWidth } from "../src/tui/input/width.ts";
 import { type Block, initialState, reduce, type StatusInfo, type UiAction, type UiState } from "../src/tui/model.ts";
 import { approvalBody } from "../src/tui/render/approval.ts";
@@ -529,7 +529,7 @@ describe("redraw after a width change", () => {
 		assert.deepEqual(redrawn.live, state.live);
 	});
 
-	it("takes over Ink's resize listener: repaints at once and again at the final size, height changes go to Ink", async () => {
+	it("takes over Ink's resize listener: the live area at once, everything once the width settles", async () => {
 		const listeners = new Set<() => void>();
 		const os = { columns: 120, rows: 40 };
 		const stream: {
@@ -548,8 +548,13 @@ describe("redraw after a width change", () => {
 		let inkCalls = 0;
 		const ink = () => inkCalls++;
 		stream.on("resize", ink);
-		const painted: number[] = [];
-		const stop = takeOverResize(stream, [ink], () => painted.push(stream.columns), 30);
+		const passes: string[] = [];
+		const stop = takeOverResize(
+			stream,
+			[ink],
+			{ live: () => passes.push(`live ${stream.columns}`), full: () => passes.push(`full ${stream.columns}`) },
+			30,
+		);
 		assert.ok(!listeners.has(ink), "Ink no longer answers resizes itself");
 		const resize = (columns: number) => {
 			os.columns = columns;
@@ -559,19 +564,28 @@ describe("redraw after a width change", () => {
 		resize(110);
 		resize(100);
 		await new Promise((resolve) => setImmediate(resolve));
-		assert.deepEqual(painted, [100], "a drag in one event-loop turn repaints once, at the latest width");
+		assert.deepEqual(passes, ["live 100"], "a drag in one event-loop turn repaints the live area once");
 		// The window keeps narrowing without an event, and Node's cached columns are stale (Windows).
 		os.columns = 72;
 		await new Promise((resolve) => setTimeout(resolve, 60));
-		assert.deepEqual(painted, [100, 72], "the settle pass repaints at the size the OS reports");
+		assert.deepEqual(passes, ["live 100", "full 72"], "once settled, everything at the size the OS reports");
 		assert.equal(stream.columns, 72);
 		assert.equal(inkCalls, 0);
 		os.rows = 30;
 		for (const listener of [...listeners]) listener();
 		assert.equal(inkCalls, 1, "a height change goes to Ink");
-		assert.deepEqual(painted, [100, 72]);
 		stop();
 		assert.ok(listeners.has(ink), "Ink's listener is back after the TUI exits");
 		assert.equal(listeners.size, 1);
+	});
+
+	it("counts the rows a frame takes once the terminal re-wraps it", () => {
+		const border = `\x1b[36m╭${"─".repeat(118)}╮\x1b[39m`;
+		const input = `│ › 你好${" ".repeat(111)}│`;
+		const frame = [border, input, "", "status"].join("\n");
+		assert.equal(rewrappedRows(frame, 120), 4, "nothing re-wraps at the width it was drawn for");
+		assert.equal(rewrappedRows(frame, 100), 6, "both 120-column lines take two rows");
+		assert.equal(rewrappedRows(frame, 50), 8);
+		assert.equal(rewrappedRows(frame, 200), 4, "wider: still one row each");
 	});
 });
