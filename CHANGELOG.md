@@ -19,6 +19,11 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   (`render/wrap.ts`, byte-identical, over 20× faster).
 
 ### Fixed (P33)
+- CLI: full screen no longer flashes a blank screen now and then while the
+  window is resized. Every frame paints the whole screen from the corner in
+  one synchronized write (nothing is cleared first), a resize draws its
+  frame at once instead of after Ink's render throttle, and the view takes
+  its height from the same layout pass as the bottom area.
 - CLI: Ink's cursor show/hide writes to stderr no longer show up as warning
   notices in the TUI.
 - CLI: leaving the TUI no longer ends the process with exit code 13 (an

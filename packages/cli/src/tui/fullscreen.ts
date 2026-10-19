@@ -50,15 +50,40 @@ export function tailRows(
 	return parts.reverse().flat();
 }
 
-/** A stdout whose every write is one synchronized frame: the terminal shows Ink's frames whole. */
-export function synchronizedStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream {
+// How Ink starts a frame: log-update erases the previous one line by line (ansi-escapes
+// eraseLines); the whole-screen path starts with clearTerminal.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Ink's escape sequences are what this strips
+const INK_ERASE = /^(?:\x1b\[2K(?:\x1b\[1A)?)*(?:\x1b\[G)?/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: Ink's escape sequences are what this strips
+const INK_CLEAR = /^\x1b\[2J(?:\x1b\[3J)?(?:\x1b\[H|\x1b\[0f)/;
+
+/**
+ * One Ink frame as a whole-screen paint in one synchronized write: from the top-left
+ * corner, every row cleared to its end, then the rest of the screen. Nothing is ever
+ * cleared first, so the terminal never shows a blank screen between frames, and the paint
+ * does not depend on where the cursor was left (a resize can move it). Empty: nothing to paint.
+ */
+export function paintFrame(chunk: string): string {
+	const frame = chunk.replace(INK_CLEAR, "").replace(INK_ERASE, "");
+	if (frame === "") return "";
+	const rows = frame.replaceAll("\n", "\x1b[K\n");
+	return `${SYNC_BEGIN}\x1b[H${rows}${frame.endsWith("\n") ? "" : "\x1b[K"}\x1b[J${SYNC_END}`;
+}
+
+/** The stdout Ink draws on in full screen: every write is painted with paintFrame. */
+export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream {
 	return new Proxy(stdout, {
 		get(target, property) {
 			if (property === "write") {
-				return (chunk: unknown, ...rest: unknown[]) =>
-					typeof chunk === "string" && chunk !== ""
-						? (target.write as (...args: unknown[]) => boolean)(`${SYNC_BEGIN}${chunk}${SYNC_END}`, ...rest)
-						: (target.write as (...args: unknown[]) => boolean)(chunk, ...rest);
+				return (chunk: unknown, ...rest: unknown[]) => {
+					const write = (...args: unknown[]) => (target.write as (...a: unknown[]) => boolean).apply(target, args);
+					if (typeof chunk !== "string") return write(chunk, ...rest);
+					const painted = paintFrame(chunk);
+					if (painted !== "") return write(painted, ...rest);
+					const callback = rest.find((arg): arg is () => void => typeof arg === "function");
+					callback?.();
+					return true;
+				};
 			}
 			const value = Reflect.get(target, property, target);
 			return typeof value === "function" ? value.bind(target) : value;
@@ -195,22 +220,24 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	const committedLines = (block: Block) => cache.lines(block, options);
 	const liveRows = state.live.flatMap((block) => blockLines(block, options));
 
-	// The bottom area's height decides the view's: measured after each layout.
-	const bottomRef = useRef(null);
-	const [bottomHeight, setBottomHeight] = useState(6);
-	useEffect(() => {
-		if (!bottomRef.current) return;
-		const measured = measureElement(bottomRef.current).height;
-		if (measured > 0 && measured !== bottomHeight) setBottomHeight(measured);
-	});
 	// One row less than the screen: Ink writes a newline after the frame.
 	const frameHeight = Math.max(3, screenRows - 1);
-	const viewHeight = Math.max(1, frameHeight - bottomHeight);
-	// Following the end needs only the blocks that fill the view, so a resize wraps a screenful,
-	// not the whole history; the total is counted when scrolling asks for it.
+	// The view takes what the bottom area leaves, in the same layout pass: it is given up to a
+	// frame of rows and clips the rest (the top while following, the bottom when scrolled), so a
+	// resize never draws a frame with the old split. Its measured height only feeds scrolling
+	// and the "below" count.
+	const viewRef = useRef(null);
+	const [viewHeight, setViewHeight] = useState(Math.max(1, frameHeight - 6));
+	useEffect(() => {
+		if (!viewRef.current) return;
+		const measured = measureElement(viewRef.current).height;
+		if (measured > 0 && measured !== viewHeight) setViewHeight(measured);
+	});
+	// Following the end needs only the blocks that fill the screen, so a resize wraps a
+	// screenful, not the whole history; the total is counted when scrolling asks for it.
 	const following = state.scroll.top === undefined;
 	const rows = following
-		? tailRows(state.committed, liveRows, viewHeight, committedLines)
+		? tailRows(state.committed, liveRows, frameHeight, committedLines)
 		: state.committed.flatMap(committedLines).concat(liveRows);
 	controller.setViewport(
 		viewHeight,
@@ -218,20 +245,30 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 			? () => state.committed.reduce((total, block) => total + committedLines(block).length, liveRows.length)
 			: rows.length,
 	);
-	const { visible, below } = viewSlice(rows, state.scroll.top, viewHeight);
+	const { top, below } = viewSlice(rows, state.scroll.top, viewHeight);
+	const shown = following ? rows.slice(-frameHeight) : rows.slice(top, top + frameHeight);
 
 	return h(
 		Box,
 		{ flexDirection: "column", height: frameHeight, width: columns },
 		h(
 			Box,
-			{ key: "view", flexDirection: "column", height: viewHeight, overflow: "hidden" },
-			// Ink measures an empty <Text> as zero rows: a blank row is a space.
-			...visible.map((row, i) => h(Text, { key: `r${i}`, wrap: "truncate-end" }, row === "" ? " " : row)),
+			{
+				key: "view",
+				ref: viewRef,
+				flexDirection: "column",
+				flexGrow: 1,
+				flexShrink: 1,
+				overflow: "hidden",
+				// A conversation shorter than the view starts at the top.
+				justifyContent: following && rows.length >= viewHeight ? "flex-end" : "flex-start",
+			},
+			// One <Text> in a box that does not shrink: the view clips it instead of squeezing rows.
+			shown.length > 0 ? h(Box, { key: "rows", flexShrink: 0 }, h(Text, null, shown.join("\n"))) : null,
 		),
 		h(
 			Box,
-			{ key: "bottom", ref: bottomRef, flexDirection: "column", flexShrink: 0 },
+			{ key: "bottom", flexDirection: "column", flexShrink: 0 },
 			below > 0
 				? h(
 						Text,

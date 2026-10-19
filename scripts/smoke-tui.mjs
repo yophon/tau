@@ -483,11 +483,21 @@ async function runFullscreenResizeSmoke(root, baseUrl) {
 				throw new Error(`After resizing to ${width}x${height} there are ${count} input boxes:\n${screen}`);
 			if (!screen.includes("SMOKE_PRICING_OK"))
 				throw new Error(`The transcript is gone after resizing to ${width}x${height}:\n${screen}`);
+			// No blank screen in between: nothing is cleared, and every synchronized frame written
+			// for the resize paints the whole screen from the corner, input box included.
 			const written = (await readFile(raw)).subarray(offset).toString("utf8");
-			if (!written.startsWith("\x1b[?2026h\x1b[2J")) {
+			const frames = written.split("\x1b[?2026h").slice(1);
+			if (written.includes("\x1b[2J") || frames.length === 0 || !written.startsWith("\x1b[?2026h")) {
 				throw new Error(
-					`A resize to ${width}x${height} did not repaint the screen in one frame: ${JSON.stringify(written.slice(0, 80))}`,
+					`A resize to ${width}x${height} did not repaint in whole frames: ${JSON.stringify(written.slice(0, 120))}`,
 				);
+			}
+			for (const frame of frames) {
+				if (!frame.startsWith("\x1b[H") || !frame.includes("╭") || !frame.includes("\x1b[?2026l")) {
+					throw new Error(
+						`A frame after resizing to ${width}x${height} is partial: ${JSON.stringify(frame.slice(0, 120))}`,
+					);
+				}
 			}
 		}
 		await tmux(["pipe-pane", "-t", session.name]);

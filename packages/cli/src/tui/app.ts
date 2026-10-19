@@ -154,10 +154,11 @@ export function rewrappedRows(frame: string, width: number): number {
 	return rows;
 }
 
-/** The parts of Ink's instance the live pass needs: the frame it drew last and its line counter. */
+/** The parts of Ink's instance the resize passes need: the frame it drew last, its line counter, its unthrottled render. */
 interface InkFrameState {
 	lastOutput: string;
 	log: { done(): void };
+	onRender?(): void;
 }
 
 /**
@@ -256,7 +257,7 @@ async function runFullscreen(controller: TuiController, render: InkRender): Prom
 	process.stdout.write(fullscreen.ENTER_FULLSCREEN);
 	// However the process ends (an error, a signal), the terminal comes back.
 	const guard = fullscreen.restoreOnExit((data) => process.stdout.write(data));
-	const stdout = fullscreen.synchronizedStdout(process.stdout);
+	const stdout = fullscreen.fullscreenStdout(process.stdout);
 	const before = new Set(process.stdout.listeners("resize"));
 	const instance = render(h(fullscreen.FullscreenApp, { controller, cache }), {
 		stdout,
@@ -265,16 +266,15 @@ async function runFullscreen(controller: TuiController, render: InkRender): Prom
 	});
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
 	const ink = await inkFrameState(stdout);
-	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, () =>
-		controller.repaintLive(() => {
-			// The frame is the whole screen: clear it and let Ink draw the next one from the top.
-			process.stdout.write("\x1b[2J\x1b[H");
-			if (ink) {
-				ink.log.done();
-				ink.lastOutput = "";
-			}
-		}),
-	);
+	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, () => {
+		// Lay out at the new size, then draw that frame now rather than after Ink's 32 ms render
+		// throttle. Every frame paints the whole screen, so nothing is cleared beforehand.
+		controller.relayout();
+		if (ink?.onRender) {
+			ink.lastOutput = "";
+			ink.onRender();
+		}
+	});
 	try {
 		await controller.start();
 		controller.notice(

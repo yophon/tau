@@ -8,12 +8,13 @@ import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { readSettings, tuiScreen, writeTuiMode } from "../src/settings.ts";
 import {
+	fullscreenStdout,
 	LEAVE_FULLSCREEN,
+	paintFrame,
 	repaintOnResize,
 	restoreOnExit,
 	SYNC_BEGIN,
 	SYNC_END,
-	synchronizedStdout,
 	tailRows,
 	transcriptText,
 	viewSlice,
@@ -97,20 +98,36 @@ describe("P33 view slice", () => {
 });
 
 describe("P33 terminal plumbing", () => {
-	it("wraps every string write in one synchronized frame and passes the rest through", () => {
+	it("paints each Ink frame as the whole screen in one synchronized write, never clearing first", () => {
+		const paint = (rows: string) => `${SYNC_BEGIN}\x1b[H${rows}\x1b[J${SYNC_END}`;
+		// log-update: erase the previous frame line by line, then the frame and a newline.
+		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[Gab\ncd\n"), paint("ab\x1b[K\ncd\x1b[K\n"));
+		assert.equal(paintFrame("first\n"), paint("first\x1b[K\n"));
+		// Ink's whole-screen path (clearTerminal, Windows and elsewhere) has no trailing newline.
+		assert.equal(paintFrame("\x1b[2J\x1b[0fab\ncd"), paint("ab\x1b[K\ncd\x1b[K"));
+		assert.equal(paintFrame("\x1b[2J\x1b[3J\x1b[Hab"), paint("ab\x1b[K"));
+		// Only erasing (log.clear): nothing to paint.
+		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[G"), "");
+	});
+
+	it("draws Ink's writes through paintFrame and drops the empty ones", () => {
 		const written: unknown[] = [];
+		let called = 0;
 		const target = {
 			columns: 80,
-			write(chunk: unknown) {
+			// A real stream needs its own `this` (Writable reads this._writableState).
+			write(this: unknown, chunk: unknown) {
+				assert.equal(this, target);
 				written.push(chunk);
 				return true;
 			},
-		} as unknown as NodeJS.WriteStream;
-		const stdout = synchronizedStdout(target);
-		stdout.write("frame");
-		stdout.write("");
+		};
+		const stdout = fullscreenStdout(target as unknown as NodeJS.WriteStream);
+		stdout.write("frame\n");
+		stdout.write("\x1b[2K\x1b[G", () => called++);
 		assert.equal(stdout.columns, 80);
-		assert.deepEqual(written, [`${SYNC_BEGIN}frame${SYNC_END}`, ""]);
+		assert.deepEqual(written, [paintFrame("frame\n")]);
+		assert.equal(called, 1);
 	});
 
 	it("repaints once per burst of resizes and once more when it settles; Ink's listeners come back", async () => {

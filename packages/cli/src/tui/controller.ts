@@ -1231,6 +1231,12 @@ export class TuiController {
 		if (sync) process.stdout.write("\x1b[?2026l");
 	}
 
+	/** Lay the view out again at the current size (full screen: the frame is drawn by the caller). */
+	relayout(): void {
+		this.dispatch({ type: "relayout" });
+		this.store.flush();
+	}
+
 	/**
 	 * The width changed, right now: repaint only the area Ink redraws (live blocks, input box,
 	 * status) at the new width, in one synchronized frame. `prepare` erases what the terminal
