@@ -26,6 +26,7 @@ import {
 	type UiCapability,
 	type UserContent,
 } from "@yophon/tau-kernel";
+import { stdioServer } from "../secrets.ts";
 import { editPairs } from "../tui/render/tool-views.ts";
 import { HeadlessSession, type HeadlessWorkspace, type ModelSwitch } from "./headless.ts";
 import { type RecordWriter, readRecords } from "./jsonl.ts";
@@ -369,7 +370,8 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 				return choice === "allow_once" || choice === "allow_always";
 			},
 		});
-		const servers = mcpServerConfigs(mcpServers);
+		// Stdio servers start from the environment without secrets, plus what the editor declared (P32b).
+		const servers = mcpServerConfigs(mcpServers).map((server) => (server.command ? stdioServer(server) : server));
 		if (servers.length > 0) await ws.extensions.add([createMcpExtension({ servers })]);
 		const session = {
 			id: "",

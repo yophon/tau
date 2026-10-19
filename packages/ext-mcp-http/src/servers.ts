@@ -55,6 +55,8 @@ export interface McpServerConfig extends McpExposureConfig {
 	args?: string[];
 	cwd?: string;
 	env?: Record<string, string>;
+	/** Stdio: start from the host's environment under `env` (default true); false passes `env` alone. */
+	inheritEnv?: boolean;
 	/** One-line summary for the namespace and the `mcp_servers` section; default: the server's instructions. */
 	description?: string;
 	/**

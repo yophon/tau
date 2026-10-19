@@ -57,7 +57,13 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		reportUnavailable: (message) => process.stderr.write(`${message}\n`),
 		createTransport: (config) => {
 			if (config.command) {
-				return new StdioTransport({ command: config.command, args: config.args, cwd: config.cwd, env: config.env });
+				return new StdioTransport({
+					command: config.command,
+					args: config.args,
+					cwd: config.cwd,
+					env: config.env,
+					...(config.inheritEnv === false ? { inheritEnv: false } : {}),
+				});
 			}
 			if (config.url) {
 				return new StreamableHttpTransport({ url: config.url, platform, headers: config.headers, openGetStream: true });

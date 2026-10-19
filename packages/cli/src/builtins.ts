@@ -13,6 +13,7 @@ import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
 import { type Agent, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
 import { createMemoryExtension, type MemoryScope } from "./memory.ts";
 import { resolveConfigValue } from "./models.ts";
+import { createSecretGuard } from "./secret-guard.ts";
 import { readSettings } from "./settings.ts";
 import { todoExtension } from "./todo.ts";
 
@@ -32,7 +33,19 @@ const state: {
 	memory: MemoryScope | undefined;
 	/** The web_search provider (P28); undefined = web_search is not registered. */
 	webSearch: WebSearchConfig | undefined;
-} = { codemode: {}, agent: undefined, defaultPrompt: true, memory: undefined, webSearch: undefined };
+	/** The user home (P32b: the secret guard protects ~/.tau credential files). */
+	home: string;
+	/** settings.json shell.envAllow (P32b). */
+	envAllow: string[];
+} = {
+	codemode: {},
+	agent: undefined,
+	defaultPrompt: true,
+	memory: undefined,
+	webSearch: undefined,
+	home: homedir(),
+	envAllow: [],
+};
 
 /** Environment keys that pick a search provider when settings name none (P28), in this order. */
 const SEARCH_ENV: ReadonlyArray<[WebSearchConfig["provider"], string]> = [
@@ -106,6 +119,8 @@ export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
 export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	state.memory = defaultMemoryScope(home, options.cwd);
+	state.home = home;
+	state.envAllow = readSettings(join(home, ".tau", "settings.json")).shellEnvAllow ?? [];
 	// User settings only: the search endpoint and key are never chosen by a repository.
 	state.webSearch = resolveWebSearch(join(home, ".tau", "settings.json"));
 	state.codemode = {
@@ -164,6 +179,8 @@ const toolPrompt: Extension = (api) => {
  */
 export function builtinExtensions(options: { memory?: MemoryScope } = {}): Extension[] {
 	return [
+		// P32b: first, so a blocked read never reaches another extension and results are masked early.
+		createSecretGuard({ home: state.home, envAllow: state.envAllow }),
 		toolPrompt,
 		createToolSearchExtension(),
 		createNodeCodemodeExtension({

@@ -63,6 +63,7 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
+import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
 	availableModels,
@@ -82,6 +83,7 @@ import { HeadlessSession } from "./modes/headless.ts";
 import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
 import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
+import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { readSettings, writeSettings } from "./settings.ts";
 import { conversationLength } from "./tui/controller.ts";
 
@@ -1024,6 +1026,20 @@ async function runCommand(
 	}
 }
 
+/**
+ * The environment for processes the model drives (P32b): secrets registered for masking
+ * (secret-looking variables, the credential store), then scrubbed out.
+ */
+function modelEnvironment(): Record<string, string> {
+	registerEnvSecrets(process.env);
+	try {
+		new CredentialStore(credentialsPath(userHome())).registerAll();
+	} catch {
+		// A broken store is reported by tau credentials; the guard still masks what it knows.
+	}
+	return scrubEnv(process.env, readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow);
+}
+
 async function main(): Promise<void> {
 	// `tau credentials …` (P32b) needs neither a model nor the usual options.
 	const subcommand = process.argv[2];
@@ -1438,7 +1454,10 @@ async function main(): Promise<void> {
 		};
 
 		const fs: FileSystem = spec.fs ?? new NodeFileSystem(cwd);
+		// The user's own `!` commands get the full environment; the tools the model calls get it
+		// without secret-looking variables (P32b). Secrets are registered first so their values go too.
 		const shell = new NodeShell(cwd);
+		const toolShell = new NodeShell(cwd, { env: modelEnvironment() });
 		// Project context files (P21a, pi loadProjectContextFiles): ~/.tau first, then
 		// every directory from the root down to cwd. Appended to any system prompt.
 		const loadProjectContext = async (): Promise<string> =>
@@ -1458,7 +1477,7 @@ async function main(): Promise<void> {
 			agentExtensions = extensions,
 		): Agent => {
 			const mode = workspaceMode ?? permissionMode;
-			const codingTools = createCodingTools({ fs, shell }, { mode });
+			const codingTools = createCodingTools({ fs, shell: toolShell }, { mode });
 			const built = new Agent({
 				config,
 				transport,
@@ -1479,7 +1498,7 @@ async function main(): Promise<void> {
 				ui: spec.ui,
 				capabilities: {
 					fs,
-					shell,
+					shell: toolShell,
 					paths: {
 						cwd,
 						userTauDir: join(userHome(), ".tau"),

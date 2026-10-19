@@ -8,6 +8,9 @@
 /** Environment variable names that look like secrets (Codex's KEY/SECRET/TOKEN, Claude Code's PASSWORD/AUTH). */
 export const SECRET_NAME_RE = /KEY|SECRET|TOKEN|PASSWORD|PASSWD|AUTH|CREDENTIAL/i;
 
+/** Names that match the pattern but hold sockets and paths, not secrets (git over SSH, X11, GPG). */
+const DEFAULT_ENV_ALLOW = ["SSH_AUTH_SOCK", "SSH_AGENT_PID", "XAUTHORITY", "GPG_AGENT_INFO"];
+
 /** Values shorter than this are not masked: they would match ordinary text. */
 const MIN_SECRET_LENGTH = 8;
 
@@ -54,7 +57,7 @@ export function scrubEnv(
 	env: Record<string, string | undefined>,
 	allow: readonly string[] = [],
 ): Record<string, string> {
-	const allowed = new Set(allow.map((name) => name.toUpperCase()));
+	const allowed = new Set([...DEFAULT_ENV_ALLOW, ...allow].map((name) => name.toUpperCase()));
 	const out: Record<string, string> = {};
 	for (const [name, value] of Object.entries(env)) {
 		if (value === undefined) continue;
@@ -62,6 +65,19 @@ export function scrubEnv(
 		out[name] = value;
 	}
 	return out;
+}
+
+/**
+ * A stdio MCP server's process environment (P32b): the host's without secrets, then the
+ * variables the server's config declares (registered for masking when they look secret).
+ */
+export function stdioServer<T extends { env?: Record<string, string> }>(
+	server: T,
+	allow: readonly string[] = [],
+	env: Record<string, string | undefined> = process.env,
+): T & { inheritEnv: false } {
+	registerEnvSecrets(server.env ?? {});
+	return { ...server, env: { ...scrubEnv(env, allow), ...(server.env ?? {}) }, inheritEnv: false };
 }
 
 /** The names scrubEnv would drop (for hints when a command fails for want of one). */

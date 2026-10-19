@@ -146,9 +146,12 @@ function killProcessTree(pid: number): void {
 
 export class NodeShell implements Shell {
 	readonly cwd: string;
+	/** The environment of spawned commands; default: this process's (P32b: the CLI passes one without secrets). */
+	readonly env: Record<string, string> | undefined;
 
-	constructor(cwd: string = process.cwd()) {
+	constructor(cwd: string = process.cwd(), options: { env?: Record<string, string> } = {}) {
 		this.cwd = resolve(cwd);
+		this.env = options.env;
 	}
 
 	async exec(
@@ -180,6 +183,7 @@ export class NodeShell implements Shell {
 
 			const child = spawn(shell, [...args, shellCommand], {
 				cwd,
+				...(this.env ? { env: this.env } : {}),
 				// Unix uses a process group so abort/timeout can kill descendants;
 				// Windows uses taskkill /T below and detached children can otherwise
 				// inherit handles that keep commands such as where/findstr alive.

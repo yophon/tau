@@ -16,6 +16,10 @@ export interface TauSettings {
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
 	webSearch?: WebSearchSettings;
+	/** P32b: secret-looking variables to keep in the environment of commands the model runs. */
+	shellEnvAllow?: string[];
+	/** P32c: tool arguments in the audit ledger: a masked summary (default) or none. */
+	auditDetails?: "summary" | "none";
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -56,6 +60,18 @@ export function readSettings(path: string): TauSettings {
 				...(typeof baseUrl === "string" && baseUrl !== "" ? { baseUrl } : {}),
 			};
 		}
+	}
+	const shell = raw.shell;
+	if (typeof shell === "object" && shell !== null) {
+		const allow = (shell as Record<string, unknown>).envAllow;
+		if (Array.isArray(allow)) {
+			settings.shellEnvAllow = allow.filter((name): name is string => typeof name === "string" && name !== "");
+		}
+	}
+	const audit = raw.audit;
+	if (typeof audit === "object" && audit !== null) {
+		const details = (audit as Record<string, unknown>).details;
+		if (details === "summary" || details === "none") settings.auditDetails = details;
 	}
 	return settings;
 }

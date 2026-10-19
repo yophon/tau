@@ -452,6 +452,45 @@ test("memory about the user follows them to another project's next session (P32a
 	});
 });
 
+test("secrets stay away from the model: scrubbed env, blocked credential files, masked output (P32b)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(
+			join(home, ".tau", "credentials.json"),
+			JSON.stringify({ version: 1, credentials: { demo: { value: "cred-value-abcdefgh", createdAt: 1 } } }),
+		);
+		await writeFile(join(cwd, "notes.txt"), "found cred-value-abcdefgh and tok-e2e-1234567890 here\n");
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("bash", { command: 'echo "token=[$TAU_E2E_SECRET_TOKEN] path-ok=[$PATH_PROBE]"' }),
+			() => mockToolCallTurn("read", { path: join(home, ".tau", "credentials.json") }),
+			() => mockToolCallTurn("bash", { command: "cat ~/.tau/models.json" }),
+			() => mockToolCallTurn("read", { path: "notes.txt" }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const cli = startCli(["-p", "go", "--no-session"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+				env: { TAU_E2E_SECRET_TOKEN: "tok-e2e-1234567890", PATH_PROBE: "visible" },
+			});
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const toolText = (index: number) => {
+				const messages = (mock.requests[index] as { messages: { role: string; content: string | null }[] }).messages;
+				return messages.filter((message) => message.role === "tool").at(-1)?.content ?? "";
+			};
+			assert.match(toolText(1), /token=\[\] path-ok=\[visible\]/, "the secret-looking variable is gone, others stay");
+			assert.match(toolText(1), /tau removes TAU_E2E_SECRET_TOKEN from the environment/);
+			assert.match(toolText(2), /Blocked: .*credentials\.json holds tau's credentials/);
+			assert.match(toolText(3), /Blocked: \.tau\/models\.json holds tau's credentials/);
+			assert.match(toolText(4), /found \[已隐藏:cred:demo\] and \[已隐藏:TAU_E2E_SECRET_TOKEN\] here/);
+			assert.doesNotMatch(JSON.stringify(mock.requests), /cred-value-abcdefgh|tok-e2e-1234567890/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
 test("the built-in subagent tool delegates to a child agent (P26b)", async () => {
 	await withSandbox(async ({ cwd, home }) => {
 		const mock = await startMockOpenAI([
