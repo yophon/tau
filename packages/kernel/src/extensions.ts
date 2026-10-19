@@ -1147,7 +1147,7 @@ export class ExtensionRegistry {
 	private hostActions: ExtensionHostActions | undefined;
 	private errorSink: ExtensionErrorSink | undefined;
 	private readonly channels = new Map<string, Array<(data: unknown) => void>>();
-	/** pi EventBus over a plain map (the kernel has no node:events). */
+	/** pi EventBus over a plain map (the kernel has no Node event emitter). */
 	readonly events: EventBus = {
 		emit: (channel, data) => {
 			for (const handler of [...(this.channels.get(channel) ?? [])]) {

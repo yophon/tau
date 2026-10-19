@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import type { BackgroundTaskInfo } from "@yophon/tau-kernel";
 import { NodeBackgroundShell } from "../src/background.ts";
 import { NodeImageProcessor } from "../src/image/processor.ts";
@@ -46,6 +46,13 @@ function alive(pid: number): boolean {
 }
 
 describe("P36a: NodeBackgroundShell", () => {
+	// Background commands do not keep the process alive (tau exits and stops them): the tests hold it.
+	let keepAlive: ReturnType<typeof setInterval> | undefined;
+	before(() => {
+		keepAlive = setInterval(() => undefined, 1000);
+	});
+	after(() => clearInterval(keepAlive));
+
 	it("writes the output to a file and reports how the command ended", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "tau-bg-"));
 		const ok = script(dir, "ok", `console.log("one"); console.error("two"); console.log("three");`);
@@ -95,6 +102,9 @@ setInterval(() => {}, 1000);`,
 			}
 		}
 		assert.ok(childPid > 0, "the grandchild started");
+		for (let i = 0; i < 100 && !readFileSync(task.outputPath, "utf8").includes("tick"); i++) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
 		assert.equal(shell.running, 1);
 		const stopped = await shell.stop(task.id);
 		assert.equal(stopped.status, "killed");
