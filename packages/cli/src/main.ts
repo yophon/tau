@@ -756,6 +756,7 @@ async function loadExtensionRegistry(
 	ui: UiCapability | undefined,
 	hostExtensions: readonly Extension[] = [],
 	memory?: MemoryScope,
+	mcp = true,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
@@ -794,6 +795,26 @@ async function loadExtensionRegistry(
 	}
 	// Project codemode settings count only for a trusted directory.
 	configureBuiltins({ cwd, projectTrusted, home: userHome() });
+	// Connectors (P32b): MCP servers from ~/.tau/mcp.json and, when trusted, the project's.
+	if (mcp) {
+		const { loadMcpConfig } = await import("./mcp-config.ts");
+		const loadedMcp = loadMcpConfig({
+			home: userHome(),
+			cwd,
+			projectTrusted,
+			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
+		});
+		for (const diagnostic of loadedMcp.diagnostics) console.log(dim(`mcp: ${diagnostic}`));
+		const usable = loadedMcp.servers.filter((server) => {
+			if (server.auth !== "oauth") return true;
+			console.log(dim(`mcp: server "${server.name}" uses OAuth, which this build cannot sign in to yet`));
+			return false;
+		});
+		if (usable.length > 0) {
+			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
+			await registry.add([createMcpExtension({ servers: usable })]);
+		}
+	}
 	reportExtensionLoad(registry);
 	return { registry, projectTrusted };
 }
@@ -1041,9 +1062,9 @@ function modelEnvironment(): Record<string, string> {
 }
 
 async function main(): Promise<void> {
-	// `tau credentials …` (P32b) needs neither a model nor the usual options.
+	// `tau credentials …` and `tau mcp …` (P32b) need neither a model nor the usual options.
 	const subcommand = process.argv[2];
-	if (subcommand === "credentials") {
+	if (subcommand === "credentials" || subcommand === "mcp") {
 		const { runToolCommand } = await import("./tool-commands.ts");
 		process.exitCode = await runToolCommand(subcommand, process.argv.slice(3), {
 			home: userHome(),
@@ -1436,10 +1457,12 @@ async function main(): Promise<void> {
 		extensions?: Extension[];
 		/** P32a: this workspace's memory scope instead of the project's (a gateway guest's own). */
 		memory?: MemoryScope;
+		/** P32b: load ~/.tau/mcp.json servers (default true; off for a gateway guest, and ACP merges its own). */
+		mcp?: boolean;
 	}) => {
 		const cwd = spec.cwd;
 		let workspaceMode = spec.permissionMode;
-		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions, spec.memory);
+		const loaded = await loadExtensionRegistry(cwd, spec.ui, spec.extensions, spec.memory, spec.mcp ?? true);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
@@ -1447,7 +1470,7 @@ async function main(): Promise<void> {
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
 			projectContext = await loadProjectContext();
-			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions, spec.memory);
+			const next = await loadExtensionRegistry(cwd, reloadUi, spec.extensions, spec.memory, spec.mcp ?? true);
 			projectTrusted = next.projectTrusted;
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras));
 			return next.registry;
@@ -1584,10 +1607,21 @@ async function main(): Promise<void> {
 	if (options.mode === "acp") {
 		// One workspace per session/new, at the client's cwd (P29). Loaded on demand: it pulls in the MCP client.
 		const { runAcpMode } = await import("./modes/acp.ts");
+		const { loadMcpConfig } = await import("./mcp-config.ts");
 		await runAcpMode({
 			out,
 			host: {
 				openWorkspace,
+				configuredMcpServers: (serverCwd, projectTrusted) => {
+					const loaded = loadMcpConfig({
+						home: userHome(),
+						cwd: serverCwd,
+						projectTrusted,
+						envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
+					});
+					for (const diagnostic of loaded.diagnostics) console.error(`mcp: ${diagnostic}`);
+					return loaded.servers.filter((server) => server.auth !== "oauth");
+				},
 				isAlwaysAllowed,
 				recordAlwaysAllow,
 				modelDisplay,

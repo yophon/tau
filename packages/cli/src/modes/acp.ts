@@ -8,7 +8,7 @@
  * a plan; permission modes become session modes. bash still runs locally.
  */
 import { isAbsolute, resolve } from "node:path";
-import { createMcpExtension } from "@yophon/tau-ext-mcp";
+import { createMcpExtension, type McpServerConfig } from "@yophon/tau-ext-mcp";
 import { NodeFileSystem } from "@yophon/tau-host-node";
 import {
 	type AgentEvent,
@@ -229,7 +229,10 @@ export interface AcpHost {
 		ui: UiCapability | undefined;
 		onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 		fs?: FileSystem;
-	}): Promise<HeadlessWorkspace>;
+		mcp?: boolean;
+	}): Promise<HeadlessWorkspace & { isProjectTrusted(): boolean }>;
+	/** P32b: the ~/.tau/mcp.json servers (and the project's when trusted); the editor's win on a name clash. */
+	configuredMcpServers?(cwd: string, projectTrusted: boolean): McpServerConfig[];
 	isAlwaysAllowed(request: ApprovalRequest): boolean;
 	recordAlwaysAllow(request: ApprovalRequest): void;
 	modelDisplay(): string;
@@ -339,6 +342,7 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 			cwd,
 			ui,
 			fs,
+			mcp: false,
 			onApproval: async (request) => {
 				if (host.isAlwaysAllowed(request)) return true;
 				const sessionId = holder.session?.id ?? "";
@@ -371,7 +375,12 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 			},
 		});
 		// Stdio servers start from the environment without secrets, plus what the editor declared (P32b).
-		const servers = mcpServerConfigs(mcpServers).map((server) => (server.command ? stdioServer(server) : server));
+		const editor = mcpServerConfigs(mcpServers).map((server) => (server.command ? stdioServer(server) : server));
+		const names = new Set(editor.map((server) => server.name));
+		const configured = (host.configuredMcpServers?.(cwd, ws.isProjectTrusted()) ?? []).filter(
+			(server) => !names.has(server.name),
+		);
+		const servers = [...editor, ...configured];
 		if (servers.length > 0) await ws.extensions.add([createMcpExtension({ servers })]);
 		const session = {
 			id: "",

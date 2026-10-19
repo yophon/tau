@@ -18,6 +18,7 @@ import {
 	type JsonValue,
 	limitToolText,
 	type Platform,
+	type RiskLevel,
 	type Tool,
 	type ToolNamespace,
 	type ToolResult,
@@ -71,6 +72,27 @@ export interface McpServerConfig extends McpExposureConfig {
 	 * (D20); off by default — opt in per server you trust to label its tools.
 	 */
 	riskFromAnnotations?: boolean;
+	/**
+	 * Risk per tool, by the server's tool name with `*` wildcards, e.g. `{ "get_*": "low" }`
+	 * (P32b). The host's own declaration, unlike annotations, may lower risk, so a host
+	 * should take it only from the user's configuration. A destructive hint still wins.
+	 */
+	toolRisk?: Record<string, RiskLevel>;
+}
+
+/** The risk `toolRisk` declares for a tool: the first matching pattern, exact names first. */
+export function declaredToolRisk(toolRisk: Record<string, RiskLevel> | undefined, tool: string): RiskLevel | undefined {
+	if (!toolRisk) return undefined;
+	if (toolRisk[tool]) return toolRisk[tool];
+	for (const [pattern, risk] of Object.entries(toolRisk)) {
+		if (!pattern.includes("*")) continue;
+		const source = pattern
+			.split("*")
+			.map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+			.join(".*");
+		if (new RegExp(`^${source}$`).test(tool)) return risk;
+	}
+	return undefined;
 }
 
 export interface McpServerStatus {
@@ -307,7 +329,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			const definition = createTauTool(state, name, info, namespace);
 			definitions.set(name, definition);
 			const destructive = state.config.riskFromAnnotations === true && info.annotations?.destructiveHint === true;
-			target.registerTool(definition, destructive ? { risk: "high" } : undefined);
+			const declared = declaredToolRisk(state.config.toolRisk, info.name);
+			const risk = destructive ? "high" : declared;
+			target.registerTool(definition, risk ? { risk } : undefined);
 		}
 		state.tools = current;
 		// Tools cannot be unregistered: tools the server dropped become hidden. Offered again,

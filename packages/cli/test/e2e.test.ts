@@ -3,7 +3,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -490,6 +490,135 @@ test("secrets stay away from the model: scrubbed env, blocked credential files, 
 		}
 	});
 });
+
+/** A Streamable HTTP MCP server (JSON replies) that wants `Authorization: Bearer <token>`. */
+async function startAuthMcp(token: string): Promise<{ url: string; close(): Promise<void>; calls: string[] }> {
+	const { createServer } = await import("node:http");
+	const calls: string[] = [];
+	const server = createServer((req, res) => {
+		let body = "";
+		req.on("data", (chunk) => {
+			body += chunk;
+		});
+		req.on("end", () => {
+			if (req.headers.authorization !== `Bearer ${token}`) {
+				res.writeHead(401).end();
+				return;
+			}
+			if (req.method !== "POST") {
+				res.writeHead(405).end();
+				return;
+			}
+			const message = JSON.parse(body) as { id?: number; method: string; params?: { name?: string } };
+			if (message.id === undefined) {
+				res.writeHead(202).end();
+				return;
+			}
+			const reply = (result: unknown) => {
+				res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "s1" });
+				res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+			};
+			if (message.method === "initialize") {
+				reply({
+					protocolVersion: "2025-06-18",
+					capabilities: { tools: {} },
+					serverInfo: { name: "auth", version: "1" },
+				});
+			} else if (message.method === "tools/list") {
+				const schema = { type: "object", properties: {} };
+				reply({
+					tools: [
+						{ name: "whoami", description: "Who am I", inputSchema: schema },
+						{ name: "delete_all", description: "Delete everything", inputSchema: schema },
+					],
+				});
+			} else if (message.method === "tools/call") {
+				calls.push(message.params?.name ?? "");
+				reply({ content: [{ type: "text", text: `called ${message.params?.name} with a valid token` }] });
+			} else {
+				res.writeHead(404).end();
+			}
+		});
+	});
+	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+	const address = server.address() as { port: number };
+	return {
+		url: `http://127.0.0.1:${address.port}/mcp`,
+		calls,
+		close: () => new Promise((done) => server.close(() => done())),
+	};
+}
+
+test("connectors from ~/.tau/mcp.json: ${cred:…} in headers, toolRisk, tau mcp list (P32b)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const token = "mcp-token-0123456789";
+		const mcp = await startAuthMcp(token);
+		try {
+			await connectorScenario(cwd, home, token, mcp);
+		} finally {
+			await mcp.close();
+		}
+	});
+});
+
+async function connectorScenario(
+	cwd: string,
+	home: string,
+	token: string,
+	mcp: { url: string; calls: string[] },
+): Promise<void> {
+	await mkdir(join(home, ".tau"), { recursive: true });
+	await writeFile(
+		join(home, ".tau", "credentials.json"),
+		JSON.stringify({ version: 1, credentials: { demo: { value: token, createdAt: 1 } } }),
+	);
+	const stdioServer = resolve(fileURLToPath(new URL("../../ext-mcp/test/mock-mcp-server.mjs", import.meta.url)));
+	await writeFile(
+		join(home, ".tau", "mcp.json"),
+		JSON.stringify({
+			mcpServers: {
+				web: { url: mcp.url, headers: { Authorization: "Bearer ${cred:demo}" }, toolRisk: { whoami: "low" } },
+				local: { command: process.execPath, args: [stdioServer] },
+				broken: { url: "https://example.invalid/mcp", headers: { Authorization: "Bearer ${cred:missing}" } },
+			},
+		}),
+	);
+	const mock = await startMockOpenAI([
+		() => mockToolCallTurn("mcp__web__whoami", {}),
+		() => mockToolCallTurn("mcp__web__delete_all", {}),
+		() => mockToolCallTurn("mcp__local__echo", { text: "hi" }),
+		() => mockTextTurn("done"),
+	]);
+	try {
+		const cli = startCli(["--permission-mode", "supervised", "-p", "go", "--no-session"], {
+			cwd,
+			home,
+			baseUrl: mock.baseUrl,
+		});
+		assert.equal(await cli.waitForExit(), 0, cli.output());
+		assert.match(cli.output(), /mcp: .*server "broken" skipped: \$\{cred:missing\} has no value/);
+		const toolText = (index: number) => {
+			const messages = (mock.requests[index] as { messages: { role: string; content: string | null }[] }).messages;
+			return messages.filter((message) => message.role === "tool").at(-1)?.content ?? "";
+		};
+		assert.match(toolText(1), /called whoami with a valid token/, "low risk by toolRisk: no approval needed");
+		assert.match(toolText(2), /Denied/, "undeclared MCP tools still need approval");
+		assert.deepEqual(mcp.calls, ["whoami"]);
+		const tools = ((mock.requests[0] as { tools?: { function: { name: string } }[] }).tools ?? []).map(
+			(tool) => tool.function.name,
+		);
+		assert.ok(tools.includes("mcp__local__echo"), "the stdio server's tools are declared");
+		assert.doesNotMatch(JSON.stringify(mock.requests), new RegExp(token));
+
+		const list = startCli(["mcp", "list", "--check"], { cwd, home, baseUrl: mock.baseUrl });
+		assert.equal(await list.waitForExit(), 1, list.output());
+		assert.match(list.output(), /web {2}http: .*credentials demo; toolRisk whoami=low\) {2}→ ok, 2 tool\(s\)/);
+		assert.match(list.output(), /local {2}stdio: .* {2}→ ok, \d+ tool\(s\)/);
+		assert.match(list.output(), /! .*server "broken" skipped/);
+	} finally {
+		await mock.close();
+	}
+}
 
 test("the built-in subagent tool delegates to a child agent (P26b)", async () => {
 	await withSandbox(async ({ cwd, home }) => {

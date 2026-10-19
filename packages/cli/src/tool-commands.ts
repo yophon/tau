@@ -1,7 +1,12 @@
-// `tau credentials …` (P32b): commands that manage configuration and need
+// `tau credentials …` and `tau mcp …` (P32b): commands that manage configuration and need
 // neither a model nor the agent.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { auditCredentials, CredentialStore, credentialsPath, credentialUsage } from "./credentials.ts";
+import type { LoadedMcpServer } from "./mcp-config.ts";
+import { maskSecrets } from "./secrets.ts";
+import { readSettings } from "./settings.ts";
 
 const CREDENTIALS_USAGE = `tau credentials - secrets referenced from configuration as \${cred:<name>}
 
@@ -107,12 +112,103 @@ async function credentialsCommand(args: string[], home: string): Promise<number>
 	}
 }
 
+const MCP_USAGE = `tau mcp - connectors (MCP servers) from ~/.tau/mcp.json and a trusted project's .tau/mcp.json
+
+Usage:
+  tau mcp list [--check]     Servers, their source and the credentials they use; --check connects and counts tools
+
+Format (pi's mcp.json): { "mcpServers": { "<name>": { "url": "…", "headers": { "Authorization": "Bearer \${cred:<name>}" } },
+                                          "<name>": { "command": "…", "args": […], "env": { … } } } }
+Per server: exposure, toolExposure, toolRisk (user file only), enabled, description, timeoutMs. See docs/connectors.md.`;
+
+/** Whether ~/.tau/trust.json records the directory as trusted (the CLI's trust gate, without the digest check). */
+function trustedProject(home: string, cwd: string): boolean {
+	try {
+		const store = JSON.parse(readFileSync(join(home, ".tau", "trust.json"), "utf8")) as {
+			trusted?: Record<string, { trusted?: boolean }>;
+		};
+		return store.trusted?.[cwd]?.trusted === true;
+	} catch {
+		return false;
+	}
+}
+
+async function checkServer(server: LoadedMcpServer): Promise<string> {
+	const [{ McpClient, StreamableHttpTransport }, { StdioTransport }, { defaultPlatform }] = await Promise.all([
+		import("@yophon/tau-ext-mcp-http"),
+		import("@yophon/tau-ext-mcp"),
+		import("@yophon/tau-kernel"),
+	]);
+	const platform = defaultPlatform();
+	const client = new McpClient({ name: "tau", version: "0.4.0", platform, requestTimeoutMs: 10_000 });
+	const transport = server.command
+		? new StdioTransport({
+				command: server.command,
+				args: server.args,
+				cwd: server.cwd,
+				env: server.env,
+				...(server.inheritEnv === false ? { inheritEnv: false } : {}),
+			})
+		: new StreamableHttpTransport({ url: server.url ?? "", platform, headers: server.headers });
+	try {
+		await client.connect(transport);
+		const tools = await client.listTools();
+		return `ok, ${tools.length} tool(s)`;
+	} catch (error) {
+		return `failed: ${maskSecrets(error instanceof Error ? error.message : String(error))}`;
+	} finally {
+		await client.close().catch(() => undefined);
+	}
+}
+
+async function mcpCommand(args: string[], context: { home: string; cwd: string }): Promise<number> {
+	const [command = "help", ...rest] = args;
+	if (command === "help" || command === "--help") {
+		console.log(MCP_USAGE);
+		return 0;
+	}
+	if (command !== "list") {
+		console.error(`Unknown mcp command "${command}".\n\n${MCP_USAGE}`);
+		return 1;
+	}
+	const { loadMcpConfig } = await import("./mcp-config.ts");
+	const { servers, diagnostics } = loadMcpConfig({
+		home: context.home,
+		cwd: context.cwd,
+		projectTrusted: trustedProject(context.home, context.cwd),
+		envAllow: readSettings(join(context.home, ".tau", "settings.json")).shellEnvAllow ?? [],
+	});
+	if (servers.length === 0 && diagnostics.length === 0) {
+		console.log(`No MCP servers. Add them to ${join(context.home, ".tau", "mcp.json")}.`);
+		return 0;
+	}
+	for (const server of servers) {
+		const transport = server.command ? `stdio: ${server.command}` : `http: ${server.url}`;
+		const extras = [
+			server.exposure ? `exposure ${server.exposure}` : "",
+			server.credentials.length > 0 ? `credentials ${[...new Set(server.credentials)].join(", ")}` : "",
+			server.toolRisk
+				? `toolRisk ${Object.entries(server.toolRisk)
+						.map(([pattern, risk]) => `${pattern}=${risk}`)
+						.join(" ")}`
+				: "",
+			server.auth === "oauth" ? "OAuth" : "",
+		].filter(Boolean);
+		let line = `${server.name}  ${transport}  (${server.source}${extras.length > 0 ? `; ${extras.join("; ")}` : ""})`;
+		if (rest.includes("--check")) line += `  → ${await checkServer(server)}`;
+		console.log(line);
+	}
+	for (const diagnostic of diagnostics) console.log(`! ${diagnostic}`);
+	return diagnostics.length > 0 ? 1 : 0;
+}
+
 export async function runToolCommand(
 	name: string,
 	args: string[],
 	context: { home: string; cwd: string },
 ): Promise<number> {
 	if (name === "credentials") return credentialsCommand(args, context.home);
+	if (name === "mcp") return mcpCommand(args, context);
 	console.error(`Unknown command ${name}`);
 	return 1;
 }

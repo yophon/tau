@@ -58,6 +58,7 @@ export interface GatewayHost {
 		promptNote?: string;
 		extensions?: Extension[];
 		memory?: MemoryScope;
+		mcp?: boolean;
 	}): Promise<HeadlessWorkspace & { extensions: ExtensionRegistry; setPermissionMode(mode: PermissionMode): void }>;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
@@ -171,7 +172,8 @@ export async function openConversation(
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
 		// Someone other than the owner never sees the owner's memory, only their own (P32).
-		...(policy.role === "owner" ? {} : { memory: guestMemoryScope(host.home, sessionsDir, key) }),
+		// Connectors carry the owner's credentials: not in someone else's conversation (P32b).
+		...(policy.role === "owner" ? {} : { memory: guestMemoryScope(host.home, sessionsDir, key), mcp: false }),
 	});
 	const existing = (await ws.sessionRepo.list())[0];
 	const store = existing ? await ws.sessionRepo.open(existing) : await ws.sessionRepo.create();

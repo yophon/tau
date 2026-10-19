@@ -58,6 +58,7 @@ export { createMcpToolName, MAX_TOOL_NAME_LENGTH, mcpNamespace, sha256Hex } from
 export { MCP_OUTPUT_MAX_BYTES, toolOutput } from "./result.ts";
 export {
 	createMcpServers,
+	declaredToolRisk,
 	type McpServerConfig,
 	type McpServerStatus,
 	type McpServersHandle,
