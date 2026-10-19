@@ -93,7 +93,7 @@ import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
 import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
-import { readSettings, writeSettings } from "./settings.ts";
+import { readSettings, tuiScreen, writeSettings, writeTuiMode } from "./settings.ts";
 import { conversationLength } from "./tui/controller.ts";
 
 /** The CLI package version (src/ and dist/ both sit one level below package.json). */
@@ -132,6 +132,9 @@ Options:
                          acp: Agent Client Protocol over stdio (editors)
       --tui              Use the TUI (the default on a terminal)
       --repl             Use the line-based REPL instead of the TUI
+      --inline           TUI in the main screen, history in the terminal's scrollback
+                         (default: full screen; settings.json tui.mode, env TAU_TUI_MODE)
+      --fullscreen       TUI on the alternate screen with its own scrollable transcript
   -w, --context-window <n>  Model context window in tokens; enables auto-compaction
                          (env: TAU_CONTEXT_WINDOW)
       --pricing <spec>   Unit prices, USD per million tokens, e.g.
@@ -190,6 +193,8 @@ interface CliOptions {
 	print?: string;
 	tui: boolean;
 	repl: boolean;
+	/** P33: --inline / --fullscreen for the TUI. */
+	screen?: "fullscreen" | "inline";
 	continue: boolean;
 	contextWindow?: number;
 	pricing?: ModelPricing;
@@ -361,6 +366,12 @@ function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "--repl":
 				options.repl = true;
+				break;
+			case "--inline":
+				options.screen = "inline";
+				break;
+			case "--fullscreen":
+				options.screen = "fullscreen";
 				break;
 			case "--list-models":
 				options.listModels = true;
@@ -1778,6 +1789,8 @@ async function main(): Promise<void> {
 		await runTui({
 			agent,
 			extensions,
+			screen: tuiScreen(options.screen, userSettings.tuiMode),
+			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
 			model: activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model,
 			modelChoices,
 			...(configuredModels.length > 0

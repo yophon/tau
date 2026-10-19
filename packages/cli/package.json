@@ -42,6 +42,7 @@
 	},
 	"devDependencies": {
 		"@types/react": "18.3.31",
-		"ink-testing-library": "4.0.0"
+		"ink-testing-library": "4.0.0",
+		"wrap-ansi": "9.0.2"
 	}
 }

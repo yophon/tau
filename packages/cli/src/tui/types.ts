@@ -42,6 +42,8 @@ export interface RunTuiOptions {
 	resolveModelSwitch?(
 		requested: string,
 	): { model: string; display: string; options: SetModelOptions; commit(): void } | { error: string };
+	/** /settings → Screen: save tui.mode in settings.json for the next start (P33). */
+	saveTuiMode?(mode: "fullscreen" | "inline"): void;
 	/** Ctrl+S in the /model picker: save `provider/id` as the default in settings.json. */
 	saveDefaultModel?(ref: string): boolean;
 	setThinkingLevel(level: ThinkingLevel | undefined): void;
@@ -59,6 +61,8 @@ export interface RunTuiOptions {
 	reloadExtensions(ui: UiCapability | undefined): Promise<ExtensionRegistry>;
 	/** session_start reason; fired once the host actions are attached (P23e). */
 	sessionReason: "startup" | "resume";
+	/** P33: the alternate screen with tau's own transcript view (default), or the inline view in the main screen. */
+	screen?: "fullscreen" | "inline";
 }
 
 /** Test seams; the real TUI uses the defaults. */

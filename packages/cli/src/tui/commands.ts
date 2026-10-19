@@ -622,10 +622,14 @@ const BUILTINS: BuiltinCommand[] = [
 				{ label: "Tool details", hint: tui.state.verbose ? "expanded" : "collapsed", value: "details" },
 				{ label: "Tools", hint: `${tui.agent.getActiveTools().length} on`, value: "tools" },
 			];
+			if (tui.options.saveTuiMode) {
+				items.push({ label: "Screen", hint: screenName(tui.options.screen ?? "fullscreen"), value: "screen" });
+			}
 			const picked = await tui.pick("Settings", items);
 			if (picked === undefined) return;
 			if (picked === "reasoning") tui.execute({ type: "toggle-reasoning" });
 			else if (picked === "details") tui.execute({ type: "toggle-verbose" });
+			else if (picked === "screen") await pickScreen(tui);
 			else await findBuiltin(picked)?.run(tui, "");
 		},
 	},
@@ -659,6 +663,25 @@ const BUILTINS: BuiltinCommand[] = [
 		run: (tui) => tui.stop(),
 	},
 ];
+
+const screenName = (mode: "fullscreen" | "inline"): string => (mode === "inline" ? "inline" : "full screen");
+
+/** /settings → Screen (P33): saved as tui.mode; the screen changes on the next start. */
+async function pickScreen(tui: TuiController): Promise<void> {
+	const current = tui.options.screen ?? "fullscreen";
+	const modes = ["fullscreen", "inline"] as const;
+	const picked = await tui.pick(
+		`Screen (now: ${screenName(current)}; takes effect on the next start)`,
+		[
+			{ label: "Full screen", hint: "own scrollable view, no resize ghosts", value: "fullscreen" },
+			{ label: "Inline", hint: "history in the terminal's scrollback", value: "inline" },
+		],
+		modes.indexOf(current),
+	);
+	if (picked !== "fullscreen" && picked !== "inline") return;
+	tui.options.saveTuiMode?.(picked);
+	tui.notice("dim", `Saved tui.mode = ${picked} in settings.json; tau uses it from the next start.`);
+}
 
 const INFO = "__entry_info__:";
 

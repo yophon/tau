@@ -42,6 +42,7 @@ import { InputDecoder } from "./input/decoder.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
 import { expandPastes, foldPaste, newPasteStore } from "./input/paste.ts";
+import { type ScrollCommand, scrollCommands, takeMouseReports } from "./input/scroll.ts";
 import { BUILTIN_KEYS, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
 import { APPROVAL_OPTIONS, type ApprovalView, initialState, type PickerItem, type TaskKind } from "./model.ts";
 import { type StyledLine, span } from "./render/spans.ts";
@@ -324,7 +325,56 @@ export class TuiController {
 
 	// ── input ────────────────────────────────────────────────────────────────
 
-	handleInput(raw: string, key: KeyLike): void {
+	// ── full-screen transcript view (P33) ──────────────────────────────────
+
+	private viewport: { height: number; total: number | (() => number) } = { height: 20, total: 0 };
+
+	/** The view's size, from the last layout: what scrolling clamps against (the total may be counted on demand). */
+	setViewport(height: number, total: number | (() => number)): void {
+		this.viewport = { height, total };
+	}
+
+	private maxTop(): number {
+		const { height, total } = this.viewport;
+		return Math.max(0, (typeof total === "function" ? total() : total) - height);
+	}
+
+	/** Raw input the view handles itself (PgUp/PgDn, Ctrl+Home/End); true when it was one. */
+	handleScrollInput(data: string): boolean {
+		const commands = scrollCommands(data);
+		this.scroll(commands);
+		return commands.length > 0;
+	}
+
+	private scroll(commands: readonly ScrollCommand[]): void {
+		for (const command of commands) {
+			if (command.kind === "rows") this.scrollBy(command.delta);
+			else if (command.kind === "page") this.scrollBy(command.direction * Math.max(1, this.viewport.height - 2));
+			else this.scrollTo(command.to);
+		}
+	}
+
+	/** A mouse report cut off at the end of the last read. */
+	private mousePending = "";
+
+	/** Move the view; reaching the end follows it again. */
+	scrollBy(delta: number): void {
+		const maxTop = this.maxTop();
+		const top = Math.min(maxTop, Math.max(0, (this.state.scroll.top ?? maxTop) + delta));
+		this.dispatch({ type: "scroll", ...(top >= maxTop ? {} : { top }) });
+	}
+
+	scrollTo(to: "top" | "bottom"): void {
+		this.dispatch({ type: "scroll", ...(to === "top" && this.maxTop() > 0 ? { top: 0 } : {}) });
+	}
+
+	handleInput(input: string, key: KeyLike): void {
+		// Mouse reports (full screen) scroll the view or are dropped; they never reach the editor.
+		const mouse = takeMouseReports(this.mousePending, input);
+		this.mousePending = mouse.pending;
+		this.scroll(mouse.commands);
+		const raw = mouse.rest;
+		if (raw === "" && input !== "") return;
 		for (const event of this.decoder.feed(raw, key)) {
 			if (event.kind === "paste") {
 				this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(event.text))));
@@ -714,6 +764,8 @@ export class TuiController {
 	}
 
 	submit(): void {
+		// Sending something brings the full-screen view back to the end.
+		if (this.state.scroll.top !== undefined) this.dispatch({ type: "scroll" });
 		const raw = this.state.editor.text;
 		// A trailing backslash continues the line (Claude Code habit).
 		if (raw.endsWith("\\")) {

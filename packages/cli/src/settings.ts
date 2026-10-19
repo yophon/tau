@@ -20,6 +20,8 @@ export interface TauSettings {
 	shellEnvAllow?: string[];
 	/** P32c: tool arguments in the audit ledger: a masked summary (default) or none. */
 	auditDetails?: "summary" | "none";
+	/** P33: tui.mode, the TUI's screen. */
+	tuiMode?: "fullscreen" | "inline";
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -68,12 +70,38 @@ export function readSettings(path: string): TauSettings {
 			settings.shellEnvAllow = allow.filter((name): name is string => typeof name === "string" && name !== "");
 		}
 	}
+	const tui = raw.tui;
+	if (typeof tui === "object" && tui !== null) {
+		const mode = (tui as Record<string, unknown>).mode;
+		if (mode === "fullscreen" || mode === "inline") settings.tuiMode = mode;
+	}
 	const audit = raw.audit;
 	if (typeof audit === "object" && audit !== null) {
 		const details = (audit as Record<string, unknown>).details;
 		if (details === "summary" || details === "none") settings.auditDetails = details;
 	}
 	return settings;
+}
+
+/**
+ * The TUI's screen (P33): --inline/--fullscreen, then TAU_TUI_MODE, then settings.json
+ * tui.mode; full screen when nothing says otherwise.
+ */
+export function tuiScreen(
+	flag: "fullscreen" | "inline" | undefined,
+	setting: "fullscreen" | "inline" | undefined,
+	env: string | undefined = process.env.TAU_TUI_MODE,
+): "fullscreen" | "inline" {
+	if (flag) return flag;
+	if (env === "inline" || env === "fullscreen") return env;
+	return setting ?? "fullscreen";
+}
+
+/** Save tui.mode (P33, /settings), keeping the file's other tui keys. */
+export function writeTuiMode(path: string, mode: "fullscreen" | "inline"): void {
+	const tui = readJson(path).tui;
+	const current = typeof tui === "object" && tui !== null && !Array.isArray(tui) ? tui : {};
+	writeSettings(path, { tui: { ...current, mode } });
 }
 
 /** Merge keys into a settings file, keeping the rest (undefined deletes a key). */

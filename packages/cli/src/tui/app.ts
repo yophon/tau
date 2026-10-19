@@ -5,16 +5,22 @@
  */
 
 import { stripVTControlCharacters } from "node:util";
-import { Box, Static, useInput, useStdout } from "ink";
+import { Box, Static, Text, useInput, useStdout } from "ink";
 import React, { useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
 import { strWidth } from "./input/width.ts";
 import type { Block } from "./model.ts";
-import { BlockView, type RenderOptions } from "./render/blocks.ts";
 import { renderBottom } from "./render/bottom.ts";
+import { blockLines, type LineOptions } from "./render/lines.ts";
 import type { RunTuiOptions, TuiDeps } from "./types.ts";
 
 const h = React.createElement;
+
+/** A block as the rows blockLines gives it (P33a: the same rows as the full-screen view). */
+function BlockRows(props: { block: Block; options: LineOptions }): React.ReactElement | null {
+	const rows = blockLines(props.block, props.options);
+	return rows.length === 0 ? null : h(Text, null, rows.join("\n"));
+}
 
 export function App(props: { controller: TuiController }): React.ReactElement {
 	const { controller } = props;
@@ -24,7 +30,12 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 
 	useInput((input, key) => controller.handleInput(input, key));
 
-	const options: RenderOptions = { width: columns, verbose: state.verbose, showReasoning: state.showReasoning };
+	const options: LineOptions = {
+		width: columns,
+		verbose: state.verbose,
+		showReasoning: state.showReasoning,
+		colors: stdout?.hasColors?.() === true,
+	};
 	return h(
 		Box,
 		{ flexDirection: "column" },
@@ -33,14 +44,14 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 			items: state.committed,
 			children: (item: unknown) => {
 				const block = item as Block;
-				return h(BlockView, { key: block.id, block, options });
+				return h(BlockRows, { key: block.id, block, options });
 			},
 		}),
 		state.live.length > 0
 			? h(
 					Box,
 					{ key: "live", flexDirection: "column" },
-					...state.live.map((block) => h(BlockView, { key: block.id, block, options })),
+					...state.live.map((block) => h(BlockRows, { key: block.id, block, options })),
 				)
 			: null,
 		renderBottom(state, columns, controller.completion()),
@@ -154,7 +165,7 @@ interface InkFrameState {
  * exports, imported by path so it is the module Ink itself uses). Undefined if a future Ink
  * changes shape; the TUI then falls back to full redraws only.
  */
-async function inkFrameState(stdout: NodeJS.WriteStream): Promise<InkFrameState | undefined> {
+async function inkFrameState(stdout: object): Promise<InkFrameState | undefined> {
 	try {
 		const url = new URL("./instances.js", import.meta.resolve("ink"));
 		const instances = (await import(url.href)).default as WeakMap<object, unknown>;
@@ -185,6 +196,19 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	});
 	// Bracketed paste: pasted newlines arrive inside 200~/201~ markers instead of submitting.
 	process.stdout.write("\x1b[?2004h");
+	try {
+		if (options.screen === "inline") await runInline(controller, render);
+		else await runFullscreen(controller, render);
+	} finally {
+		process.stdout.write("\x1b[?2004l");
+		restoreConsole();
+	}
+}
+
+type InkRender = typeof import("ink").render;
+
+/** The main-screen TUI (P25): history in the terminal's scrollback, the bottom redrawn in place. */
+async function runInline(controller: TuiController, render: InkRender): Promise<void> {
 	// Ctrl+C belongs to the TUI (interrupt, or press twice to exit).
 	const before = new Set(process.stdout.listeners("resize"));
 	const instance = render(h(App, { controller }), { exitOnCtrlC: false, patchConsole: false });
@@ -214,9 +238,68 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 		controller.store.flush();
 	} finally {
 		stopRedrawOnResize();
+		// Ink only settles a waitUntilExit() taken before unmount(); one taken after never does.
+		const exited = instance.waitUntilExit().catch(() => undefined);
 		instance.unmount();
-		await instance.waitUntilExit().catch(() => undefined);
-		process.stdout.write("\x1b[?2004l");
-		restoreConsole();
+		await exited;
+	}
+}
+
+/**
+ * The full-screen TUI (P33): the alternate screen, tau's own transcript view, every frame
+ * one synchronized write, and the conversation written to the main screen on exit.
+ */
+async function runFullscreen(controller: TuiController, render: InkRender): Promise<void> {
+	const fullscreen = await import("./fullscreen.ts");
+	const { LineCache } = await import("./render/lines.ts");
+	const cache = new LineCache();
+	process.stdout.write(fullscreen.ENTER_FULLSCREEN);
+	// However the process ends (an error, a signal), the terminal comes back.
+	const guard = fullscreen.restoreOnExit((data) => process.stdout.write(data));
+	const stdout = fullscreen.synchronizedStdout(process.stdout);
+	const before = new Set(process.stdout.listeners("resize"));
+	const instance = render(h(fullscreen.FullscreenApp, { controller, cache }), {
+		stdout,
+		exitOnCtrlC: false,
+		patchConsole: false,
+	});
+	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
+	const ink = await inkFrameState(stdout);
+	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, () =>
+		controller.repaintLive(() => {
+			// The frame is the whole screen: clear it and let Ink draw the next one from the top.
+			process.stdout.write("\x1b[2J\x1b[H");
+			if (ink) {
+				ink.log.done();
+				ink.lastOutput = "";
+			}
+		}),
+	);
+	try {
+		await controller.start();
+		controller.notice(
+			"dim",
+			"Full screen: the wheel, PgUp/PgDn scroll · Ctrl+End jumps back down · Shift+drag selects text · tau --inline for the classic view",
+		);
+		await controller.done;
+		controller.store.flush();
+	} finally {
+		stopRepaint();
+		// Ink only settles a waitUntilExit() taken before unmount(); one taken after never does.
+		const exited = instance.waitUntilExit().catch(() => undefined);
+		instance.unmount();
+		await exited;
+		guard.restore();
+		guard.dispose();
+		// The conversation stays in the terminal: written to the main screen at its width.
+		const state = controller.store.getState();
+		process.stdout.write(
+			fullscreen.transcriptText([...state.committed, ...state.live], {
+				width: process.stdout.columns ?? 80,
+				verbose: state.verbose,
+				showReasoning: state.showReasoning,
+				colors: process.stdout.hasColors?.() === true,
+			}),
+		);
 	}
 }

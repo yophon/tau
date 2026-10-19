@@ -36,6 +36,10 @@ async function main() {
 		await run("commands", runCommandsSmoke);
 		await run("models", runModelsSmoke);
 		await run("resize", runResizeSmoke);
+		await run("fullscreen-resize", runFullscreenResizeSmoke);
+		await run("fullscreen-scroll", runFullscreenScrollSmoke);
+		await run("fullscreen-exit", runFullscreenExitSmoke);
+		await run("fullscreen-signal", runFullscreenSignalSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -271,6 +275,8 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		// approval scenario overrides with an explicit --permission-mode flag.
 		"TAU_PERMISSION_MODE=autonomous",
 		"TAU_HISTORY=",
+		// SMOKE_TUI_MODE=inline runs every scenario in the inline TUI (P33); a scenario's own env wins.
+		...(process.env.SMOKE_TUI_MODE ? [`TAU_TUI_MODE=${shellQuote(process.env.SMOKE_TUI_MODE)}`] : []),
 		...extraEnv.map(shellQuote),
 		shellQuote(process.execPath),
 		"--disable-warning=ExperimentalWarning",
@@ -378,7 +384,13 @@ async function runPricingFooterSmoke(root, baseUrl) {
 // the input box behind (user report 2026-10-19). After shrinking and widening there is one box.
 async function runResizeSmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "resize", false);
-	const session = await startTui("resize", dirs, baseUrl, ["--no-session"], ["TAU_PRICING=in=0.5,out=2"]);
+	const session = await startTui(
+		"resize",
+		dirs,
+		baseUrl,
+		["--no-session"],
+		["TAU_PRICING=in=0.5,out=2", "TAU_TUI_MODE=inline"],
+	);
 	const boxes = async () => {
 		const screen = await tmux(["capture-pane", "-t", session.name, "-p"]);
 		return { count: screen.split("\n").filter((line) => line.trimStart().startsWith("╭")).length, screen };
@@ -427,10 +439,165 @@ async function runResizeSmoke(root, baseUrl) {
 		await session.waitFor("SMOKE_PRICING_OK", 5_000);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
-		console.log("ok resize");
+		console.log("ok resize (inline)");
 	} finally {
 		await session.kill();
 	}
+}
+
+// P33: full screen clips instead of re-wrapping; every resize repaints one synchronized frame.
+async function runFullscreenResizeSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-resize", false);
+	const session = await startTui(
+		"fs-resize",
+		dirs,
+		baseUrl,
+		["--no-session"],
+		["TAU_PRICING=in=0.5,out=2", "TAU_TUI_MODE=fullscreen"],
+	);
+	const boxes = async () => {
+		const screen = await tmux(["capture-pane", "-t", session.name, "-p"]);
+		return { count: screen.split("\n").filter((line) => line.trimStart().startsWith("╭")).length, screen };
+	};
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		const raw = join(dirs.home, "fs-resize-output.bin");
+		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await sleep(200);
+		for (const [width, height] of [
+			[100, 38],
+			[70, 30],
+			[50, 24],
+			[110, 40],
+		]) {
+			const offset = await readFile(raw).then(
+				(data) => data.length,
+				() => 0,
+			);
+			await tmux(["resize-window", "-t", session.name, "-x", String(width), "-y", String(height)]);
+			await sleep(400);
+			const { count, screen } = await boxes();
+			if (count !== 1)
+				throw new Error(`After resizing to ${width}x${height} there are ${count} input boxes:\n${screen}`);
+			if (!screen.includes("SMOKE_PRICING_OK"))
+				throw new Error(`The transcript is gone after resizing to ${width}x${height}:\n${screen}`);
+			const written = (await readFile(raw)).subarray(offset).toString("utf8");
+			if (!written.startsWith("\x1b[?2026h\x1b[2J")) {
+				throw new Error(
+					`A resize to ${width}x${height} did not repaint the screen in one frame: ${JSON.stringify(written.slice(0, 80))}`,
+				);
+			}
+		}
+		await tmux(["pipe-pane", "-t", session.name]);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok fullscreen resize");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P33: a transcript taller than the screen scrolls; Ctrl+Home shows the start, Ctrl+End follows again.
+async function runFullscreenScrollSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-scroll", false);
+	const session = await startTui("fs-scroll", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	const screen = () => tmux(["capture-pane", "-t", session.name, "-p"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("long smoke", "Enter");
+		await session.waitFor("LINE_080", 10_000);
+		let shown = await screen();
+		if (shown.includes("LINE_001")) throw new Error(`The start of a long answer should be scrolled away:\n${shown}`);
+		await session.send("C-Home");
+		await sleep(300);
+		shown = await screen();
+		if (!shown.includes("tau ·") || shown.includes("LINE_080") || !/more lines? below/.test(shown)) {
+			throw new Error(`Ctrl+Home did not show the start with a "below" hint:\n${shown}`);
+		}
+		await session.send("PageDown");
+		await sleep(300);
+		shown = await screen();
+		if (!/LINE_0[0-4]\d/.test(shown)) throw new Error(`PgDn did not move down a page:\n${shown}`);
+		await session.send("C-End");
+		await sleep(300);
+		shown = await screen();
+		if (!shown.includes("LINE_080") || /more lines? below/.test(shown))
+			throw new Error(`Ctrl+End did not return to the end:\n${shown}`);
+		// Two wheel notches up (SGR reports as the terminal sends them), nothing typed: 6 rows
+		// scrolled, plus the one the "below" hint takes from the view.
+		await session.send("-l", "\x1b[<64;20;5M\x1b[<64;20;5M");
+		await sleep(300);
+		shown = await screen();
+		if (!/↓ 7 more lines below/.test(shown) || shown.includes("[<64")) {
+			throw new Error(`The mouse wheel did not scroll the view:\n${shown}`);
+		}
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok fullscreen scroll");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P33: leaving full screen restores the main screen and leaves the conversation in it.
+async function runFullscreenExitSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-exit", false);
+	const session = await startTui(
+		"fs-exit",
+		dirs,
+		baseUrl,
+		["--no-session"],
+		["TAU_PRICING=in=0.5,out=2", "TAU_TUI_MODE=fullscreen"],
+	);
+	try {
+		await tmux(["set-option", "-t", session.name, "remain-on-exit", "on"]);
+		await session.waitFor("tau ·", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await session.send("exit", "Enter");
+		const pane = await deadPaneModes(session);
+		if (pane !== "1 0 0") throw new Error(`tau did not exit back to the main screen with the mouse off: ${pane}`);
+		const main = await tmux(["capture-pane", "-t", session.name, "-p", "-S", "-"]);
+		if (!main.includes("› pricing smoke") || !main.includes("SMOKE_PRICING_OK")) {
+			throw new Error(`The conversation was not written to the main screen:\n${main}`);
+		}
+		console.log("ok fullscreen exit");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P33: killed with SIGTERM, tau still leaves the alternate screen and turns the mouse off.
+async function runFullscreenSignalSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "fs-signal", false);
+	const session = await startTui("fs-signal", dirs, baseUrl, ["--no-session"], ["TAU_TUI_MODE=fullscreen"]);
+	try {
+		await tmux(["set-option", "-t", session.name, "remain-on-exit", "on"]);
+		await session.waitFor("tau ·", 10_000);
+		const pid = await tmux(["display-message", "-p", "-t", session.name, "#{pane_pid}"]);
+		process.kill(Number(pid.trim()), "SIGTERM");
+		const pane = await deadPaneModes(session);
+		if (pane !== "1 0 0") throw new Error(`After SIGTERM the terminal was not restored: ${pane}`);
+		console.log("ok fullscreen signal");
+	} finally {
+		await session.kill();
+	}
+}
+
+/** "#{pane_dead} #{alternate_on} #{mouse_any_flag}" once the pane's process has exited (remain-on-exit). */
+async function deadPaneModes(session) {
+	const started = Date.now();
+	let pane = "";
+	while (Date.now() - started < 10_000) {
+		pane = (
+			await tmux(["display-message", "-p", "-t", session.name, "#{pane_dead} #{alternate_on} #{mouse_any_flag}"])
+		).trim();
+		if (pane.startsWith("1")) break;
+		await sleep(100);
+	}
+	return pane;
 }
 
 // P15 验收：supervised 档下高风险 bash 触发审批选择器——Allow once 执行 / Deny 拒绝
@@ -740,6 +907,10 @@ function responseFor(request) {
 	}
 	if (content.includes("hang smoke")) {
 		return { payloads: [{ choices: [{ delta: { content: "SMOKE_ABORT_STREAM " } }] }], hold: true };
+	}
+	if (content.includes("long smoke")) {
+		const lines = Array.from({ length: 80 }, (_, i) => `LINE_${String(i + 1).padStart(3, "0")}`).join("\n\n");
+		return { payloads: [{ choices: [{ delta: { content: lines }, finish_reason: "stop" }] }] };
 	}
 	if (content.includes("pricing smoke")) {
 		return {

@@ -156,6 +156,14 @@ npm run tau -- -p "list the files here and summarize"
 npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
 ```
 
+The TUI runs full screen: its own scrollable transcript on the terminal's
+alternate screen (mouse wheel, PgUp/PgDn, Ctrl+Home/Ctrl+End; Shift+drag
+selects text), redrawn cleanly when the window is resized, and written back
+to the terminal when you leave. `--inline` keeps the classic view with the
+history in the terminal's scrollback; to make it the default, set
+`"tui": { "mode": "inline" }` in `~/.tau/settings.json` (or pick it in
+`/settings` → Screen, or set `TAU_TUI_MODE=inline`).
+
 ### Models
 
 `~/.tau/models.json` uses a subset of pi's format. Keys are never stored by
@@ -323,7 +331,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D34)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D37)
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search

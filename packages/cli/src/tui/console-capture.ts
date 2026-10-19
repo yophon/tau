@@ -15,6 +15,10 @@ export interface CaptureOptions {
 
 type ConsoleMethod = "log" | "info" | "debug" | "trace" | "warn" | "error";
 
+/** Cursor show/hide sequences: terminal control, passed through rather than reported. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching terminal control is the point
+const CURSOR_ONLY = /^(?:\x1b\[\?25[hl])+$/;
+
 export function captureConsole(options: CaptureOptions): () => void {
 	let logReady = false;
 	const log = (level: string, text: string): void => {
@@ -50,6 +54,8 @@ export function captureConsole(options: CaptureOptions): () => void {
 	const originalStderrWrite = process.stderr.write;
 	process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
 		const text = typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+		// Ink's log-update hides and shows the cursor through cli-cursor, which writes to stderr.
+		if (CURSOR_ONLY.test(text)) return originalStderrWrite.call(process.stderr, chunk, ...(rest as []));
 		log("stderr", text.trimEnd());
 		problem("warn", text);
 		const callback = rest.find((arg): arg is () => void => typeof arg === "function");

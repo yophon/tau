@@ -133,6 +133,8 @@ export interface UiState {
 	status: StatusInfo;
 	/** Extension widgets above and below the input box. */
 	widgets: { above: StyledLine[][]; below: StyledLine[][] };
+	/** Full-screen transcript (P33): the first row shown, or undefined to follow the end. */
+	scroll: { top?: number };
 }
 
 export function initialState(status: StatusInfo): UiState {
@@ -152,6 +154,7 @@ export function initialState(status: StatusInfo): UiState {
 		rejectArmed: false,
 		status,
 		widgets: { above: [], below: [] },
+		scroll: {},
 	};
 }
 
@@ -190,6 +193,8 @@ export type UiAction =
 	| { type: "redraw" }
 	/** The width changed: lay the redrawn area out again (history stays as written until a redraw). */
 	| { type: "relayout" }
+	/** Full screen: show from this row, or follow the end (top undefined). */
+	| { type: "scroll"; top?: number }
 	/** Another session: drop everything shown and start a new screen. */
 	| { type: "reset" }
 	/** Finished blocks rebuilt from a restored conversation. */
@@ -402,7 +407,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, widgets: { above: action.above, below: action.below } };
 		case "clear":
 			// Live blocks carry over so a running turn keeps drawing.
-			return { ...state, committed: [], epoch: state.epoch + 1 };
+			return { ...state, committed: [], epoch: state.epoch + 1, scroll: {} };
+		case "scroll":
+			return { ...state, scroll: action.top === undefined ? {} : { top: action.top } };
 		case "relayout":
 			// A new state object is enough: the view re-renders at the current width.
 			return { ...state };
@@ -410,7 +417,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			// A new <Static> writes every committed block again at the new width.
 			return { ...state, epoch: state.epoch + 1 };
 		case "reset":
-			return { ...state, committed: [], live: [], epoch: state.epoch + 1 };
+			return { ...state, committed: [], live: [], epoch: state.epoch + 1, scroll: {} };
 		case "replay": {
 			let next = state;
 			const blocks: Block[] = [];

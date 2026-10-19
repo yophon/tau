@@ -4,6 +4,28 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P33)
+- CLI: the TUI runs full screen by default: the alternate screen with
+  auto-wrap off (narrowing the window clips, then redraws at the new width,
+  so no ghost copies of the input box), its own scrollable transcript (mouse
+  wheel, PgUp/PgDn, Ctrl+Home/Ctrl+End; follows the end, "N more lines below"
+  when scrolled up; Shift+drag for the terminal's own selection), every frame
+  one synchronized write, and the conversation written back to the main
+  screen on exit (also on SIGTERM/SIGHUP). `--inline`/`--fullscreen`,
+  `TAU_TUI_MODE`, `tui.mode` in `~/.tau/settings.json` and `/settings` →
+  Screen choose; inline is the P25 view.
+- CLI: blocks render as terminal rows (`render/lines.ts`) in both views, the
+  same rows Ink drew, with a port of wrap-ansi for Ink's mode
+  (`render/wrap.ts`, byte-identical, over 20× faster).
+
+### Fixed (P33)
+- CLI: Ink's cursor show/hide writes to stderr no longer show up as warning
+  notices in the TUI.
+- CLI: leaving the TUI no longer ends the process with exit code 13 (an
+  unsettled top-level await since P25: Ink's `waitUntilExit()` was taken
+  after `unmount()` and never settled), which also skipped turning
+  bracketed paste off and restoring the console.
+
 ### Added (P32c)
 - CLI: an audit ledger in `~/.tau/audit/YYYY-MM-DD.jsonl` (kept 30 days),
   written by every mode and the gateway: each run's start and end (host,

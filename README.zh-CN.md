@@ -140,6 +140,12 @@ npm run tau -- -p "列出这里的文件并总结"
 npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "你好"
 ```
 
+TUI 缺省全屏：在终端的备用屏幕上显示自己的可滚动对话（滚轮、PgUp/PgDn、
+Ctrl+Home/Ctrl+End；按住 Shift 拖动可选中文字），调整窗口大小时干净地重画，
+退出后整段对话留在终端里。`--inline` 用原来的界面，历史在终端的滚动记录里；
+想缺省用它，在 `~/.tau/settings.json` 写 `"tui": { "mode": "inline" }`（或在
+`/settings` → Screen 里选，或设 `TAU_TUI_MODE=inline`）。
+
 ### 模型
 
 `~/.tau/models.json` 用 pi 格式的子集。tau 从不保存密钥：`apiKey` 写
@@ -285,7 +291,7 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D34）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D37）
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
 - [docs/memory.md](docs/memory.md)——长期记忆与会话检索

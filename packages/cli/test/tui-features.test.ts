@@ -280,6 +280,32 @@ describe("console capture", () => {
 		assert.match(log, /stderr raw stderr line/);
 		assert.deepEqual(problems, ["warn:careful", "error:Error: broken", "warn:raw stderr line"]);
 	});
+
+	it("passes cursor show/hide on stderr (Ink's cli-cursor) through to the terminal", () => {
+		const problems: string[] = [];
+		const written: string[] = [];
+		const terminalWrite = process.stderr.write;
+		process.stderr.write = ((chunk: string) => {
+			written.push(chunk);
+			return true;
+		}) as typeof process.stderr.write;
+		try {
+			const restore = captureConsole({
+				logFile: undefined,
+				onProblem: (tone, text) => problems.push(`${tone}:${text}`),
+			});
+			try {
+				process.stderr.write("\x1b[?25l");
+				process.stderr.write("\x1b[?25h");
+			} finally {
+				restore();
+			}
+		} finally {
+			process.stderr.write = terminalWrite;
+		}
+		assert.deepEqual(written, ["\x1b[?25l", "\x1b[?25h"]);
+		assert.deepEqual(problems, []);
+	});
 });
 
 describe("P25c commands and keys", () => {

@@ -287,6 +287,12 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 698 个测试，695 通过、3 跳过；smoke-tui（WSL）、pack smoke 通过；新增测试在 WSL Linux 上也通过。真实 DeepSeek：终端里记住的偏好在另一个项目的新会话里生效，另一个项目里用 `session_search` 找回上次聊的细节；网关里主人记住的家事，访客的对话搜了记忆和会话也不知道；`env` 看不到密钥类变量，读凭据文件被拦（账本记为 hook），模型如实说明；`${cred:…}` 注入的 MCP 连接器调用成功；`/runs` 显示触发者、工具、`chat_owner by boss`、token 与费用。偏差见规格书「实施记录」，使用说明见 [memory.md](memory.md)、[connectors.md](connectors.md)、[audit.md](audit.md)。
 
+## Phase 33 ✅ 全屏 TUI（2026-10-19）
+
+规格书：[specs/phase-33-fullscreen-tui.md](specs/phase-33-fullscreen-tui.md)（2026-10-19 确认，四项按建议）。起因是调整宽度时的输入框残影：主屏幕上改了三版后确认，内容在主屏幕上就躲不开终端的重新折行；pi 1.2、Codex、Reasonix 都缺省全屏。备用屏幕、关自动换行、自己的可滚动视图（滚轮、PgUp/PgDn、Ctrl+Home/End，跟随底部）、每帧同步输出、退出或收到信号时恢复终端并把对话写回主屏幕；inline 模式保留为选项（`--inline`、`tui.mode`、`TAU_TUI_MODE`、`/settings` → Screen）。D37。
+
+**完成记录**：全量 829 个测试，826 通过、3 跳过；smoke-tui 十七个场景（新增全屏的调整大小、滚动、退出、SIGTERM）在全屏和 inline 下各跑一遍都通过，CI 两遍都跑；pack smoke 通过；TUI 测试在 WSL Linux 上也通过。块按宽度渲染成行（`blockLines`，与改造前的 Ink 渲染逐行对比 105 个用例），折行移植 wrap-ansi（逐字节相同，快 27 倍），跟随底部时只渲染末尾的块：200 轮的对话里调整宽度一次 0.5–3 毫秒。顺带修了自 P25 起退出 TUI 时进程以退出码 13 结束（没关括号粘贴），以及 Ink 写到 stderr 的光标序列被当成警告。真机验收待用户执行。偏差见规格书「实施记录」。
+
 ## 产品层后续 ⬜ 待定
 
 主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
