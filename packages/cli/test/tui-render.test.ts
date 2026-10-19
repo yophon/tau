@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AgentEvent, AssistantMessage, ToolCall } from "@yophon/tau-kernel";
+import { redrawOnWidthChange } from "../src/tui/app.ts";
 import { strWidth } from "../src/tui/input/width.ts";
 import { type Block, initialState, reduce, type StatusInfo, type UiAction, type UiState } from "../src/tui/model.ts";
 import { approvalBody } from "../src/tui/render/approval.ts";
@@ -516,5 +517,40 @@ describe("P26b background approvals", () => {
 		]);
 		assert.equal(state.approval?.id, 2);
 		assert.deepEqual(state.approvalQueue, []);
+	});
+});
+
+describe("redraw after a width change", () => {
+	it("keeps the committed history and starts a new <Static> epoch", () => {
+		const state = run([{ type: "notice", tone: "dim", text: "hello" }]);
+		const redrawn = reduce(state, { type: "redraw" });
+		assert.equal(redrawn.epoch, state.epoch + 1);
+		assert.deepEqual(redrawn.committed, state.committed);
+		assert.deepEqual(redrawn.live, state.live);
+	});
+
+	it("redraws once the width settles, not on every resize event or a height change", async () => {
+		const listeners = new Set<() => void>();
+		const stream = {
+			columns: 120,
+			on: (_event: "resize", listener: () => void) => listeners.add(listener),
+			off: (_event: "resize", listener: () => void) => listeners.delete(listener),
+		};
+		let redraws = 0;
+		const stop = redrawOnWidthChange(stream, () => redraws++, 20);
+		const resize = (columns: number) => {
+			stream.columns = columns;
+			for (const listener of listeners) listener();
+		};
+		resize(110);
+		resize(100);
+		resize(90);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(redraws, 1, "one redraw after dragging");
+		resize(90);
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		assert.equal(redraws, 1, "same width (a height change): nothing to do");
+		stop();
+		assert.equal(listeners.size, 0);
 	});
 });

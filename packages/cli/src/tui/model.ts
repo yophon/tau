@@ -186,6 +186,8 @@ export type UiAction =
 	| { type: "status"; status: Partial<StatusInfo> }
 	| { type: "widgets"; above: StyledLine[][]; below: StyledLine[][] }
 	| { type: "clear" }
+	/** The terminal width changed: write everything again, re-wrapped (after the screen was cleared). */
+	| { type: "redraw" }
 	/** Another session: drop everything shown and start a new screen. */
 	| { type: "reset" }
 	/** Finished blocks rebuilt from a restored conversation. */
@@ -399,6 +401,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		case "clear":
 			// Live blocks carry over so a running turn keeps drawing.
 			return { ...state, committed: [], epoch: state.epoch + 1 };
+		case "redraw":
+			// A new <Static> writes every committed block again at the new width.
+			return { ...state, epoch: state.epoch + 1 };
 		case "reset":
 			return { ...state, committed: [], live: [], epoch: state.epoch + 1 };
 		case "replay": {

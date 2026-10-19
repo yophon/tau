@@ -45,6 +45,38 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 	);
 }
 
+/**
+ * Call `redraw` when the terminal's width changes, once resize events stop for `settleMs`
+ * (dragging a window edge fires many). Height changes need nothing: lines do not re-wrap.
+ */
+export function redrawOnWidthChange(
+	stream: {
+		columns?: number;
+		on(event: "resize", listener: () => void): unknown;
+		off(event: "resize", listener: () => void): unknown;
+	},
+	redraw: () => void,
+	settleMs = 150,
+): () => void {
+	let width = stream.columns ?? 0;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const onResize = () => {
+		if (timer) clearTimeout(timer);
+		timer = setTimeout(() => {
+			timer = undefined;
+			const next = stream.columns ?? 0;
+			if (next === width) return;
+			width = next;
+			redraw();
+		}, settleMs);
+	};
+	stream.on("resize", onResize);
+	return () => {
+		if (timer) clearTimeout(timer);
+		stream.off("resize", onResize);
+	};
+}
+
 /** Run the TUI until the user quits. Needs a TTY. */
 export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promise<void> {
 	const { render } = await import("ink");
@@ -65,11 +97,14 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	process.stdout.write("\x1b[?2004h");
 	// Ctrl+C belongs to the TUI (interrupt, or press twice to exit).
 	const instance = render(h(App, { controller }), { exitOnCtrlC: false, patchConsole: false });
+	// A width change re-wraps the screen under Ink; redraw once the resizing settles.
+	const stopRedrawOnResize = redrawOnWidthChange(process.stdout, () => controller.redraw());
 	try {
 		await controller.start();
 		await controller.done;
 		controller.store.flush();
 	} finally {
+		stopRedrawOnResize();
 		instance.unmount();
 		await instance.waitUntilExit().catch(() => undefined);
 		process.stdout.write("\x1b[?2004l");

@@ -1162,6 +1162,16 @@ export class TuiController {
 		else process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
 	}
 
+	/**
+	 * The terminal width changed. The terminal re-wraps what is on screen, so the frame Ink
+	 * last drew now spans a different number of rows and Ink's line-count erase leaves pieces
+	 * of it behind (old input box borders) or eats into history. Clear and write it all again.
+	 */
+	redraw(): void {
+		this.clearScreen();
+		this.dispatch({ type: "redraw" });
+	}
+
 	/** A fresh screen with the current conversation, then a note. */
 	private showSession(note: string): void {
 		this.clearScreen();

@@ -35,6 +35,7 @@ async function main() {
 		await run("subagent", runSubagentSmoke);
 		await run("commands", runCommandsSmoke);
 		await run("models", runModelsSmoke);
+		await run("resize", runResizeSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -368,6 +369,34 @@ async function runPricingFooterSmoke(root, baseUrl) {
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok pricing footer");
+	} finally {
+		await session.kill();
+	}
+}
+
+// A width change re-wraps the screen under Ink; without a redraw, each shrink left a copy of
+// the input box behind (user report 2026-10-19). After shrinking and widening there is one box.
+async function runResizeSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "resize", false);
+	const session = await startTui("resize", dirs, baseUrl, ["--no-session"], ["TAU_PRICING=in=0.5,out=2"]);
+	const boxes = async () => {
+		const screen = await tmux(["capture-pane", "-t", session.name, "-p"]);
+		return { count: screen.split("\n").filter((line) => line.trimStart().startsWith("╭")).length, screen };
+	};
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		for (const width of [100, 80, 60, 110]) {
+			await tmux(["resize-window", "-t", session.name, "-x", String(width)]);
+			await sleep(600);
+			const { count, screen } = await boxes();
+			if (count !== 1) throw new Error(`After resizing to ${width} columns there are ${count} input boxes:\n${screen}`);
+		}
+		await session.waitFor("SMOKE_PRICING_OK", 5_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok resize");
 	} finally {
 		await session.kill();
 	}
