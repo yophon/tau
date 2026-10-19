@@ -6,6 +6,8 @@
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import type { ModelPricing } from "@yophon/tau-kernel";
+import { defaultCredentialLookup } from "./credentials.ts";
+import { registerSecret } from "./secrets.ts";
 
 /** Wire APIs tau speaks (pi names): the kernel's Chat Completions and ext-provider-anthropic. */
 export const MODEL_APIS = ["openai-completions", "anthropic-messages"] as const;
@@ -164,6 +166,8 @@ export interface ValueResolver {
 	env: Record<string, string | undefined>;
 	/** Run a `!command`; returns its trimmed stdout. Throws on failure. */
 	exec?: (command: string) => string;
+	/** A `${cred:<name>}` value (P32b); default: ~/.tau/credentials.json under env HOME/USERPROFILE. */
+	credential?: (name: string) => string | undefined;
 }
 
 const commandCache = new Map<string, string | undefined>();
@@ -180,9 +184,18 @@ export function clearConfigValueCache(): void {
  */
 export function resolveConfigValue(spec: string | undefined, resolver: ValueResolver): string | undefined {
 	if (spec === undefined || spec === "") return undefined;
+	// Referenced values are secrets: registered so tool output masks them (P32b).
+	const credential = /^\$\{cred:([a-z0-9_-]{1,64})\}$/.exec(spec);
+	if (credential) {
+		const name = credential[1] as string;
+		const value = (resolver.credential ?? defaultCredentialLookup(resolver.env))(name);
+		registerSecret(value, `cred:${name}`);
+		return value === "" ? undefined : value;
+	}
 	const env = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/.exec(spec) ?? /^\$([A-Za-z_][A-Za-z0-9_]*)$/.exec(spec);
 	if (env) {
 		const value = resolver.env[env[1] as string];
+		registerSecret(value, env[1] as string);
 		return value === undefined || value === "" ? undefined : value;
 	}
 	if (spec.startsWith("!")) {
@@ -195,6 +208,7 @@ export function resolveConfigValue(spec: string | undefined, resolver: ValueReso
 			value = undefined;
 		}
 		commandCache.set(command, value);
+		registerSecret(value, "!command");
 		return value;
 	}
 	return spec;

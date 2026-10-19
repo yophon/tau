@@ -25,6 +25,8 @@ export interface BootOptions {
 	print(line: string): void;
 	pairingCode?: string;
 	statusIntervalMs?: number;
+	/** Resolves ${cred:<name>} in config.json channel sections (P32b). */
+	credential?: (name: string) => string | undefined;
 }
 
 export interface BootedGateway {
@@ -85,6 +87,7 @@ export async function bootGateway(options: BootOptions): Promise<BootedGateway> 
 		cwd: options.cwd,
 		env: options.env,
 		...(options.workspace !== undefined ? { workspace: options.workspace } : {}),
+		...(options.credential ? { credential: options.credential } : {}),
 	});
 	const release = acquireLock(paths.lock);
 	rmSync(paths.stopRequest, { force: true });

@@ -65,17 +65,30 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
 	return typeof value === "string" && (MODES as readonly string[]).includes(value);
 }
 
-/** `$NAME` / `${NAME}` as a whole value reads the environment; anything else is literal. */
-export function resolveEnvValue(value: string, env: Record<string, string | undefined>): string {
+/**
+ * `$NAME` / `${NAME}` as a whole value reads the environment, `${cred:<name>}`
+ * the credential store when the host supplies a lookup (P32b); anything else is literal.
+ */
+export function resolveEnvValue(
+	value: string,
+	env: Record<string, string | undefined>,
+	credential?: (name: string) => string | undefined,
+): string {
+	const cred = /^\$\{cred:([a-z0-9_-]{1,64})\}$/.exec(value);
+	if (cred) return credential?.(cred[1] ?? "") ?? "";
 	const match = /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$/.exec(value);
 	if (!match) return value;
 	return env[match[1] ?? match[2] ?? ""] ?? "";
 }
 
-function resolveSection(section: Record<string, unknown>, env: Record<string, string | undefined>) {
+function resolveSection(
+	section: Record<string, unknown>,
+	env: Record<string, string | undefined>,
+	credential?: (name: string) => string | undefined,
+) {
 	const out: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(section)) {
-		out[key] = typeof value === "string" ? resolveEnvValue(value, env) : value;
+		out[key] = typeof value === "string" ? resolveEnvValue(value, env, credential) : value;
 	}
 	return out;
 }
@@ -86,7 +99,13 @@ function positive(value: unknown, fallback: number): number {
 
 export function loadGatewayConfig(
 	path: string,
-	options: { cwd: string; env: Record<string, string | undefined>; workspace?: string },
+	options: {
+		cwd: string;
+		env: Record<string, string | undefined>;
+		workspace?: string;
+		/** Resolves ${cred:<name>} in channel sections (P32b). */
+		credential?: (name: string) => string | undefined;
+	},
 ): { config: GatewayConfig; diagnostics: string[] } {
 	const diagnostics: string[] = [];
 	let raw: Record<string, unknown> = {};
@@ -111,7 +130,7 @@ export function loadGatewayConfig(
 			if (section === false) channels[name] = false;
 			else if (section === true || section === undefined || section === null) channels[name] = {};
 			else if (typeof section === "object" && !Array.isArray(section)) {
-				channels[name] = resolveSection(section as Record<string, unknown>, options.env);
+				channels[name] = resolveSection(section as Record<string, unknown>, options.env, options.credential);
 			} else diagnostics.push(`channels.${name}: expected an object or false`);
 		}
 	}

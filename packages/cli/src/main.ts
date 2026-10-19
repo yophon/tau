@@ -1025,6 +1025,16 @@ async function runCommand(
 }
 
 async function main(): Promise<void> {
+	// `tau credentials …` (P32b) needs neither a model nor the usual options.
+	const subcommand = process.argv[2];
+	if (subcommand === "credentials") {
+		const { runToolCommand } = await import("./tool-commands.ts");
+		process.exitCode = await runToolCommand(subcommand, process.argv.slice(3), {
+			home: userHome(),
+			cwd: resolve(process.cwd()),
+		});
+		return;
+	}
 	const options = parseArgs(process.argv.slice(2));
 	// The JSON, RPC and ACP modes own stdout: everything else goes to stderr (pi json.md).
 	if (options.mode) console.log = (...args: unknown[]) => console.error(...args);

@@ -4,6 +4,9 @@
 		"enabled": true,
 		"rules": {
 			"recommended": true,
+			"suspicious": {
+				"noTemplateCurlyInString": "off"
+			},
 			"style": {
 				"noNonNullAssertion": "off",
 				"useConst": "error"

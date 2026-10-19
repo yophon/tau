@@ -39,6 +39,7 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import { restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { GatewayCommand } from "./main.ts";
 import type { MemoryScope } from "./memory.ts";
 import { HeadlessSession, type HeadlessWorkspace, type ModelSwitch } from "./modes/headless.ts";
@@ -66,6 +67,11 @@ export interface GatewayHost {
 }
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** ${cred:<name>} in config.json channel sections reads ~/.tau/credentials.json (P32b). */
+function credentialLookup(home: string): (name: string) => string | undefined {
+	return (name) => new CredentialStore(credentialsPath(home)).get(name);
+}
 const CHANNEL_NAMES: Record<string, string> = { weixin: "WeChat", feishu: "Feishu" };
 
 async function builtinPlugins(): Promise<ChannelPlugin[]> {
@@ -217,6 +223,7 @@ export async function runGateway(command: GatewayCommand, host: GatewayHost): Pr
 	let booted: Awaited<ReturnType<typeof bootGateway>>;
 	try {
 		booted = await bootGateway({
+			credential: credentialLookup(host.home),
 			home: host.home,
 			cwd: host.cwd,
 			env: host.env,
@@ -336,7 +343,11 @@ export async function runGatewayCommand(
 		}
 		case "schedules":
 		case "goals": {
-			const { config } = loadGatewayConfig(paths.config, { cwd: context.cwd, env: process.env });
+			const { config } = loadGatewayConfig(paths.config, {
+				cwd: context.cwd,
+				env: process.env,
+				credential: credentialLookup(context.home),
+			});
 			const store = new ScheduleStore(paths.schedules, { timeZone: config.timeZone });
 			const now = Date.now();
 			const where = (key: { channel: string; account: string; peer: string }) =>
@@ -373,7 +384,11 @@ export async function runGatewayCommand(
 		}
 		case "channels":
 		case "login": {
-			const { config, diagnostics } = loadGatewayConfig(paths.config, { cwd: context.cwd, env: process.env });
+			const { config, diagnostics } = loadGatewayConfig(paths.config, {
+				cwd: context.cwd,
+				env: process.env,
+				credential: credentialLookup(context.home),
+			});
 			for (const diagnostic of diagnostics) console.error(`config: ${diagnostic}`);
 			const { plugins, failed } = await loadPlugins(await builtinPlugins(), config.plugins, paths.dir);
 			if (command.command === "channels") {
