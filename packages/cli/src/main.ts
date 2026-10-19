@@ -1608,6 +1608,8 @@ async function main(): Promise<void> {
 				permissionMode: mode,
 				toolExecution,
 				onApproval: onWorkspaceApproval,
+				// No cap unless settings.json sets one (P34 follow-up: pi does not cap a prompt).
+				...(userSettings.maxTurnsPerPrompt !== undefined ? { maxTurnsPerPrompt: userSettings.maxTurnsPerPrompt } : {}),
 			});
 			// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
 			const active = selectActiveTools(

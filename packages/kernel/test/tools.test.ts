@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createCodingTools as createCodingToolsForEdit, mutationQueueKey } from "../src/coding-tools.ts";
+import { ShellError } from "../src/errors.ts";
 import { limitToolText, toolResultText, truncateMiddle, validateToolArgs } from "../src/tools.ts";
 
 const bashSchema = {
@@ -122,4 +123,21 @@ test("mutationQueueKey resolves relative paths against the filesystem cwd (P23e)
 	assert.equal(mutationQueueKey("src/a.ts", "D:\\repo"), mutationQueueKey("D:/repo/src/a.ts"));
 	assert.equal(mutationQueueKey("./src/../src/a.ts", "/repo"), mutationQueueKey("/repo/src/a.ts"));
 	assert.equal(mutationQueueKey("/abs/a.ts", "/repo"), "/abs/a.ts");
+});
+
+test("bash stopped by its timeout reports what it printed and how to give it longer", async () => {
+	const shell = {
+		exec: async (_command: string, options: { onStdout?: (chunk: string) => void; timeoutSeconds?: number }) => {
+			options.onStdout?.("compiling 1/3\ncompiling 2/3\n");
+			throw new ShellError("timeout", `Command timed out after ${options.timeoutSeconds}s`);
+		},
+	};
+	const bash = createCodingToolsForEdit({ shell: shell as never }).find((tool) => tool.name === "bash");
+	assert.ok(bash);
+	const result = await bash.execute({ command: "make", timeoutSeconds: 5 }, undefined);
+	assert.equal(result.isError, true);
+	const text = toolResultText(result);
+	assert.match(text, /compiling 2\/3/);
+	assert.match(text, /stopped after the 5s timeout/);
+	assert.match(text, /larger timeoutSeconds/);
 });

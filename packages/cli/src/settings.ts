@@ -22,6 +22,8 @@ export interface TauSettings {
 	auditDetails?: "summary" | "none";
 	/** P33: tui.mode, the TUI's screen. */
 	tuiMode?: "fullscreen" | "inline";
+	/** maxTurnsPerPrompt — an optional cap on model turns in one prompt (default: none). */
+	maxTurnsPerPrompt?: number;
 	/** P34f: session.autoTitle — the model names a session after its first turn (default true). */
 	autoTitle?: boolean;
 	/** P34e: tui.notify — desktop notifications when the window is in the background ("auto", default) or none. */
@@ -75,6 +77,13 @@ export function readSettings(path: string): TauSettings {
 		if (Array.isArray(allow)) {
 			settings.shellEnvAllow = allow.filter((name): name is string => typeof name === "string" && name !== "");
 		}
+	}
+	if (
+		typeof raw.maxTurnsPerPrompt === "number" &&
+		Number.isInteger(raw.maxTurnsPerPrompt) &&
+		raw.maxTurnsPerPrompt > 0
+	) {
+		settings.maxTurnsPerPrompt = raw.maxTurnsPerPrompt;
 	}
 	const tui = raw.tui;
 	if (typeof tui === "object" && tui !== null) {

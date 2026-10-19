@@ -219,6 +219,25 @@ test("exceeding maxTurnsPerPrompt throws max_turns", async () => {
 	});
 });
 
+test("without maxTurnsPerPrompt a prompt runs as many turns as it needs", async () => {
+	const loopTool: Tool = {
+		name: "loop_tool",
+		description: "keeps the loop going",
+		parameters: { type: "object", properties: {} },
+		execute: async () => ({ content: [{ type: "text", text: "again" }] }),
+	};
+	const responses = Array.from({ length: 60 }, () => makeSseResponse(toolCallTurn("loop_tool", {})));
+	const agent = new Agent({
+		config: CONFIG,
+		platform: fakePlatform([...responses, makeSseResponse(textTurn("finished"))]),
+		tools: [loopTool],
+	});
+	await collect(agent, "hi");
+	const last = agent.messages.at(-1);
+	assert.equal(last?.role, "assistant");
+	assert.equal(agent.messages.filter((message) => message.role === "toolResult").length, 60);
+});
+
 test("re-entering prompt() while running throws busy", async () => {
 	let releaseFetch: (() => void) | undefined;
 	let fetchEntered: (() => void) | undefined;

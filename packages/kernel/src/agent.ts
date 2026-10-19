@@ -197,7 +197,7 @@ export interface AgentOptions {
 	 * Absent = a private InMemorySessionStore, so there is one code path.
 	 */
 	session?: SessionRecorder;
-	/** Safety valve for runaway tool loops within a single prompt. Defaults to 50. */
+	/** Optional cap on model turns within one prompt (runaway tool loops); default: none. */
 	maxTurnsPerPrompt?: number;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
@@ -292,7 +292,8 @@ export type AgentEvent =
 	| { type: "agent_end"; messages: readonly AgentMessage[] }
 	| { type: "agent_settled"; aborted: boolean };
 
-const DEFAULT_MAX_TURNS = 50;
+/** No cap unless the host sets one (pi, Claude Code and Codex do not cap a prompt; Esc stops a run). */
+const DEFAULT_MAX_TURNS = Number.POSITIVE_INFINITY;
 
 /** Text of the latest user/custom message — the "prompt" a resumed run answers. */
 function lastPromptText(messages: readonly AgentMessage[]): string {

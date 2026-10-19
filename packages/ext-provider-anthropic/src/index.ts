@@ -53,6 +53,22 @@ export const ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com";
 const ANTHROPIC_VERSION = "2023-06-01";
 /** Anthropic requires max_tokens; applied when neither the request nor the config caps output. */
 const DEFAULT_MAX_TOKENS = 8192;
+/** Claude 3.7 and every Claude 4 or later model take at least this much output (Opus 4 is the lowest at 32k). */
+const MODERN_CLAUDE_MAX_TOKENS = 32_000;
+
+/**
+ * The output cap when nothing sets one: 32k for Claude 3.7 and Claude 4 or later, which
+ * write that much in one reply (a large file in a tool call), else 8192 — older Claude
+ * models and other services on this protocol (DeepSeek's) reject more. tau has no model
+ * table to read it from (pi's model.maxTokens); models.json maxTokens overrides it.
+ */
+export function defaultMaxTokens(model: string): number {
+	const id = model.toLowerCase();
+	if (/claude-3-7/.test(id)) return MODERN_CLAUDE_MAX_TOKENS;
+	const family =
+		/claude-(?:opus|sonnet|haiku)-(\d+)/.exec(id) ?? /claude-(\d+)(?:-\d+)?-(?:opus|sonnet|haiku)/.exec(id);
+	return family && Number(family[1]) >= 4 ? MODERN_CLAUDE_MAX_TOKENS : DEFAULT_MAX_TOKENS;
+}
 /** pi's floor for output tokens when clamping a thinking budget into max_tokens. */
 const MIN_OUTPUT_TOKENS = 1024;
 
@@ -452,7 +468,7 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 		request.thinkingLevel !== undefined
 			? anthropicThinkingForLevel(request.thinkingLevel, config.thinkingMode ?? "adaptive")
 			: { thinking: config.thinking, effort: config.effort };
-	let maxTokens = request.maxTokens ?? config.maxTokens ?? DEFAULT_MAX_TOKENS;
+	let maxTokens = request.maxTokens ?? config.maxTokens ?? defaultMaxTokens(model);
 	const budgetThinking =
 		thinkingConfig.thinking !== undefined && thinkingConfig.thinking !== "adaptive"
 			? thinkingConfig.thinking

@@ -26,6 +26,16 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   current model that is not recorded in the session.
 
 ### Changed (P34)
+- kernel: `maxTurnsPerPrompt` has no default cap (was 50: a long task ended
+  with "Prompt exceeded 50 turns without completing"); pi, Claude Code and
+  Codex do not cap a prompt either. The CLI applies `maxTurnsPerPrompt`
+  from settings.json when set.
+- kernel: a bash command stopped by its timeout returns what it printed
+  (the end of it) and says to run it again with a larger `timeoutSeconds`;
+  the tool description mentions `timeoutSeconds` for long builds and tests.
+- ext-provider-anthropic: without a configured `maxTokens` the output cap
+  is 32k for Claude 3.7 and Claude 4 or later (was 8192 for every model, so
+  writing a large file in one tool call got cut off); other models keep 8192.
 - CLI TUI: the completion menu and pickers list every item and scroll
   (PgUp/PgDn, Home/End, the wheel) instead of stopping at eight.
 - CLI TUI: mouse and focus reports are taken from stdin before Ink parses

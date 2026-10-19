@@ -198,7 +198,7 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 
 ```
 用户输入 → input 钩子 → before_agent_start → [prompt/工具有变化时追加 system 消息] → 追加 user 条目
-  ↓ 循环（≤ maxTurnsPerPrompt，默认 50，跨续跑 run 共用）
+  ↓ 循环（maxTurnsPerPrompt 缺省不限，宿主可设上限，跨续跑 run 共用；CLI 读 settings.json 的 maxTurnsPerPrompt）
   [压缩] → [拉 steering] → turn_start 钩子 → 提交待处理消息 → [prompt/工具有变化时追加 system 消息]
   verifyTranscript：JSON 往返重放日志 ≡ messages，否则 invalid_state
   context → context_with_system 钩子（作用于副本）

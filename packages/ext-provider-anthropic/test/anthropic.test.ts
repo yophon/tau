@@ -21,6 +21,7 @@ import {
 	anthropicThinkingForLevel,
 	buildRequestBody,
 	createAnthropicTransport,
+	defaultMaxTokens,
 	messagesToWire,
 	transformMessagesForAnthropic,
 } from "../src/index.ts";
@@ -811,4 +812,15 @@ test("signed thinking with empty text is replayed, not dropped (display omitted 
 		content.map((b) => b.type),
 		["text", "text"],
 	);
+});
+
+test("the default output cap follows the model: 32k for Claude 3.7 and 4+, else 8192", () => {
+	assert.equal(defaultMaxTokens("claude-sonnet-4-5"), 32_000);
+	assert.equal(defaultMaxTokens("claude-opus-4-1-20250805"), 32_000);
+	assert.equal(defaultMaxTokens("claude-opus-5-5"), 32_000);
+	assert.equal(defaultMaxTokens("claude-haiku-4-5"), 32_000);
+	assert.equal(defaultMaxTokens("claude-3-7-sonnet-latest"), 32_000);
+	assert.equal(defaultMaxTokens("claude-3-5-haiku-latest"), 8192);
+	assert.equal(defaultMaxTokens("claude-3-opus-20240229"), 8192);
+	assert.equal(defaultMaxTokens("deepseek-chat"), 8192);
 });

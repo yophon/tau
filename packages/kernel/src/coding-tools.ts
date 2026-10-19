@@ -1,5 +1,6 @@
 import { encodeBase64 } from "./base64.ts";
 import type { FileSystem, Shell } from "./capabilities.ts";
+import { ShellError } from "./errors.ts";
 import type { PermissionMode } from "./policy.ts";
 import { createFindTool, createGrepTool, createLsTool } from "./search-tools.ts";
 import { errorResult, optionalNumber, requireString, type Tool, textResult } from "./tools.ts";
@@ -8,6 +9,12 @@ import { utf8CodePointLength } from "./utf8.ts";
 const MAX_READ_LINES = 2000;
 const MAX_OUTPUT_CHARS = 50_000;
 const DEFAULT_BASH_TIMEOUT_SECONDS = 120;
+
+/** The end of a long output (what a stopped command printed last matters most). */
+function truncateTail(text: string, limit: number = MAX_OUTPUT_CHARS): string {
+	if (text.length <= limit) return text;
+	return `[... ${text.length - limit} characters before this were cut]\n${text.slice(-limit)}`;
+}
 
 function truncate(text: string, limit: number = MAX_OUTPUT_CHARS): string {
 	if (text.length <= limit) return text;
@@ -342,7 +349,7 @@ function createBashTool(shell: Shell): Tool {
 		name: "bash",
 		description:
 			"Run a shell command in the working directory and return its output. " +
-			`Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s.`,
+			`Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; pass timeoutSeconds for longer builds or tests.`,
 		parameters: {
 			type: "object",
 			properties: {
@@ -358,12 +365,29 @@ function createBashTool(shell: Shell): Tool {
 			const command = requireString(args, "command");
 			const timeoutSeconds = optionalNumber(args, "timeoutSeconds") ?? DEFAULT_BASH_TIMEOUT_SECONDS;
 			const startedAt = Date.now();
-			const result = await shell.exec(command, {
-				timeoutSeconds,
-				signal,
-				onStdout: (chunk) => onUpdate?.(chunk, "stdout"),
-				onStderr: (chunk) => onUpdate?.(chunk, "stderr"),
-			});
+			// Kept so a command stopped by the timeout still reports what it printed.
+			const streamed: string[] = [];
+			let result: Awaited<ReturnType<Shell["exec"]>>;
+			try {
+				result = await shell.exec(command, {
+					timeoutSeconds,
+					signal,
+					onStdout: (chunk) => {
+						streamed.push(chunk);
+						onUpdate?.(chunk, "stdout");
+					},
+					onStderr: (chunk) => {
+						streamed.push(chunk);
+						onUpdate?.(chunk, "stderr");
+					},
+				});
+			} catch (error) {
+				if (!(error instanceof ShellError) || error.code !== "timeout") throw error;
+				const printed = truncateTail(streamed.join(""));
+				return errorResult(
+					`${printed === "" ? "" : `${printed}\n`}Command stopped after the ${timeoutSeconds}s timeout. If it needs longer, run it again with a larger timeoutSeconds; start servers and watchers in the background instead.`,
+				);
+			}
 			const parts: string[] = [];
 			if (result.stdout !== "") parts.push(result.stdout);
 			if (result.stderr !== "") parts.push(result.stderr);
