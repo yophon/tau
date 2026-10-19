@@ -45,35 +45,46 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 	);
 }
 
+type ResizeStream = {
+	columns?: number;
+	on(event: "resize", listener: () => void): unknown;
+	off(event: "resize", listener: () => void): unknown;
+};
+
 /**
- * Call `redraw` when the terminal's width changes, once resize events stop for `settleMs`
- * (dragging a window edge fires many). Height changes need nothing: lines do not re-wrap.
+ * Take over Ink's resize handling (pi-tui's approach). Ink 5 answers a resize by erasing as
+ * many lines as it last wrote and drawing again; after a width change the terminal has
+ * re-wrapped that frame onto a different number of rows, so the erase leaves pieces of it
+ * behind (copies of the input box) or eats into history. On a width change `redraw` repaints
+ * everything at once instead, at most once per event-loop turn while a window edge is dragged.
+ * A height change does not re-wrap anything and still goes to Ink's own listeners.
  */
-export function redrawOnWidthChange(
-	stream: {
-		columns?: number;
-		on(event: "resize", listener: () => void): unknown;
-		off(event: "resize", listener: () => void): unknown;
-	},
+export function takeOverResize(
+	stream: ResizeStream,
+	inkListeners: readonly (() => void)[],
 	redraw: () => void,
-	settleMs = 150,
 ): () => void {
+	for (const listener of inkListeners) stream.off("resize", listener);
 	let width = stream.columns ?? 0;
-	let timer: ReturnType<typeof setTimeout> | undefined;
+	let scheduled = false;
 	const onResize = () => {
-		if (timer) clearTimeout(timer);
-		timer = setTimeout(() => {
-			timer = undefined;
-			const next = stream.columns ?? 0;
-			if (next === width) return;
-			width = next;
+		const next = stream.columns ?? 0;
+		if (next === width) {
+			if (!scheduled) for (const listener of inkListeners) listener();
+			return;
+		}
+		width = next;
+		if (scheduled) return;
+		scheduled = true;
+		setImmediate(() => {
+			scheduled = false;
 			redraw();
-		}, settleMs);
+		});
 	};
 	stream.on("resize", onResize);
 	return () => {
-		if (timer) clearTimeout(timer);
 		stream.off("resize", onResize);
+		for (const listener of inkListeners) stream.on("resize", listener);
 	};
 }
 
@@ -96,9 +107,11 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	// Bracketed paste: pasted newlines arrive inside 200~/201~ markers instead of submitting.
 	process.stdout.write("\x1b[?2004h");
 	// Ctrl+C belongs to the TUI (interrupt, or press twice to exit).
+	const before = new Set(process.stdout.listeners("resize"));
 	const instance = render(h(App, { controller }), { exitOnCtrlC: false, patchConsole: false });
-	// A width change re-wraps the screen under Ink; redraw once the resizing settles.
-	const stopRedrawOnResize = redrawOnWidthChange(process.stdout, () => controller.redraw());
+	// A width change re-wraps the screen under Ink: repaint it all in one synchronized frame.
+	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
+	const stopRedrawOnResize = takeOverResize(process.stdout, inkListeners, () => controller.redraw());
 	try {
 		await controller.start();
 		await controller.done;

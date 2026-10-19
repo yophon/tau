@@ -40,9 +40,11 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 ### Fixed
 - TUI: changing the terminal width left copies of the input box (and other
   pieces of the last frame) on screen, because the terminal re-wraps what is
-  shown and Ink erases by line count. A width change now clears the screen
-  and writes the conversation again at the new width (debounced while
-  resizing). New smoke-tui scenario `resize`.
+  shown and Ink erases by line count. The TUI now takes over Ink's resize
+  handling (pi-tui's approach): on a width change it clears and writes the
+  conversation again at the new width in one synchronized-output frame (DEC
+  2026), so neither the leftover pieces nor a blank screen show; height
+  changes still go to Ink. New smoke-tui scenario `resize`.
 
 ### Fixed (P32a)
 - gateway: a non-owner's conversation carried the owner's project memory in

@@ -1168,8 +1168,15 @@ export class TuiController {
 	 * of it behind (old input box borders) or eats into history. Clear and write it all again.
 	 */
 	redraw(): void {
+		// One synchronized frame (DEC 2026): the terminal shows nothing until all of it is
+		// written, so neither the cleared screen nor a half-written history flashes. The new
+		// <Static> epoch makes Ink render at once (legacy mode, unthrottled), inside the frame.
+		const sync = !this.deps.clearScreen;
+		if (sync) process.stdout.write("\x1b[?2026h");
 		this.clearScreen();
 		this.dispatch({ type: "redraw" });
+		this.store.flush();
+		if (sync) process.stdout.write("\x1b[?2026l");
 	}
 
 	/** A fresh screen with the current conversation, then a note. */

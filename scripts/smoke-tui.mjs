@@ -387,12 +387,28 @@ async function runResizeSmoke(root, baseUrl) {
 		await session.waitFor("tau ·", 10_000);
 		await session.send("pricing smoke", "Enter");
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		// Everything the TUI writes from here on, to check what a resize sends.
+		const raw = join(dirs.home, "resize-output.bin");
+		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await sleep(200);
 		for (const width of [100, 80, 60, 110]) {
+			const offset = await readFile(raw).then(
+				(data) => data.length,
+				() => 0,
+			);
 			await tmux(["resize-window", "-t", session.name, "-x", String(width)]);
-			await sleep(600);
+			await sleep(250);
 			const { count, screen } = await boxes();
 			if (count !== 1) throw new Error(`After resizing to ${width} columns there are ${count} input boxes:\n${screen}`);
+			// One synchronized frame, and nothing before it: Ink's own erase-and-redraw no longer runs.
+			const written = (await readFile(raw)).subarray(offset).toString("utf8");
+			if (!written.startsWith("\x1b[?2026h") || !written.includes("\x1b[?2026l")) {
+				throw new Error(
+					`A resize to ${width} columns was not one synchronized frame: ${JSON.stringify(written.slice(0, 120))}`,
+				);
+			}
 		}
+		await tmux(["pipe-pane", "-t", session.name]);
 		await session.waitFor("SMOKE_PRICING_OK", 5_000);
 		await session.send("exit", "Enter");
 		await session.waitForExit();

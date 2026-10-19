@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { AgentEvent, AssistantMessage, ToolCall } from "@yophon/tau-kernel";
-import { redrawOnWidthChange } from "../src/tui/app.ts";
+import { takeOverResize } from "../src/tui/app.ts";
 import { strWidth } from "../src/tui/input/width.ts";
 import { type Block, initialState, reduce, type StatusInfo, type UiAction, type UiState } from "../src/tui/model.ts";
 import { approvalBody } from "../src/tui/render/approval.ts";
@@ -529,28 +529,34 @@ describe("redraw after a width change", () => {
 		assert.deepEqual(redrawn.live, state.live);
 	});
 
-	it("redraws once the width settles, not on every resize event or a height change", async () => {
+	it("takes over Ink's resize listener: one redraw per burst of width changes, height changes still go to Ink", async () => {
 		const listeners = new Set<() => void>();
 		const stream = {
 			columns: 120,
 			on: (_event: "resize", listener: () => void) => listeners.add(listener),
 			off: (_event: "resize", listener: () => void) => listeners.delete(listener),
 		};
+		let inkCalls = 0;
+		const ink = () => inkCalls++;
+		stream.on("resize", ink);
 		let redraws = 0;
-		const stop = redrawOnWidthChange(stream, () => redraws++, 20);
+		const stop = takeOverResize(stream, [ink], () => redraws++);
+		assert.ok(!listeners.has(ink), "Ink no longer answers resizes itself");
 		const resize = (columns: number) => {
 			stream.columns = columns;
-			for (const listener of listeners) listener();
+			for (const listener of [...listeners]) listener();
 		};
 		resize(110);
 		resize(100);
 		resize(90);
-		await new Promise((resolve) => setTimeout(resolve, 60));
-		assert.equal(redraws, 1, "one redraw after dragging");
+		await new Promise((resolve) => setImmediate(resolve));
+		assert.equal(redraws, 1, "a drag in one event-loop turn redraws once");
+		assert.equal(inkCalls, 0);
 		resize(90);
-		await new Promise((resolve) => setTimeout(resolve, 60));
-		assert.equal(redraws, 1, "same width (a height change): nothing to do");
+		assert.equal(inkCalls, 1, "same width (a height change) goes to Ink");
+		assert.equal(redraws, 1);
 		stop();
-		assert.equal(listeners.size, 0);
+		assert.ok(listeners.has(ink), "Ink's listener is back after the TUI exits");
+		assert.equal(listeners.size, 1);
 	});
 });
