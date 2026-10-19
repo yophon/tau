@@ -154,8 +154,10 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		void controller.stop();
 	};
 	await controller.start();
-	// Let Ink mount and attach its stdin listener before anything is typed.
-	await pause(30);
+	// Let Ink mount and attach its stdin listener (useInput's raw mode) before anything is typed;
+	// a fixed pause lost the first keystroke on a loaded machine.
+	for (let waited = 0; ink.stdin.listenerCount("readable") === 0 && waited < 3000; waited += 5) await pause(5);
+	await pause(5);
 	const frame = (): string => {
 		controller.store.flush();
 		return ink.lastFrame() ?? "";

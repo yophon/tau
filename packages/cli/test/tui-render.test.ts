@@ -553,7 +553,8 @@ describe("redraw after a width change", () => {
 			stream,
 			[ink],
 			{ live: () => passes.push(`live ${stream.columns}`), full: () => passes.push(`full ${stream.columns}`) },
-			30,
+			// A settle time well above any scheduling delay on a loaded machine.
+			300,
 		);
 		assert.ok(!listeners.has(ink), "Ink no longer answers resizes itself");
 		const resize = (columns: number) => {
@@ -567,7 +568,8 @@ describe("redraw after a width change", () => {
 		assert.deepEqual(passes, ["live 100"], "a drag in one event-loop turn repaints the live area once");
 		// The window keeps narrowing without an event, and Node's cached columns are stale (Windows).
 		os.columns = 72;
-		await new Promise((resolve) => setTimeout(resolve, 60));
+		for (let waited = 0; passes.length < 2 && waited < 3000; waited += 50)
+			await new Promise((resolve) => setTimeout(resolve, 50));
 		assert.deepEqual(passes, ["live 100", "full 72"], "once settled, everything at the size the OS reports");
 		assert.equal(stream.columns, 72);
 		assert.equal(inkCalls, 0);
