@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-18（P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
+> 最后更新：2026-10-19（P37 规格确认；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -311,6 +311,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量测试、check、pack smoke（新增 host-node 从发布包缩图与跑后台命令）通过；smoke-tui 新增 background 场景，全部二十六个场景在全屏和 inline 下各跑一遍都通过。真 DeepSeek（官方 `deepseek-flash`）验收：后台启动服务器、读输出文件拿端口、`curl`、`task_stop`；`read` 看 4000×3000 的图（缩成 2000×1500，模型答对形状、颜色并换算坐标）；`@shot.png` 答对。验收中发现并照 pi 修了 OpenAI 兼容线上工具结果图片被换成 `[image omitted]`；models.json 的 `input` 现在也用到请求上（没写 = 只收文字，pi 同）；内核加了 pi 的扩展间事件总线 `api.events`。D39。真机验收待用户执行（Windows 上真实的 Alt+V 粘贴截图我这边无权读剪贴板，未能实测）。偏差见规格书「实施记录」。
 
+## Phase 37 🚧 权限规则、转交新会话、状态栏与 worktree
+
+规格书（2026-10-19 确认；安全措施不比 Claude Code、Codex、pi 严，网关不动）：[specs/phase-37-permissions-handoff-worktree.md](specs/phase-37-permissions-handoff-worktree.md)。37a 照抄 Claude Code 的权限规则（`permissions.allow/ask/deny`、`.tau/settings.local.json`、`/permissions`、`--add-dir`、`--allowed-tools`），旧 `permissions.json` 自动转成规则，修 accept-edits 用 `..` 跳出工作目录；37b `/handoff`（pi）、未提交改动提醒（pi，缺省关）、连按两下 Esc（pi）；37c 自定义状态栏（Claude Code 的 `statusLine`）；37d `tau --worktree`（Claude Code）。
+
 ## 产品层后续 ⬜ 待定
 
 主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
@@ -331,6 +335,7 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 ### C. 已裁决推迟
 
 - 0.4.0 发版（P22–P33）：2026-10-19 用户裁决推迟，现在没有外部用户；技术债 #13 的首发随之推迟
+- 网关（P30、P31）：2026-10-19 用户裁决先放着，以后重新考虑（包括主人、名单、访客这套多人设计）；之后的阶段不为网关做改动，共用代码的新功能在网关里关掉，保持现状
 
 - P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
 - P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
@@ -347,16 +352,12 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 ### E. 扩展与 TUI 候选（2026-10-19 整理，用户：「其他的想法可以先记着，后续考虑」）
 
-对照 tau 现有内置扩展、pi 1.2 的示例扩展（`packages/coding-agent/examples/extensions/`）与 Claude Code、Codex 的功能整理。2026-10-19 用户裁决：提问工具与用户钩子进 P35。
+对照 tau 现有内置扩展、pi 1.2 的示例扩展（`packages/coding-agent/examples/extensions/`）与 Claude Code、Codex 的功能整理。2026-10-19 用户裁决：提问工具与用户钩子进 P35；转交新会话、受保护路径（并入权限规则）、连按 Esc、自定义状态栏、worktree 进 P37；预设、提示里内联命令不做（用户：没什么应用场景）。
 
-- **预设**：一个名字打包模型、思考深度、工具集与额外说明，`--preset`、`/preset`（pi 的 preset 示例）。
-- **转交新会话**：`/handoff <目标>` 把上下文压成摘要开新会话（pi 的 handoff 示例）。
-- **受保护路径**：禁止写 `.env`、`.git/`、`node_modules/`，仓库有未提交改动时提醒（pi 的 protected-paths、dirty-repo-guard）；可并进权限配置。
 - **远程执行**：工具跑在另一台机器上，会话与凭据留在本地（pi 的 ssh 示例与 pi-env）；与 D 组的 bash 沙箱、网关放在哪台机器一起考虑。
 - **扩展安装命令**：`tau install <包>` 生成 `.tau/extensions` 里的导入文件；有外部扩展之后再做。
-- **提示里内联命令**：`!{git diff}` 发送前展开成命令输出（pi 的 inline-bash 示例）。
 - **TUI 余项**（P33、P34 范围外）：滚动条、Ctrl+Z 挂起、按终端类型自动退回 inline、复制开关。
-- 不做：计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；改完自动诊断（用户在钩子里配类型检查即可）；`/review`、`/commit`；自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
+- 不做：预设、提示里内联命令（用户：没什么应用场景）；计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；改完自动诊断（用户在钩子里配类型检查即可）；`/review`、`/commit`；自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
 
 ## 技术债登记
 
