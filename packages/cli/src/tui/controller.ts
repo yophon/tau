@@ -29,6 +29,7 @@ import {
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
 import { autoTitle } from "../session-title.ts";
+import { type StatusLineFacts, statusLineInput } from "../statusline.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
 import { commandList, runCommand } from "./commands.ts";
@@ -155,6 +156,10 @@ export class TuiController {
 	private exitTimer: ReturnType<typeof setTimeout> | undefined;
 	/** When the last Esc on an empty, idle input came (pi's double-Esc window, P37b); 0 when none counts. */
 	private lastEscapeAt = 0;
+	/** P37c: the custom status line runner, and what it last knew about the session. */
+	private statusLineRunner: { trigger(input: () => unknown): void; stop(): void } | undefined;
+	private sessionMeta: SessionMetadata | undefined;
+	private readonly startedAt: number;
 	private rejectTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private resolveDone: (() => void) | undefined;
@@ -165,6 +170,10 @@ export class TuiController {
 		this.options = options;
 		this.deps = deps;
 		this.agent = options.agent;
+		this.startedAt = (deps.now ?? Date.now)();
+		this.statusLineRunner = options.statusLine?.((lines, padding) =>
+			this.dispatch({ type: "status-line", lines, padding }),
+		);
 		this.extensions = options.extensions;
 		this.sessionStore = options.store;
 		this.recorder = options.recorder;
@@ -295,6 +304,7 @@ export class TuiController {
 		this.stopped = true;
 		this.controller?.abort();
 		this.clearTimers();
+		this.statusLineRunner?.stop();
 		try {
 			await this.extensions.notifySessionShutdown("quit", this.agent.extensionContext());
 		} finally {
@@ -358,7 +368,8 @@ export class TuiController {
 		const session = this.agent.getSessionUsage();
 		let sessionName: string | undefined;
 		try {
-			sessionName = this.sessionStore ? (await this.sessionStore.getMetadata()).name : undefined;
+			this.sessionMeta = this.sessionStore ? await this.sessionStore.getMetadata() : undefined;
+			sessionName = this.sessionMeta?.name;
 		} catch {
 			sessionName = undefined;
 		}
@@ -386,6 +397,51 @@ export class TuiController {
 				items,
 			},
 		});
+		this.triggerStatusLine();
+	}
+
+	/** P37c: re-run the custom status line (debounced by the runner). */
+	private triggerStatusLine(): void {
+		this.statusLineRunner?.trigger(() => statusLineInput(this.statusLineFacts()));
+	}
+
+	/** What the status line JSON says, in Claude Code's terms. */
+	statusLineFacts(): StatusLineFacts {
+		const usage = this.agent.getContextUsage();
+		const session = this.agent.getSessionUsage();
+		const extra = this.options.statusLineContext?.() ?? {};
+		const last = [...this.agent.messages].reverse().find((message) => message.role === "assistant");
+		const lastUsage = last && last.role === "assistant" ? last.usage : undefined;
+		return {
+			...(this.sessionMeta ? { sessionId: this.sessionMeta.id } : {}),
+			...(this.sessionMeta?.name ? { sessionName: this.sessionMeta.name } : {}),
+			...(this.sessionMeta?.filePath ? { transcriptPath: this.sessionMeta.filePath } : {}),
+			cwd: this.options.cwd,
+			projectDir: extra.projectDir ?? this.options.cwd,
+			addedDirs: extra.addedDirs ?? [],
+			model: this.model,
+			...(extra.provider ? { provider: extra.provider } : {}),
+			...(extra.version ? { version: extra.version } : {}),
+			costUsd: session.cost.total,
+			durationMs: this.now() - this.startedAt,
+			inputTokens: session.input + session.cacheRead + session.cacheWrite,
+			outputTokens: session.output,
+			contextTokens: usage.tokens,
+			...(usage.contextWindow ? { contextWindow: usage.contextWindow } : {}),
+			...(lastUsage
+				? {
+						currentUsage: {
+							input: lastUsage.input,
+							output: lastUsage.output,
+							cacheWrite: lastUsage.cacheWrite,
+							cacheRead: lastUsage.cacheRead,
+						},
+					}
+				: {}),
+			...(this.thinkingLevel !== undefined ? { thinking: this.thinkingLevel } : {}),
+			permissionMode: this.agent.getPermissionMode(),
+			...(extra.worktree ? { worktree: extra.worktree } : {}),
+		};
 	}
 
 	private async refreshWidgets(): Promise<void> {
@@ -1327,6 +1383,7 @@ export class TuiController {
 		this.agent.setPermissionMode(next);
 		this.options.setPermissionMode?.(next);
 		this.dispatch({ type: "status", status: { mode: next } });
+		this.triggerStatusLine();
 		if (next === "bypass") {
 			this.notice("warn", "Bypass: every approval is skipped (Shift+Tab or /mode to switch back).");
 		} else if (next === "autonomous") {

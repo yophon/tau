@@ -113,6 +113,7 @@ import {
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
+import { createStatusLineExtension, StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/controller.ts";
 
 /** The CLI package version (src/ and dist/ both sit one level below package.json). */
@@ -1640,7 +1641,9 @@ async function main(): Promise<void> {
 						},
 					});
 		for (const diagnostic of permissions?.diagnostics() ?? []) console.error(dim(`permissions: ${diagnostic}`));
-		if (permissions) await extensions.add([createPermissionsExtension(permissions)]);
+		if (permissions) {
+			await extensions.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
+		}
 		const policy: ToolPolicy | undefined = permissions
 			? auditedPolicy(
 					createDefaultPolicy({
@@ -1685,7 +1688,9 @@ async function main(): Promise<void> {
 				hookRunner,
 			);
 			projectTrusted = next.projectTrusted;
-			if (permissions) await next.registry.add([createPermissionsExtension(permissions)]);
+			if (permissions) {
+				await next.registry.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
+			}
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras).values);
 			return next.registry;
 		};
@@ -1985,6 +1990,21 @@ async function main(): Promise<void> {
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
 			dirtyRepoGuard: userSettings.dirtyRepoGuard === true,
+			// P37c: Claude Code's statusLine, the user's own environment like hooks.
+			statusLine: (onLines) =>
+				new StatusLineRunner({
+					settings: new StatusLineSettings({ home, cwd, projectTrusted: () => workspace.isProjectTrusted() }),
+					cwd,
+					env: process.env,
+					size: () => ({ columns: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }),
+					onLines,
+				}),
+			statusLineContext: () => ({
+				projectDir: cwd,
+				addedDirs: workspace.permissions?.workingDirectories() ?? [],
+				provider: activeModel?.provider ?? config.provider ?? "openai-compat",
+				version: CLI_VERSION,
+			}),
 			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
 			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),
 			autoTitle: autoTitleOn(userSettings.autoTitle),

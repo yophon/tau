@@ -148,6 +148,8 @@ export interface UiState {
 	exitArmed: boolean;
 	rejectArmed: boolean;
 	status: StatusInfo;
+	/** P37c: the custom status line's output (Claude Code statusLine), shown above the status line. */
+	statusLine?: { lines: string[]; padding: number };
 	/** Extension widgets above and below the input box. */
 	widgets: { above: StyledLine[][]; below: StyledLine[][] };
 	/** Full-screen transcript (P33): the first row shown, or undefined to follow the end. */
@@ -187,6 +189,7 @@ export function initialState(status: StatusInfo): UiState {
 export type UiAction =
 	| { type: "agent-event"; event: AgentEvent; at: number }
 	| { type: "task-start"; task: TaskKind; activity: string; at: number }
+	| { type: "status-line"; lines: string[] | undefined; padding: number }
 	| { type: "task-end" }
 	| { type: "activity"; text: string }
 	| { type: "notice"; tone: Tone; text: string }
@@ -459,6 +462,10 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			};
 		case "status":
 			return { ...state, status: { ...state.status, ...action.status } };
+		case "status-line":
+			return action.lines
+				? { ...state, statusLine: { lines: action.lines, padding: action.padding } }
+				: { ...state, statusLine: undefined };
 		case "widgets":
 			return { ...state, widgets: { above: action.above, below: action.below } };
 		case "clear":

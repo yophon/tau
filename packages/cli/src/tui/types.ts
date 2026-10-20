@@ -12,6 +12,7 @@ import type {
 	UiCapability,
 	UserContent,
 } from "@yophon/tau-kernel";
+import type { StatusLineFacts } from "../statusline.ts";
 import type { ClipboardContent } from "./clipboard-read.ts";
 import type { ApprovalPromptRequest } from "./model.ts";
 
@@ -79,6 +80,15 @@ export interface RunTuiOptions {
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37b: save a /settings choice (section.key in ~/.tau/settings.json). */
 	saveSetting?(section: "tui" | "session", key: string, value: unknown): void;
+	/** P37c: the custom status line runner (Claude Code statusLine), given where its lines go. */
+	statusLine?: (onLines: (lines: string[] | undefined, padding: number) => void) => {
+		trigger(input: () => unknown): void;
+		stop(): void;
+	};
+	/** P37c: what the status line JSON says that the TUI does not know itself. */
+	statusLineContext?: () => Partial<
+		Pick<StatusLineFacts, "projectDir" | "addedDirs" | "provider" | "version" | "worktree">
+	>;
 }
 
 /** Test seams; the real TUI uses the defaults. */

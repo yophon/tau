@@ -10,7 +10,7 @@ import React, { useEffect, useState } from "react";
 import { fmtCost, fmtElapsed, fmtInt, riskColor, SPINNER_FRAMES, shortPath } from "../format.ts";
 import type { Completion } from "../input/completion.ts";
 import * as ed from "../input/editor.ts";
-import { strWidth, truncateCells } from "../input/width.ts";
+import { strWidth, truncateAnsi, truncateCells } from "../input/width.ts";
 import { type ApprovalView, approvalOptions, type PickerView, type StatusInfo, type UiState } from "../model.ts";
 import { approvalBody, approvalTitle } from "./approval.ts";
 import { styledLine } from "./blocks.ts";
@@ -339,6 +339,15 @@ export function renderBottom(
 		children.push(
 			h(Text, { key: "hint", dimColor: true }, truncateCells(hintText(state, completion), Math.max(10, columns - 1))),
 		);
+	}
+	// P37c: the custom status line's rows, colors kept, above the built-in status line (Claude Code).
+	if (state.statusLine) {
+		const pad = " ".repeat(state.statusLine.padding);
+		for (const [i, line] of state.statusLine.lines.entries()) {
+			children.push(
+				h(Text, { key: `sl${i}`, wrap: "truncate" }, truncateAnsi(`${pad}${line}`, Math.max(10, columns - 1))),
+			);
+		}
 	}
 	children.push(h(Text, { key: "status", dimColor: true }, statusText(state.status, columns)));
 	return h(Box, { key: "bottom", flexDirection: "column", marginTop: 1 }, ...children);
