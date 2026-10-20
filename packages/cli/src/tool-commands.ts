@@ -299,7 +299,7 @@ Usage: tau audit [options]
   --kind <run|tool|message>   with --json: only that kind of record
   --json            records as JSON lines        --limit <n>   most runs to show (default 50)
 
-Decision sources: mode, policy_deny, user_once, user_session, user_reject, chat_owner,
+Decision sources: mode, policy_deny, rule_allow, rule_deny, user_once, user_session, user_reject, chat_owner,
 chat_reject, timeout, non_owner, hook, hook_allow, no_approver.`;
 
 async function auditCommand(args: string[], home: string): Promise<number> {

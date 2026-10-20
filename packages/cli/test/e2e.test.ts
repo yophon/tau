@@ -1357,3 +1357,136 @@ test("a background command started in -p ends when tau exits (P36a)", async () =
 		}
 	});
 });
+
+// --- P37a: permission rules -------------------------------------------------------
+
+function toolMessages(request: Record<string, unknown>): string[] {
+	return (request.messages as { role: string; content: string | null }[])
+		.filter((message) => message.role === "tool")
+		.map((message) => message.content ?? "");
+}
+
+test("settings rules and --allowed-tools decide in -p; the audit names the rule (P37a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(
+			join(home, ".tau", "settings.json"),
+			JSON.stringify({ permissions: { allow: ["Bash(echo *)"], deny: ["Bash(curl *)"] } }),
+		);
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("bash", { command: "echo allowed-$((6*7))" }),
+			() => mockToolCallTurn("bash", { command: "curl https://example.invalid" }),
+			() => mockToolCallTurn("bash", { command: "ls" }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const cli = startCli(["--permission-mode", "supervised", "--allowed-tools", "Bash(ls *)", "-p", "go"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+			});
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const results = toolMessages(mock.requests[3]);
+			assert.match(results[0], /allowed-42/, "allow rule ran it without a UI");
+			assert.match(results[1], /^Denied by policy: Bash\(curl \*\) \(deny rule in ~\/\.tau\/settings\.json\)/);
+			assert.doesNotMatch(results[2], /Denied/, "--allowed-tools");
+			const ledger = await readFile(
+				join(home, ".tau", "audit", (await import("node:fs")).readdirSync(join(home, ".tau", "audit"))[0]),
+				"utf8",
+			);
+			assert.match(ledger, /"source":"rule_allow","rule":"Bash\(echo \*\) \(~\/\.tau\/settings\.json\)"/);
+			assert.match(ledger, /"source":"rule_deny"/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("--disallowed-tools takes a tool off the wire (P37a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			const cli = startCli(["--disallowed-tools", "Bash,WebFetch", "-p", "hi"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const names = ((mock.requests[0].tools ?? []) as { function: { name: string } }[]).map(
+				(tool) => tool.function.name,
+			);
+			assert.ok(!names.includes("bash"), names.join(","));
+			assert.ok(names.includes("read"), names.join(","));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("--add-dir: accept-edits writes there without asking; the system prompt names it (P37a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const shared = join(cwd, "..", "shared");
+		await mkdir(shared, { recursive: true });
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("write", { path: "../shared/note.txt", content: "hello" }),
+			() => mockToolCallTurn("write", { path: "../elsewhere.txt", content: "no" }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const cli = startCli(["--permission-mode", "accept-edits", "--add-dir", "../shared", "-p", "write"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+			});
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			assert.equal(await readFile(join(shared, "note.txt"), "utf8"), "hello");
+			assert.ok(
+				!existsSync(join(cwd, "..", "elsewhere.txt")),
+				"outside every working directory still asks (denied headless)",
+			);
+			const system = (mock.requests[0].messages as { role: string; content: string }[])[0].content;
+			assert.match(system, /Additional working directories: .*shared/);
+			const bad = startCli(["--add-dir", "../missing", "-p", "x"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await bad.waitForExit(), 1);
+			assert.match(bad.output(), /--add-dir: .*missing is not a directory/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("the old permissions.json becomes rules and keeps allowing (P37a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await mkdir(join(home, ".tau"), { recursive: true });
+		await writeFile(
+			join(home, ".tau", "permissions.json"),
+			JSON.stringify({ version: 1, rules: [{ tool: "bash", fingerprint: "risk:medium", action: "allow" }] }),
+		);
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("bash", { command: "echo kept-$((6*7))" }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const cli = startCli(["--permission-mode", "supervised", "-p", "go"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			assert.match(toolMessages(mock.requests[1])[0], /kept-42/);
+			assert.match(cli.output(), /Moved your "always allow" approvals/);
+			const settings = JSON.parse(await readFile(join(home, ".tau", "settings.json"), "utf8"));
+			assert.deepEqual(settings.permissions.allow, ["Bash"]);
+			assert.ok(existsSync(join(home, ".tau", "permissions.json.migrated")));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+test("a project with only .tau/mcp.json goes through the trust gate (P37a)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		await mkdir(join(cwd, ".tau"), { recursive: true });
+		await writeFile(join(cwd, ".tau", "mcp.json"), JSON.stringify({ mcpServers: {} }));
+		const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			const cli = startCli(["-p", "hi"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			assert.match(cli.output(), /Ignored .*\.tau\/mcp\.json.*: directory not trusted/);
+		} finally {
+			await mock.close();
+		}
+	});
+});

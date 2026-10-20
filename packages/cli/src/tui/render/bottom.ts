@@ -11,7 +11,7 @@ import { fmtCost, fmtElapsed, fmtInt, riskColor, SPINNER_FRAMES, shortPath } fro
 import type { Completion } from "../input/completion.ts";
 import * as ed from "../input/editor.ts";
 import { strWidth, truncateCells } from "../input/width.ts";
-import { APPROVAL_OPTIONS, type ApprovalView, type PickerView, type StatusInfo, type UiState } from "../model.ts";
+import { type ApprovalView, approvalOptions, type PickerView, type StatusInfo, type UiState } from "../model.ts";
 import { approvalBody, approvalTitle } from "./approval.ts";
 import { styledLine } from "./blocks.ts";
 import { INLINE_LIST_ROWS, listWindow } from "./list.ts";
@@ -203,7 +203,7 @@ function renderApproval(view: ApprovalView, queued: number, layout: BottomLayout
 		h(
 			Box,
 			{ key: "options", ref: layout.approvalRef, flexDirection: "column" },
-			...APPROVAL_OPTIONS.map((option, i) =>
+			...approvalOptions(view.request).map((option, i) =>
 				h(
 					Text,
 					{ key: `o${i}`, color: i === view.selected ? "cyan" : undefined },
@@ -236,7 +236,9 @@ function renderMenu(completion: Completion, selected: number, start: number, lay
 }
 
 export function hintText(state: UiState, completion: Completion | undefined): string {
-	if (state.approval) return "↑↓ or 1-4 to choose · Enter to confirm · Esc twice to deny";
+	if (state.approval) {
+		return `↑↓ or 1-${approvalOptions(state.approval.request).length} to choose · Enter to confirm · Esc twice to deny`;
+	}
 	if (state.picker?.checked) return "↑↓ to move · Space or a click to check · Enter to confirm · Esc to cancel";
 	if (state.picker) {
 		return `↑↓ to choose · Enter to confirm${state.picker.alt ? ` · Ctrl+S to ${state.picker.alt}` : ""} · Esc to cancel`;

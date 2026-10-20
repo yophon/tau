@@ -23,6 +23,7 @@ import {
 import { render } from "ink-testing-library";
 import React from "react";
 import { fakePlatform } from "../../kernel/test/helpers.ts";
+import { suggestRules } from "../src/permissions.ts";
 import { App } from "../src/tui/app.ts";
 import { TuiController } from "../src/tui/controller.ts";
 import { FullscreenApp } from "../src/tui/fullscreen.ts";
@@ -113,7 +114,15 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 			...(session !== undefined ? { session } : {}),
 			onApproval: async (request) => {
 				if (!approvalPrompt) return false;
-				return (await approvalPrompt(request)) !== "deny";
+				// What main.ts's workspace would offer as "always" (P37a).
+				const edits = request.toolName === "write" || request.toolName === "edit";
+				const rules = edits || request.protectedPath ? [] : suggestRules(request, { allow: [], ask: [], deny: [] });
+				const always = edits
+					? { label: "Allow all edits this session", kind: "edits" as const }
+					: rules.length > 0
+						? { label: `Always allow in this project: ${rules.join(", ")}`, kind: "rules" as const }
+						: undefined;
+				return (await approvalPrompt(always ? { ...request, always } : request)) !== "deny";
 			},
 		});
 	const agent = buildAgent(initial, recorder, extensions);

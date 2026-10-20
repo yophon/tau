@@ -49,18 +49,29 @@ export type Block =
 
 export type ApprovalChoice = "once" | "always" | "deny" | "deny-tell";
 
+/** An approval as the host hands it over: with what "always allow" means for it, if anything (P37a). */
+export type ApprovalPromptRequest = ApprovalRequest & { always?: { label: string; kind: "rules" | "edits" } };
+
 export interface ApprovalView {
 	id: number;
-	request: ApprovalRequest;
+	request: ApprovalPromptRequest;
 	selected: number;
 }
 
-export const APPROVAL_OPTIONS: ReadonlyArray<{ choice: ApprovalChoice; label: string }> = [
-	{ choice: "once", label: "Allow once" },
-	{ choice: "always", label: "Always allow (saved to permissions.json)" },
-	{ choice: "deny", label: "Deny" },
-	{ choice: "deny-tell", label: "Deny and tell the agent what to do instead" },
-];
+/**
+ * The approval panel's options. The second one says what "always" saves (a rule for
+ * this project, or edits for the session); it is left out when only one approval fits.
+ */
+export function approvalOptions(
+	request: ApprovalPromptRequest,
+): ReadonlyArray<{ choice: ApprovalChoice; label: string }> {
+	return [
+		{ choice: "once", label: "Allow once" },
+		...(request.always ? [{ choice: "always" as const, label: request.always.label }] : []),
+		{ choice: "deny", label: "Deny" },
+		{ choice: "deny-tell", label: "Deny and tell the agent what to do instead" },
+	];
+}
 
 export interface PickerItem {
 	label: string;
@@ -187,7 +198,7 @@ export type UiAction =
 	| { type: "tool-rendered"; callId: string; lines: StyledLine[] }
 	| { type: "queue-add"; input: QueuedInput }
 	| { type: "queue-clear" }
-	| { type: "approval-open"; id: number; request: ApprovalRequest }
+	| { type: "approval-open"; id: number; request: ApprovalPromptRequest }
 	| { type: "approval-move"; delta: 1 | -1 }
 	| { type: "approval-close"; id: number }
 	| { type: "picker-open"; picker: PickerView }
@@ -377,7 +388,7 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		}
 		case "approval-move": {
 			if (!state.approval) return state;
-			const n = APPROVAL_OPTIONS.length;
+			const n = approvalOptions(state.approval.request).length;
 			return { ...state, approval: { ...state.approval, selected: (state.approval.selected + action.delta + n) % n } };
 		}
 		case "approval-close": {

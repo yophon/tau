@@ -882,7 +882,7 @@ async function runSessionTitleSmoke(root, baseUrl) {
 }
 
 // P15 验收：supervised 档下高风险 bash 触发审批选择器——Allow once 执行 / Deny 拒绝
-// / Always allow 持久化到 ~/.tau/permissions.json，且第二个 TUI 进程直接放行。
+// / Always allow 存成项目的权限规则（P37a：.tau/settings.local.json），且第二个 TUI 进程直接放行。
 async function runApprovalSmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "approval", false);
 	const session = await startTui("approval", dirs, baseUrl, ["--no-session", "--permission-mode", "supervised"]);
@@ -903,9 +903,9 @@ async function runApprovalSmoke(root, baseUrl) {
 		await session.send("3", "Enter");
 		await session.waitFor("SMOKE_APPROVAL_DENIED_1", 15_000);
 
-		// Always allow: runs now and persists the rule.
+		// Always allow: runs now and saves the rules for this project (P37a).
 		await session.send("approval smoke", "Enter");
-		await session.waitFor("Always allow", 10_000);
+		await session.waitFor("Always allow in this project: Bash(rm -rf ./approval-scratch)", 10_000);
 		await session.send("2", "Enter");
 		await session.waitFor("SMOKE_APPROVAL_DONE_2", 15_000);
 
@@ -917,8 +917,10 @@ async function runApprovalSmoke(root, baseUrl) {
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 
-		const persisted = await readFile(join(dirs.home, ".tau", "permissions.json"), "utf8");
-		if (!persisted.includes('"bash"')) throw new Error(`permissions.json missing bash rule:\n${persisted}`);
+		const persisted = await readFile(join(dirs.cwd, ".tau", "settings.local.json"), "utf8");
+		if (!persisted.includes("Bash(rm -rf ./approval-scratch)")) {
+			throw new Error(`settings.local.json missing the bash rule:\n${persisted}`);
+		}
 	} finally {
 		await session.kill();
 	}

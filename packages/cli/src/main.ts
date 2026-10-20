@@ -37,6 +37,7 @@ import {
 	type ApprovalRequest,
 	type ChatTransport,
 	createCodingTools,
+	createDefaultPolicy,
 	createOpenAICompatTransport,
 	defaultPlatform,
 	type Extension,
@@ -58,6 +59,7 @@ import {
 	TauError,
 	type ThinkingLevel,
 	type ToolExecutionMode,
+	type ToolPolicy,
 	thinkingText,
 	toolResultText,
 	type UiCapability,
@@ -71,8 +73,8 @@ import {
 	AuditLedger,
 	type AuditTrigger,
 	auditedApproval,
+	auditedPolicy,
 	createAuditExtension,
-	noteApprovalSource,
 } from "./audit.ts";
 import { createBackgroundExtension } from "./background.ts";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
@@ -98,6 +100,15 @@ import { HeadlessSession } from "./modes/headless.ts";
 import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
 import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
+import { createPermissionsExtension } from "./permission-commands.ts";
+import {
+	type HostApprovalRequest,
+	localSettingsIsRepoFile,
+	migrateLegacyPermissions,
+	openAlwaysOptions,
+	splitRuleList,
+	WorkspacePermissions,
+} from "./permissions.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSettings, writeTuiMode } from "./settings.ts";
@@ -154,12 +165,21 @@ Options:
                          (cache keys optional and uncounted when omitted;
                          env: TAU_PRICING). Enables real cost in the footer.
       --permission-mode <mode>  read-only | supervised | accept-edits | autonomous | bypass
-                         (default: supervised; env: TAU_PERMISSION_MODE).
+                         (default: settings permissions.defaultMode, else supervised;
+                         env: TAU_PERMISSION_MODE).
                          supervised asks before medium/high-risk tools;
                          accept-edits also allows file edits inside the
                          working directory (commands still ask);
                          headless (piped) runs deny instead of asking.
                          read-only registers only the read tool.
+      --allowed-tools <rules>  Permission rules allowed for this run (Claude Code
+                         syntax; comma-separated or repeated), e.g.
+                         "Bash(npm test *),WebFetch(domain:github.com)"
+      --disallowed-tools <rules>  Deny rules for this run; a bare name ("Bash")
+                         takes the tool away. Saved rules: permissions in
+                         settings.json, /permissions (docs/permissions.md)
+      --add-dir <dir>    Another working directory for this run (repeatable):
+                         accept-edits allows edits there too; see /add-dir
       --tool-execution <mode>  sequential | parallel
                          (default: parallel, pi's default; env: TAU_TOOL_EXECUTION).
                          parallel runs a multi-tool batch concurrently after
@@ -225,6 +245,10 @@ interface CliOptions {
 	extras: string[];
 	/** P36c: `@file` arguments (pi): text inlined, images attached to the first message. */
 	files: string[];
+	/** P37a: --add-dir, --allowed-tools, --disallowed-tools (Claude Code). */
+	addDirs?: string[];
+	allowedTools?: string[];
+	disallowedTools?: string[];
 }
 
 /** `tau gateway <command> [args]` (P30). run also takes the usual tau options (model, flags). */
@@ -335,6 +359,17 @@ function parseArgs(argv: string[]): CliOptions {
 			case "-t":
 			case "--tools":
 				options.tools = splitList(next());
+				break;
+			case "--add-dir":
+				options.addDirs = [...(options.addDirs ?? []), next()];
+				break;
+			case "--allowed-tools":
+			case "--allowedTools":
+				options.allowedTools = [...(options.allowedTools ?? []), ...splitRuleList(next())];
+				break;
+			case "--disallowed-tools":
+			case "--disallowedTools":
+				options.disallowedTools = [...(options.disallowedTools ?? []), ...splitRuleList(next())];
 				break;
 			case "--no-tools":
 				options.noTools = true;
@@ -532,54 +567,8 @@ function isProvider(value: string): value is ProviderKind {
 	return (PROVIDERS as readonly string[]).includes(value);
 }
 
-// ---------------------------------------------------------------------------
-// Approval persistence (P15): "always allow" decisions are keyed by tool name
-// plus a rule fingerprint (the policy reason that fired, or the bare risk
-// level), so one approval covers the rule, not the exact argument bytes.
-// ---------------------------------------------------------------------------
-
+// Approvals (P15): "always allow" saves permission rules since P37a (permissions.ts).
 type ApprovalChoice = "once" | "always" | "deny";
-
-interface PermissionRule {
-	tool: string;
-	fingerprint: string;
-	action: "allow";
-}
-
-function permissionsStorePath(): string {
-	return join(userHome(), ".tau", "permissions.json");
-}
-
-function approvalFingerprint(request: ApprovalRequest): string {
-	return request.reason ?? `risk:${request.risk}`;
-}
-
-function readPermissionRules(): PermissionRule[] {
-	try {
-		const parsed = JSON.parse(readFileSync(permissionsStorePath(), "utf8").replace(/^\uFEFF/, "")) as {
-			rules?: PermissionRule[];
-		};
-		return Array.isArray(parsed.rules) ? parsed.rules : [];
-	} catch {
-		return [];
-	}
-}
-
-function isAlwaysAllowed(request: ApprovalRequest): boolean {
-	const fingerprint = approvalFingerprint(request);
-	return readPermissionRules().some(
-		(rule) => rule.tool === request.toolName && rule.fingerprint === fingerprint && rule.action === "allow",
-	);
-}
-
-function recordAlwaysAllow(request: ApprovalRequest): void {
-	if (isAlwaysAllowed(request)) return;
-	const rules = readPermissionRules();
-	rules.push({ tool: request.toolName, fingerprint: approvalFingerprint(request), action: "allow" });
-	const path = permissionsStorePath();
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify({ version: 1, rules }, null, "\t")}\n`, "utf8");
-}
 
 function uniqueStrings(values: string[]): string[] {
 	return [...new Set(values)];
@@ -710,6 +699,8 @@ function writeTrustStore(store: TrustStore): void {
 const GATED_PROJECT_RESOURCES = [
 	".tau/extensions",
 	".tau/settings.json",
+	// P37a: the project's MCP servers were read only when trusted but never asked about.
+	".tau/mcp.json",
 	".tau/skills",
 	".tau/prompts",
 	".pi/settings.json",
@@ -718,7 +709,10 @@ const GATED_PROJECT_RESOURCES = [
 ] as const;
 
 function presentGatedResources(cwd: string): string[] {
-	return GATED_PROJECT_RESOURCES.filter((relative) => existsSync(join(cwd, relative)));
+	const present: string[] = GATED_PROJECT_RESOURCES.filter((relative) => existsSync(join(cwd, relative)));
+	// The local permissions file counts when the repository supplies it (git tracks it, P37a).
+	if (localSettingsIsRepoFile(cwd)) present.push(".tau/settings.local.json");
+	return present;
 }
 
 /**
@@ -886,13 +880,14 @@ function reportExtensionLoad(registry: ExtensionRegistry): void {
 	for (const warning of registry.warnings) process.stderr.write(`[extension conflict] ${warning}\n`);
 }
 
-function defaultSystemPrompt(cwd: string, toolNames: readonly string[]): string {
+function defaultSystemPrompt(cwd: string, toolNames: readonly string[], extraDirs: readonly string[] = []): string {
 	// Name the tools actually loaded: read-only mode has no write/edit, and a prompt
 	// promising them invites calls that can only fail (HF-16). The built-in tool
 	// prompt keeps this line equal to the declared tools at each run (P24e).
 	return [
 		"You are tau, a coding agent running in a terminal.",
 		`Working directory: ${cwd}`,
+		...(extraDirs.length > 0 ? [`Additional working directories: ${extraDirs.join(", ")}`] : []),
 		toolLine(toolNames),
 		"Be direct and concise. Answer questions before making changes.",
 	].join("\n");
@@ -1150,6 +1145,18 @@ async function main(): Promise<void> {
 	const modelsConfig = loadModelsConfig(join(home, ".tau", "models.json"));
 	for (const diagnostic of modelsConfig.diagnostics) console.error(`Warning: ${diagnostic}`);
 	const userSettingsPath = join(home, ".tau", "settings.json");
+	// P37a: the old "always allow" store becomes permission rules, once.
+	if (!options.gateway) {
+		const moved = migrateLegacyPermissions(home);
+		if (moved) console.error(dim(moved));
+	}
+	for (const dir of options.addDirs ?? []) {
+		const path = resolve(dir.startsWith("~/") ? join(home, dir.slice(2)) : dir);
+		if (!existsSync(path) || !statSync(path).isDirectory()) {
+			console.error(`--add-dir: ${path} is not a directory`);
+			process.exit(1);
+		}
+	}
 	const userSettings = readSettings(userSettingsPath);
 	const valueResolver: ValueResolver = { env: process.env };
 	const configuredModels = availableModels(modelsConfig, valueResolver);
@@ -1354,6 +1361,8 @@ async function main(): Promise<void> {
 		if (isPermissionMode(value)) permissionMode = value;
 		else console.error(`Ignoring TAU_PERMISSION_MODE="${value}" (expected one of: ${PERMISSION_MODES.join(", ")})`);
 	}
+	// A mode from the flag or env wins over settings' permissions.defaultMode (P37a).
+	const explicitMode = permissionMode !== undefined;
 	// Interactive hosts default to supervised (P15 user ruling) — the kernel's
 	// own default stays autonomous for library consumers.
 	permissionMode ??= "supervised";
@@ -1472,27 +1481,25 @@ async function main(): Promise<void> {
 	// *how*. REPL and TUI install their prompt into approvalPromptRef below;
 	// with no UI at all onApproval stays undefined so the kernel's headless
 	// degradation (ask → deny) applies.
-	const approvalPromptRef: { current?: (request: ApprovalRequest) => Promise<ApprovalChoice> } = {};
+	const approvalPromptRef: { current?: (request: HostApprovalRequest) => Promise<ApprovalChoice> } = {};
 	const onApproval =
 		ui === undefined
 			? undefined
 			: async (request: ApprovalRequest): Promise<boolean> => {
-					if (isAlwaysAllowed(request)) {
-						noteApprovalSource(request.toolCallId, "user_session");
-						return true;
-					}
+					// What "always allow" means for this call (P37a): rules to save, or edits for the session.
+					const always = openAlwaysOptions.get(request.toolCallId);
+					const hostRequest: HostApprovalRequest = always
+						? { ...request, always: { label: always.label, kind: always.kind } }
+						: request;
 					const choice = approvalPromptRef.current
-						? await approvalPromptRef.current(request)
+						? await approvalPromptRef.current(hostRequest)
 						: (await ui.confirm(
 									`Allow ${request.toolName}? (${request.risk} risk${nestedNote(request)})`,
 									request.reason,
 								))
 							? "once"
 							: "deny";
-					if (choice === "always") {
-						recordAlwaysAllow(request);
-						noteApprovalSource(request.toolCallId, "user_session");
-					}
+					if (choice === "always") always?.apply();
 					return choice !== "deny";
 				};
 	// RPC: approvals are a select on the client (P29).
@@ -1504,7 +1511,9 @@ async function main(): Promise<void> {
 			console.log(`${cyan(`Approval: ${request.toolName}`)} ${dim(`(${request.risk} risk${nestedNote(request)})`)}`);
 			if (request.reason) console.log(dim(request.reason));
 			console.log(dim(firstLine(JSON.stringify(request.args), 200)));
-			process.stdout.write("\nAllow? [y]es once / [a]lways / [N]o ");
+			process.stdout.write(
+				request.always ? `\nAllow? [y]es once / [a] ${request.always.label} / [N]o ` : "\nAllow? [y]es once / [N]o ",
+			);
 			return await new Promise<ApprovalChoice>((resolve) => {
 				// Tool preflight is serial, but resolving a stale gate defensively keeps
 				// an aborted/closed turn from blocking the next one forever.
@@ -1545,6 +1554,8 @@ async function main(): Promise<void> {
 		askUser?: false | { freeAnswer?: boolean; unavailable?: () => string | undefined };
 		/** P35: ask the trust question through `ui` (default true; the gateway's chat UI does not). */
 		trustPrompt?: boolean;
+		/** P37a: permission rules and additional working directories (default true; off in the gateway, which stays as it was). */
+		permissionRules?: boolean;
 		/** P32c: the audit's host, trigger and approval kind for this workspace (the gateway's chats). */
 		audit?: {
 			host?: AuditHost;
@@ -1603,16 +1614,62 @@ async function main(): Promise<void> {
 			auditExtension,
 			hookRunner,
 		);
+		const extensions = loaded.registry;
+		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
+		let projectTrusted = loaded.projectTrusted;
+		// Permission rules (P37a): settings files, flags, /permissions; "always allow" saves rules.
+		let currentAgent: Agent | undefined;
+		const permissions =
+			spec.permissionRules === false
+				? undefined
+				: new WorkspacePermissions({
+						home: userHome(),
+						cwd,
+						projectTrusted: () => projectTrusted,
+						allowedTools: options.allowedTools ?? [],
+						disallowedTools: options.disallowedTools ?? [],
+						addDirs: options.addDirs ?? [],
+						acceptEdits: () => {
+							currentAgent?.setPermissionMode("accept-edits");
+							if (workspaceMode !== undefined) workspaceMode = "accept-edits";
+							else permissionMode = "accept-edits";
+						},
+						onProjectFileWritten: () => {
+							if (projectTrusted) void saveProjectTrust(cwd, true);
+						},
+					});
+		for (const diagnostic of permissions?.diagnostics() ?? []) console.error(dim(`permissions: ${diagnostic}`));
+		if (permissions) await extensions.add([createPermissionsExtension(permissions)]);
+		const policy: ToolPolicy | undefined = permissions
+			? auditedPolicy(
+					createDefaultPolicy({
+						rules: () => permissions.rules(),
+						workingDirectories: () => permissions.workingDirectories(),
+						home: userHome(),
+					}),
+					approvals,
+				)
+			: undefined;
+		// The host's prompt learns what "always allow" would save for each open approval.
+		const withAlwaysOption = (handler: ((request: ApprovalRequest) => Promise<boolean>) | undefined): typeof handler =>
+			handler && permissions
+				? async (request) => {
+						const option = permissions.alwaysOption(request);
+						if (option) openAlwaysOptions.set(request.toolCallId, option);
+						try {
+							return await handler(request);
+						} finally {
+							openAlwaysOptions.delete(request.toolCallId);
+						}
+					}
+				: handler;
 		// After the hooks are loaded: PermissionRequest hooks may answer before the host asks (P35).
 		const onWorkspaceApproval = auditedApproval(
-			withHookApprovals(spec.onApproval, hookRunner),
+			withHookApprovals(withAlwaysOption(spec.onApproval), hookRunner),
 			approvals,
 			spec.audit?.approvals ?? "terminal",
 			spec.audit?.decidedBy,
 		);
-		const extensions = loaded.registry;
-		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
-		let projectTrusted = loaded.projectTrusted;
 		extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras).values);
 		const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
 			// /reload also re-reads AGENTS.md / CLAUDE.md, as pi's resource loader does.
@@ -1627,6 +1684,7 @@ async function main(): Promise<void> {
 				hookRunner,
 			);
 			projectTrusted = next.projectTrusted;
+			if (permissions) await next.registry.add([createPermissionsExtension(permissions)]);
 			next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras).values);
 			return next.registry;
 		};
@@ -1668,6 +1726,7 @@ async function main(): Promise<void> {
 						defaultSystemPrompt(
 							cwd,
 							codingTools.map((tool) => tool.name),
+							permissions?.workingDirectories() ?? [],
 						),
 					projectContext,
 					spec.promptNote ?? "",
@@ -1696,6 +1755,7 @@ async function main(): Promise<void> {
 				permissionMode: mode,
 				toolExecution,
 				onApproval: onWorkspaceApproval,
+				...(policy ? { policy } : {}),
 				// No cap unless settings.json sets one (P34 follow-up: pi does not cap a prompt).
 				...(userSettings.maxTurnsPerPrompt !== undefined ? { maxTurnsPerPrompt: userSettings.maxTurnsPerPrompt } : {}),
 			});
@@ -1708,6 +1768,7 @@ async function main(): Promise<void> {
 			);
 			if (active) built.setActiveTools(active);
 			attachPromptAgent(built, options.system === undefined);
+			currentAgent = built;
 			return built;
 		};
 		return {
@@ -1720,6 +1781,8 @@ async function main(): Promise<void> {
 			reloadExtensions,
 			/** P36a: this workspace's background commands. */
 			background,
+			/** P37a: this workspace's permission rules (undefined in the gateway). */
+			permissions,
 			isProjectTrusted: () => projectTrusted,
 			/** Agents built later (session switches) use this mode; only for a workspace opened with one. */
 			setPermissionMode: (next: PermissionMode) => {
@@ -1784,8 +1847,6 @@ async function main(): Promise<void> {
 					for (const diagnostic of loaded.diagnostics) console.error(`mcp: ${diagnostic}`);
 					return withOAuth(loaded.servers, userHome());
 				},
-				isAlwaysAllowed,
-				recordAlwaysAllow,
 				modelDisplay,
 				modelChoices,
 				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
@@ -1796,6 +1857,12 @@ async function main(): Promise<void> {
 	}
 	const workspace: Workspace = await openWorkspace({ cwd, ui, onApproval });
 	const { extensions, sessionRepo, shell, buildAgent, reloadExtensions } = workspace;
+	// settings' permissions.defaultMode (P37a), unless --permission-mode or the env chose.
+	if (!explicitMode && workspace.permissions) {
+		const { mode: settingsMode, warnings } = workspace.permissions.defaultMode();
+		for (const warning of warnings) console.error(dim(`permissions: ${warning}`));
+		if (settingsMode) permissionMode = settingsMode;
+	}
 	// P36c (pi): `@file` arguments and messages given as words on the command line.
 	const messages = resolveExtensionFlags(extensions, options.extras).messages;
 	if ((options.mode === "rpc" || options.mode === "json") && messages.length > 0) {

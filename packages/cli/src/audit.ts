@@ -8,7 +8,13 @@
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { type AssistantMessage, createDefaultPolicy, type Extension, type RiskLevel } from "@yophon/tau-kernel";
+import {
+	type AssistantMessage,
+	createDefaultPolicy,
+	type Extension,
+	type RiskLevel,
+	type ToolPolicy,
+} from "@yophon/tau-kernel";
 import { maskSecrets } from "./secrets.ts";
 
 export const AUDIT_KEEP_DAYS = 30;
@@ -35,6 +41,9 @@ export type DecisionSource =
 	| "hook"
 	/** P35: a hook approved the call (PreToolUse permissionDecision allow, PermissionRequest allow). */
 	| "hook_allow"
+	/** P37a: a permission rule allowed or denied the call. */
+	| "rule_allow"
+	| "rule_deny"
 	| "no_approver";
 
 interface Base {
@@ -65,7 +74,7 @@ export interface ToolRecord extends Base {
 	name: string;
 	risk?: RiskLevel;
 	summary?: string;
-	decision: { source: DecisionSource; by?: string };
+	decision: { source: DecisionSource; by?: string; rule?: string };
 	external?: boolean;
 	durationMs?: number;
 	ok: boolean;
@@ -159,15 +168,23 @@ export class AuditLedger {
 	}
 }
 
+/** How one call was decided; `rule` is the permission rule that did, if one did (P37a). */
+interface Decision {
+	source: DecisionSource;
+	by?: string;
+	risk?: RiskLevel;
+	rule?: string;
+}
+
 /** Who decided each approval, by tool call id: the host's approval wrapper writes, the audit reads. */
 export class ApprovalLog {
-	private readonly decisions = new Map<string, { source: DecisionSource; by?: string; risk?: RiskLevel }>();
+	private readonly decisions = new Map<string, Decision>();
 
-	record(toolCallId: string, decision: { source: DecisionSource; by?: string; risk?: RiskLevel }): void {
+	record(toolCallId: string, decision: Decision): void {
 		this.decisions.set(toolCallId, decision);
 	}
 
-	take(toolCallId: string): { source: DecisionSource; by?: string; risk?: RiskLevel } | undefined {
+	take(toolCallId: string): Decision | undefined {
 		const decision = this.decisions.get(toolCallId);
 		this.decisions.delete(toolCallId);
 		return decision;
@@ -198,6 +215,7 @@ export function summarizeToolArgs(name: string, args: Record<string, unknown>, m
 /** How a call that never ran ended, from its result text (the kernel's wording, tool-batch.ts). */
 export function classifyRefusal(text: string): DecisionSource {
 	if (text.startsWith("Tool call blocked:")) return "hook";
+	if (/\(deny rule(?: in [^)]*)?\)$/.test(text)) return "rule_deny";
 	if (text.includes("no approval handler is available")) return "no_approver";
 	return "policy_deny";
 }
@@ -240,7 +258,11 @@ export function createAuditExtension(context: AuditContext): Extension {
 				name: entry.name,
 				...(risk ? { risk } : {}),
 				...(entry.summary !== undefined ? { summary: entry.summary } : {}),
-				decision: { source, ...(decided?.by ? { by: decided.by } : {}) },
+				decision: {
+					source,
+					...(decided?.by ? { by: decided.by } : {}),
+					...(decided?.rule ? { rule: decided.rule } : {}),
+				},
 				...(isExternal(entry.name) ? { external: true } : {}),
 				durationMs: Date.now() - entry.startedAt,
 				ok,
@@ -475,6 +497,28 @@ export function startOfToday(now = Date.now()): number {
 	const date = new Date(now);
 	date.setHours(0, 0, 0, 0);
 	return date.getTime();
+}
+
+/**
+ * A policy that tells the ledger when a permission rule decided a call (P37a):
+ * allowed by an allow rule, or denied by a deny rule.
+ */
+export function auditedPolicy(policy: ToolPolicy, log: ApprovalLog): ToolPolicy {
+	return {
+		assess(call, mode) {
+			const decision = policy.assess(call, mode);
+			const rule = decision.rule;
+			if (rule && call.toolCallId && (rule.kind === "deny" || decision.action === "allow")) {
+				log.record(call.toolCallId, {
+					source: rule.kind === "deny" ? "rule_deny" : "rule_allow",
+					risk: decision.risk,
+					rule: rule.source ? `${rule.text} (${rule.source})` : rule.text,
+				});
+			}
+			return decision;
+		},
+		deniesTool: (toolName) => policy.deniesTool?.(toolName) ?? false,
+	};
 }
 
 /** A handler's own word on how it decided ("always allow" = for the session), read once by auditedApproval. */

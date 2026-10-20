@@ -9,6 +9,14 @@
  * pattern exhaustiveness.
  */
 
+import {
+	canonicalPath,
+	deniesWholeTool,
+	matchPermissionRules,
+	type PermissionRuleKind,
+	type PermissionRules,
+} from "./permission-rules.ts";
+
 /** How much the host trusts the agent. Kernel default: autonomous; interactive hosts should pick supervised. */
 export type PermissionMode = "read-only" | "supervised" | "accept-edits" | "autonomous" | "bypass";
 
@@ -21,6 +29,10 @@ export interface PolicyDecision {
 	action: PolicyAction;
 	/** The rule that fired; feeds approval prompts and deny tool results. */
 	reason?: string;
+	/** The permission rule that decided, when one did (P37a). */
+	rule?: { kind: PermissionRuleKind; text: string; source?: string };
+	/** The built-in protected path a write touches; allow rules never pre-approve these (Claude Code). */
+	protectedPath?: string;
 }
 
 /** A tool call as the policy sees it: name, (hook-rewritten) arguments, and any registration-time risk. */
@@ -35,10 +47,14 @@ export interface ToolPolicyCall {
 	declaredRisk?: RiskLevel;
 	/** The working directory edits are relative to (accept-edits allows edits inside it, P26d). */
 	cwd?: string;
+	/** The call being assessed, for hosts that record which rule decided it (P37a). */
+	toolCallId?: string;
 }
 
 export interface ToolPolicy {
 	assess(call: ToolPolicyCall, mode: PermissionMode): PolicyDecision;
+	/** Whether a whole-tool deny rule takes this tool off the model's list (Claude Code). */
+	deniesTool?(toolName: string): boolean;
 }
 
 /** Handed to AgentOptions.onApproval (and, by default, UiCapability.confirm) when a call needs approval. */
@@ -48,6 +64,10 @@ export interface ApprovalRequest {
 	args: Record<string, unknown>;
 	risk: RiskLevel;
 	reason?: string;
+	/** The ask rule that forced the approval, if one did (P37a). */
+	rule?: { kind: PermissionRuleKind; text: string; source?: string };
+	/** The built-in protected path a write touches (no "always allow" for it). */
+	protectedPath?: string;
 	/** Set for a call another tool made (ctx.executeTool), e.g. from a codemode script. */
 	parentToolCallId?: string;
 	/** The subagent that made the call (AgentSpawnOptions.label, P26b). */
@@ -96,6 +116,9 @@ export const DEFAULT_PROTECTED_PATHS: readonly string[] = [
 	".env*",
 	"~/.tau/trust.json",
 	"~/.tau/permissions.json",
+	// Permission rules live here (P37a): the model may not quietly widen its own permissions.
+	".tau/settings.json",
+	".tau/settings.local.json",
 ];
 
 interface DangerousPattern {
@@ -150,18 +173,16 @@ const WRITE_TOOLS = new Set(["write", "edit"]);
 /** Tools accept-edits allows without asking (inside the working directory, off protected paths). */
 const ACCEPT_EDITS_TOOLS = new Set(["write", "edit", "memory_write"]);
 
-function normalizePath(path: string): string {
-	return path
-		.replace(/\\/g, "/")
-		.replace(/^([A-Za-z]):/, (_match, drive: string) => `${drive.toLowerCase()}:`)
-		.replace(/\/+$/, "");
-}
-
-/** Whether a target path stays inside `cwd`: relative without escaping, or absolute under it. */
+/**
+ * Whether a target path stays inside `cwd`: relative without escaping, or absolute
+ * under it. Paths are compared in canonical form (P37a): `.`/`..` folded, and on
+ * Windows the Git Bash, WSL and Cygwin spellings (`/d/…`, `/mnt/d/…`,
+ * `/cygdrive/d/…`) read as the drive path, case-insensitively.
+ */
 export function isInsideCwd(path: string, cwd: string | undefined): boolean {
-	const target = normalizePath(path);
-	const absolute = target.startsWith("/") || /^[a-z]:/.test(target);
-	if (!absolute) {
+	const target = path.replace(/\\/g, "/");
+	const absolute = target.startsWith("/") || /^[A-Za-z]:/.test(target);
+	if (!absolute && !cwd) {
 		let depth = 0;
 		for (const segment of target.split("/")) {
 			if (segment === "..") depth--;
@@ -171,11 +192,19 @@ export function isInsideCwd(path: string, cwd: string | undefined): boolean {
 		return true;
 	}
 	if (!cwd) return false;
-	const base = normalizePath(cwd);
-	const caseFold = /^[a-z]:/.test(base);
-	const a = caseFold ? target.toLowerCase() : target;
-	const b = caseFold ? base.toLowerCase() : base;
-	return a === b || a.startsWith(`${b}/`);
+	const base = canonicalPath(cwd, undefined);
+	const resolved = canonicalPath(path, cwd);
+	return resolved === base || resolved.startsWith(base === "/" ? "/" : `${base}/`);
+}
+
+/** Inside the working directory or one of the additional working directories (P37a). */
+function isInsideWorkingDirectories(path: string, cwd: string | undefined, extra: readonly string[]): boolean {
+	if (isInsideCwd(path, cwd)) return true;
+	return extra.some((dir) => {
+		const base = canonicalPath(dir, cwd);
+		const resolved = canonicalPath(path, cwd);
+		return resolved === base || resolved.startsWith(`${base}/`);
+	});
 }
 const BASH_TOOLS = new Set(["bash"]);
 
@@ -212,13 +241,31 @@ function probeStrings(args: Record<string, unknown>, keys: readonly string[]): s
 	return found;
 }
 
+export interface DefaultPolicyOptions {
+	/** Appended to DEFAULT_PROTECTED_PATHS. */
+	protectedPaths?: string[];
+	/** Appended to the built-in dangerous bash patterns. */
+	dangerousPatterns?: RegExp[];
+	/** Permission rules (P37a), read on every assess so edited settings apply from the next call. */
+	rules?: () => PermissionRules;
+	/** Extra roots that count as inside the working directory for accept-edits (P37a). */
+	workingDirectories?: () => readonly string[];
+	/** The home directory "~/" in rules resolves to. */
+	home?: string;
+}
+
 /**
  * The default static policy: read tools are low; write/edit are medium unless
  * the target hits a protected path (high); bash is medium unless the command
  * matches a dangerous pattern (high); unknown tools take their declared risk,
  * defaulting to medium. Options append to (never replace) the built-in lists.
+ *
+ * Permission rules (P37a, Claude Code) come first: deny denies and ask asks in
+ * every mode; allow allows in supervised, accept-edits and autonomous (dangerous
+ * commands included), except writes to protected paths, and does not lift
+ * read-only. Without a matching rule the mode × risk matrix decides.
  */
-export function createDefaultPolicy(options?: { protectedPaths?: string[]; dangerousPatterns?: RegExp[] }): ToolPolicy {
+export function createDefaultPolicy(options?: DefaultPolicyOptions): ToolPolicy {
 	const protectedEntries = [...DEFAULT_PROTECTED_PATHS, ...(options?.protectedPaths ?? [])].map((entry) => ({
 		entry,
 		segments: pathSegments(entry),
@@ -228,14 +275,18 @@ export function createDefaultPolicy(options?: { protectedPaths?: string[]; dange
 		...(options?.dangerousPatterns ?? []).map((pattern) => ({ pattern, label: "custom dangerous pattern" })),
 	];
 
-	const classify = (call: ToolPolicyCall): { risk: RiskLevel; reason?: string } => {
+	const classify = (call: ToolPolicyCall): { risk: RiskLevel; reason?: string; protectedPath?: string } => {
 		if (READ_TOOLS.has(call.toolName)) return { risk: "low" };
 		if (WRITE_TOOLS.has(call.toolName)) {
 			for (const target of probeStrings(call.args, PATH_PROBE_KEYS)) {
 				const segments = pathSegments(target);
 				for (const { entry, segments: entrySegments } of protectedEntries) {
 					if (pathHitsEntry(segments, entrySegments)) {
-						return { risk: "high", reason: `"${target}" touches protected path "${entry}"` };
+						return {
+							risk: "high",
+							reason: `"${target}" touches protected path "${entry}"`,
+							protectedPath: entry,
+						};
 					}
 				}
 			}
@@ -252,17 +303,46 @@ export function createDefaultPolicy(options?: { protectedPaths?: string[]; dange
 		return { risk: call.declaredRisk ?? "medium" };
 	};
 
+	const workingDirectories = (): readonly string[] => options?.workingDirectories?.() ?? [];
+
 	return {
 		assess(call, mode) {
-			const { risk, reason } = classify(call);
+			const { risk, reason, protectedPath } = classify(call);
+			const base: Pick<PolicyDecision, "risk" | "protectedPath"> = {
+				risk,
+				...(protectedPath ? { protectedPath } : {}),
+			};
+			const rules = options?.rules?.();
+			const match = rules
+				? matchPermissionRules(rules, { toolName: call.toolName, args: call.args, cwd: call.cwd, home: options?.home })
+				: undefined;
+			if (match) {
+				const rule = {
+					kind: match.kind,
+					text: match.rule.text,
+					...(match.rule.source ? { source: match.rule.source } : {}),
+				};
+				const from = match.rule.source ? ` in ${match.rule.source}` : "";
+				if (match.kind === "deny") return { ...base, action: "deny", reason: `${rule.text} (deny rule${from})`, rule };
+				if (match.kind === "ask") return { ...base, action: "ask", reason: `${rule.text} (ask rule${from})`, rule };
+				// allow: no say in read-only (still read-only) or bypass (allows anyway); never over protected paths.
+				if (mode !== "read-only" && mode !== "bypass" && !protectedPath) {
+					return { ...base, action: "allow", reason: reason ?? `${rule.text} (allow rule${from})`, rule };
+				}
+			}
 			if (mode === "accept-edits" && risk !== "high" && ACCEPT_EDITS_TOOLS.has(call.toolName)) {
 				const targets = probeStrings(call.args, PATH_PROBE_KEYS);
-				if (targets.every((target) => isInsideCwd(target, call.cwd))) {
-					return { risk, action: "allow", reason };
+				const extra = workingDirectories();
+				if (targets.every((target) => isInsideWorkingDirectories(target, call.cwd, extra))) {
+					return { ...base, action: "allow", reason };
 				}
-				return { risk, action: "ask", reason: reason ?? "edit outside the working directory" };
+				return { ...base, action: "ask", reason: reason ?? "edit outside the working directory" };
 			}
-			return { risk, action: resolvePolicyAction(mode, risk), reason };
+			return { ...base, action: resolvePolicyAction(mode, risk), reason };
+		},
+		deniesTool(toolName) {
+			const rules = options?.rules?.();
+			return rules ? deniesWholeTool(rules, toolName) : false;
 		},
 	};
 }

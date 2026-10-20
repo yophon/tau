@@ -1,7 +1,6 @@
 import type {
 	Agent,
 	AgentMessage,
-	ApprovalRequest,
 	ExtensionRegistry,
 	JsonlSessionRepo,
 	PermissionMode,
@@ -14,6 +13,7 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import type { ClipboardContent } from "./clipboard-read.ts";
+import type { ApprovalPromptRequest } from "./model.ts";
 
 export type ApprovalAnswer = "once" | "always" | "deny";
 
@@ -62,7 +62,7 @@ export interface RunTuiOptions {
 	/** Save a trust decision for this project's resources (/trust); returns the resources it covers. */
 	saveTrust?(trusted: boolean): Promise<string[]>;
 	/** Install the TUI approval prompt into the host's approval loop (P15). */
-	setApprovalPrompt?(prompt: (request: ApprovalRequest) => Promise<ApprovalAnswer>): void;
+	setApprovalPrompt?(prompt: (request: ApprovalPromptRequest) => Promise<ApprovalAnswer>): void;
 	buildAgent(
 		messages: AgentMessage[] | undefined,
 		session: SessionRecorder | undefined,

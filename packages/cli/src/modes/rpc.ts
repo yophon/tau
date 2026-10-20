@@ -72,13 +72,18 @@ export class RpcUiBridge {
 		};
 	}
 
-	/** A tool approval as a select; the structured request rides along in `approval`. */
-	async approve(request: ApprovalRequest): Promise<ApprovalChoice> {
+	/**
+	 * A tool approval as a select; the structured request rides along in `approval`. The option
+	 * strings stay fixed; the title says what "Always allow" does for this call (P37a), and the
+	 * option is left out when only a single approval fits.
+	 */
+	async approve(request: ApprovalRequest & { always?: { label: string } }): Promise<ApprovalChoice> {
 		const who = request.subagent ? ` (subagent ${request.subagent})` : "";
+		const always = request.always ? `. "Always allow" = ${request.always.label}` : "";
 		const response = await this.request({
 			method: "select",
-			title: `${request.toolName} wants to run${who}: ${summarizeArgs(request.args)} (${request.risk} risk)`,
-			options: [...APPROVAL_OPTIONS],
+			title: `${request.toolName} wants to run${who}: ${summarizeArgs(request.args)} (${request.risk} risk)${always}`,
+			options: request.always ? [...APPROVAL_OPTIONS] : APPROVAL_OPTIONS.filter((option) => option !== "Always allow"),
 			approval: {
 				toolCallId: request.toolCallId,
 				toolName: request.toolName,

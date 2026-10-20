@@ -253,6 +253,22 @@ export {
 	withStallTimeout,
 } from "./openai.ts";
 export {
+	bashPatternMatches,
+	canonicalPath,
+	deniesWholeTool,
+	EMPTY_PERMISSION_RULES,
+	matchPermissionRules,
+	mergePermissionRules,
+	type ParsedCommand,
+	type PermissionRule,
+	type PermissionRuleCall,
+	type PermissionRuleKind,
+	type PermissionRuleMatch,
+	type PermissionRules,
+	parsePermissionRule,
+	parseShellCommand,
+} from "./permission-rules.ts";
+export {
 	defaultPlatform,
 	type Platform,
 	type PlatformBodyReader,
@@ -267,6 +283,7 @@ export {
 	type ApprovalRequest,
 	createDefaultPolicy,
 	DEFAULT_PROTECTED_PATHS,
+	type DefaultPolicyOptions,
 	isInsideCwd,
 	type PermissionMode,
 	type PolicyAction,

@@ -13,7 +13,6 @@ import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
-	type ApprovalRequest,
 	type CustomMessage,
 	type ExtensionRegistry,
 	type PermissionMode,
@@ -47,7 +46,14 @@ import { PersistentHistory } from "./input/history.ts";
 import { type PointerEvent, rawKey, takeInputEvents, WHEEL_ROWS } from "./input/mouse.ts";
 import { expandPastes, foldPaste, newPasteStore } from "./input/paste.ts";
 import { BUILTIN_KEYS, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
-import { APPROVAL_OPTIONS, type ApprovalView, initialState, type PickerItem, type TaskKind } from "./model.ts";
+import {
+	type ApprovalPromptRequest,
+	type ApprovalView,
+	approvalOptions,
+	initialState,
+	type PickerItem,
+	type TaskKind,
+} from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
@@ -458,7 +464,7 @@ export class TuiController {
 
 	/** A click on approval option `index`: the same as pressing its number. */
 	clickApproval(index: number): void {
-		if (this.state.approval && index >= 0 && index < APPROVAL_OPTIONS.length) {
+		if (this.state.approval && index >= 0 && index < approvalOptions(this.state.approval.request).length) {
 			this.execute({ type: "approval-choose", index });
 		}
 	}
@@ -781,7 +787,12 @@ export class TuiController {
 
 	private targetAt(y: number): PointerTarget | undefined {
 		const approval = this.layout.approval;
-		if (this.state.approval && approval && y >= approval.top && y < approval.top + APPROVAL_OPTIONS.length) {
+		if (
+			this.state.approval &&
+			approval &&
+			y >= approval.top &&
+			y < approval.top + approvalOptions(this.state.approval.request).length
+		) {
 			return { kind: "approval", index: y - approval.top };
 		}
 		const item = this.listItemAt(y);
@@ -996,7 +1007,7 @@ export class TuiController {
 				if (!state.approval) return;
 				if (state.rejectArmed) {
 					this.disarmReject();
-					this.decideApproval(APPROVAL_OPTIONS.findIndex((option) => option.choice === "deny"));
+					this.decideApproval(approvalOptions(state.approval.request).findIndex((option) => option.choice === "deny"));
 				} else {
 					this.dispatch({ type: "armed", reject: true });
 					this.rejectTimer = setTimeout(() => this.disarmReject(), ARM_WINDOW_MS);
@@ -1975,7 +1986,7 @@ export class TuiController {
 
 	// ── dialogs ──────────────────────────────────────────────────────────────
 
-	requestApproval(request: ApprovalRequest): Promise<ApprovalAnswer> {
+	requestApproval(request: ApprovalPromptRequest): Promise<ApprovalAnswer> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.approvals.set(id, { resolve, detached: request.detached === true });
@@ -2021,7 +2032,7 @@ export class TuiController {
 
 	private decideApproval(index: number): void {
 		const view = this.state.approval;
-		const option = APPROVAL_OPTIONS[index];
+		const option = view ? approvalOptions(view.request)[index] : undefined;
 		if (!view || !option) return;
 		this.disarmReject();
 		if (option.choice === "deny-tell") {
@@ -2053,6 +2064,8 @@ export class TuiController {
 			return;
 		}
 		this.dispatch({ type: "approval-close", id: view.id });
+		// "Allow all edits this session" (P37a): the host switches the agent; the footer follows here.
+		if (option.choice === "always" && view.request.always?.kind === "edits") this.setMode("accept-edits");
 		this.settleApproval(view.id, option.choice === "once" ? "once" : option.choice === "always" ? "always" : "deny");
 	}
 

@@ -76,6 +76,7 @@ export interface GatewayHost {
 		mcp?: boolean;
 		askUser?: false | { freeAnswer?: boolean; unavailable?: () => string | undefined };
 		trustPrompt?: boolean;
+		permissionRules?: boolean;
 		audit?: {
 			host?: AuditHost;
 			approvals?: "terminal" | "chat";
@@ -226,6 +227,8 @@ export async function openConversation(
 		onApproval: hooks.onApproval,
 		sessionDir: join(sessionsDir, segment(key.channel), segment(key.account), segment(key.peer)),
 		permissionMode: policy.permissionMode,
+		// The gateway is parked as it was (2026-10-19): P37 permission rules stay off here.
+		permissionRules: false,
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
 		audit: {

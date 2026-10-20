@@ -619,11 +619,16 @@ export class Agent {
 		return tools;
 	}
 
-	/** The active tools (declared to the model, in registration order); `hidden` tools never are (pi). */
+	/**
+	 * The active tools (declared to the model, in registration order); `hidden` tools
+	 * never are (pi), nor tools a whole-tool deny rule removes (Claude Code, P37a).
+	 */
 	private activeTools(): Map<string, Tool> {
 		const active = new Map<string, Tool>();
 		for (const [name, tool] of this.syncRegistrations()) {
-			if (this.activeNames.has(name) && toolExposure(tool) !== "hidden") active.set(name, tool);
+			if (!this.activeNames.has(name) || toolExposure(tool) === "hidden") continue;
+			if (this.policy.deniesTool?.(name)) continue;
+			active.set(name, tool);
 		}
 		return active;
 	}

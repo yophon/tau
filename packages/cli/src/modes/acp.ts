@@ -26,6 +26,7 @@ import {
 	type UiCapability,
 	type UserContent,
 } from "@yophon/tau-kernel";
+import { openAlwaysOptions } from "../permissions.ts";
 import { stdioServer } from "../secrets.ts";
 import { editPairs } from "../tui/render/tool-views.ts";
 import { HeadlessSession, type HeadlessWorkspace, type ModelSwitch } from "./headless.ts";
@@ -234,8 +235,6 @@ export interface AcpHost {
 	}): Promise<HeadlessWorkspace & { isProjectTrusted(): boolean }>;
 	/** P32b: the ~/.tau/mcp.json servers (and the project's when trusted); the editor's win on a name clash. */
 	configuredMcpServers?(cwd: string, projectTrusted: boolean): McpServerConfig[];
-	isAlwaysAllowed(request: ApprovalRequest): boolean;
-	recordAlwaysAllow(request: ApprovalRequest): void;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
 	resolveModelSwitch?: (requested: string) => ModelSwitch;
@@ -347,8 +346,9 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 			// ACP has buttons but no text input: ask_user offers only the options (P35).
 			askUser: { freeAnswer: false },
 			onApproval: async (request) => {
-				if (host.isAlwaysAllowed(request)) return true;
 				const sessionId = holder.session?.id ?? "";
+				// What "always allow" saves for this call (P37a), or edits for the session.
+				const always = openAlwaysOptions.get(request.toolCallId);
 				const result = (await connection
 					.request("session/request_permission", {
 						sessionId,
@@ -367,13 +367,18 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 						},
 						options: [
 							{ optionId: "allow_once", name: "Allow once", kind: "allow_once" },
-							{ optionId: "allow_always", name: "Always allow", kind: "allow_always" },
+							...(always ? [{ optionId: "allow_always", name: always.label, kind: "allow_always" }] : []),
 							{ optionId: "reject_once", name: "Deny", kind: "reject_once" },
 						],
 					})
 					.catch(() => undefined)) as { outcome?: { outcome?: string; optionId?: string } } | undefined;
 				const choice = result?.outcome?.outcome === "selected" ? result.outcome.optionId : undefined;
-				if (choice === "allow_always") host.recordAlwaysAllow(request);
+				if (choice === "allow_always" && always) {
+					always.apply();
+					if (always.kind === "edits") {
+						update(sessionId, { sessionUpdate: "current_mode_update", currentModeId: "accept-edits" });
+					}
+				}
 				return choice === "allow_once" || choice === "allow_always";
 			},
 		});

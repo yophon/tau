@@ -341,6 +341,7 @@ export class ToolBatchRunner {
 				toolName: toolCall.name,
 				args,
 				declaredRisk: tool.risk,
+				toolCallId: toolCall.id,
 				...(this.host.cwd !== undefined ? { cwd: this.host.cwd } : {}),
 			},
 			this.host.permissionMode,
@@ -350,7 +351,9 @@ export class ToolBatchRunner {
 		if (policyDecision.action === "deny") {
 			return { kind: "immediate", toolCall, result: errorResult(`Denied by policy: ${riskText}`) };
 		}
-		const ask = permission === undefined ? policyDecision.action === "ask" : permission === "ask";
+		// A hook's "allow" skips risk-based approvals but not an ask rule (Claude Code, P37a).
+		const askRule = policyDecision.rule?.kind === "ask";
+		const ask = askRule || (permission === undefined ? policyDecision.action === "ask" : permission === "ask");
 		if (ask) {
 			const handler = this.host.onApproval ?? this.uiApprovalHandler();
 			if (!handler) {
@@ -368,6 +371,8 @@ export class ToolBatchRunner {
 				args,
 				risk: policyDecision.risk,
 				reason: policyDecision.reason,
+				...(policyDecision.rule ? { rule: policyDecision.rule } : {}),
+				...(policyDecision.protectedPath ? { protectedPath: policyDecision.protectedPath } : {}),
 				...parent,
 			};
 			let approved: boolean;
