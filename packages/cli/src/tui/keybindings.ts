@@ -60,7 +60,7 @@ export function keybindingDefinitions(platform: string = process.platform): Reco
 		"tui.editor.undo": { defaultKeys: win32 ? ["ctrl+z", "ctrl+-"] : ["ctrl+-"], description: "Undo" },
 		// Input (pi tui.input.*)
 		"tui.input.newLine": { defaultKeys: ["shift+enter", "ctrl+j"], description: "Insert a newline" },
-		"tui.input.submit": { defaultKeys: ["enter"], description: "Send" },
+		"tui.input.submit": { defaultKeys: ["enter", "ctrl+enter"], description: "Send" },
 		"tui.input.tab": {
 			defaultKeys: ["tab"],
 			description: "Complete; while working, queue a follow-up (Codex)",

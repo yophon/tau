@@ -56,6 +56,7 @@ async function main() {
 		await run("statusline", runStatusLineSmoke);
 		await run("worktree", runWorktreeSmoke);
 		await run("keys", runKeysSmoke);
+		await run("p39", runP39Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -157,7 +158,8 @@ async function runSelectorSmoke(root, baseUrl) {
 		await session.send("/smoke-render", "Enter");
 		await session.waitFor("SMOKE_MESSAGE_RENDERED", 10_000);
 		await session.send("/tree", "Enter");
-		await session.waitFor("SMOKE_ENTRY_RENDERED", 10_000);
+		// P39f: pi's tree shows a custom message as [type]: text (entry renderers are for the transcript).
+		await session.waitFor("[smoke_custom]: custom payload", 10_000);
 		await session.send("Escape");
 		await session.waitFor("Navigation cancelled.", 10_000);
 		await session.send("/fork", "Enter");
@@ -911,12 +913,47 @@ async function runDoubleEscSmoke(root, baseUrl) {
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
 		await sleep(300);
 		await session.send("Escape", "Escape");
-		await session.waitFor("Go back to a message", 10_000);
+		await session.waitFor("Session tree", 10_000);
 		await session.send("Escape");
 		await sleep(200);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok double esc");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P39: /btw answers while a command runs and stays out of the conversation, Ctrl+B moves the
+// command to the background (tmux send-keys passes C-b straight to the pane), /tree draws pi's
+// tree and filters it, /diff outside a repository says so.
+async function runP39Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p39", false);
+	const session = await startTui("p39", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("fg smoke", "Enter");
+		await session.waitFor("SMOKE_FG_START", 10_000);
+		await session.send("/btw what runs?", "Enter");
+		await session.waitFor("SMOKE_BTW_ANSWER", 10_000);
+		await session.send("Escape");
+		await sleep(200);
+		await session.send("C-b");
+		await session.waitFor("SMOKE_FG_MOVED", 10_000);
+		await session.waitFor("1 background command", 10_000);
+		await session.send("/tree", "Enter");
+		await session.waitFor("Session tree", 10_000);
+		await session.send("C-u");
+		await session.waitFor("[user]", 10_000);
+		const tree = await session.capture();
+		if (tree.includes("what runs?")) throw new Error(`The side question reached the session:\n${tree}`);
+		await session.send("Escape");
+		await sleep(200);
+		await session.send("/diff", "Enter");
+		await session.waitFor("Not a git repository.", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok p39");
 	} finally {
 		await session.kill();
 	}
@@ -1348,6 +1385,7 @@ function responseFor(request) {
 		if (content.includes("(deny rule in ")) return textTurn("SMOKE_RULE_DENIED");
 		if (content.includes("Denied by policy")) return textTurn(`SMOKE_APPROVAL_DENIED_${++approvalDenyCount}`);
 		if (content.includes("Question q1 sent")) return textTurn("SMOKE_ASK_CONTINUED");
+		if (content.includes("The user moved this command to the background")) return textTurn("SMOKE_FG_MOVED");
 		if (content.includes("Command running in background with ID: b1")) return textTurn("SMOKE_BG_STARTED");
 		if (content.includes("Command running in background with ID: b2")) return textTurn("SMOKE_BG_SECOND");
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
@@ -1357,7 +1395,10 @@ function responseFor(request) {
 	}
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
+	if (content.includes("<side-question>")) return textTurn("SMOKE_BTW_ANSWER");
 	if (content.includes("which model")) return textTurn(`MODEL_IS_${request.model}`);
+	if (content.includes("fg smoke"))
+		return toolCallTurn("bash", { command: "echo SMOKE_FG_START; sleep 30; echo SMOKE_FG_END" });
 	if (content.includes("rules smoke")) return toolCallTurn("write", { path: ".env", content: "X=1" });
 	if (content.includes("[Answer q1]") && content.includes("user selected 2. SMOKE_OPT_B"))
 		return textTurn("SMOKE_ANSWER_GOT_B");

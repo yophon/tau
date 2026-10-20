@@ -162,7 +162,8 @@
 | 自定义状态栏 | ✅ P37c | pi 是写 footer 的示例扩展（`status-line.ts`）；tau 照抄 Claude Code 的 `statusLine` 命令（字段名、触发、防抖），显示在内置状态行上面 |
 | worktree | ✅ P37d | pi 没有（只在 footer 与 AGENTS.md 去重里认 worktree，tau 两处都照抄）；`tau --worktree` 照抄 Claude Code |
 | 按键拆分与解析（`StdinBuffer`、`parseKey`、kitty 键盘协议） | ✅ P38a | 照抄完整序列拆分（括号粘贴整段、跨读入等待、50 毫秒放弃）与按键解析（传统 VT、xterm 修饰参数、CSI-u、modifyOtherKeys）、kitty 协商。偏离：Windows Terminal 里照 Claude Code 开 win32-input-mode 并先转成 VT（pi 在 Windows 上用自带的 .node 判断 Shift）；一次读入里文字后的 LF 当回车（未进原始模式时敲的整行） |
-| 编辑器按键（`keybindings.ts` 缺省表）、撤销、kill ring、历史草稿 | ✅ P38a | 照抄缺省键（Home/End、Delete、Ctrl/Alt+←→、Alt+Backspace、Alt+D、Ctrl+Y、Alt+Y、Ctrl+-，Windows 上 Ctrl+Z）、撤销把一个词算一步、连续删除累积、进入历史时保存草稿、往上翻光标放开头、按词移动用 `word-navigation.ts` 的分词（`Intl.Segmenter`，中文按词，粘贴标记整块）、发送后清空撤销栈。不做 keybindings.json（记进 Backlog E） |
+| 编辑器按键（`keybindings.ts` 缺省表）、撤销、kill ring、历史草稿 | ✅ P38a | 照抄缺省键（Home/End、Delete、Ctrl/Alt+←→、Alt+Backspace、Alt+D、Ctrl+Y、Alt+Y、Ctrl+-，Windows 上 Ctrl+Z）、撤销把一个词算一步、连续删除累积、进入历史时保存草稿、往上翻光标放开头、按词移动用 `word-navigation.ts` 的分词（`Intl.Segmenter`，中文按词，粘贴标记整块）、发送后清空撤销栈 |
+| `keybindings.json`（`KeybindingsManager`） | ✅ P39e | 照抄文件位置（`~/.tau/keybindings.json`）、平铺格式、pi 的动作名、用户条目替换缺省键、冲突检查、`/reload` 重读。tau 自己的动作用新名字（`app.permissionMode.cycle`、`app.history.search`、`app.redraw`、`app.task.background`）；缺省键保持 tau 原来的（Shift+Tab 切权限档、Ctrl+L 重画，pi 是切思考等级、选模型）。不做旧名字迁移（pi 的 `KEYBINDING_NAME_MIGRATIONS`，tau 没有旧文件）；加 Claude Code 的 `/keybindings` 创建并打开文件 |
 | 硬件光标定位（`CURSOR_MARKER`） | ✅ P38a | 照抄：标记找出插入点，每帧把真光标放过去（输入法候选框跟着走）。偏离：标记是包住光标那一格的 OSC 8 链接（pi 用零宽字符；Ink 的格子里零宽字符各占一格）。只在全屏（inline 的光标归 Ink） |
 | 粘贴折叠（10 行或 1000 字）、整块标记 | ✅ P38a | 照抄阈值与整块移动、删除；外部编辑器拿到展开后的内容。标记文字沿用 tau 的 `[Pasted #n · N lines]` |
 | `@` 文件补全（每次重列、目录、带引号路径）、Tab 补全路径 | ✅ P38a | 照抄行为；不调 fd，用 `git ls-files` 或遍历目录，在每个新的 `@` 时重列 |
@@ -170,7 +171,8 @@
 | 编辑结果 `details.diff` 与渲染（带行号、词级高亮）、write 预览 | ✅ P38b | 照抄 generateDiffString 的格式与四行上下文、renderIntraLineDiff 的反色、write 默认 10 行。偏离：内核无依赖，只对改到的行做 LCS（结果与 pi 用 `diff` 包一致） |
 | 流式工具参数（`toolcall_delta`） | ✅ P38b | tau 的事件名 `tool_call_delta`（内核事件扁平，D21）；带 index、名字、到目前为止的参数文本；扩展照常在 `message_update` 里收到 |
 | 代码高亮（highlight.js 10.7.3） | ✅ P38b | 照抄版本、预加载的语言、作用域到颜色的映射（换成 Ink 颜色名）、不自动检测语言。正在生成的内容先不高亮（P38d） |
-| 会话树回到用户消息之前（`navigateTree` 的 `editorText`） | ✅ P38c | 照抄：用户或自定义消息作目标时叶子移到父节点，原文回到输入框；切换前问「Summarize branch?」（No summary 在前）。列表从最新的消息开始 |
+| 会话树回到用户消息之前（`navigateTree` 的 `editorText`） | ✅ P38c | 照抄：用户或自定义消息作目标时叶子移到父节点，原文回到输入框；切换前问「Summarize branch?」（No summary 在前） |
+| 会话树选择器（`tree-selector.ts`） | ✅ P39f | 照抄展开与缩进规则、分叉线与折叠标记、当前分支排前面并标 `•`、默认视图隐藏的条目、五种过滤与循环、搜索、折叠与跳到分支起点、标签与标签时间、复制、从当前叶子打开、上下到头绕回。偏离：tau 日志的 `leaf` 与系统声明任何过滤都不显示；没有横向平移、不上色；改标签时选择器先收起、在输入框里问，答完再回到树 |
 | alt-screen 差量重画 | ✅ P38d | 照抄只写变了的行；改变窗口大小、交出终端、Ctrl+L、清屏后整屏重画 |
 | 内置工具 grep、find、ls | ✅ P26a | 参数、输出、上限提示照抄 pi 1.2.0。偏离：纯 ES 走 FileSystem，不调 rg/fd、不自动下载（D32）；单文件超过 1 MB 跳过 |
 | edit 的 `edits[]`、read 读图片 | ✅ P26a、P36d | 照抄 pi 1.x 的多段替换与 promptGuidelines；保留单对 oldText/newText。read 图片：按文件头识别（含 BMP），经宿主的 `ImageProcessor` 转格式、缩放（pi 的参数与 photon，P36d），模型不收图片时加 pi 的说明；路径去掉开头的 `@`（pi）与首尾引号（tau 补充）。没有处理器的宿主仍是超过 5 MB 拒读 |

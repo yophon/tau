@@ -4,6 +4,48 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P39)
+- CLI TUI: `/diff` shows the uncommitted changes (against HEAD, staged ones
+  too) and every untracked file, in the transcript and never to the model
+  (Codex's /diff).
+- CLI TUI: `/btw <question>` asks a side question about the conversation, also
+  while the agent works: no tools, not added to the conversation or the
+  session log, answered in an overlay above the input (Space/Enter/Esc close,
+  ↑↓ scroll, Shift+←→ or `[` `]` step between answers, `c` copies, `x` clears
+  the earlier ones; `/btw` alone reopens it). The newest 20 earlier exchanges
+  go along (Claude Code). kernel: `Agent.askAside` sends it with the same
+  prefix as the next request; its usage is logged as a `usage` entry.
+- CLI TUI: Ctrl+B moves the bash command the model is running in the
+  foreground to the background; a command that reaches its timeout moves
+  there too instead of being stopped (a `sleep` is still stopped). Either way
+  it becomes a background task with an output file that starts with what it
+  printed so far, and its end is reported as before (Claude Code). kernel:
+  `BackgroundShell.run`/`moveToBackground` (optional), `ForegroundOutcome`,
+  `backgroundMovedText`; host-node: `NodeBackgroundShell.run`,
+  `moveToBackground`, `foregroundCount`, `moveOnTimeout`. The gateway keeps
+  stopping commands at their timeout.
+- CLI TUI: `~/.tau/keybindings.json` changes keys, in pi's format and action
+  names (`{ "tui.editor.cursorLineStart": ["home", "ctrl+a"] }`; tau's own
+  actions are `app.permissionMode.cycle`, `app.history.search`, `app.redraw`,
+  `app.task.background`). A user entry replaces that action's defaults; a key
+  given two actions and mistakes are reported; read at start and on
+  `/reload`. `/keybindings` creates the file with every action and opens it
+  in your editor; `/hotkeys`, the `?` panel and the hint line show the keys in
+  force.
+- kernel: `Agent.setLabel(entryId, label)`.
+
+### Changed (P39)
+- CLI TUI: `/tree` (and Esc twice) is pi's tree selector: every entry with its
+  branches drawn, the current branch first and marked •, tool results as one
+  line (`[read: path]`), five filters (Ctrl+D/T/U/L/A, Ctrl+O cycles),
+  folding (Ctrl+←/→), typing to search, Shift+L to label an entry, Shift+T for
+  label times, Ctrl+X to copy one. It opens at the current leaf. Extension
+  entry renderers no longer apply inside it (pi shows `[type]: text`).
+- CLI: memory writes have no size limit any more; the prompt loads the first
+  200 lines or 25 KB of USER.md and MEMORY.md, and a write that nears or passes
+  that reminds the model to tidy up (Claude Code's auto memory).
+  `memory_read` and `/memory` show lines and size.
+
 ### Fixed (P38 review)
 - kernel: the edit diff drops CRLF files' carriage returns (full screen showed
   their rows blank) and treats a final newline as diffLines does (no phantom

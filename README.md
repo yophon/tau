@@ -196,6 +196,12 @@ an empty input lists every shortcut. Edits show their diff, a file being
 written shows while the model writes it, and reasoning folds into one
 "Thought for Ns" line (Ctrl+T or a click opens it). If keys misbehave in an
 unusual terminal, `TAU_KEYBOARD=legacy` turns the extended key reporting off.
+Any key can be changed in `~/.tau/keybindings.json` (pi's format; `/keybindings`
+opens it). `/btw <question>` asks a side question about the conversation while
+the agent works, without tools and without adding it to the conversation;
+Ctrl+B moves a running command to the background (a command that reaches its
+timeout moves there too); `/diff` shows the uncommitted changes; `/tree` draws
+the session with its branches (pi's tree: filters, folding, search, labels).
 
 ### Models
 
