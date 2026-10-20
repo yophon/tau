@@ -1,6 +1,6 @@
 # Phase 37：权限规则、转交新会话、状态栏与 worktree 规格书
 
-> 状态：已确认（2026-10-19）。用户定：安全措施不比 Claude Code、Codex、pi 严（「别管的太严了」）；网关先放着不动；其余按「照抄标准、取最宽」。
+> 状态：已完成（2026-10-20）。真机验收待用户执行；实施偏差见文末「实施记录」。已确认（2026-10-19）：用户定：安全措施不比 Claude Code、Codex、pi 严（「别管的太严了」）；网关先放着不动；其余按「照抄标准、取最宽」。
 > 对应 roadmap 阶段：Phase 37
 > 起因：2026-10-19 用户从 Backlog E 里选了转交新会话（`/handoff`）和受保护路径，并同意加上连按两下 Esc、自定义状态栏、`--worktree`。bash 沙箱推后；预设和内联命令不做（用户：没什么应用场景）。
 
@@ -412,3 +412,29 @@ export interface ToolPolicy {
 - tau 会往仓库的 `info/exclude` 写两行（`**/.tau/settings.local.json`、`/.tau/worktrees/`）。只在本机生效，不进提交；文档写明。
 - 修问题 7 后，已信任且有 `.tau/mcp.json` 的项目会被重问一次信任。
 - `fresh` 起点首次可能要等最多 5 秒的 fetch。
+
+## 实施记录
+
+提交：c4c3c71、d9faaa4（37a 权限规则）、77982e3（37b `/handoff`、未提交改动提醒、连按 Esc）、065dcd9（37c 状态栏）、085f691（37d worktree）、51f49c9（审查修复与 smoke-tui 场景）、e58c041（pack smoke 布局）。
+
+全量 983 个测试，980 通过、3 跳过（Windows 上本来就跳过的三项）；check、pack smoke、smoke:browser、smoke:quickjs（含 legacy）通过；smoke-tui 新增 permissions、handoff、double-esc、statusline、worktree 五个场景，全部三十一个场景在全屏与 inline 下各跑一遍都通过。新增测试：内核规则 15（`permission-rules.test.ts`）、会话 `parentSession` 1；CLI 规则与命令 13（`p37.test.ts`）、e2e 6（规则与 `--allowed-tools`、`--disallowed-tools`、`--add-dir`、旧 permissions.json 迁移、`.tau/mcp.json` 信任门、`--worktree`）、TUI 9（`tui-p37.test.ts`）、状态栏 7、worktree 8（真实 git 仓库）。
+
+真 DeepSeek（官方 `deepseek-flash`，scratchpad `p37real.mjs`）：`-p` 下 deny `Edit(.env*)` 拦下写 `.env`，模型照实转述规则、没有绕道；allow 规则放行 `node` 与写 `notes.md`，没有规则的 `ls` 照常要审批；RPC 里对 `git status --short` 选「总是允许」，存下 `Bash(git status *)` 与 `info/exclude` 一行；`/handoff` 生成的提示有 Context、Files involved、Task，内容对得上前面的对话；`--worktree real -p` 下模型在 worktree 里建文件，分支是 `worktree-real`，主仓库没有这个文件。
+
+与规格的偏差与补充：
+
+- **`/permissions`、`/add-dir` 只写了一份**：做成只用 `UiCapability` 的扩展命令，TUI 里是选择器、REPL/RPC/ACP 各用自己的界面，没有界面时输出文字。规格写的是 TUI 交互版加其他宿主的文字版，现在两者是同一份代码。
+- **「总是允许」**：被 ask 规则要求的审批不给这一项（存下的 allow 越不过 ask）；`Allow all edits this session` 只在 supervised 档出现，并且只改这个会话（不改宿主的档位，ACP 的其他会话不受影响）；本地设置文件不是合法 JSON 时只给单次；标签超过 100 字截断显示，存的规则是完整的。RPC 在不适用时不列「Always allow」（字符串本身没改）。
+- **shell 解析补充**（审查发现，照 bash 的语义）：here-document 正文是数据，带引号正文里的撇号不再让命令解析失败；没加引号的正文与 `$(( … ))` 里的命令替换照样检查；`/dev/null` 等不算写入目标；完全一致的规则按空白归一比较（引号里多个空格、换行的命令也能匹配）；fetch 的主机用 URL 解析器取（与 fetch 一致），裸引擎退回正则。
+- **Read 的 deny 也拦 edit、write**：规格写了，第一版漏了，审查补上。
+- **保护路径折叠 `..`**：`.tau/x/../settings.local.json` 原来能绕过保护名单（审查发现）。
+- **设置文件不是合法 JSON**：它的规则都不生效并在诊断里说明；tau 不改写它，旧 permissions.json 的迁移也等它修好再做。
+- **worktree 的「新提交」**改为「只有这个 worktree 有的提交」（HEAD 或分支能到达、其他分支/远端/标签都到不了），不再按起点数：按起点数时，复用旧分支或分离 HEAD 会让有提交的 worktree 被不问就删掉（审查用真实 git 复现）。`fresh` 重开时只在 HEAD 是最新默认分支的祖先时才重置。自动起名把分支还在的名字也算占用。主仓库从 `git worktree list` 取（分离 git 目录、bare 仓库各有退路）。`symlinkDirectories` 建的链接不算改动（macOS、Linux 上 `node_modules/` 规则匹配不到符号链接）。
+- **退出时的问题在 TUI 关掉之后问**（终端里的一行问答），不在 TUI 里弹。Ink 卸载时会 unref stdin，问之前要重新 ref，否则 Node 直接退出（smoke 撞出来的）。
+- **刚建好的 worktree 没用上**（参数错误等导致 tau 在开始会话前退出）：自动起名、没有改动的会删掉。规格没写，审查补上。
+- **路径参数**：`--add-dir`、`@file`、`--session` 在进入 worktree 之前按启动目录解析；`--add-dir ~` 也认。信任继承按真实路径比较（Windows 上盘符大小写不同也认）。
+- **ACP 读 `defaultMode`**：每个会话打开时套用（之前只在 CLI 主路径生效）。
+- **连按 Esc**：真终端里两次很快的 Esc 是同一块 `\x1b\x1b`，Ink 会当成一个键；stdin 过滤层把它拆开（审批的「再按一次 Esc 拒绝」也受益）。只有空白的输入框按 Esc 直接清空，不进历史、不计入连按。
+- **handoff 的输出上限**按上下文窗口缩小（与压缩摘要相同的 `compactionSettingsForWindow`）；模型返回空提示时说明失败。
+- **状态栏**：`statusLineInput` 拆到没有依赖的 `statusline-input.ts`（TUI 不必加载 host-node）。
+- **已知问题（与 P37 无关，登记技术债 #21）**：一块输入里有两个方向键（按住 ↓ 或终端合并发送）时只处理第一个。

@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-19（P37 规格确认；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
+> 最后更新：2026-10-20（P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -311,9 +311,11 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量测试、check、pack smoke（新增 host-node 从发布包缩图与跑后台命令）通过；smoke-tui 新增 background 场景，全部二十六个场景在全屏和 inline 下各跑一遍都通过。真 DeepSeek（官方 `deepseek-flash`）验收：后台启动服务器、读输出文件拿端口、`curl`、`task_stop`；`read` 看 4000×3000 的图（缩成 2000×1500，模型答对形状、颜色并换算坐标）；`@shot.png` 答对。验收中发现并照 pi 修了 OpenAI 兼容线上工具结果图片被换成 `[image omitted]`；models.json 的 `input` 现在也用到请求上（没写 = 只收文字，pi 同）；内核加了 pi 的扩展间事件总线 `api.events`。D39。真机验收待用户执行（Windows 上真实的 Alt+V 粘贴截图我这边无权读剪贴板，未能实测）。偏差见规格书「实施记录」。
 
-## Phase 37 🚧 权限规则、转交新会话、状态栏与 worktree
+## Phase 37 ✅ 权限规则、转交新会话、状态栏与 worktree（2026-10-20）
 
 规格书（2026-10-19 确认；安全措施不比 Claude Code、Codex、pi 严，网关不动）：[specs/phase-37-permissions-handoff-worktree.md](specs/phase-37-permissions-handoff-worktree.md)。37a 照抄 Claude Code 的权限规则（`permissions.allow/ask/deny`、`.tau/settings.local.json`、`/permissions`、`--add-dir`、`--allowed-tools`），旧 `permissions.json` 自动转成规则，修 accept-edits 用 `..` 跳出工作目录；37b `/handoff`（pi）、未提交改动提醒（pi，缺省关）、连按两下 Esc（pi）；37c 自定义状态栏（Claude Code 的 `statusLine`）；37d `tau --worktree`（Claude Code）。
+
+**完成记录**：全量 983 个测试，980 通过、3 跳过；check、pack smoke、smoke:browser、smoke:quickjs 通过；smoke-tui 新增五个场景，全部三十一个场景在全屏与 inline 下各跑一遍都通过。真 DeepSeek：deny 规则拦下写 `.env` 且模型照实转述，allow 规则放行命令，RPC 里「总是允许」存成 `Bash(git status *)`，`/handoff` 的提示完整，`--worktree` 下文件只落在 worktree 里。三人审查找出的问题全部修掉，其中 worktree 退出检查原来可能不问就删掉有提交的分支，改为按「只有这个 worktree 有的提交」判断；shell 解析补上 here-document 与算术展开里的命令替换。D40。真机验收待用户执行。偏差见规格书「实施记录」，使用说明见 [permissions.md](permissions.md)、[statusline.md](statusline.md)、[worktrees.md](worktrees.md)。
 
 ## 产品层后续 ⬜ 待定
 
@@ -372,5 +374,6 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 | 19 | 网关每个对话各加载一份扩展（P30） | MCP 服务器按对话各起一套 stdio 进程，对话多时进程数随之增长 | 现由驻留上限（缺省 16）与空闲卸载控制；出现实测瓶颈再做共享连接池 |
 | 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
+| 21 | TUI 一块输入里有多个方向键（按住 ↓、终端合并发送）时只处理第一个（P37 smoke 发现，Esc 已单独拆开） | 长列表里按住方向键移动得比按的次数少 | 在 stdin 过滤层把多个 CSI 键拆开逐个处理 |
 
 （#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

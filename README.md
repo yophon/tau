@@ -38,6 +38,12 @@ inject a small adapter instead of polyfilling globals.
   `web_search`, `ask_user` (questions with options; by default the model
   goes on working and your answer arrives when you give it), and five
   permission modes (read-only, supervised, accept-edits, autonomous, bypass).
+- **Permission rules** — Claude Code's `permissions.allow/ask/deny` in
+  `settings.json` (`Bash(npm test *)`, `Edit(.env*)`,
+  `WebFetch(domain:github.com)`, `mcp__github`): rules copied from Claude
+  Code just work. "Always allow" saves a rule for the project; `/permissions`
+  views and edits them, `--add-dir` / `/add-dir` add working directories.
+  See [docs/permissions.md](docs/permissions.md).
 - **Hooks** — shell commands in `settings.json` at fixed points of a run
   (before and after tools, on approval, when you send a prompt, when a turn
   ends…), in Claude Code's format: block a call, approve it, rewrite its
@@ -51,8 +57,14 @@ inject a small adapter instead of polyfilling globals.
   result comes back as a follow-up). Agents are Markdown definitions (pi's
   format): scout, planner, reviewer and worker ship built in.
 - **Sessions** — pi v3 JSONL format on disk: resume (`--continue`), in-place
-  tree navigation (`/tree`), forking (`/fork`), automatic context compaction
-  with pi's exact algorithm and prompts.
+  tree navigation (`/tree`, or Esc twice), forking (`/fork`), automatic
+  context compaction with pi's exact algorithm and prompts, and `/handoff
+  <goal>` (pi) to start a new session with a prompt that carries over what
+  matters. `tau --worktree [name]` (Claude Code) runs the session in its own
+  git worktree so several can work on one repository at once (see
+  [docs/worktrees.md](docs/worktrees.md)); a custom status line (Claude Code's
+  `statusLine`, [docs/statusline.md](docs/statusline.md)) shows what you want
+  under the input box.
 - **Extensions** — pi-mirrored API: 25+ lifecycle events, tools, slash
   commands, flags, renderers, widgets, shortcuts. Standard packs: subagents,
   MCP client bridges (a zero-dependency pure-`Platform` MCP core, plus a stdio
@@ -345,13 +357,16 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D38)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D40)
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, credentials, OAuth, keeping secrets from the model
 - [docs/audit.md](docs/audit.md) — the audit ledger: what tau did, who approved it, what it cost (`tau audit`)
 - [docs/hooks.md](docs/hooks.md) — user hooks: shell commands at fixed points of a run (Claude Code's format)
+- [docs/permissions.md](docs/permissions.md) — permission rules, "always allow", working directories (Claude Code's format)
+- [docs/statusline.md](docs/statusline.md) — a custom status line (Claude Code's `statusLine`)
+- [docs/worktrees.md](docs/worktrees.md) — `tau --worktree`: a session in its own git worktree
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

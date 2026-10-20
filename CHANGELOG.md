@@ -4,6 +4,52 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P37)
+- kernel: Claude Code permission rules (`parsePermissionRule`,
+  `matchPermissionRules`, `parseShellCommand`, `canonicalPath`):
+  bash patterns over compound and nested commands, gitignore-style paths
+  (Windows spellings folded), `domain:`, MCP names, parameter rules.
+  `createDefaultPolicy` takes `rules`, `workingDirectories` and `home`;
+  `PolicyDecision.rule`/`protectedPath`; `ToolPolicy.deniesTool` takes a
+  wholly denied tool off the wire; `ToolPolicyCall.toolCallId`.
+- kernel: `SessionRepo.create({ parentSession })` (pi newSession);
+  `loadProjectContextFiles` takes `skip`.
+- CLI: `permissions.allow/ask/deny/additionalDirectories/defaultMode` in
+  ~/.tau/settings.json, .tau/settings.json (allow after trust) and the new
+  .tau/settings.local.json; `--allowed-tools`, `--disallowed-tools`,
+  `--add-dir`, `/add-dir`, `/permissions`. "Always allow" saves a project
+  rule (`Bash(npm test *)`, `WebFetch(domain:…)`, MCP names) or, for edits,
+  switches the session to accept-edits. Audit sources `rule_allow`,
+  `rule_deny`. See docs/permissions.md.
+- CLI: `/handoff <goal>` (pi): a prompt carrying what matters into a new
+  session, left in the input box; `/session` shows the parent.
+- CLI TUI: Esc twice on an empty input opens `/tree`
+  (`tui.doubleEscapeAction`: tree, fork, none); Esc on a draft keeps it in
+  history; optional uncommitted-changes question before switching sessions
+  (`session.dirtyRepoGuard`, pi's dirty-repo-guard).
+- CLI TUI: custom status line (Claude Code `statusLine`), `/statusline`.
+  See docs/statusline.md.
+- CLI: `tau --worktree [name]` (Claude Code): worktree and branch under
+  .tau/worktrees, `worktree.baseRef`, `.worktreeinclude`,
+  `worktree.symlinkDirectories`, cleanup on exit. See docs/worktrees.md.
+
+### Changed (P37)
+- CLI: `~/.tau/permissions.json` is migrated to permission rules on first
+  start (`bash` entries become `allow: ["Bash"]`) and renamed
+  `permissions.json.migrated`; "always allow" no longer writes it.
+- kernel: a hook's `permissionDecision: "allow"` no longer skips an ask
+  rule (Claude Code).
+- kernel: accept-edits no longer lets `..` in an absolute path leave the
+  working directory; Git Bash, WSL and Cygwin spellings of the working
+  directory count as inside it.
+- CLI: `.tau/mcp.json` now goes through the project trust gate (it was
+  silently ignored); trusted projects that have one are asked once more.
+- CLI: `.tau/settings.json` and `.tau/settings.local.json` are protected
+  paths (writes always ask).
+- CLI TUI: the branch shows in linked worktrees and repository
+  subdirectories; two Escs arriving in one chunk count as two.
+- CLI: project memory is shared by all worktrees of a repository.
+
 ### Added (P36)
 - kernel: `bash` takes `run_in_background` (and `description`) when the
   host provides a `BackgroundShell`: it returns at once with a task ID and

@@ -239,6 +239,15 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D40：权限规则、worktree 与状态栏照抄 Claude Code，安全措施不比大热项目严（2026-10-19，P37，用户确认）
+
+- **权限规则照抄 Claude Code 的 `permissions`**：`allow`/`ask`/`deny` 的写法、deny → ask → allow 的判定顺序、与档位和钩子的关系、项目文件的 allow 要先信任而 deny/ask 不用、「总是允许」存成项目本地文件里的规则（bash 按命令前缀、WebFetch 按域名、改文件只对会话切 accept-edits）、`--add-dir`、`--allowedTools`/`--disallowedTools`、`/permissions`。规则引擎是纯 ES，放进内核（`permission-rules.ts`），读写设置文件在 CLI。现成的 Claude Code 规则复制过来按原意生效，Claude Code 自己也不生效的写法（`Write(路径)`）照样不生效。
+- **安全措施不比 Claude Code、Codex、pi 严**（用户：「别管的太严了，到时候寸步难行」）。规格审查时提出的几项额外防护都没做，记作已知风险：allow 规则照 Claude Code 放行 tau 归为危险的命令（只有内置保护路径放行不了）；Windows 上交给 cmd.exe 的命令不另写一套拆分；本地设置文件按 Claude Code 的规则判断是否可信，不核对内容；改了设置立即生效，不复核信任摘要；worktree 的信任跟随主仓库。旧的 `~/.tau/permissions.json` 转成等效规则，原来不问的照样不问。
+- **worktree 照抄 Claude Code 的 `--worktree`**：路径、分支名、`baseRef`（缺省 fresh）、重开时的重置、`.worktreeinclude`、`symlinkDirectories`、退出时的清理规则、项目记忆与本地规则按主仓库。没有 `-w` 简写（已是 `--context-window`）。退出时「名字是你给的才问」代替 Claude Code 的「会话有名字才问」：tau 的会话会自动起标题，没法区分。不做在 worktree 里禁止写主仓库（Codex 也没有，限制取最宽）。
+- **状态栏照抄 Claude Code 的 `statusLine`**：配置、输入字段名、触发时机、300 毫秒防抖、新触发取消旧的、只认退出码 0、显示在内置状态行上面。用户设置里的状态栏在未信任的项目里也跑（Claude Code 整个状态栏要先信任；tau 只在项目有资源时才问信任，照抄就等于大多数目录没有状态栏）。
+- **`/handoff`、未提交改动提醒、连按两下 Esc 照抄 pi**（examples/extensions/handoff.ts、dirty-repo-guard.ts、`doubleEscapeAction`）。handoff 生成的提示直接放进新会话的输入框，不另开编辑器对话框；未提交改动提醒缺省关（pi 里是选装扩展），没有界面的宿主不检查。
+- **网关不动**（用户：网关先放着，以后重新考虑）：规则与附加目录在网关里关掉，行为与 P36 时完全一样。
+
 ## D39：后台命令照抄 Claude Code，图片照抄 pi（2026-10-19，P36，用户确认）
 
 - **后台命令照 Claude Code**：pi 没有后台命令（它让用户自己开 tmux）。`bash` 加 `run_in_background`，立即返回编号与输出文件；看输出就用 `read` 读文件，不另设读输出的工具；命令自己结束时作为后续消息告诉模型（与后台子代理同一条路）；`task_stop` 结束；`/tasks` 查看与结束。个数与输出大小不设上限（取最宽）。tau 退出即结束全部后台命令，后台进程不拖住 tau 退出。内核只有 `BackgroundShell` 缝，进程、文件与清理在宿主。

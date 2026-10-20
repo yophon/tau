@@ -2,6 +2,8 @@
 
 在 `settings.json` 里写 shell 命令，tau 运行到对应时机时执行它。格式与 Claude Code 相同（Codex、Gemini CLI、Copilot CLI、Cursor 也采用或兼容这一格式），现成的钩子脚本一般改一下工具名就能用（tau 的工具名是 `bash`、`read`、`edit`、`write` 等，matcher 不分大小写，所以 `Bash`、`Edit|Write` 也能匹配）。
 
+钩子批准调用（`permissionDecision: "allow"`）越不过 `settings.json` 里的 deny 和 ask 规则（P37a，照 Claude Code，见 [permissions.md](permissions.md)）。
+
 钩子读自 `~/.tau/settings.json`；项目里的 `.tau/settings.json` 只在目录受信任之后才读，文件一改就会重新问你。两处写了一模一样的命令只跑一次。改完配置用 `/reload` 或重启生效，`/hooks` 列出已加载的钩子。
 
 ## 写法

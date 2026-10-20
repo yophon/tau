@@ -31,6 +31,11 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   `web_search`、`ask_user`（带选项的提问；缺省模型问完接着干，你什么时候答、
   答案什么时候送到）和五档权限
   （read-only、supervised、accept-edits、autonomous、bypass）。
+- **权限规则**——在 `settings.json` 里写 Claude Code 格式的
+  `permissions.allow/ask/deny`（`Bash(npm test *)`、`Edit(.env*)`、
+  `WebFetch(domain:github.com)`、`mcp__github`），Claude Code 的规则复制过来就能用。
+  审批时点「总是允许」存成这个项目的一条规则；`/permissions` 查看、增删，
+  `--add-dir`、`/add-dir` 增加工作目录。见 [docs/permissions.md](docs/permissions.md)。
 - **钩子**——在 `settings.json` 里写 shell 命令，挂在运行的固定时机（工具执行
   前后、审批时、发出提示时、一轮结束时……），格式与 Claude Code 相同：可以拦下
   调用、批准调用、改参数，或者把类型检查的报错交给模型。见
@@ -41,7 +46,12 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
   并行、串联，或放到后台（做完后结果作为 follow-up 送回）。子代理用 Markdown
   定义（pi 的格式），内置 scout、planner、reviewer、worker。
 - **会话**——磁盘上就是 pi v3 JSONL 格式：恢复（`--continue`）、原地树导航
-  （`/tree`）、分叉（`/fork`）、自动上下文压缩（算法与 prompt 逐字照抄 pi）。
+  （`/tree`，或连按两下 Esc）、分叉（`/fork`）、自动上下文压缩（算法与 prompt
+  逐字照抄 pi），以及 `/handoff <目标>`（pi）：带着和新目标相关的内容开一个新会话。
+  `tau --worktree [名字]`（Claude Code）让会话在单独的 git worktree 里跑，同一个
+  仓库可以同时开几个（见 [docs/worktrees.md](docs/worktrees.md)）；自定义状态栏
+  （Claude Code 的 `statusLine`，见 [docs/statusline.md](docs/statusline.md)）在
+  输入框下面显示你想看的内容。
 - **扩展**——镜像 pi 的扩展 API：25+ 生命周期事件、工具、slash 命令、flags、
   渲染器、widgets、快捷键。标准扩展包：子代理、MCP client 桥（零依赖、纯
   `Platform` 的 MCP 核心，Node 上另加 stdio 传输和 OAuth 登录）、tool_search 与 codemode、
@@ -300,13 +310,16 @@ CLI 从 `~/.tau/extensions/` 加载全局扩展（始终信任），项目扩展
 - [docs/architecture.md](docs/architecture.md)——当前架构、内核代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——阶段计划（P0–P20）：状态、依赖、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D38）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D40）
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
 - [docs/memory.md](docs/memory.md)——长期记忆与会话检索
 - [docs/connectors.md](docs/connectors.md)——MCP 连接器、凭据、OAuth、不给模型看密钥
 - [docs/audit.md](docs/audit.md)——审计账本：做了什么、谁批的、花了多少（`tau audit`）
 - [docs/hooks.md](docs/hooks.md)——用户钩子：在运行的固定时机执行 shell 命令（Claude Code 的格式）
+- [docs/permissions.md](docs/permissions.md)——权限规则、「总是允许」、工作目录（Claude Code 的格式）
+- [docs/statusline.md](docs/statusline.md)——自定义状态栏（Claude Code 的 `statusLine`）
+- [docs/worktrees.md](docs/worktrees.md)——`tau --worktree`：会话在单独的 git worktree 里跑
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 生命周期/钩子对照清单
 
 ## 许可证

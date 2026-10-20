@@ -142,7 +142,7 @@
 | 会话日志为上下文唯一来源、system 消息进转录 | ✅ P22 | D13 补记 ①。偏离两处：before_agent_start 改写的提示落盘（D27）；内核只有一个 section `prompt`（宿主把项目上下文拼进 systemPrompt） |
 | 工具参数 JSON 修复（`repairJson`） | ✅ P21-HF-7 | |
 | 跨模型回放（`transformMessages`） | ✅ P21-HF-6 | 内核共享，Anthropic 扩展同用 |
-| 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | ✅ P21a | 内核 `loadProjectContextFiles(fs, …)` + `renderProjectContext`，CLI `-nc` 关闭、`/reload` 重读。偏离：不识别链接 worktree 的重复文件（内核无 realpath） |
+| 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | ✅ P21a | 内核 `loadProjectContextFiles(fs, …)` + `renderProjectContext`，CLI `-nc` 关闭、`/reload` 重读。嵌套 worktree 的重复文件照抄 pi `findShadowedContextFile`（P37d）：CLI 的 `git-paths.ts` 算出被遮住的主仓库文件，经 `skip` 交给内核（内核无 realpath） |
 | provider 线层事件 | 📍Backlog | `before_provider_headers` 已做（P23d）；`before_provider_request`/`after_provider_response`/`provider_stream_event` 无消费者 |
 | settings 层 | ❌D9 | 见 `getSettings` |
 | 模型库与目录（models.json、modelOverrides、models-store.json） | ❌D21 | 连同 auth.json 一起属于 pi 产品层配置面 |
@@ -155,7 +155,12 @@
 | tool_search（`builtin:tool-search`） | ✅ P24d | `@yophon/tau-ext-tool-search`，照抄 pi 1.2.0（BM25、静态描述、注册即 inactive、激活走 active 集并记进转录）。CLI 静态装配见 P24e |
 | MCP exposure / namespace / `mcp_servers` 段 / 生命周期 | ✅ P24d | 照抄 pi 0.99.2–1.2.0：`exposure`/`toolExposure`、codemode 档注册为 deferred、namespace + aliases + instructions、`CallToolResult` 输出 schema 与 structuredContent、`mcp_servers` 段（4096 字符）、后台连接与首 prompt 等 direct 服务器、`reachesTools` 等待、HTTP 连接重试两次、`tools/list_changed` 撤回为 hidden。偏离：缺省 exposure 为 direct（pi 为 codemode，用户裁定）；`mcp_servers` 段经 before_agent_start 追加进提示，变化时由 P22 的 section diff 记一条新 system 消息；HTTP 的 GET 通知流在 ext-mcp-http 为可选（移动端不留空闲连接）；无 `mcp.json`、`/mcp`、resources 工具 |
 | codemode（`builtin:codemode`） | ✅ P24e | `@yophon/tau-ext-codemode`：照抄 pi 1.2.0 的工具契约、脚本全局、输出约定、`on`/`only` 呈现与 `inlineBudget`、`store()`/`load()`（`codemode-store` 条目）；沙箱精确钉版消费 `@earendil-works/pi-codemode`（D30），纯 ES 入口注入沙箱，`./node` 接 worker 沙箱。CLI 作为 inactive 内置扩展装配，`--tools +codemode` 激活，`codemode.mode`/`inlineBudget` 读 settings.json。偏离：无 `models` 全局（D21）、无约束采样语法（D25）、`image()` 不落临时文件、预算用 `estimateStringTokens`（D19-1）、进度经 onUpdate 文本、内置不可被用户扩展替换 |
-| 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3）；P26d 加 accept-edits 档（yo-agent / Claude Code） |
+| 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3）；P26d 加 accept-edits 档（yo-agent / Claude Code）；P37a 加 Claude Code 的权限规则（`permissions.allow/ask/deny`、`/permissions`、`--add-dir`，D40）。pi 的 protected-paths 示例等于三条 deny 规则 |
+| 转交新会话（pi 示例扩展 `handoff.ts`） | ✅ P37b | 照抄系统提示、请求格式、压缩感知的输入、新会话记 `parentSession`（`SessionRepo.create({ parentSession })` 对应 pi `newSession({ parentSession })`）、提示放进输入框。偏离：TUI 内置命令而非扩展（tau 扩展拿不到开新会话与设输入框）；不另开编辑器对话框 |
+| 未提交改动提醒（pi 示例扩展 `dirty-repo-guard.ts`） | ✅ P37b | 照抄问法与选项；缺省关（`session.dirtyRepoGuard`）。偏离：写在 TUI 与 REPL 的切换命令里，不挂 `session_before_switch`（网关重建会话会被拦）；没有界面时不检查 |
+| `doubleEscapeAction`（tree / fork / none） | ✅ P37b | 照抄取值、缺省 tree、500 毫秒、只在空闲且输入框为空时计。设置名 `tui.doubleEscapeAction`；另照 Claude Code 把 Esc 清掉的草稿存进历史 |
+| 自定义状态栏 | ✅ P37c | pi 是写 footer 的示例扩展（`status-line.ts`）；tau 照抄 Claude Code 的 `statusLine` 命令（字段名、触发、防抖），显示在内置状态行上面 |
+| worktree | ✅ P37d | pi 没有（只在 footer 与 AGENTS.md 去重里认 worktree，tau 两处都照抄）；`tau --worktree` 照抄 Claude Code |
 | 内置工具 grep、find、ls | ✅ P26a | 参数、输出、上限提示照抄 pi 1.2.0。偏离：纯 ES 走 FileSystem，不调 rg/fd、不自动下载（D32）；单文件超过 1 MB 跳过 |
 | edit 的 `edits[]`、read 读图片 | ✅ P26a、P36d | 照抄 pi 1.x 的多段替换与 promptGuidelines；保留单对 oldText/newText。read 图片：按文件头识别（含 BMP），经宿主的 `ImageProcessor` 转格式、缩放（pi 的参数与 photon，P36d），模型不收图片时加 pi 的说明；路径去掉开头的 `@`（pi）与首尾引号（tau 补充）。没有处理器的宿主仍是超过 5 MB 拒读 |
 | `@file` 参数、命令行消息 | ✅ P36c | 照抄 pi file-processor 与 `pi [options] [@files...] [messages...]`：文字文件包成 `<file name>` 内联，图片缩放后附在第一条消息上，空文件跳过、不存在报错退出；第一条消息带上文件，其余依次发。偏离：`-p` 带值（pi 的 `-p` 是开关） |
