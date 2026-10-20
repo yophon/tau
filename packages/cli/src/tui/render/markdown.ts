@@ -39,7 +39,9 @@ export function renderMarkdown(markdown: string, width = 80): StyledLine[] {
 	return markdownItems(markdown, width).map((line) => [...line.prefix, ...line.content]);
 }
 
-export function markdownItems(markdown: string, width = 80): MarkdownItem[] {
+/** `highlight: false` while the text still streams (P38d: highlighting on every token cost a frame). */
+export function markdownItems(markdown: string, width = 80, options: { highlight?: boolean } = {}): MarkdownItem[] {
+	const highlight = options.highlight !== false;
 	const out: MarkdownItem[] = [];
 	let fence: { language: string; lines: string[] } | undefined;
 	let table: string[] = [];
@@ -54,7 +56,9 @@ export function markdownItems(markdown: string, width = 80): MarkdownItem[] {
 	const flushFence = (): void => {
 		if (!fence) return;
 		if (fence.lines.length > 0) {
-			for (const line of highlightCode(fence.lines.join("\n"), fence.language, { color: CODE_COLOR })) {
+			for (const line of highlightCode(fence.lines.join("\n"), highlight ? fence.language : undefined, {
+				color: CODE_COLOR,
+			})) {
 				out.push(item(line.length > 0 ? line : [span("")], bar()));
 			}
 		}

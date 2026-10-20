@@ -231,7 +231,11 @@ function blockOut(block: Block, options: LineOptions): Out {
 			return prefixedRows(prefix, { color: "cyan" }, wrapped(parts, width - strWidth(prefix), colors), colors);
 		}
 		case "assistant":
-			return concat(markdownItems(block.text, options.width).map((line) => hangingRows(line, width, colors)));
+			return concat(
+				markdownItems(block.text, options.width, { highlight: block.done }).map((line) =>
+					hangingRows(line, width, colors),
+				),
+			);
 		case "reasoning":
 			if (options.showReasoning) {
 				return wrapped([{ text: block.text.trim() }], width, colors, { dim: true, italic: true });

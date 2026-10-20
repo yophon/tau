@@ -26,7 +26,29 @@ const str = (args: Record<string, unknown>, field: string): string => {
 
 /** The text to preview: the final result once there is one, else what streamed so far. */
 function outputText(tool: ToolBlock): string {
-	return (tool.result ?? tool.output).replace(/\s+$/, "");
+	return (tool.result ?? tool.output).trimEnd();
+}
+
+/**
+ * The last `n` lines of the output, after "… N more lines" (P38d): taken from the end, so a
+ * command printing megabytes does not split all of it on every frame.
+ */
+function tailOf(tool: ToolBlock, n: number, dim = true): StyledLine[] {
+	return tailText(outputText(tool), n, dim);
+}
+
+function tailText(text: string, n: number, dim = true): StyledLine[] {
+	if (text === "") return [];
+	let total = 1;
+	for (let at = text.indexOf("\n"); at !== -1; at = text.indexOf("\n", at + 1)) total++;
+	if (total <= n) return tail(text.split("\n"), n, dim);
+	let start = text.length;
+	for (let k = 0; k < n; k++) start = text.lastIndexOf("\n", start - 1);
+	const shown = text
+		.slice(start + 1)
+		.split("\n")
+		.map((line) => plainLine(line, dim ? { dim: true } : {}));
+	return [plainLine(`… ${total - n} more lines`, { dim: true }), ...shown];
 }
 
 function outputLines(tool: ToolBlock): string[] {
@@ -61,7 +83,7 @@ function clip(rows: StyledLine[], n: number): StyledLine[] {
 }
 
 function errorBody(tool: ToolBlock, verbose: boolean): StyledLine[] {
-	return tail(outputLines(tool), verbose ? FULL : 3, false).map((line) =>
+	return tailOf(tool, verbose ? FULL : 3, false).map((line) =>
 		line.map((part) => (part.dim ? part : { ...part, color: "red" })),
 	);
 }
@@ -192,11 +214,11 @@ const RENDERERS: Record<string, Renderer> = {
 	},
 
 	bash: (tool, verbose) => {
-		const lines = outputLines(tool).filter((line) => !/^Exit code -?\d+$/.test(line));
-		const body = tail(lines, verbose ? FULL : 5);
+		// The "Exit code N" line the result ends with shows as the red "exit N" below.
+		const body = tailText(outputText(tool).replace(/(^|\n)Exit code -?\d+$/, ""), verbose ? FULL : 5);
 		if (tool.exitCode !== undefined && tool.exitCode !== 0) {
 			body.push(plainLine(`exit ${tool.exitCode}`, { color: "red" }));
-		} else if (tool.status === "error" && tool.exitCode === undefined && lines.length === 0) {
+		} else if (tool.status === "error" && tool.exitCode === undefined && body.length === 0) {
 			body.push(...errorBody(tool, verbose));
 		}
 		return { head: `bash(${firstLine(str(tool.args, "command"), 80)})`, body };
@@ -207,7 +229,7 @@ const RENDERERS: Record<string, Renderer> = {
 		const codeLines = code.split("\n").length;
 		const body: StyledLine[] = [];
 		if (verbose) body.push(...code.split("\n").map((line) => plainLine(line, { color: "cyan" })));
-		body.push(...(tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? FULL : 5)));
+		body.push(...(tool.status === "error" ? errorBody(tool, verbose) : tailOf(tool, verbose ? FULL : 5)));
 		return { head: `codemode(${codeLines} line${codeLines === 1 ? "" : "s"} of JavaScript)`, body };
 	},
 
@@ -234,7 +256,7 @@ const RENDERERS: Record<string, Renderer> = {
 		const head = `subagent(${what})${tool.args.background === true ? " · background" : ""}`;
 		if (tool.status === "error") return { head, body: errorBody(tool, verbose) };
 		// While running: the children's tool calls, one line each; then the answer's first lines.
-		if (tool.result === undefined) return { head, body: tail(outputLines(tool), verbose ? FULL : 6) };
+		if (tool.result === undefined) return { head, body: tailOf(tool, verbose ? FULL : 6) };
 		const answer = (tool.result ?? "").trim().split("\n");
 		const shown = answer.slice(0, verbose ? FULL : 8).map((line) => plainLine(line, { dim: true }));
 		if (answer.length > shown.length)
@@ -288,7 +310,7 @@ const RENDERERS: Record<string, Renderer> = {
 
 	tool_search: (tool, verbose) => ({
 		head: `tool_search(${firstLine(str(tool.args, "query"), 60)})`,
-		body: tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? FULL : 3),
+		body: tool.status === "error" ? errorBody(tool, verbose) : tailOf(tool, verbose ? FULL : 3),
 	}),
 };
 
@@ -331,6 +353,6 @@ export function toolView(tool: ToolBlock, verbose: boolean): ToolView {
 	if (tool.status === "streaming") return streamingView(tool);
 	const renderer = RENDERERS[tool.name];
 	if (renderer) return renderer(tool, verbose);
-	const body = tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? FULL : 5);
+	const body = tool.status === "error" ? errorBody(tool, verbose) : tailOf(tool, verbose ? FULL : 5);
 	return { head: `${displayToolName(tool.name)}(${genericArgs(tool.args)})`, body };
 }

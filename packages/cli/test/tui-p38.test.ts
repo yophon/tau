@@ -623,3 +623,22 @@ describe("P38c sessions and commands", () => {
 		assert.equal(approvalBody(request, 40).length, 30);
 	});
 });
+
+describe("P38d performance", () => {
+	it("inline, what is still being written stays shorter than the screen", async () => {
+		const { liveRows } = await import("../src/tui/app.ts");
+		const text = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n\n");
+		const block = { kind: "assistant" as const, id: "a", text, done: false };
+		const rows = liveRows([block], { width: 80, verbose: false, showReasoning: false, colors: false }, 24).split("\n");
+		assert.equal(rows.length, 10);
+		assert.match(rows[0] ?? "", /^… \d+ more rows above while this is written$/);
+		assert.equal(rows.at(-1), "line 59");
+	});
+
+	it("a grapheme's width is measured once", async () => {
+		const { cellWidth } = await import("../src/tui/input/width.ts");
+		assert.equal(cellWidth("中"), 2);
+		assert.equal(cellWidth("中"), 2);
+		assert.equal(cellWidth("a"), 1);
+	});
+});

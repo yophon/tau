@@ -87,9 +87,14 @@ const INK_CLEAR = /^\x1b\[2J(?:\x1b\[3J)?(?:\x1b\[H|\x1b\[0f)/;
  * does not depend on where the cursor was left (a resize can move it). Empty: nothing to paint.
  */
 export function paintFrame(chunk: string, columns?: number): string {
+	return paintDiff(chunk, columns, undefined).out;
+}
+
+/** Ink's frame as screen rows, and where the caret mark puts the real cursor (P38a, pi). */
+function frameRows(chunk: string): { rows: string[]; caret: string } | undefined {
 	let frame = chunk.replace(INK_CLEAR, "").replace(INK_ERASE, "");
-	if (frame === "") return "";
-	// The caret (P38a, pi): the real cursor ends up there, for the input method's window.
+	if (frame === "") return undefined;
+	// The caret: the real cursor ends up there, for the input method's window.
 	let caret = "";
 	const at = frame.indexOf(CARET_MARK);
 	if (at !== -1) {
@@ -100,29 +105,61 @@ export function paintFrame(chunk: string, columns?: number): string {
 		frame = before + frame.slice(at + CARET_MARK.length);
 		caret = `\x1b[${row};${column}H`;
 	}
-	// Each row clears what an older frame left after it. A row as wide as the screen leaves the
-	// cursor on its last cell, which erasing would wipe (P38b: the boxes lost their right border).
-	const lines = frame.split("\n");
-	const painted = lines
-		.map((row, i) => {
-			if (i === lines.length - 1 && row === "") return row;
-			const full = columns !== undefined && strWidth(stripVTControlCharacters(row)) >= columns;
-			return full ? row : `${row}\x1b[K`;
-		})
-		.join("\n");
-	return `${SYNC_BEGIN}\x1b[H${painted}\x1b[J${caret}${SYNC_END}`;
+	const rows = frame.split("\n");
+	if (rows.at(-1) === "") rows.pop();
+	return { rows, caret };
+}
+
+/**
+ * A frame painted over the previous one (P38d, pi's alt-screen renderer): only the rows that
+ * changed are written, each from its first column; rows the frame no longer has are cleared.
+ * Without a previous frame it paints the whole screen from the corner. Each row clears what
+ * was after it, unless it fills the screen: erasing from the last cell would wipe that cell
+ * (P38b: the boxes lost their right border).
+ */
+export function paintDiff(
+	chunk: string,
+	columns: number | undefined,
+	previous: readonly string[] | undefined,
+): { out: string; rows: string[] | undefined } {
+	const parsed = frameRows(chunk);
+	if (!parsed) return { out: "", rows: previous ? [...previous] : undefined };
+	const { rows, caret } = parsed;
+	const paint = (row: string): string => {
+		const full = columns !== undefined && strWidth(stripVTControlCharacters(row)) >= columns;
+		return full ? row : `${row}\x1b[K`;
+	};
+	if (!previous) {
+		return { out: `${SYNC_BEGIN}\x1b[H${rows.map(paint).join("\n")}\x1b[J${caret}${SYNC_END}`, rows };
+	}
+	let body = "";
+	rows.forEach((row, i) => {
+		if (row !== previous[i]) body += `\x1b[${i + 1};1H${paint(row)}`;
+	});
+	if (rows.length < previous.length) body += `\x1b[${rows.length + 1};1H\x1b[J`;
+	if (body === "" && caret === "") return { out: "", rows };
+	return { out: `${SYNC_BEGIN}${body}${caret}${SYNC_END}`, rows };
 }
 
 /** The stdout Ink draws on in full screen: every write is painted with paintFrame. */
-export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream {
+export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream & { invalidate(): void } {
+	// The rows on screen, for painting only what changed; undefined repaints it all.
+	let onScreen: string[] | undefined;
 	return new Proxy(stdout, {
 		get(target, property) {
+			// After a resize, a hand-over or Ctrl+L the screen is not what we last wrote.
+			if (property === "invalidate") {
+				return () => {
+					onScreen = undefined;
+				};
+			}
 			if (property === "write") {
 				return (chunk: unknown, ...rest: unknown[]) => {
 					const write = (...args: unknown[]) => (target.write as (...a: unknown[]) => boolean).apply(target, args);
 					if (typeof chunk !== "string") return write(chunk, ...rest);
-					const painted = paintFrame(chunk, target.columns);
-					if (painted !== "") return write(painted, ...rest);
+					const painted = paintDiff(chunk, target.columns, onScreen);
+					onScreen = painted.rows;
+					if (painted.out !== "") return write(painted.out, ...rest);
 					const callback = rest.find((arg): arg is () => void => typeof arg === "function");
 					callback?.();
 					return true;
@@ -134,7 +171,7 @@ export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream
 		set(target, property, value) {
 			return Reflect.set(target, property, value, target);
 		},
-	});
+	}) as NodeJS.WriteStream & { invalidate(): void };
 }
 
 /** The view's rows with a scrollbar thumb in the last column: where `top` is in `total` rows. */

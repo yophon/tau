@@ -1232,7 +1232,7 @@ export class TuiController {
 		) {
 			return cache.result;
 		}
-		const computed = computeCompletion(editor.text, editor.cursor, this.completionSources());
+		const computed = this.rawCompletion();
 		const result = computed && computed.token !== menu.suppressedToken ? computed : undefined;
 		this.menuCache = {
 			text: editor.text,
@@ -1243,6 +1243,45 @@ export class TuiController {
 		};
 		return result;
 	}
+
+	/** The completion for the input before Esc's suppression, computed once per input state (P38d). */
+	private rawCompletion(): Completion | undefined {
+		const { text, cursor } = this.state.editor;
+		const last = this.rawCache;
+		if (
+			last &&
+			last.text === text &&
+			last.cursor === cursor &&
+			last.files === this.files &&
+			last.version === this.completionVersion &&
+			last.extensions === this.extensions
+		) {
+			return last.result;
+		}
+		const result = computeCompletion(text, cursor, this.completionSources());
+		this.rawCache = {
+			text,
+			cursor,
+			files: this.files,
+			version: this.completionVersion,
+			extensions: this.extensions,
+			result,
+		};
+		return result;
+	}
+
+	private rawCache:
+		| {
+				text: string;
+				cursor: number;
+				files: unknown;
+				version: number;
+				extensions: unknown;
+				result: Completion | undefined;
+		  }
+		| undefined;
+	/** Bumped when argument completions settle (their results feed the completion). */
+	private completionVersion = 0;
 
 	private completionSources(): CompletionSources {
 		return {
@@ -1274,6 +1313,7 @@ export class TuiController {
 		void result.then(
 			(items) => {
 				this.argumentCache.set(key, items ?? undefined);
+				this.completionVersion++;
 				this.menuCache = undefined;
 				this.syncMenu();
 				this.dispatch({ type: "menu-select", index: this.state.menu.selected });
@@ -1285,7 +1325,7 @@ export class TuiController {
 
 	/** A new token resets the selection and lifts a suppression; `@` loads the file list once. */
 	private syncMenu(): void {
-		const completion = computeCompletion(this.state.editor.text, this.state.editor.cursor, this.completionSources());
+		const completion = this.rawCompletion();
 		const token = completion?.token;
 		if (token !== this.lastToken) {
 			this.lastToken = token;
@@ -1342,8 +1382,9 @@ export class TuiController {
 				void this.searchHistory();
 				return;
 			case "redraw":
-				if (this.fullscreen) this.relayout();
-				else this.redraw();
+				if (!this.fullscreen) this.redraw();
+				else if (this.fullRepaint) this.fullRepaint();
+				else this.relayout();
 				return;
 			case "shortcuts":
 				void this.pick("Keyboard shortcuts", shortcutItems(this.extensions));
@@ -2259,6 +2300,9 @@ export class TuiController {
 	/** Clear the visible screen and the scrollback; <Static> then starts over. */
 	clearScreen(): void {
 		if (this.deps.clearScreen) this.deps.clearScreen();
+		// Full screen paints whole frames: the next one is painted all over (frames otherwise
+		// write only the rows that changed, P38d), without clearing first.
+		else if (this.fullscreen && this.fullRepaint) this.fullRepaint();
 		else process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
 	}
 
@@ -2274,9 +2318,23 @@ export class TuiController {
 		const sync = !this.deps.clearScreen;
 		if (sync) process.stdout.write("\x1b[?2026h");
 		this.clearScreen();
+		this.beforeRedraw?.();
 		this.dispatch({ type: "redraw" });
 		this.store.flush();
 		if (sync) process.stdout.write("\x1b[?2026l");
+	}
+
+	/** Full screen: paint the whole screen again (Ctrl+L), set by the app. */
+	private fullRepaint: (() => void) | undefined;
+	/** Inline: what the app does before the history is written again (Ink's static buffer). */
+	private beforeRedraw: (() => void) | undefined;
+
+	setBeforeRedraw(hook: () => void): void {
+		this.beforeRedraw = hook;
+	}
+
+	setFullRepaint(repaint: () => void): void {
+		this.fullRepaint = repaint;
 	}
 
 	/** Lay the view out again at the current size (full screen: the frame is drawn by the caller). */

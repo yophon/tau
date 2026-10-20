@@ -25,6 +25,19 @@ function BlockRows(props: { block: Block; options: LineOptions }): React.ReactEl
 	return rows.length === 0 ? null : h(Text, null, rows.join("\n"));
 }
 
+/**
+ * What is still being written, kept shorter than the screen (P38d): Ink rewrites the whole
+ * screen and all history each frame once its live area is as tall as the terminal. The rows
+ * cut off here are printed whole when the block finishes.
+ */
+export function liveRows(live: readonly Block[], options: LineOptions, screenRows: number): string {
+	const rows = live.flatMap((block) => blockLines(block, options));
+	const room = Math.max(5, screenRows - 14);
+	if (rows.length <= room) return rows.join("\n");
+	const note = `… ${rows.length - room + 1} more rows above while this is written`;
+	return [options.colors === false ? note : `\x1b[2m${note}\x1b[22m`, ...rows.slice(-(room - 1))].join("\n");
+}
+
 export function App(props: { controller: TuiController }): React.ReactElement {
 	const { controller } = props;
 	const state = useSyncExternalStore(controller.store.subscribe, controller.store.getState);
@@ -51,13 +64,7 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 				return h(BlockRows, { key: block.id, block, options });
 			},
 		}),
-		state.live.length > 0
-			? h(
-					Box,
-					{ key: "live", flexDirection: "column" },
-					...state.live.map((block) => h(BlockRows, { key: block.id, block, options })),
-				)
-			: null,
+		state.live.length > 0 ? h(Text, { key: "live" }, liveRows(state.live, options, stdout?.rows ?? 24)) : null,
 		renderBottom(state, columns, controller.completion()),
 	);
 }
@@ -161,6 +168,8 @@ export function rewrappedRows(frame: string, width: number): number {
 /** The parts of Ink's instance the resize passes need: the frame it drew last, its line counter, its unthrottled render. */
 interface InkFrameState {
 	lastOutput: string;
+	/** Everything <Static> printed; a redraw remounts it, so it is emptied first (P38d). */
+	fullStaticOutput?: string;
 	log: { done(): void };
 	onRender?(): void;
 }
@@ -318,6 +327,11 @@ async function runInline(controller: TuiController, render: InkRender): Promise<
 	// A width change re-wraps the screen under Ink: repaint it all in one synchronized frame.
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
 	const ink = await inkFrameState(process.stdout);
+	// A redraw writes the history again; Ink would otherwise keep the old copy too and write
+	// both whenever its frame fills the screen.
+	controller.setBeforeRedraw(() => {
+		if (ink && typeof ink.fullStaticOutput === "string") ink.fullStaticOutput = "";
+	});
 	const stopRedrawOnResize = takeOverResize(process.stdout, inkListeners, {
 		live: () => {
 			if (!ink) {
@@ -377,7 +391,8 @@ async function runFullscreen(
 	const ink = await inkFrameState(stdout);
 	const repaint = (): void => {
 		// Lay out at the new size, then draw that frame now rather than after Ink's 32 ms render
-		// throttle. Every frame paints the whole screen, so nothing is cleared beforehand.
+		// throttle, the whole screen (frames otherwise write only the rows that changed, P38d).
+		stdout.invalidate();
 		controller.relayout();
 		if (ink?.onRender) {
 			ink.lastOutput = "";
@@ -385,6 +400,7 @@ async function runFullscreen(
 		}
 	};
 	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, repaint);
+	controller.setFullRepaint(repaint);
 	// Handing the terminal over (Ctrl+G, Ctrl+Z): back to the main screen, then in again and repaint.
 	const { leave, enter } = screen;
 	screen.leave = () => {

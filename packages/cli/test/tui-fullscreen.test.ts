@@ -10,6 +10,7 @@ import { readSettings, tuiScreen, writeTuiMode } from "../src/settings.ts";
 import {
 	fullscreenStdout,
 	LEAVE_FULLSCREEN,
+	paintDiff,
 	paintFrame,
 	repaintOnResize,
 	restoreOnExit,
@@ -131,13 +132,35 @@ describe("P33 terminal plumbing", () => {
 	it("paints each Ink frame as the whole screen in one synchronized write, never clearing first", () => {
 		const paint = (rows: string) => `${SYNC_BEGIN}\x1b[H${rows}\x1b[J${SYNC_END}`;
 		// log-update: erase the previous frame line by line, then the frame and a newline.
-		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[Gab\ncd\n"), paint("ab\x1b[K\ncd\x1b[K\n"));
-		assert.equal(paintFrame("first\n"), paint("first\x1b[K\n"));
+		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[Gab\ncd\n"), paint("ab\x1b[K\ncd\x1b[K"));
+		assert.equal(paintFrame("first\n"), paint("first\x1b[K"));
 		// Ink's whole-screen path (clearTerminal, Windows and elsewhere) has no trailing newline.
 		assert.equal(paintFrame("\x1b[2J\x1b[0fab\ncd"), paint("ab\x1b[K\ncd\x1b[K"));
 		assert.equal(paintFrame("\x1b[2J\x1b[3J\x1b[Hab"), paint("ab\x1b[K"));
 		// Only erasing (log.clear): nothing to paint.
 		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[G"), "");
+	});
+
+	it("after the first frame, writes only the rows that changed (P38d, pi); invalidate repaints all", () => {
+		assert.deepEqual(paintDiff("a\nb\nc\n", 80, ["a", "B", "c"]), {
+			out: `${SYNC_BEGIN}\x1b[2;1Hb\x1b[K${SYNC_END}`,
+			rows: ["a", "b", "c"],
+		});
+		// Fewer rows: the rest of the screen is cleared.
+		assert.equal(paintDiff("a\n", 80, ["a", "b"]).out, `${SYNC_BEGIN}\x1b[2;1H\x1b[J${SYNC_END}`);
+		assert.equal(paintDiff("a\n", 80, ["a"]).out, "");
+		const written: string[] = [];
+		const target = { columns: 80, write: (chunk: string) => written.push(chunk) > 0 };
+		const stdout = fullscreenStdout(target as unknown as NodeJS.WriteStream);
+		stdout.write("one\ntwo\n");
+		stdout.write("one\nTWO\n");
+		stdout.invalidate();
+		stdout.write("one\nTWO\n");
+		assert.deepEqual(written, [
+			paintFrame("one\ntwo\n"),
+			`${SYNC_BEGIN}\x1b[2;1HTWO\x1b[K${SYNC_END}`,
+			paintFrame("one\nTWO\n"),
+		]);
 	});
 
 	it("draws Ink's writes through paintFrame and drops the empty ones", () => {

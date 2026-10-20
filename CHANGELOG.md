@@ -4,6 +4,17 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P38d)
+- CLI TUI: grapheme widths are measured once (Ctrl+F over 7,500 Chinese rows:
+  2.5 s → 0.14 s; input layout of 2,000 CJK characters 5.6 → 0.3 ms). Full
+  screen writes only the rows that changed (pi's alt-screen renderer; a spinner
+  tick 5,168 → 67 bytes), repainting all after a resize, a hand-over or Ctrl+L.
+  Text still streaming is highlighted once it finishes (a 1,000-line open code
+  block 107 → 7 ms a frame); a running command's preview takes its tail from
+  the end (100k lines 8 → 2 ms); the completion is computed once per input.
+  Inline, Ink's copy of the history is emptied before a redraw and the live
+  area stays shorter than the screen.
+
 ### Changed (P38c)
 - kernel: `navigateTo` to a user or custom message moves the leaf to its
   parent and returns the message as `editorText` (pi navigateTree; before,

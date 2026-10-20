@@ -13,9 +13,19 @@ export function graphemes(text: string): string[] {
 	return Array.from(segmenter.segment(text), (part) => part.segment);
 }
 
+/**
+ * Cells of graphemes already measured (P38d): string-width per grapheme made a search
+ * over a Chinese conversation take seconds. Text uses a few thousand distinct ones.
+ */
+const WIDTHS = new Map<string, number>();
+
 /** Cells of one grapheme cluster (0, 1 or 2). */
 export function cellWidth(grapheme: string): number {
-	return stringWidth(grapheme);
+	const known = WIDTHS.get(grapheme);
+	if (known !== undefined) return known;
+	const width = stringWidth(grapheme);
+	if (WIDTHS.size < 50_000) WIDTHS.set(grapheme, width);
+	return width;
 }
 
 /** Cells of a whole string; ANSI escapes count as zero. */
