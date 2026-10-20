@@ -4,6 +4,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P38c)
+- kernel: `navigateTo` to a user or custom message moves the leaf to its
+  parent and returns the message as `editorText` (pi navigateTree; before,
+  tau moved to the message itself).
+- CLI TUI: `/tree` (and Esc twice) opens at the newest message, asks pi's
+  "Summarize branch?" (no summary first) and puts the message back in the input
+  box to edit and send again. `/resume` marks the current session, tells same
+  titles apart, renames with Ctrl+R and deletes with Ctrl+D (pi). `/clear` (also
+  `/reset`) starts a new session as in Claude Code; Ctrl+L redraws. One Esc
+  denies an approval; Ctrl+O shows its whole diff or command; an extension's
+  question numbers its options. Slash commands typed while a turn works wait for
+  it ("after this turn"), except the ones that only show something. `?` on an
+  empty input lists the shortcuts. The REPL's `/tree` shows a message's text
+  after going back before it.
+- smoke-tui passes `CI` on to tau (the tmux server's environment lacked it, so
+  an Ink-loads-too-early bug only showed on CI).
+
 ### Added (P38b)
 - kernel: the edit tool's result carries pi's `details.diff` (numbered lines,
   context, `...`) and `firstChangedLine` (`editDiff`). Transports stream a

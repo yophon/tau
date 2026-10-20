@@ -3,7 +3,8 @@
 // kept across history and prompts, Ctrl+C clearing a draft and Ctrl+R (Claude Code),
 // type-to-filter pickers, one Enter running a command, paste markers, path completion.
 // P38b: the edit diff, streaming tool calls, read groups, copying source text, links,
-// the scrollbar.
+// the scrollbar. P38c: back to a message (pi), /resume rename and delete, /clear, one Esc
+// to deny, commands typed mid-turn waiting for it, ? for the shortcuts.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
@@ -13,12 +14,13 @@ import { paintFrame, withScrollbar } from "../src/tui/fullscreen.ts";
 import { acceptCompletion, computeCompletion, fileReference } from "../src/tui/input/completion.ts";
 import * as ed from "../src/tui/input/editor.ts";
 import { type Block, initialState, reduce, type StatusInfo, type ToolBlock } from "../src/tui/model.ts";
+import { approvalBody } from "../src/tui/render/approval.ts";
 import { CARET_MARK } from "../src/tui/render/bottom.ts";
 import { blockLines, groupSummary } from "../src/tui/render/lines.ts";
 import { lineText } from "../src/tui/render/spans.ts";
 import { toolView } from "../src/tui/render/tool-views.ts";
 import { buildTranscript, linkAt, rangeText } from "../src/tui/transcript.ts";
-import { DOWN, ENTER, ESC, harness, UP } from "./tui-harness.ts";
+import { DOWN, deferred, ENTER, ESC, harness, textTool, UP } from "./tui-harness.ts";
 
 const HOME = "\x1b[H";
 const END = "\x1b[F";
@@ -467,5 +469,157 @@ describe("P38b copying and links", () => {
 		const bottom = withScrollbar(rows, 90, 100, 10, 20);
 		assert.ok(bottom[9]?.includes("┃") && !bottom[0]?.includes("┃"));
 		assert.deepEqual(withScrollbar(rows, 0, 5, 10, 20), rows);
+	});
+});
+
+describe("P38c sessions and commands", () => {
+	it("going back to one of your messages puts its text in the input box (pi)", async () => {
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("ANSWER_ONE")), makeSseResponse(textTurn("ANSWER_TWO"))],
+			sessions: true,
+		});
+		try {
+			await h.submit("first question");
+			await h.waitFor((f) => f.includes("ANSWER_ONE") && /Worked for \d/.test(f), "the first answer");
+			await h.submit("second question");
+			await h.waitFor((f) => f.includes("ANSWER_TWO"), "the second answer");
+			await h.waitFor(() => h.controller.state.task === undefined, "the turn to end");
+			await h.submit("/tree");
+			await h.waitFor((f) => f.includes("Go back to a message"), "the tree");
+			// It opens at the newest message on the path.
+			assert.match(
+				h.controller.state.picker?.items[h.controller.state.picker.selected]?.label ?? "",
+				/second question/,
+			);
+			await h.key(ENTER);
+			await h.waitFor((f) => f.includes("Summarize branch?"), "the summary question");
+			await h.key(ENTER); // No summary
+			await h.waitFor((f) => f.includes("Back before that message"), "the move");
+			assert.equal(h.controller.state.editor.text, "second question");
+			assert.deepEqual(
+				h.controller.agent.messages.filter((m) => m.role !== "system").map((m) => m.role),
+				["user", "assistant"],
+			);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("/resume renames with Ctrl+R and deletes with Ctrl+D (pi); the current session stays", async () => {
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("A")), makeSseResponse(textTurn("B"))],
+			sessions: true,
+		});
+		try {
+			await h.submit("hello there");
+			await h.waitFor((f) => /Worked for \d/.test(f), "the answer");
+			await h.submit("/name old name");
+			await h.waitFor((f) => f.includes('Session named "old name"'), "the name");
+			await h.submit("/new");
+			await h.waitFor((f) => f.includes("New session"), "the new session");
+			await h.submit("second chat");
+			await h.waitFor((f) => f.includes("B") && /Worked for \d/.test(f), "the second answer");
+			await h.submit("/resume");
+			await h.waitFor((f) => f.includes("Ctrl+R rename") && f.includes("Ctrl+D delete"), "the picker hints");
+			const picker = h.controller.state.picker;
+			const otherIndex = picker?.items.findIndex((item) => item.label.includes("old name")) ?? -1;
+			assert.ok(otherIndex >= 0, JSON.stringify(picker?.items));
+			assert.equal(picker?.selected, otherIndex, "it opens on a session other than the current one");
+			await h.key("\x12"); // Ctrl+R
+			await h.waitFor(() => h.controller.state.prompt !== undefined, "the name prompt");
+			await h.type("new name");
+			await h.key(ENTER);
+			await h.waitFor((f) => f.includes("new name"), "the renamed session");
+			const sessions = await h.controller.options.sessionRepo.list();
+			assert.ok(sessions.some((session) => session.name === "new name"));
+			// Delete it: confirm with y.
+			const index = h.controller.state.picker?.items.findIndex((item) => item.label.includes("new name")) ?? -1;
+			for (let i = h.controller.state.picker?.selected ?? 0; i < index; i++) await h.key(DOWN);
+			await h.key("\x04"); // Ctrl+D
+			await h.waitFor((f) => f.includes("Delete"), "the confirmation");
+			await h.key("y");
+			// The picker opens again at once, so the "deleted" flash stays under it: read the files.
+			let left = -1;
+			for (let waited = 0; waited < 3000; waited += 20) {
+				left = (await h.controller.options.sessionRepo.list()).length;
+				if (left === 1) break;
+				await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+			assert.equal(left, 1);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("/clear starts a new session with empty context (Claude Code)", async () => {
+		const h = await harness({ responses: [makeSseResponse(textTurn("A"))], sessions: true });
+		try {
+			await h.submit("hello");
+			await h.waitFor((f) => /Worked for \d/.test(f), "the answer");
+			const before = (await h.controller.sessionStore?.getMetadata())?.id;
+			await h.submit("/clear");
+			await h.waitFor((f) => f.includes("New session"), "the new session");
+			assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, before);
+			assert.equal(h.controller.agent.messages.filter((m) => m.role !== "system").length, 0);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("a command typed while a turn works waits for it; one that only shows something runs now", async () => {
+		const gate = deferred();
+		const h = await harness({
+			responses: [makeSseResponse(toolCallTurn("bash", { command: "slow" })), makeSseResponse(textTurn("DONE"))],
+			tools: [textTool("bash", () => gate.promise)],
+		});
+		try {
+			await h.submit("go");
+			await h.waitFor((f) => f.includes("bash(slow)"), "the running tool");
+			await h.submit("/mode read-only");
+			await h.waitFor(() => h.controller.agent.getPermissionMode() === "read-only", "the mode switch, at once");
+			await h.submit("/settings");
+			await h.waitFor((f) => f.includes("after this turn: /settings"), "the waiting command");
+			assert.equal(h.controller.state.picker, undefined);
+			gate.resolve("ok");
+			await h.waitFor((f) => f.includes("DONE"), "the answer");
+			await h.waitFor(
+				() => h.controller.state.picker !== undefined,
+				`the command after the turn (task ${h.controller.state.task}, queued ${JSON.stringify(h.controller.state.queued)})`,
+			);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("? on an empty input lists the shortcuts; typed after text it is text", async () => {
+		const h = await harness({ responses: [] });
+		try {
+			await h.key("?");
+			await h.waitFor((f) => f.includes("Keyboard shortcuts"), "the shortcuts");
+			await h.key(ESC);
+			await h.type("why?");
+			assert.equal(h.controller.state.editor.text, "why?");
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("an extension's question numbers its options: a digit picks one", async () => {
+		const h = await harness({ responses: [] });
+		try {
+			const answer = h.controller.ui.select?.("Pick a color", ["red", "green", "blue"]);
+			await h.waitFor((f) => f.includes("2. green"), "the numbered options");
+			await h.key("2");
+			assert.equal(await answer, "green");
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("Ctrl+O shows an approval's whole command (P38c)", () => {
+		const command = Array.from({ length: 30 }, (_, i) => `echo ${i}`).join("\n");
+		const request = { toolCallId: "1", toolName: "bash", args: { command }, risk: "medium" as const };
+		assert.equal(approvalBody(request).length, 21);
+		assert.equal(approvalBody(request, 40).length, 30);
 	});
 });

@@ -24,9 +24,12 @@ export function approvalTitle(request: ApprovalRequest): string {
 	return `${displayToolName(request.toolName)} wants to run`;
 }
 
-export function approvalBody(request: ApprovalRequest): StyledLine[] {
+/** `max`: rows the body may take (Ctrl+O raises it to what fits on the screen, P38c). */
+export function approvalBody(request: ApprovalRequest, max = MAX_LINES): StyledLine[] {
 	const args = request.args;
 	const lines: StyledLine[] = [];
+	// A write's preview and other arguments show ten rows until expanded.
+	const small = max === MAX_LINES ? 10 : max;
 	switch (request.toolName) {
 		case "bash":
 			lines.push(
@@ -34,12 +37,13 @@ export function approvalBody(request: ApprovalRequest): StyledLine[] {
 					str(args, "command")
 						.split("\n")
 						.map((line) => [span(line, { bold: true })]),
+					max,
 				),
 			);
 			break;
 		case "edit":
 			lines.push(plainLine(str(args, "path"), { underline: true }));
-			lines.push(...cap(editDiff(editPairs(args))));
+			lines.push(...cap(editDiff(editPairs(args)), max));
 			break;
 		case "write": {
 			const content = str(args, "content");
@@ -48,7 +52,7 @@ export function approvalBody(request: ApprovalRequest): StyledLine[] {
 			lines.push(
 				...cap(
 					contentLines.map((line) => plainLine(line, { dim: true })),
-					10,
+					small,
 				),
 			);
 			break;
@@ -63,7 +67,7 @@ export function approvalBody(request: ApprovalRequest): StyledLine[] {
 			lines.push(
 				...cap(
 					pretty.split("\n").map((line) => plainLine(line, { dim: true })),
-					10,
+					small,
 				),
 			);
 		}

@@ -297,6 +297,9 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		// A session title request would take the next scripted response (P34f); the title scenario turns it on.
 		"TAU_AUTO_TITLE=0",
 		"TAU_HISTORY=",
+		// tau runs in the tmux server's environment, not this one: pass CI on, as CI's own tmux has it
+		// (P38b: with CI set, Ink loaded too early drew nothing — locally that never showed).
+		...(process.env.CI ? [`CI=${shellQuote(process.env.CI)}`] : []),
 		// SMOKE_TUI_MODE=inline runs every scenario in the inline TUI (P33); a scenario's own env wins.
 		...(process.env.SMOKE_TUI_MODE ? [`TAU_TUI_MODE=${shellQuote(process.env.SMOKE_TUI_MODE)}`] : []),
 		...extraEnv.map(shellQuote),
@@ -908,7 +911,7 @@ async function runDoubleEscSmoke(root, baseUrl) {
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
 		await sleep(300);
 		await session.send("Escape", "Escape");
-		await session.waitFor("Jump to a user message", 10_000);
+		await session.waitFor("Go back to a message", 10_000);
 		await session.send("Escape");
 		await sleep(200);
 		await session.send("exit", "Enter");

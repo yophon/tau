@@ -969,12 +969,13 @@ test("/tree lists user-message jump points and navigating rewrites the context",
 			assert.ok(match, `no entry id found in listing:\n${plain}`);
 			const firstTopicId = match[1];
 
-			// Navigating back to the first topic abandons the second-topic branch,
-			// summarizes it, and moves the leaf there.
+			// Navigating back to the first topic (pi, P38c) abandons everything from it on,
+			// summarizes that, moves the leaf before it and shows its text to send again.
 			cli.child.stdin?.write(`/tree ${firstTopicId}\n`);
-			await cli.waitFor("Moved to");
+			await cli.waitFor("Moved back before that message");
+			await cli.waitFor("It said:");
 			await cli.waitForIdle();
-			cli.child.stdin?.write("after nav\n");
+			cli.child.stdin?.write("first topic\n");
 			await cli.waitFor("nav-done");
 			await cli.waitForIdle();
 			cli.child.stdin?.write("exit\n");

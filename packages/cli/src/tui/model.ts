@@ -125,6 +125,8 @@ export interface PickerView {
 	 */
 	all?: PickerItem[];
 	query?: string;
+	/** Keys that act on the selected item (pi's session picker: Ctrl+R rename, Ctrl+D delete). */
+	actions?: Array<{ key: string; label: string }>;
 }
 
 /** A question answered in the editor: ctx.ui.input, or the text after "deny and tell". */
@@ -138,7 +140,8 @@ export interface PromptView {
 export type TaskKind = "turn" | "compaction" | "bash" | "navigate" | "reload" | "handoff";
 
 export interface QueuedInput {
-	kind: "steer" | "followUp";
+	/** "command": a slash command waiting for the turn to end (P38c, Claude Code). */
+	kind: "steer" | "followUp" | "command";
 	text: string;
 }
 
@@ -183,7 +186,6 @@ export interface UiState {
 	/** Tokens the model has written this task, estimated as they stream (P38b: the activity line counts them). */
 	streamedTokens: number;
 	exitArmed: boolean;
-	rejectArmed: boolean;
 	status: StatusInfo;
 	/** P37c: the custom status line's output (Claude Code statusLine), shown above the status line. */
 	statusLine?: { lines: string[]; padding: number };
@@ -217,7 +219,6 @@ export function initialState(status: StatusInfo, options: { showReasoning?: bool
 		showReasoning: options.showReasoning ?? false,
 		streamedTokens: 0,
 		exitArmed: false,
-		rejectArmed: false,
 		status,
 		widgets: { above: [], below: [] },
 		scroll: {},
@@ -239,6 +240,7 @@ export type UiAction =
 	| { type: "assistant-rendered"; lines: StyledLine[] }
 	| { type: "tool-rendered"; callId: string; lines: StyledLine[] }
 	| { type: "queue-add"; input: QueuedInput }
+	| { type: "queue-remove"; text: string }
 	| { type: "queue-clear" }
 	| { type: "approval-open"; id: number; request: ApprovalPromptRequest }
 	| { type: "approval-move"; delta: 1 | -1 }
@@ -256,7 +258,7 @@ export type UiAction =
 	| { type: "menu-suppress"; token: string | undefined }
 	| { type: "toggle-verbose" }
 	| { type: "toggle-reasoning" }
-	| { type: "armed"; exit?: boolean; reject?: boolean }
+	| { type: "armed"; exit?: boolean }
 	| { type: "status"; status: Partial<StatusInfo> }
 	| { type: "widgets"; above: StyledLine[][]; below: StyledLine[][] }
 	| { type: "clear" }
@@ -517,6 +519,10 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, queued: [...state.queued, action.input] };
 		case "queue-clear":
 			return state.queued.length === 0 ? state : { ...state, queued: [] };
+		case "queue-remove": {
+			const index = state.queued.findIndex((queued) => queued.kind === "command" && queued.text === action.text);
+			return index === -1 ? state : { ...state, queued: state.queued.filter((_, i) => i !== index) };
+		}
 		case "approval-open": {
 			const view: ApprovalView = { id: action.id, request: action.request, selected: 0 };
 			if (state.approval || state.prompt?.kind === "tell") {
@@ -596,7 +602,6 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return {
 				...state,
 				exitArmed: action.exit ?? state.exitArmed,
-				rejectArmed: action.reject ?? state.rejectArmed,
 			};
 		case "status":
 			return { ...state, status: { ...state.status, ...action.status } };

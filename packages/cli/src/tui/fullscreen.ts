@@ -390,6 +390,8 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 				approvalRef,
 				widgetsRef,
 				caret: true,
+				// The panel's frame, title, options and hints take about a dozen rows.
+				approvalRows: Math.max(10, frameHeight - 14),
 				...(search ? { search } : {}),
 			}),
 		),

@@ -323,6 +323,22 @@ test("navigateTo: summarize false moves the leaf without a summary", async () =>
 	);
 });
 
+test("navigateTo: a user message goes back to the editor; the leaf moves to its parent (pi, P38c)", async () => {
+	const { agent, store } = await twoTurnAgent([]);
+	const [u1, a1, u2] = await store.getEntries();
+
+	assert.deepEqual(await agent.navigateTo(u2.id, { summarize: false }), { cancelled: false, editorText: "q2" });
+	assert.equal(await store.getLeafId(), a1.id);
+	assert.deepEqual(
+		agent.messages.map((message) => message.role),
+		["user", "assistant"],
+	);
+	// The first message's parent is the root: an empty conversation, the text back in the editor.
+	assert.deepEqual(await agent.navigateTo(u1.id, { summarize: false }), { cancelled: false, editorText: "q1" });
+	assert.equal(await store.getLeafId(), null);
+	assert.equal(agent.messages.length, 0);
+});
+
 test("navigateTo: guards — unknown entry (also without a host session), current leaf no-op, busy agent", async () => {
 	// P22: an agent without a host session logs to a private in-memory store, so
 	// navigateTo works there too and only rejects entries that do not exist.

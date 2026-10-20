@@ -94,6 +94,8 @@ export type KeyCommand =
 	| { type: "menu-accept"; submit?: boolean }
 	/** Backspace in a picker that filters as you type. */
 	| { type: "picker-backspace" }
+	/** Ctrl+R / Ctrl+D in a picker with actions (pi's session picker). */
+	| { type: "picker-action"; key: string }
 	| { type: "menu-close" }
 	| { type: "interrupt" }
 	| { type: "exit-request" }
@@ -130,6 +132,10 @@ export type KeyCommand =
 	| { type: "yank-pop" }
 	/** Ctrl+R (Claude Code): search the prompt history. */
 	| { type: "history-search" }
+	/** Ctrl+L (Claude Code): draw the screen again, input and conversation kept. */
+	| { type: "redraw" }
+	/** ? on an empty input (Claude Code, Codex): the keyboard shortcuts. */
+	| { type: "shortcuts" }
 	/** Tab with no menu open (pi): complete the path before the cursor. */
 	| { type: "complete-path" }
 	/** Ctrl+Z outside Windows (pi, Claude Code): suspend to the shell. */
@@ -145,6 +151,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.ctrl && ch === "c") return { type: "interrupt" };
 		// The conversation scrolls behind the panel (P38b): read what is being approved.
 		if (ctx.fullscreen && (key.pageUp || key.pageDown)) return { type: "scroll-page", direction: key.pageUp ? -1 : 1 };
+		// Ctrl+O shows the whole diff or command in the panel (P38c).
+		if (key.ctrl && ch === "o") return { type: "toggle-verbose" };
 		if (key.upArrow) return { type: "approval-up" };
 		if (key.downArrow) return { type: "approval-down" };
 		if (key.return) return { type: "approval-confirm" };
@@ -162,6 +170,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.return) return { type: "picker-confirm" };
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
 		if (key.ctrl && ch === "s") return { type: "picker-alt" };
+		if (key.ctrl && (ch === "r" || ch === "d")) return { type: "picker-action", key: `ctrl+${ch}` };
 		if (key.backspace) return { type: "picker-backspace" };
 		if (ch === " ") return { type: "picker-toggle" };
 		if (ch.length === 1 && ch.trim() !== "" && plain) return { type: "picker-key", key: ch };
@@ -253,6 +262,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 				return { type: "yank" };
 			case "r":
 				return { type: "history-search" };
+			case "l":
+				return { type: "redraw" };
 			case "-":
 				return { type: "undo" };
 			case "z":
@@ -282,6 +293,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 	if (key.backspace) return key.ctrl || key.meta ? { type: "delete-word-back" } : { type: "backspace" };
 	if (key.delete) return key.ctrl || key.meta ? { type: "delete-word-forward" } : { type: "delete-forward" };
 
+	if (ch === "?" && plain && ctx.bufferEmpty && !ctx.promptActive) return { type: "shortcuts" };
 	if (ch !== "" && plain && !key.tab) return { type: "insert", text: ch };
 	return undefined;
 }
@@ -322,7 +334,7 @@ export const BUILTIN_KEYS: ReadonlySet<string> = new Set([
 	"alt+right",
 	"alt+v",
 	"ctrl+-",
-	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "o", "r", "t", "u", "v", "w", "y", "z"].map(
+	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "l", "o", "r", "t", "u", "v", "w", "y", "z"].map(
 		(letter) => `ctrl+${letter}`,
 	),
 ]);

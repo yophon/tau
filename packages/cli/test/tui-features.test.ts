@@ -244,7 +244,7 @@ describe("P25b commands and sessions", () => {
 		await h.submit("/mark");
 		await h.waitFor((f) => f.includes("MARKED"), "the custom entry");
 		await h.submit("/tree");
-		const tree = await h.waitFor((f) => f.includes("Jump to a user message"), "the tree picker");
+		const tree = await h.waitFor((f) => f.includes("Go back to a message"), "the tree picker");
 		assert.match(tree, /ENTRY_RENDERED/);
 		await h.key(ESC);
 		await h.waitFor((f) => f.includes("Navigation cancelled."), "the cancellation");

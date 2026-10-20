@@ -241,7 +241,7 @@ describe("bottom area text", () => {
 				},
 				undefined,
 			),
-			/Esc twice to deny/,
+			/or 1-3, to choose · Esc to deny · Ctrl\+O all of it/,
 		);
 	});
 });

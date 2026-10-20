@@ -105,7 +105,7 @@ describe("P25 TUI", () => {
 		assert.match(last, /approval declined|Denied/);
 	});
 
-	it("Esc twice on the approval panel denies", async () => {
+	it("Esc on the approval panel denies (P38c, Claude Code)", async () => {
 		const executions: string[] = [];
 		const h = await harness({
 			responses: [makeSseResponse(toolCallTurn("bash", { command: "ls" })), makeSseResponse(textTurn("fine"))],
@@ -115,8 +115,6 @@ describe("P25 TUI", () => {
 		await h.type("go");
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("wants to run"), "the approval panel");
-		await h.key(ESC);
-		await h.waitFor((f) => f.includes("Press Esc again to deny"), "the armed hint");
 		await h.key(ESC);
 		await h.waitFor((f) => f.includes("fine"), "the answer after denial");
 		assert.equal(executions.length, 0);

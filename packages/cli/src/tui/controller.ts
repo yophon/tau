@@ -33,7 +33,7 @@ import { autoTitle } from "../session-title.ts";
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
-import { commandList, runCommand } from "./commands.ts";
+import { commandList, runCommand, shortcutItems, whenCommandRuns } from "./commands.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, type Tone } from "./format.ts";
 import {
@@ -163,7 +163,8 @@ export class TuiController {
 	 * messages instead races with a result landing while a turn wraps up.
 	 */
 	private readonly shownCustom = new Set<string>();
-	private readonly pickers = new Map<number, (value: string | undefined, alt?: boolean) => void>();
+	/** Open pickers: how each settles (with Ctrl+S, `alt` is true; with an action key, it is that key). */
+	private readonly pickers = new Map<number, (value: string | undefined, extra?: boolean | string) => void>();
 	/** Multi-select lists (P35, ctx.ui.selectMany): the checked values. */
 	private readonly multiPickers = new Map<number, (values: string[] | undefined) => void>();
 	/** The widget each row above the input box belongs to, for clicks (P35). */
@@ -179,7 +180,6 @@ export class TuiController {
 	private statusLineRunner: { trigger(input: () => unknown): void; stop(): void } | undefined;
 	private sessionMeta: SessionMetadata | undefined;
 	private readonly startedAt: number;
-	private rejectTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private resolveDone: (() => void) | undefined;
 	readonly done: Promise<void>;
@@ -233,11 +233,16 @@ export class TuiController {
 				this.attention("question", title);
 				return this.ask("input", title, placeholder);
 			},
+			// Numbered options: a digit picks one (P38c, Claude Code's numbered choices); longer lists filter.
 			select: (title, values) => {
 				this.attention("question", title);
 				return this.pick(
 					title,
-					values.map((value) => ({ label: value, value })),
+					values.map((value, index) =>
+						values.length <= 9
+							? { label: `${index + 1}. ${value}`, value, key: String(index + 1) }
+							: { label: value, value },
+					),
 				);
 			},
 			selectMany: (title, values) => {
@@ -302,7 +307,7 @@ export class TuiController {
 			lines: [
 				[
 					span("tau", { bold: true, color: "cyan" }),
-					span(`${version ? ` · v${version}` : ""} · /help for commands · /hotkeys for keys`, { dim: true }),
+					span(`${version ? ` · v${version}` : ""} · /help for commands · ? for shortcuts`, { dim: true }),
 				],
 			],
 		});
@@ -338,9 +343,7 @@ export class TuiController {
 
 	private clearTimers(): void {
 		if (this.exitTimer) clearTimeout(this.exitTimer);
-		if (this.rejectTimer) clearTimeout(this.rejectTimer);
 		this.exitTimer = undefined;
-		this.rejectTimer = undefined;
 	}
 
 	private attachHostActions(registry: ExtensionRegistry): void {
@@ -630,6 +633,11 @@ export class TuiController {
 
 	/** Typed text: the panels take it one key at a time ("1" chooses, it does not type). */
 	private handleText(text: string): void {
+		// "?" alone on an empty input is a key, not text (the shortcuts).
+		if (text === "?" && this.state.editor.text === "" && !this.state.approval && !this.state.picker) {
+			this.handleKey("?", {});
+			return;
+		}
 		if (this.state.approval || this.state.picker) {
 			for (const ch of text) this.handleKey(ch, {});
 		} else if (this.state.search) {
@@ -1333,6 +1341,13 @@ export class TuiController {
 			case "history-search":
 				void this.searchHistory();
 				return;
+			case "redraw":
+				if (this.fullscreen) this.relayout();
+				else this.redraw();
+				return;
+			case "shortcuts":
+				void this.pick("Keyboard shortcuts", shortcutItems(this.extensions));
+				return;
 			case "complete-path":
 				this.completePath();
 				return;
@@ -1341,7 +1356,6 @@ export class TuiController {
 				return;
 			case "approval-up":
 			case "approval-down":
-				this.disarmReject();
 				this.dispatch({ type: "approval-move", delta: command.type === "approval-up" ? -1 : 1 });
 				return;
 			case "approval-confirm":
@@ -1351,14 +1365,9 @@ export class TuiController {
 				this.decideApproval(command.index);
 				return;
 			case "approval-reject":
+				// One Esc denies (P38c, Claude Code and Codex; two presses came from yo-agent).
 				if (!state.approval) return;
-				if (state.rejectArmed) {
-					this.disarmReject();
-					this.decideApproval(approvalOptions(state.approval.request).findIndex((option) => option.choice === "deny"));
-				} else {
-					this.dispatch({ type: "armed", reject: true });
-					this.rejectTimer = setTimeout(() => this.disarmReject(), ARM_WINDOW_MS);
-				}
+				this.decideApproval(approvalOptions(state.approval.request).findIndex((option) => option.choice === "deny"));
 				return;
 			case "prompt-cancel":
 				this.cancelPrompt();
@@ -1393,6 +1402,14 @@ export class TuiController {
 				const picker = state.picker;
 				if (picker?.checked) this.dispatch({ type: "picker-toggle", id: picker.id, index: picker.selected });
 				else if (picker?.all) this.filterPicker(`${picker.query ?? ""} `);
+				return;
+			}
+			case "picker-action": {
+				const picker = state.picker;
+				const value = picker?.items[picker.selected]?.value;
+				if (!picker?.actions?.some((action) => action.key === command.key) || value === undefined) return;
+				this.dispatch({ type: "picker-close", id: picker.id });
+				this.settlePicker(picker.id, value, command.key);
 				return;
 			}
 			case "picker-backspace": {
@@ -1648,17 +1665,11 @@ export class TuiController {
 		if (this.state.exitArmed) this.dispatch({ type: "armed", exit: false });
 	}
 
-	private disarmReject(): void {
-		if (this.rejectTimer) clearTimeout(this.rejectTimer);
-		this.rejectTimer = undefined;
-		if (this.state.rejectArmed) this.dispatch({ type: "armed", reject: false });
-	}
-
 	private historyPrev(): void {
 		const state = this.state;
 		// Queued input and an empty editor: ↑ takes the queue back for editing (pi Alt+Up).
 		if (state.queued.length > 0 && state.editor.text === "") {
-			this.restoreQueuedInput();
+			this.restoreQueuedInput(true);
 			return;
 		}
 		const items = this.history.list();
@@ -1689,14 +1700,19 @@ export class TuiController {
 		}
 	}
 
-	/** Take steering and follow-ups back from the agent into the editor. */
-	private restoreQueuedInput(): void {
+	/**
+	 * Take steering and follow-ups back into the editor; with `commands` (↑ on an empty input)
+	 * the waiting slash commands too — after a turn they stay queued and run.
+	 */
+	private restoreQueuedInput(commands = false): void {
 		const { steering, followUp } = this.agent.clearQueue();
 		const texts = [...steering, ...followUp]
 			.filter((message) => message.role === "user")
 			.map((message) => userContentText(message.content))
 			.filter((text) => text !== "");
+		if (commands) texts.push(...this.pendingCommands.splice(0));
 		this.dispatch({ type: "queue-clear" });
+		for (const text of this.pendingCommands) this.dispatch({ type: "queue-add", input: { kind: "command", text } });
 		if (texts.length === 0) return;
 		const current = this.state.editor.text;
 		this.setEditor(ed.fromText([...texts, ...(current.trim() === "" ? [] : [current])].join("\n")));
@@ -1735,6 +1751,11 @@ export class TuiController {
 			return;
 		}
 		if (text.startsWith("/")) {
+			// While a task works, only commands that show something run now; the rest wait (P38c).
+			if (task !== undefined && whenCommandRuns(this, text) === "later") {
+				this.queueCommand(text);
+				return;
+			}
 			void this.runSlash(text);
 			return;
 		}
@@ -1765,7 +1786,35 @@ export class TuiController {
 		if (text === "") return;
 		this.history.push(text);
 		this.historyIndex = this.history.list().length;
+		if (text.startsWith("/") && whenCommandRuns(this, text) !== "unknown") {
+			this.queueCommand(text);
+			return;
+		}
 		this.sendQueued("followUp", text);
+	}
+
+	/** Slash commands waiting for the running task to end, run in order then (P38c). */
+	private readonly pendingCommands: string[] = [];
+	private runningCommands = false;
+
+	private queueCommand(text: string): void {
+		this.pendingCommands.push(text);
+		this.dispatch({ type: "queue-add", input: { kind: "command", text } });
+	}
+
+	private async runPendingCommands(): Promise<void> {
+		if (this.runningCommands) return;
+		this.runningCommands = true;
+		try {
+			while (this.pendingCommands.length > 0 && this.state.task === undefined && !this.stopped) {
+				const text = this.pendingCommands.shift() as string;
+				this.dispatch({ type: "queue-remove", text });
+				await this.runSlash(text);
+			}
+		} finally {
+			this.runningCommands = false;
+			this.startPending();
+		}
 	}
 
 	sendQueued(kind: "steer" | "followUp", text: string): void {
@@ -1832,6 +1881,11 @@ export class TuiController {
 
 	private startPending(): void {
 		if (this.state.task !== undefined || this.stopped) return;
+		if (this.pendingCommands.length > 0) {
+			void this.runPendingCommands();
+			return;
+		}
+		if (this.runningCommands) return;
 		const next = this.pendingStarts.shift();
 		if (next !== undefined) void this.runPrompt(next);
 	}
@@ -2158,12 +2212,21 @@ export class TuiController {
 	 * Move to another entry of the session tree with the task slot held (Esc
 	 * cancels the branch summary). A failed summary offers moving without one (P23e).
 	 */
-	async navigate(entryId: string): Promise<void> {
-		await this.runTask("navigate", "Summarizing the branch", async (signal) => {
+	/**
+	 * Move in the session tree (pi navigateTree). Back to one of your messages, its text
+	 * returns to the input box to edit and send again.
+	 */
+	async navigate(entryId: string, options: { summarize?: boolean; customInstructions?: string } = {}): Promise<void> {
+		const summarize = options.summarize !== false;
+		await this.runTask("navigate", summarize ? "Summarizing the branch" : "Moving", async (signal) => {
 			try {
-				let result: { cancelled: boolean };
+				let result: { cancelled: boolean; editorText?: string };
 				try {
-					result = await this.agent.navigateTo(entryId, { signal });
+					result = await this.agent.navigateTo(entryId, {
+						signal,
+						summarize,
+						...(options.customInstructions !== undefined ? { customInstructions: options.customInstructions } : {}),
+					});
 				} catch (error) {
 					if (!(error instanceof TauError && error.code === "compaction_failed")) throw error;
 					const without = await this.ui.confirm("Branch summary failed. Navigate without a summary?", error.message);
@@ -2174,10 +2237,16 @@ export class TuiController {
 					result = await this.agent.navigateTo(entryId, { summarize: false, signal });
 				}
 				if (result.cancelled) {
-					this.notice("dim", "Navigation cancelled.");
+					this.flash("Navigation cancelled.");
 					return;
 				}
-				this.showSession(`Moved to ${entryId} (${conversationLength(this.agent.messages)} messages in context).`);
+				const count = conversationLength(this.agent.messages);
+				if (result.editorText !== undefined) {
+					this.showSession(`Back before that message (${count} messages in context); it is in the input box.`);
+					if (this.state.editor.text.trim() === "") this.setInput(result.editorText);
+				} else {
+					this.showSession(`Moved (${count} messages in context).`);
+				}
 			} catch (error) {
 				this.notice(
 					isAbortError(error) ? "dim" : "error",
@@ -2431,7 +2500,6 @@ export class TuiController {
 		const view = this.state.approval;
 		const option = view ? approvalOptions(view.request)[index] : undefined;
 		if (!view || !option) return;
-		this.disarmReject();
 		if (option.choice === "deny-tell") {
 			// The approval stays pending until the text is sent, so the denial and the
 			// instruction reach the model together.
@@ -2523,10 +2591,37 @@ export class TuiController {
 		resolve?.(values);
 	}
 
-	private settlePicker(id: number, value: string | undefined, alt = false): void {
+	private settlePicker(id: number, value: string | undefined, extra: boolean | string = false): void {
 		const resolve = this.pickers.get(id);
 		this.pickers.delete(id);
-		resolve?.(value, alt);
+		resolve?.(value, extra);
+	}
+
+	/** A picker whose action keys (Ctrl+R, Ctrl+D) settle it too, saying which (pi's session picker). */
+	pickWithActions(
+		title: string,
+		items: PickerItem[],
+		actions: Array<{ key: string; label: string }>,
+		selected = 0,
+	): Promise<{ value: string; action?: string } | undefined> {
+		const id = this.nextDialogId++;
+		return new Promise((resolve) => {
+			this.pickers.set(id, (value, extra) =>
+				resolve(value === undefined ? undefined : typeof extra === "string" ? { value, action: extra } : { value }),
+			);
+			this.dispatch({
+				type: "picker-open",
+				picker: {
+					id,
+					title,
+					items,
+					selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)),
+					actions,
+					...filterable(items),
+				},
+			});
+			this.store.flush();
+		});
 	}
 
 	/** A picker whose Ctrl+S also picks, flagged `alt` (the /model picker saves the default with it). */
@@ -2538,7 +2633,7 @@ export class TuiController {
 	): Promise<{ value: string; alt: boolean } | undefined> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
-			this.pickers.set(id, (value, isAlt) => resolve(value === undefined ? undefined : { value, alt: isAlt === true }));
+			this.pickers.set(id, (value, extra) => resolve(value === undefined ? undefined : { value, alt: extra === true }));
 			this.dispatch({
 				type: "picker-open",
 				picker: {

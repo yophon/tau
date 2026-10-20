@@ -1575,9 +1575,9 @@ export class Agent {
 	 * the branch being abandoned (unless summarize: false or an extension
 	 * supplies/cancels via session_before_tree), move the leaf, record a
 	 * branch_summary entry at the new position, and rebuild the conversation
-	 * from the new path. Deviation from pi: tau moves the leaf to the target
-	 * entry itself — pi moves to a user-message target's parent and refills the
-	 * editor with its text, an interaction that needs a TUI (P8).
+	 * from the new path. A user or custom message as the target moves the leaf to
+	 * its parent and returns its text as `editorText`, to edit and send again (pi;
+	 * P38c — before, tau moved to the message itself).
 	 */
 	async navigateTo(
 		entryId: string,
@@ -1587,7 +1587,7 @@ export class Agent {
 			signal?: TauAbortSignal;
 			onEvent?: (event: AgentEvent) => void;
 		},
-	): Promise<{ cancelled: boolean }> {
+	): Promise<{ cancelled: boolean; editorText?: string }> {
 		const handle = this.beginOperation("navigate", options?.signal);
 		try {
 			return await this.runNavigation(entryId, handle.signal, options);
@@ -1600,7 +1600,7 @@ export class Agent {
 		entryId: string,
 		signal: TauAbortSignal,
 		options: { summarize?: boolean; customInstructions?: string; onEvent?: (event: AgentEvent) => void } | undefined,
-	): Promise<{ cancelled: boolean }> {
+	): Promise<{ cancelled: boolean; editorText?: string }> {
 		await this.flushWrites();
 		const store = this.session.store;
 		const oldLeafId = await store.getLeafId();
@@ -1643,10 +1643,21 @@ export class Agent {
 		}
 		if (signal.aborted) return { cancelled: true };
 
+		// pi: a user or custom message goes back to the editor; the leaf moves to its parent.
+		let leafId: string | null = entryId;
+		let editorText: string | undefined;
+		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
+			leafId = targetEntry.parentId;
+			editorText = userContentText(targetEntry.message.content);
+		} else if (targetEntry.type === "custom_message") {
+			leafId = targetEntry.parentId;
+			editorText = userContentText(targetEntry.content);
+		}
+
 		const fromExtension = hook.summary !== undefined;
 		const summaryEntry = await this.enqueueWrite(async () => {
 			const entry = await this.session.moveTo(
-				entryId,
+				leafId,
 				summaryText
 					? {
 							summary: summaryText,
@@ -1662,7 +1673,7 @@ export class Agent {
 		});
 		const newLeafId = await store.getLeafId();
 		await this.extensions?.notifySessionTree({ newLeafId, oldLeafId, summaryEntry, fromExtension }, ctx);
-		return { cancelled: false };
+		return editorText !== undefined ? { cancelled: false, editorText } : { cancelled: false };
 	}
 
 	private async *runPrompt(input: UserContent, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {

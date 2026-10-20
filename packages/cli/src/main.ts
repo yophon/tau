@@ -2319,10 +2319,15 @@ async function main(): Promise<void> {
 						signal: hostTaskController.signal,
 						...(noSummary ? { summarize: false } : {}),
 					});
+					// Back before one of your messages (pi): its text is shown to send again.
 					console.log(
 						result.cancelled
 							? dim("Navigation cancelled.")
-							: dim(`Moved to ${target} (${conversationLength(agent.messages)} messages in context).`),
+							: result.editorText !== undefined
+								? dim(
+										`Moved back before that message (${conversationLength(agent.messages)} messages in context). It said:\n${result.editorText}`,
+									)
+								: dim(`Moved to ${target} (${conversationLength(agent.messages)} messages in context).`),
 					);
 				} catch (error) {
 					console.log(red(`/tree failed: ${error instanceof Error ? error.message : String(error)}`));

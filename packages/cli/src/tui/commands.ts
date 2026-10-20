@@ -15,6 +15,7 @@ import {
 	type PermissionMode,
 	type SessionEntry,
 	type SessionMetadata,
+	SessionRecorder,
 	type ThinkingLevel,
 	type Usage,
 } from "@yophon/tau-kernel";
@@ -205,20 +206,8 @@ const BUILTINS: BuiltinCommand[] = [
 			}
 			let selected: SessionMetadata | undefined;
 			if (args === "") {
-				const current = tui.sessionStore ? await tui.sessionStore.getMetadata() : undefined;
-				const id = await tui.pick(
-					"Resume a session",
-					sessions.map((session) => ({
-						label: `${session.id === current?.id ? "● " : "  "}${truncateCells(sessionLabel(session), 50)}`,
-						hint: sessionHint(session),
-						value: session.id,
-					})),
-				);
-				if (id === undefined) {
-					tui.notice("dim", "Session selection cancelled.");
-					return;
-				}
-				selected = sessions.find((session) => session.id === id);
+				selected = await chooseSession(tui, sessions);
+				if (!selected) return;
 			} else {
 				const found = findSession(sessions, args);
 				if (found === "ambiguous") {
@@ -239,7 +228,7 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "tree",
 		args: "[id]",
-		description: "Jump to an earlier user message in this session",
+		description: "Go back to one of your messages in this session (to edit and send it again)",
 		run: async (tui, args) => {
 			const store = tui.sessionStore;
 			if (!store) {
@@ -253,22 +242,26 @@ const BUILTINS: BuiltinCommand[] = [
 			const entries = await store.getEntries();
 			const onPath = new Set((await store.getPathToRoot(await store.getLeafId())).map((entry) => entry.id));
 			const items: PickerItem[] = [];
+			let newest = 0;
 			for (const entry of entries) {
 				const fallback =
 					entry.type === "message" && entry.message.role === "user"
 						? {
 								label: `${onPath.has(entry.id) ? "●" : "○"} ${firstLine(messageText(entry.message), 70)}`,
-								hint: entry.id,
+								...(onPath.has(entry.id) ? {} : { hint: "another branch" }),
 							}
 						: undefined;
 				const presentation = await presentEntry(tui, entry, fallback);
-				if (presentation) items.push({ ...presentation, value: fallback ? entry.id : `${INFO}${entry.id}` });
+				if (!presentation) continue;
+				// The list opens at the newest message on the current path (pi opens at the leaf).
+				if (fallback && onPath.has(entry.id)) newest = items.length;
+				items.push({ ...presentation, value: fallback ? entry.id : `${INFO}${entry.id}` });
 			}
 			if (items.length === 0) {
 				tui.notice("dim", "No user messages in this session yet.");
 				return;
 			}
-			const picked = await tui.pick("Jump to a user message", items);
+			const picked = await tui.pick("Go back to a message", items, newest);
 			if (picked === undefined) {
 				tui.flash("Navigation cancelled.");
 				return;
@@ -277,7 +270,28 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("dim", "That entry is not a jump target.");
 				return;
 			}
-			await tui.navigate(picked);
+			// pi: whether to summarize the branch being left, no summary first.
+			const choice = await tui.pick("Summarize branch?", [
+				{ label: "No summary", value: "none" },
+				{ label: "Summarize", value: "summarize" },
+				{ label: "Summarize with custom prompt", value: "custom" },
+			]);
+			if (choice === undefined) {
+				tui.flash("Navigation cancelled.");
+				return;
+			}
+			let customInstructions: string | undefined;
+			if (choice === "custom") {
+				customInstructions = await tui.ask("input", "Custom summarization instructions");
+				if (customInstructions === undefined) {
+					tui.flash("Navigation cancelled.");
+					return;
+				}
+			}
+			await tui.navigate(picked, {
+				summarize: choice !== "none",
+				...(customInstructions !== undefined ? { customInstructions } : {}),
+			});
 		},
 	},
 	{
@@ -333,7 +347,9 @@ const BUILTINS: BuiltinCommand[] = [
 	},
 	{
 		name: "new",
-		description: "Start a new session",
+		// Claude Code's /clear (aliases /reset, /new): a new conversation with empty context (P38c).
+		aliases: ["clear", "reset"],
+		description: "Start a new session with empty context (/clear)",
 		run: async (tui) => {
 			if (!tui.sessionStore) {
 				tui.notice("error", "No active session (--no-session).");
@@ -706,14 +722,6 @@ const BUILTINS: BuiltinCommand[] = [
 		run: (tui) => tui.reloadExtensions(),
 	},
 	{
-		name: "clear",
-		description: "Start a clean screen (the session is unchanged)",
-		run: (tui) => {
-			tui.clearScreen();
-			tui.store.dispatch({ type: "clear" });
-		},
-	},
-	{
 		name: "quit",
 		aliases: ["exit"],
 		description: "Exit tau",
@@ -997,6 +1005,34 @@ export function parseCommandLine(text: string): { name: string; args: string } |
 }
 
 /** Run a `/command`; false when no command has that name. */
+/**
+ * Commands that only show something run while a turn works; the rest wait for it to end
+ * (P38c, Claude Code: "queues it and runs it after the current turn", info commands at once).
+ */
+const RUNS_DURING_A_TURN = new Set([
+	"help",
+	"hotkeys",
+	"session",
+	"copy",
+	"usage",
+	"context",
+	"search",
+	"diagnostics",
+	"mode",
+	"reasoning",
+	"follow",
+	"quit",
+]);
+
+/** When a slash command may run while a task works: now, after it, or not a command at all. */
+export function whenCommandRuns(tui: TuiController, text: string): "now" | "later" | "unknown" {
+	const parsed = parseCommandLine(text);
+	if (!parsed) return "unknown";
+	const builtin = findBuiltin(parsed.name);
+	if (builtin) return RUNS_DURING_A_TURN.has(builtin.name) ? "now" : "later";
+	return tui.extensions.commands.has(parsed.name) ? "later" : "unknown";
+}
+
 export async function runCommand(tui: TuiController, text: string): Promise<boolean> {
 	const parsed = parseCommandLine(text);
 	if (!parsed) return false;
@@ -1054,6 +1090,73 @@ function sessionHint(session: SessionMetadata): string {
 	return `${when} · ${count} message${count === 1 ? "" : "s"}`;
 }
 
+/**
+ * The /resume picker (P38c, pi's session selector): type to search titles and first
+ * messages, the current session marked, same titles told apart by their id, Ctrl+R to
+ * rename and Ctrl+D to delete. Undefined when nothing is chosen (or only the current one).
+ */
+async function chooseSession(tui: TuiController, initial: SessionMetadata[]): Promise<SessionMetadata | undefined> {
+	let sessions = initial;
+	const current = tui.sessionStore ? await tui.sessionStore.getMetadata() : undefined;
+	for (;;) {
+		const labels = sessions.map((session) => truncateCells(sessionLabel(session), 50));
+		const items = sessions.map((session, index) => {
+			const label = labels[index] as string;
+			const twin = labels.filter((other) => other === label).length > 1;
+			return {
+				label: `${session.id === current?.id ? "● " : "  "}${label}`,
+				hint: `${session.id === current?.id ? "current · " : ""}${sessionHint(session)}${twin ? ` · ${session.id.slice(0, 8)}` : ""}`,
+				value: session.id,
+			};
+		});
+		const start = Math.max(
+			0,
+			sessions.findIndex((session) => session.id !== current?.id),
+		);
+		const picked = await tui.pickWithActions(
+			"Resume a session",
+			items,
+			[
+				{ key: "ctrl+r", label: "rename" },
+				{ key: "ctrl+d", label: "delete" },
+			],
+			start,
+		);
+		if (!picked) {
+			tui.flash("Session selection cancelled.");
+			return undefined;
+		}
+		const session = sessions.find((candidate) => candidate.id === picked.value);
+		if (!session) return undefined;
+		if (picked.action === "ctrl+r") {
+			const name = (await tui.ask("input", `New name for "${sessionLabel(session)}"`))?.trim();
+			if (name) {
+				if (session.id === current?.id && tui.recorder) await tui.recorder.setName(name);
+				else await (await SessionRecorder.open(await tui.options.sessionRepo.open(session))).setName(name);
+				tui.flash(`Renamed to "${name}"`);
+			}
+		} else if (picked.action === "ctrl+d") {
+			if (session.id === current?.id) {
+				tui.flash("The current session cannot be deleted.");
+			} else if (await tui.ui.confirm(`Delete "${sessionLabel(session)}"?`, "This removes the session file.")) {
+				await tui.options.sessionRepo.delete(session);
+				tui.flash("Session deleted.");
+			}
+		} else {
+			if (session.id === current?.id) {
+				tui.flash("Already in this session.");
+				return undefined;
+			}
+			return session;
+		}
+		sessions = await tui.options.sessionRepo.list();
+		if (sessions.length === 0) {
+			tui.notice("dim", "No sessions found.");
+			return undefined;
+		}
+	}
+}
+
 /** A session by id, time, name, file or title: exact, then prefix, then (P34f) a piece of its title. */
 function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
 	const values = (session: SessionMetadata): string[] => {
@@ -1086,6 +1189,8 @@ const KEYS: Array<[string, string]> = [
 	["Ctrl+D", "on an empty input: exit"],
 	["↑ / ↓", "move in the input, then history; ↑ on an empty input takes queued messages back"],
 	["Ctrl+R", "search the prompt history"],
+	["?", "on an empty input: these shortcuts"],
+	["Ctrl+L", "draw the screen again"],
 	["Ctrl+O", "expand or collapse tool details"],
 	["Ctrl+T", "show or hide reasoning"],
 	["Shift+Tab", "permission mode: supervised → accept-edits → autonomous → read-only (/mode for bypass)"],
@@ -1125,6 +1230,18 @@ function helpLines(extensions: ExtensionRegistry): StyledLine[] {
 }
 
 /** /hotkeys (pi): the built-in keys, then extension shortcuts. */
+/** The shortcuts as picker rows (P38c: ? on an empty input, Claude Code), extension shortcuts after. */
+export function shortcutItems(extensions: ExtensionRegistry): PickerItem[] {
+	const rows: Array<[string, string]> = [
+		...KEYS,
+		...[...extensions.shortcuts.values()].map((shortcut): [string, string] => [
+			shortcut.key,
+			shortcut.description ?? shortcut.name,
+		]),
+	];
+	return rows.map(([key, what], index) => ({ label: key, hint: what, value: String(index) }));
+}
+
 function hotkeyLines(extensions: ExtensionRegistry): StyledLine[] {
 	const row = (name: string, what: string): StyledLine => [
 		span(`  ${name.padEnd(26)}`, { color: "cyan" }),
