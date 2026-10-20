@@ -205,6 +205,20 @@ export interface UiState {
 	search?: { query: string; current: number };
 	/** A short message in the hint line ("Copied 128 characters"), cleared after a moment. */
 	flash?: string;
+	/** /btw side questions (P39c, Claude Code): this session's thread, oldest first; never sent as conversation. */
+	asides: AsideExchange[];
+	/** The open /btw overlay: which exchange it shows and how far its answer is scrolled. */
+	aside?: { index: number; scroll: number };
+}
+
+export interface AsideExchange {
+	id: number;
+	question: string;
+	answer: string;
+	done: boolean;
+	error?: string;
+	/** Tool calls the model wrote anyway (none ran). */
+	toolCalls?: number;
 }
 
 export function initialState(status: StatusInfo, options: { showReasoning?: boolean } = {}): UiState {
@@ -227,6 +241,7 @@ export function initialState(status: StatusInfo, options: { showReasoning?: bool
 		widgets: { above: [], below: [] },
 		scroll: {},
 		expanded: {},
+		asides: [],
 	};
 }
 
@@ -277,6 +292,17 @@ export type UiAction =
 	| { type: "selection"; selection?: Selection }
 	| { type: "search"; search?: { query: string; current: number } }
 	| { type: "flash"; text?: string }
+	/** /btw (P39c): a question asked, its answer streaming in, done or failed. */
+	| { type: "aside-ask"; id: number; question: string }
+	| { type: "aside-text"; id: number; delta: string }
+	| { type: "aside-done"; id: number; text?: string; error?: string; toolCalls?: number }
+	/** Reopen the overlay on the newest exchange; close it; step to an older (-1) or newer (1) one. */
+	| { type: "aside-open" }
+	| { type: "aside-close" }
+	| { type: "aside-step"; delta: 1 | -1 }
+	| { type: "aside-scroll"; delta: number }
+	/** Forget the earlier exchanges, keeping the one shown. */
+	| { type: "aside-clear" }
 	/** Another session: drop everything shown and start a new screen. */
 	| { type: "reset" }
 	/** Finished blocks rebuilt from a restored conversation. */
@@ -679,7 +705,54 @@ export function reduce(state: UiState, action: UiAction): UiState {
 				expanded: {},
 				selection: undefined,
 				search: undefined,
+				// Side questions were about the conversation left behind.
+				asides: [],
+				aside: undefined,
 			};
+		case "aside-ask": {
+			const asides = [...state.asides, { id: action.id, question: action.question, answer: "", done: false }];
+			return { ...state, asides, aside: { index: asides.length - 1, scroll: 0 } };
+		}
+		case "aside-text":
+			return {
+				...state,
+				asides: state.asides.map((item) =>
+					item.id === action.id ? { ...item, answer: item.answer + action.delta } : item,
+				),
+			};
+		case "aside-done":
+			return {
+				...state,
+				asides: state.asides.map((item) =>
+					item.id === action.id
+						? {
+								...item,
+								done: true,
+								...(action.text !== undefined ? { answer: action.text } : {}),
+								...(action.error !== undefined ? { error: action.error } : {}),
+								...(action.toolCalls ? { toolCalls: action.toolCalls } : {}),
+							}
+						: item,
+				),
+			};
+		case "aside-open":
+			return state.asides.length === 0 ? state : { ...state, aside: { index: state.asides.length - 1, scroll: 0 } };
+		case "aside-close":
+			return state.aside ? { ...state, aside: undefined } : state;
+		case "aside-step": {
+			if (!state.aside) return state;
+			const index = Math.max(0, Math.min(state.asides.length - 1, state.aside.index + action.delta));
+			return index === state.aside.index ? state : { ...state, aside: { index, scroll: 0 } };
+		}
+		case "aside-scroll":
+			return state.aside
+				? { ...state, aside: { ...state.aside, scroll: Math.max(0, state.aside.scroll + action.delta) } }
+				: state;
+		case "aside-clear": {
+			const shown = state.aside ? state.asides[state.aside.index] : state.asides.at(-1);
+			if (!shown) return state;
+			return { ...state, asides: [shown], ...(state.aside ? { aside: { ...state.aside, index: 0 } } : {}) };
+		}
 		case "replay": {
 			let next = state;
 			const blocks: Block[] = [];

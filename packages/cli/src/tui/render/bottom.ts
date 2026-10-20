@@ -13,6 +13,7 @@ import * as ed from "../input/editor.ts";
 import { strWidth, truncateAnsi, truncateCells } from "../input/width.ts";
 import { type ApprovalView, approvalOptions, type PickerView, type StatusInfo, type UiState } from "../model.ts";
 import { approvalBody, approvalTitle } from "./approval.ts";
+import { ASIDE_ROWS, renderAside } from "./aside.ts";
 import { styledLine } from "./blocks.ts";
 import { INLINE_LIST_ROWS, listWindow } from "./list.ts";
 import type { StyledLine } from "./spans.ts";
@@ -133,6 +134,8 @@ export interface BottomLayout {
 	below?: number;
 	/** Rows an expanded approval body may take (Ctrl+O) without pushing its options off the screen. */
 	approvalRows?: number;
+	/** Answer rows the /btw overlay shows (P39c); ASIDE_ROWS inline. */
+	asideRows?: number;
 }
 
 const INLINE_LAYOUT: BottomLayout = { listRows: INLINE_LIST_ROWS };
@@ -297,6 +300,10 @@ export function hintText(state: UiState, completion: Completion | undefined): st
 		return `↑↓ and Enter, or 1-${count}, to choose · Esc to deny · Ctrl+O ${state.verbose ? "less" : "all of it"}`;
 	}
 	if (state.picker?.checked) return "↑↓ to move · Space or a click to check · Enter to confirm · Esc to cancel";
+	if (state.aside && !state.picker && !state.flash) {
+		const others = state.asides.length > 1 ? " · Shift+←→ other answers · x clear earlier" : "";
+		return `Space, Enter or Esc to close · ↑↓ scroll · c copy${others}`;
+	}
 	if (state.picker) {
 		const filter = state.picker.all ? "Type to filter · " : "";
 		const actions = (state.picker.actions ?? []).map((action) => ` · ${keyLabel(action.key)} ${action.label}`).join("");
@@ -363,6 +370,8 @@ export function renderBottom(
 		children.push(renderApproval(state.approval, state.approvalQueue.length, layout, state.verbose));
 	} else if (state.picker) {
 		children.push(renderPicker(state.picker, layout));
+	} else if (state.aside) {
+		children.push(renderAside(state, columns, layout.asideRows ?? ASIDE_ROWS));
 	} else {
 		if (state.task) {
 			children.push(

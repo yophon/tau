@@ -6,10 +6,11 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { gitDiff } from "../src/git-diff.ts";
 import { gitDiffLines, summarizeDiff } from "../src/tui/render/git-diff.ts";
 import { lineText } from "../src/tui/render/spans.ts";
-import { type Harness, type HarnessOptions, harness as start } from "./tui-harness.ts";
+import { DOWN, deferred, ESC, type Harness, type HarnessOptions, harness as start, textTool } from "./tui-harness.ts";
 
 const open: Harness[] = [];
 async function harness(options: HarnessOptions): Promise<Harness> {
@@ -84,5 +85,79 @@ describe("P39b /diff", () => {
 		assert.match(frame, /\+const b = 3;/);
 		assert.match(frame, /notes\.md/);
 		assert.equal(h.requests.length, 0);
+	});
+});
+
+describe("P39c /btw", () => {
+	it("answers from the conversation while a tool runs, without joining it; Claude Code's overlay keys", async () => {
+		const gate = deferred();
+		const h = await harness({
+			responses: [
+				makeSseResponse(toolCallTurn("bash", { command: "slow" })),
+				makeSseResponse(textTurn("It is config.yaml.")),
+				makeSseResponse(toolCallTurn("read", { path: "x" })),
+				makeSseResponse(textTurn("DONE")),
+			],
+			tools: [textTool("bash", () => gate.promise), textTool("read", "never runs")],
+			sessions: true,
+		});
+		await h.submit("set it up");
+		await h.waitFor((f) => f.includes("bash(slow)"), "the running tool");
+		await h.submit("/btw which config file?");
+		await h.waitFor((f) => f.includes("/btw which config file?") && f.includes("It is config.yaml."), "the answer");
+		const aside = h.requests[1]?.messages ?? [];
+		const last = aside.at(-1);
+		assert.equal(last?.role, "user");
+		assert.match(String(last?.content), /<side-question>[\s\S]*which config file\?$/);
+		assert.ok(
+			aside.some((m) => m.role === "tool" && JSON.stringify(m.content).includes("still running")),
+			"the call still running gets a placeholder result",
+		);
+		assert.ok(
+			aside.some((m) => m.role === "user" && String(m.content) === "set it up"),
+			"the conversation goes along",
+		);
+		// A second question sees the first exchange; a tool call it makes is only counted.
+		await h.key(ESC);
+		assert.equal(h.controller.state.aside, undefined);
+		await h.submit("/btw and then?");
+		await h.waitFor((f) => f.includes("nothing ran: /btw has no tools"), "the tool-call note");
+		const second = h.requests[2]?.messages ?? [];
+		assert.ok(second.some((m) => m.role === "assistant" && JSON.stringify(m.content).includes("It is config.yaml.")));
+		// Shift+← goes back to the first answer, c copies it, x keeps only the one shown.
+		await h.key("\x1b[1;2D");
+		await h.waitFor((f) => f.includes("It is config.yaml.") && f.includes("1/2"), "the first answer");
+		await h.key("c");
+		await h.waitFor((f) => f.includes("Copied 18 characters"), "the copy");
+		assert.deepEqual(h.copied, ["It is config.yaml."]);
+		await h.key("x");
+		assert.equal(h.controller.state.asides.length, 1);
+		await h.key(" ");
+		assert.equal(h.controller.state.aside, undefined);
+		gate.resolve("ok");
+		await h.waitFor((f) => f.includes("DONE"), "the turn's end");
+		const main = h.requests[3]?.messages ?? [];
+		assert.ok(!JSON.stringify(main).includes("side-question"), "the main request never carries side questions");
+		assert.ok(!h.controller.agent.messages.some((m) => JSON.stringify(m).includes("side-question")));
+		// The tokens count in the session totals (a usage entry); the question itself is not logged.
+		const entries = (await h.controller.sessionStore?.getEntries()) ?? [];
+		assert.equal(entries.filter((e) => e.type === "usage" && e.kind === "side_question").length, 2);
+		assert.ok(!JSON.stringify(entries).includes("which config file"));
+		// /btw alone reopens the last answer.
+		await h.submit("/btw");
+		await h.waitFor((f) => f.includes("It is config.yaml."), "the reopened answer");
+	});
+
+	it("shows in the full-screen view and scrolls a long answer", async () => {
+		const long = Array.from({ length: 60 }, (_, i) => `line ${i}`).join("\n\n");
+		const h = await harness({ responses: [makeSseResponse(textTurn(long))], fullscreen: true });
+		await h.submit("/btw list them");
+		await h.waitFor((f) => f.includes("line 0") && f.includes("more"), "the first rows");
+		assert.ok(!h.frame().includes("line 59"));
+		await h.key(DOWN);
+		for (let i = 0; i < 20; i++) await h.key("\x1b[6~");
+		await h.waitFor((f) => f.includes("line 59"), "the last rows");
+		await h.key(ESC);
+		await h.waitFor((f) => !f.includes("line 59") && f.includes("Enter to send"), "the input box back");
 	});
 });

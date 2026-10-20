@@ -356,6 +356,9 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 
 	// One row less than the screen: Ink writes a newline after the frame.
 	const frameHeight = Math.max(3, screenRows - 1);
+	// The /btw overlay may take about half the screen (P39c).
+	const asideRows = Math.max(6, Math.floor(frameHeight / 2) - 4);
+	controller.setAsideRows(asideRows);
 	// The view takes what the bottom area leaves, in the same layout pass: it is given up to a
 	// frame of rows and clips the rest (the top while following, the bottom when scrolled), so a
 	// resize never draws a frame with the old split. Its measured height feeds scrolling, clicks
@@ -434,6 +437,7 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 				caret: true,
 				// The panel's frame, title, options and hints take about a dozen rows.
 				approvalRows: Math.max(10, frameHeight - 14),
+				asideRows,
 				...(search ? { search } : {}),
 			}),
 		),

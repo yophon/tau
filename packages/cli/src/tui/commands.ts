@@ -427,6 +427,21 @@ const BUILTINS: BuiltinCommand[] = [
 		},
 	},
 	{
+		name: "btw",
+		args: "<question>",
+		description: "Ask a side question about the conversation, even while it works; no tools, not added to it",
+		run: async (tui, args) => {
+			// Claude Code's /btw; without a question it reopens the last answer.
+			const question = args.trim();
+			if (question === "") {
+				if (tui.state.asides.length > 0) tui.openAside();
+				else tui.notice("dim", "Usage: /btw <question> — answered from the conversation, without tools.");
+				return;
+			}
+			await tui.askAside(question);
+		},
+	},
+	{
 		name: "diff",
 		description: "Show the uncommitted changes, untracked files included (git diff)",
 		run: async (tui) => {
@@ -1047,6 +1062,7 @@ export function parseCommandLine(text: string): { name: string; args: string } |
  */
 const RUNS_DURING_A_TURN = new Set([
 	"help",
+	"btw",
 	"diff",
 	"hotkeys",
 	"session",

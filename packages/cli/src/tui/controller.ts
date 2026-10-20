@@ -63,6 +63,7 @@ import {
 	type TaskKind,
 } from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
+import { ASIDE_ROWS, asideMaxScroll } from "./render/aside.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
@@ -515,6 +516,42 @@ export class TuiController {
 		this.listHeight = Math.max(1, rows);
 	}
 
+	/** Answer rows the /btw overlay shows (full screen: about half the screen, P39c). */
+	private asideRows = ASIDE_ROWS;
+	private asideSeq = 0;
+
+	setAsideRows(rows: number): void {
+		this.asideRows = Math.max(1, rows);
+	}
+
+	/** Reopen the /btw overlay on the newest exchange (`/btw` with no question). */
+	openAside(): void {
+		this.dispatch({ type: "aside-open" });
+	}
+
+	/**
+	 * A /btw side question (P39c, Claude Code): asked at once, even while a turn runs, with
+	 * this session's earlier side exchanges; the answer streams into the overlay and never
+	 * joins the conversation.
+	 */
+	async askAside(question: string): Promise<void> {
+		const id = ++this.asideSeq;
+		const exchanges = this.state.asides
+			.filter((item) => item.done && item.error === undefined && item.answer.trim() !== "")
+			.map((item) => ({ question: item.question, answer: item.answer }));
+		this.dispatch({ type: "aside-ask", id, question });
+		try {
+			const result = await this.agent.askAside(question, {
+				exchanges,
+				onText: (delta) => this.dispatch({ type: "aside-text", id, delta }),
+			});
+			this.dispatch({ type: "aside-done", id, text: result.text, toolCalls: result.toolCalls });
+		} catch (error) {
+			this.dispatch({ type: "aside-done", id, error: errorText(error) });
+		}
+		void this.refreshStatus();
+	}
+
 	/** The open list: a picker, else the completion menu with items. */
 	private openList(): { kind: "picker" | "menu"; count: number; selected: number; start: number } | undefined {
 		const { picker, menu } = this.state;
@@ -641,7 +678,7 @@ export class TuiController {
 			this.handleKey("?", {});
 			return;
 		}
-		if (this.state.approval || this.state.picker) {
+		if (this.state.approval || this.state.picker || this.state.aside) {
 			for (const ch of text) this.handleKey(ch, {});
 		} else if (this.state.search) {
 			this.execute({ type: "search-insert", text });
@@ -964,7 +1001,7 @@ export class TuiController {
 
 	/** A bracketed paste (or Alt+V text): folded when large (pi), one undo step. */
 	private insertPaste(text: string): void {
-		if (this.state.approval || this.state.picker) return;
+		if (this.state.approval || this.state.picker || this.state.aside) return;
 		if (this.state.search) {
 			this.execute({ type: "search-insert", text: text.replace(/\s+/g, " ") });
 			return;
@@ -978,7 +1015,12 @@ export class TuiController {
 	private handleKey(ch: string, key: KeyLike): void {
 		const state = this.state;
 		const idle =
-			state.task === undefined && !state.approval && !state.picker && !state.prompt && state.editor.text === "";
+			state.task === undefined &&
+			!state.approval &&
+			!state.picker &&
+			!state.aside &&
+			!state.prompt &&
+			state.editor.text === "";
 		if (idle && this.extensions.shortcuts.size > 0) {
 			const id = keyId(ch, key);
 			if (id !== undefined && !BUILTIN_KEYS.has(id)) {
@@ -994,6 +1036,7 @@ export class TuiController {
 		const command = routeKey(ch, key, {
 			approvalOpen: state.approval !== undefined,
 			pickerOpen: state.picker !== undefined,
+			asideOpen: state.aside !== undefined,
 			menuOpen: menu !== undefined && menu.items.length > 0,
 			promptActive: state.prompt !== undefined,
 			fullscreen: this.fullscreen,
@@ -1402,6 +1445,28 @@ export class TuiController {
 				return;
 			case "suspend":
 				this.deps.suspend?.();
+				return;
+			case "aside-close":
+				this.dispatch({ type: "aside-close" });
+				return;
+			case "aside-scroll": {
+				const max = asideMaxScroll(state, this.columns(), this.asideRows);
+				const scroll = Math.max(0, Math.min(max, (state.aside?.scroll ?? 0) + command.delta));
+				if (state.aside && scroll !== state.aside.scroll) {
+					this.dispatch({ type: "aside-scroll", delta: scroll - state.aside.scroll });
+				}
+				return;
+			}
+			case "aside-step":
+				this.dispatch({ type: "aside-step", delta: command.delta });
+				return;
+			case "aside-copy": {
+				const shown = state.aside ? state.asides[state.aside.index] : undefined;
+				if (shown && shown.answer !== "") void this.copySelection(shown.answer);
+				return;
+			}
+			case "aside-clear":
+				this.dispatch({ type: "aside-clear" });
 				return;
 			case "approval-up":
 			case "approval-down":

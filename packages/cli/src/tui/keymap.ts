@@ -38,6 +38,8 @@ export interface KeyContext {
 	approvalOpen: boolean;
 	/** A picker (selector, ctx.ui.select/confirm) is open. */
 	pickerOpen: boolean;
+	/** The /btw overlay is open (P39c): it takes the keys after approvals and pickers. */
+	asideOpen?: boolean;
 	/** The completion menu has items. */
 	menuOpen: boolean;
 	/** The editor answers a prompt (deny-and-tell, ctx.ui.input): Esc cancels it. */
@@ -73,6 +75,12 @@ export type KeyCommand =
 	| { type: "picker-alt" }
 	/** Space in a multi-select list (P35): check or uncheck the selected item. */
 	| { type: "picker-toggle" }
+	/** The /btw overlay (P39c, Claude Code's keys): close, scroll, step between answers, copy, clear earlier. */
+	| { type: "aside-close" }
+	| { type: "aside-scroll"; delta: number }
+	| { type: "aside-step"; delta: 1 | -1 }
+	| { type: "aside-copy" }
+	| { type: "aside-clear" }
 	/** PgUp/PgDn in the open list (picker or completion menu). */
 	| { type: "list-page"; direction: 1 | -1 }
 	/** Home/End in the open list. */
@@ -174,6 +182,23 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.backspace) return { type: "picker-backspace" };
 		if (ch === " ") return { type: "picker-toggle" };
 		if (ch.length === 1 && ch.trim() !== "" && plain) return { type: "picker-key", key: ch };
+		return undefined;
+	}
+
+	// The /btw overlay (P39c): Claude Code's keys; the rest is swallowed.
+	if (ctx.asideOpen) {
+		if (key.escape || key.return || (ch === " " && plain) || (key.ctrl && ch === "c")) return { type: "aside-close" };
+		if (key.upArrow && !key.shift) return { type: "aside-scroll", delta: -1 };
+		if (key.downArrow && !key.shift) return { type: "aside-scroll", delta: 1 };
+		if (key.pageUp || key.pageDown) return { type: "aside-scroll", delta: key.pageUp ? -10 : 10 };
+		if ((key.shift && key.leftArrow) || (key.tab && key.shift) || (ch === "[" && plain)) {
+			return { type: "aside-step", delta: -1 };
+		}
+		if ((key.shift && key.rightArrow) || (key.tab && !key.shift) || (ch === "]" && plain)) {
+			return { type: "aside-step", delta: 1 };
+		}
+		if (ch === "c" && plain) return { type: "aside-copy" };
+		if (ch === "x" && plain) return { type: "aside-clear" };
 		return undefined;
 	}
 
