@@ -55,6 +55,7 @@ async function main() {
 		await run("double-esc", runDoubleEscSmoke);
 		await run("statusline", runStatusLineSmoke);
 		await run("worktree", runWorktreeSmoke);
+		await run("keys", runKeysSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -918,6 +919,51 @@ async function runDoubleEscSmoke(root, baseUrl) {
 	}
 }
 
+// P38a: tau reads keys itself — Home, Delete, Ctrl+Left and Alt+Backspace edit the line, a
+// burst of arrow keys in one write all count (tech debt #21), Shift+Enter (kitty CSI-u) is a
+// newline, Ctrl+R finds history, Ctrl+D on an empty input exits.
+async function runKeysSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "keys", false);
+	const session = await startTui("keys", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("-l", "hello big world");
+		await session.send("Home");
+		await session.send("DC");
+		await session.send("End");
+		await session.send("C-Left");
+		await session.send("M-BSpace");
+		await session.waitFor("› ello world", 10_000);
+		// Three Lefts in one tmux write, then a character.
+		await session.send("Left", "Left", "Left", "X");
+		await session.waitFor("› elXlo world", 10_000);
+		await session.send("End");
+		await session.send("-l", "\x1b[13;2u");
+		await session.send("-l", "second line");
+		await session.waitFor("second line", 10_000);
+		const screen = await session.capture();
+		if (!/› elXlo world[\s│]*\n[\s│]*second line/.test(screen))
+			throw new Error(`Shift+Enter did not add a line:\n${screen}`);
+		await session.send("C-c");
+		await session.send("-l", "/hotkeys");
+		await session.send("Enter");
+		await session.waitFor("Ctrl+R", 10_000);
+		await session.send("C-r");
+		await session.waitFor("Search history", 10_000);
+		await session.send("-l", "hotk");
+		await sleep(200);
+		await session.send("Enter");
+		await session.waitFor("› /hotkeys", 10_000);
+		await session.send("C-c");
+		await sleep(200);
+		await session.send("C-d");
+		await session.waitForExit();
+		console.log("ok keys");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P37c: a statusLine command's colored rows show above the status line.
 async function runStatusLineSmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "statusline", false);
@@ -968,8 +1014,8 @@ async function runWorktreeSmoke(root, baseUrl) {
 	await git("commit", "-q", "-m", "first");
 	const session = await startTui("worktree", dirs, baseUrl, ["--no-session", "--worktree", "smoke"]);
 	try {
-		await session.waitFor(".tau/worktrees/smoke", 15_000);
-		await session.waitFor("worktree-smoke", 10_000);
+		// The status line (not the "Worktree smoke on branch" line printed before the TUI starts).
+		await session.waitFor("autonomous · worktree-smoke", 15_000);
 		await session.send("exit", "Enter");
 		await session.waitFor("has no changes. Remove it and its branch?", 15_000);
 		await session.send("y", "Enter");

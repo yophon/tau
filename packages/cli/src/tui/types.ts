@@ -114,4 +114,12 @@ export interface TuiDeps {
 	readClipboard?: () => Promise<ClipboardContent | undefined>;
 	/** Where a pasted image is saved; defaults to the system temp directory. */
 	saveImage?: (bytes: Uint8Array, extension: string) => string;
+	/** process.platform for key bindings (Ctrl+Z undoes on Windows, suspends elsewhere). */
+	platform?: string;
+	/** Run something that takes the terminal (an external editor): the TUI leaves the screen and comes back after (pi). */
+	handOverScreen?: <T>(run: () => T) => T;
+	/** Ctrl+Z outside Windows: suspend to the shell, come back on SIGCONT. */
+	suspend?: () => void;
+	/** Tab path completion: a directory's entries, directories ending in "/". */
+	listDirectory?: (dir: string) => string[];
 }

@@ -19,7 +19,8 @@ import {
 	transcriptText,
 	viewSlice,
 } from "../src/tui/fullscreen.ts";
-import { rawKey, takeInputEvents, WHEEL_ROWS } from "../src/tui/input/mouse.ts";
+import { InputSplitter } from "../src/tui/input/keys.ts";
+import { inputReport, WHEEL_ROWS } from "../src/tui/input/mouse.ts";
 import type { Block } from "../src/tui/model.ts";
 import { DOWN, ENTER, type Harness, pause, harness as start } from "./tui-harness.ts";
 
@@ -32,51 +33,58 @@ const CTRL_END = "\x1b[1;5F";
 const none = { shift: false, alt: false, ctrl: false };
 
 describe("P34 terminal reports", () => {
+	const reports = (data: string) =>
+		new InputSplitter()
+			.feed(data)
+			.flatMap((token) => (token.kind === "sequence" ? [inputReport(token.sequence)] : []))
+			.filter((event) => event !== undefined);
+
 	it("decodes SGR mouse reports into 0-based presses, drags, releases and wheel notches", () => {
-		assert.deepEqual(takeInputEvents("", "\x1b[<0;10;5M\x1b[<32;12;5M\x1b[<0;12;5m").events, [
+		assert.deepEqual(reports("\x1b[<0;10;5M\x1b[<32;12;5M\x1b[<0;12;5m"), [
 			{ kind: "press", button: 0, x: 9, y: 4, ...none },
 			{ kind: "drag", x: 11, y: 4, ...none },
 			{ kind: "release", x: 11, y: 4, ...none },
 		]);
-		assert.deepEqual(takeInputEvents("", `${WHEEL_UP}${WHEEL_DOWN}`).events, [
+		assert.deepEqual(reports(`${WHEEL_UP}${WHEEL_DOWN}`), [
 			{ kind: "wheel", delta: -1, x: 9, y: 4, ...none },
 			{ kind: "wheel", delta: 1, x: 9, y: 4, ...none },
 		]);
 		// Shift (4), Alt (8), Ctrl (16); horizontal wheel (66/67) is ignored.
-		assert.deepEqual(takeInputEvents("", "\x1b[<20;1;1M").events, [
+		assert.deepEqual(reports("\x1b[<20;1;1M"), [
 			{ kind: "press", button: 0, x: 0, y: 0, shift: true, alt: false, ctrl: true },
 		]);
-		assert.deepEqual(takeInputEvents("", "\x1b[<66;1;1M").events, []);
+		assert.deepEqual(reports("\x1b[<66;1;1M"), []);
 	});
 
-	it("takes focus reports and leaves the rest for Ink", () => {
-		const taken = takeInputEvents("", "a\x1b[Ob\x1b[I");
-		assert.deepEqual(taken.events, [
-			{ kind: "focus", focused: false },
-			{ kind: "focus", focused: true },
+	it("takes focus reports out of typed text", () => {
+		const tokens = new InputSplitter().feed("a\x1b[Ob\x1b[I");
+		assert.deepEqual(tokens, [
+			{ kind: "text", text: "a" },
+			{ kind: "sequence", sequence: "\x1b[O" },
+			{ kind: "text", text: "b" },
+			{ kind: "sequence", sequence: "\x1b[I" },
 		]);
-		assert.equal(taken.rest, "ab");
-		assert.deepEqual(takeInputEvents("", "hello"), { events: [], rest: "hello", pending: "" });
+		assert.deepEqual(inputReport("\x1b[I"), { kind: "focus", focused: true });
 	});
 
 	it("holds a report cut off at the end of a read until the next one completes it", () => {
-		const first = takeInputEvents("", "\x1b[<64;10");
-		assert.deepEqual(first, { events: [], rest: "", pending: "\x1b[<64;10" });
-		assert.equal(takeInputEvents(first.pending, ";5M").events[0]?.kind, "wheel");
-		const two = takeInputEvents("", `${WHEEL_DOWN}\x1b[<65;1`);
-		assert.equal(two.events.length, 1);
-		assert.equal(two.pending, "\x1b[<65;1");
+		const splitter = new InputSplitter();
+		assert.deepEqual(splitter.feed("\x1b[<64;10"), []);
+		assert.equal(splitter.pending, true);
+		assert.deepEqual(splitter.feed(";5M"), [{ kind: "sequence", sequence: "\x1b[<64;10;5M" }]);
+		assert.equal(splitter.feed(`${WHEEL_DOWN}\x1b[<65;1`).length, 1);
+		assert.equal(splitter.pending, true);
 	});
 
-	it("knows the keys Ink drops or swallows", () => {
-		assert.deepEqual(rawKey(PAGE_UP), { kind: "page", direction: -1 });
-		assert.deepEqual(rawKey(PAGE_DOWN), { kind: "page", direction: 1 });
-		assert.deepEqual(rawKey("\x1b[H"), { kind: "edge", to: "top", ctrl: false });
-		assert.deepEqual(rawKey("\x1b[4~"), { kind: "edge", to: "bottom", ctrl: false });
-		assert.deepEqual(rawKey(CTRL_HOME), { kind: "edge", to: "top", ctrl: true });
-		assert.deepEqual(rawKey(CTRL_END), { kind: "edge", to: "bottom", ctrl: true });
-		assert.deepEqual(rawKey("\x1b[1;5A"), { kind: "prompt", direction: -1 });
-		assert.equal(rawKey("x"), undefined);
+	it("reads the scroll keys Ink dropped", () => {
+		const keys = (data: string) => new InputSplitter().feed(data);
+		assert.deepEqual(keys(PAGE_UP), [{ kind: "key", ch: "", key: { pageUp: true } }]);
+		assert.deepEqual(keys(PAGE_DOWN), [{ kind: "key", ch: "", key: { pageDown: true } }]);
+		assert.deepEqual(keys("\x1b[H"), [{ kind: "key", ch: "", key: { home: true } }]);
+		assert.deepEqual(keys("\x1b[4~"), [{ kind: "key", ch: "", key: { end: true } }]);
+		assert.deepEqual(keys(CTRL_HOME), [{ kind: "key", ch: "", key: { home: true, ctrl: true } }]);
+		assert.deepEqual(keys(CTRL_END), [{ kind: "key", ch: "", key: { end: true, ctrl: true } }]);
+		assert.deepEqual(keys("\x1b[1;5A"), [{ kind: "key", ch: "", key: { upArrow: true, ctrl: true } }]);
 	});
 });
 

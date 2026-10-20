@@ -92,6 +92,12 @@ export interface PickerView {
 	alt?: string;
 	/** A multi-select list (P35, ctx.ui.selectMany): the checked items. Absent = pick one. */
 	checked?: number[];
+	/**
+	 * Type to filter (P38, pi's selectors): the whole list, with `items` the matches for
+	 * `query`. Absent on lists picked by key (y/n) and on multi-select lists.
+	 */
+	all?: PickerItem[];
+	query?: string;
 }
 
 /** A question answered in the editor: ctx.ui.input, or the text after "deny and tell". */
@@ -208,6 +214,7 @@ export type UiAction =
 	| { type: "picker-select"; index: number; start: number }
 	| { type: "picker-close"; id: number }
 	| { type: "picker-toggle"; id: number; index: number }
+	| { type: "picker-filter"; id: number; query: string; items: PickerItem[] }
 	| { type: "prompt-open"; prompt: PromptView }
 	| { type: "prompt-close"; id: number }
 	| { type: "editor"; editor: EditorState }
@@ -411,6 +418,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, picker: { ...state.picker, selected: action.index, start: action.start } };
 		case "picker-close":
 			return state.picker?.id === action.id ? { ...state, picker: undefined } : state;
+		case "picker-filter":
+			if (state.picker?.id !== action.id) return state;
+			return { ...state, picker: { ...state.picker, query: action.query, items: action.items, selected: 0, start: 0 } };
 		case "picker-toggle": {
 			const picker = state.picker;
 			if (picker?.id !== action.id || !picker.checked) return state;

@@ -2,8 +2,9 @@
  * Completion engine (ported from yo-agent surface-cli input/completion.ts):
  * `/` at the start of the input completes commands, the text after
  * "/command " completes that command's arguments (pi getArgumentCompletions),
- * `@` anywhere completes file paths (fuzzy). Candidates come from the caller;
- * this module only parses the token and filters.
+ * `@` anywhere completes file and directory paths (fuzzy; `@"…"` for paths with
+ * spaces, pi). Candidates come from the caller; this module only parses the token
+ * and filters.
  */
 export interface CompletionItem {
 	/** Replaces the token when accepted. */
@@ -86,13 +87,14 @@ export function computeCompletion(text: string, cursor: number, sources: Complet
 		}
 	}
 
-	const file = before.match(/(?:^|\s)@([^\s@]*)$/);
+	const file = before.match(/(?:^|\s)(@"[^"\n]*|@[^\s@"]*)$/);
 	if (file) {
-		const token = `@${file[1] ?? ""}`;
+		const token = file[1] ?? "@";
+		const query = token.startsWith('@"') ? token.slice(2) : token.slice(1);
 		const tokenStart = cursor - token.length;
 		if (sources.files === undefined) return { kind: "file", tokenStart, token, items: [] };
-		const items = fuzzyFilter(sources.files, file[1] ?? "", FILE_MATCH_LIMIT).map((path) => ({
-			value: `@${path}`,
+		const items = fuzzyFilter(sources.files, query, FILE_MATCH_LIMIT).map((path) => ({
+			value: fileReference(path),
 			label: path,
 		}));
 		return items.length > 0 ? { kind: "file", tokenStart, token, items } : undefined;
@@ -100,24 +102,44 @@ export function computeCompletion(text: string, cursor: number, sources: Complet
 	return undefined;
 }
 
-/** Replace the token with the item (a file completion adds a space). */
+/** `@path`, quoted when it has spaces; a directory stays open (no closing quote) to keep descending. */
+export function fileReference(path: string): string {
+	if (!/\s/.test(path)) return `@${path}`;
+	return path.endsWith("/") ? `@"${path}` : `@"${path}"`;
+}
+
+/** Replace the token with the item (a file completion adds a space; a directory does not, pi). */
 export function acceptCompletion(
 	text: string,
 	completion: Completion,
 	item: CompletionItem,
 ): { text: string; cursor: number } {
-	const inserted = item.value + (completion.kind === "file" ? " " : "");
+	const directory = item.value.endsWith("/");
+	const inserted = item.value + (completion.kind === "file" && !directory ? " " : "");
 	const next =
 		text.slice(0, completion.tokenStart) + inserted + text.slice(completion.tokenStart + completion.token.length);
 	return { text: next, cursor: completion.tokenStart + inserted.length };
 }
 
-export const FILE_LIST_LIMIT = 5000;
+/** Files listed at most; typing narrows the matches shown (FILE_MATCH_LIMIT). */
+export const FILE_LIST_LIMIT = 50_000;
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".next"]);
 
-/** `git ls-files` first (fast, honors .gitignore), else a directory walk; capped. */
+/** Files and the directories holding them (ending in "/"), for `@` completion. */
 export async function listFiles(cwd: string, limit = FILE_LIST_LIMIT): Promise<string[]> {
+	const files = await listOnlyFiles(cwd, limit);
+	const dirs = new Set<string>();
+	for (const file of files) {
+		for (let slash = file.indexOf("/"); slash !== -1; slash = file.indexOf("/", slash + 1)) {
+			dirs.add(file.slice(0, slash + 1));
+		}
+	}
+	return [...files, ...dirs];
+}
+
+/** `git ls-files` first (fast, honors .gitignore), else a directory walk; capped. */
+async function listOnlyFiles(cwd: string, limit: number): Promise<string[]> {
 	try {
 		const { execFile } = await import("node:child_process");
 		const out = await new Promise<string>((resolve, reject) => {

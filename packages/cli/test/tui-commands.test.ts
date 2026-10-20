@@ -57,14 +57,13 @@ describe("P27 argument completion", () => {
 		assert.equal(computeCompletion("/mode a", 6, sources), undefined);
 	});
 
-	it("Tab-free flow: typing an argument opens the menu, Enter completes, Enter runs", async () => {
+	it("Tab-free flow: typing an argument opens the menu, one Enter completes and runs it (pi, P38)", async () => {
 		const h = await harness({ responses: [], permissionMode: "supervised" });
 		await h.type("/mode acc");
 		await h.waitFor((f) => f.includes("accept-edits") && f.includes("file edits in this directory run"), "the menu");
 		await h.key(ENTER);
-		assert.equal(h.controller.state.editor.text, "/mode accept-edits");
-		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("Accept edits:"), "the switch");
+		assert.equal(h.controller.state.editor.text, "");
 		assert.equal(h.controller.agent.getPermissionMode(), "accept-edits");
 	});
 

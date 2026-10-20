@@ -38,13 +38,21 @@ function ActivityLine(props: { activity: string; startedAt: number | undefined }
 	);
 }
 
+/**
+ * Marks the caret in a full-screen frame (pi's CURSOR_MARKER): zero-width characters the
+ * painter finds, strips, and puts the terminal's real cursor at, so an input method's
+ * candidate window opens at the caret (Windows IMEs follow the real cursor).
+ */
+export const CARET_MARK = "\u2060\u200b\u2060";
+
 export function renderInputBox(
 	editor: ed.EditorState,
 	columns: number,
-	options: { active: boolean; placeholder?: string },
+	options: { active: boolean; placeholder?: string; caret?: boolean },
 ): React.ReactElement {
+	const mark = options.caret ? CARET_MARK : "";
 	// Text width = columns - border (2) - padding (2) - prefix (2).
-	const usable = Math.max(10, columns - 6);
+	const usable = ed.inputTextWidth(columns);
 	const all = ed.layout(editor, usable);
 	let lines = all;
 	let offset = 0;
@@ -67,12 +75,13 @@ export function renderInputBox(
 				Text,
 				{ key: `l${i}` },
 				prefix,
+				mark,
 				h(Text, { key: "c", inverse: true }, " "),
 				h(Text, { key: "ph", dimColor: true }, options.placeholder),
 			);
 		}
 		const { before, at, after } = ed.splitAtCursor(line.text, line.cursorUnits);
-		return h(Text, { key: `l${i}` }, prefix, before, h(Text, { key: "c", inverse: true }, at), after);
+		return h(Text, { key: `l${i}` }, prefix, before, mark, h(Text, { key: "c", inverse: true }, at), after);
 	});
 	return h(
 		Box,
@@ -98,6 +107,8 @@ export interface BottomLayout {
 	widgetsRef?: React.Ref<DOMElement>;
 	/** The transcript search (P34b): the query, how many matches, which one is current. */
 	search?: { query: string; count: number; current: number };
+	/** Full screen: mark the caret for the painter (CARET_MARK). */
+	caret?: boolean;
 }
 
 const INLINE_LAYOUT: BottomLayout = { listRows: INLINE_LIST_ROWS };
@@ -112,6 +123,12 @@ function renderList(
 	ref: React.Ref<DOMElement> | undefined,
 ): React.ReactElement[] {
 	const window = listWindow(items.length, selected, rows, start);
+	// Hints line up in a column after the widest label shown (up to 28 cells).
+	const shown = items.slice(window.start, window.end);
+	const labelWidth = Math.min(
+		28,
+		Math.max(0, ...shown.filter((item) => item.hint).map((item) => strWidth(item.label))),
+	);
 	const out: React.ReactElement[] = [];
 	if (window.above > 0) out.push(h(Text, { key: `${key}-above`, dimColor: true }, `  ↑ ${window.above} more`));
 	out.push(
@@ -126,7 +143,13 @@ function renderList(
 					{ key: `i${index}`, color: isSelected ? "cyan" : undefined, wrap: "truncate-end" },
 					isSelected ? "❯ " : "  ",
 					item.label,
-					item.hint ? h(Text, { key: "h", dimColor: true }, `  ${item.hint}`) : null,
+					item.hint
+						? h(
+								Text,
+								{ key: "h", dimColor: true },
+								`${" ".repeat(Math.max(0, labelWidth - strWidth(item.label)))}  ${item.hint}`,
+							)
+						: null,
 				);
 			}),
 		),
@@ -169,7 +192,12 @@ function renderPicker(picker: PickerView, layout: BottomLayout): React.ReactElem
 	return h(
 		Box,
 		{ key: "picker", flexDirection: "column", borderStyle: "round", borderColor: "cyan", paddingX: 1 },
-		h(Text, { key: "t", bold: true }, picker.title),
+		h(
+			Text,
+			{ key: "t", bold: true },
+			picker.title,
+			picker.query ? h(Text, { key: "q", bold: false, color: "cyan" }, `  ${picker.query}`) : null,
+		),
 		...renderList(
 			"picker",
 			picker.checked
@@ -183,7 +211,9 @@ function renderPicker(picker: PickerView, layout: BottomLayout): React.ReactElem
 			layout.listRows,
 			layout.listRef,
 		),
-		picker.items.length === 0 ? h(Text, { key: "none", dimColor: true }, "Nothing to choose from.") : null,
+		picker.items.length === 0
+			? h(Text, { key: "none", dimColor: true }, picker.query ? "No matches." : "Nothing to choose from.")
+			: null,
 	);
 }
 
@@ -241,16 +271,17 @@ export function hintText(state: UiState, completion: Completion | undefined): st
 	}
 	if (state.picker?.checked) return "↑↓ to move · Space or a click to check · Enter to confirm · Esc to cancel";
 	if (state.picker) {
-		return `↑↓ to choose · Enter to confirm${state.picker.alt ? ` · Ctrl+S to ${state.picker.alt}` : ""} · Esc to cancel`;
+		const filter = state.picker.all ? "Type to filter · " : "";
+		return `${filter}↑↓ to choose · Enter to confirm${state.picker.alt ? ` · Ctrl+S to ${state.picker.alt}` : ""} · Esc to cancel`;
 	}
 	if (state.flash) return state.flash;
 	if (state.search) return "Typing searches the conversation · Enter or ↓ next · ↑ previous · Esc to close";
 	if (completion && completion.items.length > 0) return "Tab, Enter or a click to complete · Esc to close";
 	if (state.prompt?.kind === "tell") return "Enter to deny and send this · Esc to go back to the approval";
 	if (state.prompt) return "Enter to submit · Esc to cancel";
-	if (state.task === "turn") return "Enter to steer · Alt+Enter to queue · Esc to interrupt · Ctrl+O details";
+	if (state.task === "turn") return "Enter to steer · Tab to queue · Esc to interrupt · Ctrl+O details";
 	if (state.task) return "Esc to interrupt";
-	return "Enter to send · Ctrl+J newline · ↑↓ history · @ file · / commands · Shift+Tab mode · Ctrl+O details";
+	return "Enter to send · Shift+Enter newline · @ file · / commands · Ctrl+R history · Shift+Tab mode";
 }
 
 /** One status line; parts are dropped from the right until it fits. */
@@ -326,6 +357,7 @@ export function renderBottom(
 			renderInputBox(state.editor, columns, {
 				active: true,
 				...(state.prompt?.placeholder !== undefined ? { placeholder: state.prompt.placeholder } : {}),
+				...(layout.caret ? { caret: true } : {}),
 			}),
 		);
 		if (completion) children.push(renderMenu(completion, state.menu.selected, state.menu.start, layout));

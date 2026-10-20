@@ -28,7 +28,8 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 	const { stdout } = useStdout();
 	const columns = stdout?.columns ?? 80;
 
-	useInput((input, key) => controller.handleInput(input, key));
+	// Keys reach the controller through the filtered stdin (P38a); this keeps Ink's raw mode on.
+	useInput(() => undefined);
 
 	const options: LineOptions = {
 		width: columns,
@@ -188,7 +189,29 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	const envHistory = process.env.TAU_HISTORY;
 	const historyFile =
 		deps.historyFile ?? (envHistory !== undefined ? envHistory || undefined : join(homedir(), ".tau", "history.jsonl"));
-	const controller = new TuiController(options, { ...deps, ...(historyFile !== undefined ? { historyFile } : {}) });
+	// Ctrl+G and Ctrl+Z hand the terminal over; each screen mode says how it leaves and comes back.
+	const screen = { leave: () => {}, enter: () => {} };
+	const handOverScreen = <T>(run: () => T): T => {
+		screen.leave();
+		try {
+			return run();
+		} finally {
+			screen.enter();
+		}
+	};
+	// pi: suspend the process group; SIGCONT (fg) brings the TUI back.
+	const suspend = (): void => {
+		if (process.platform === "win32") return;
+		screen.leave();
+		process.once("SIGCONT", () => screen.enter());
+		process.kill(0, "SIGTSTP");
+	};
+	const controller = new TuiController(options, {
+		handOverScreen,
+		suspend,
+		...deps,
+		...(historyFile !== undefined ? { historyFile } : {}),
+	});
 	const { captureConsole, defaultLogFile } = await import("./console-capture.ts");
 	// Nothing but the TUI draws on the terminal while it runs (SDK loggers included).
 	const restoreConsole = captureConsole({
@@ -210,16 +233,41 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	controller.setTerminalStatus(status);
 	// Bracketed paste: pasted newlines arrive inside 200~/201~ markers instead of submitting.
 	// Focus reports (P34e): notifications only while the window is in the background.
-	process.stdout.write("\x1b[?2004h\x1b[?1004h");
-	// However the process ends, the shell must not get focus reports or our title.
+	// Keyboard reports (P38a): win32-input-mode in Windows Terminal (Claude Code), kitty flags
+	// elsewhere (pi), so Shift+Enter and the like are told apart.
+	const { keyboardMode, KITTY_KEYS_OFF, KITTY_KEYS_ON, WIN32_INPUT_OFF, WIN32_INPUT_ON } = await import(
+		"./input/keys.ts"
+	);
+	const keyboard = keyboardMode();
+	const keysOn = keyboard === "win32" ? WIN32_INPUT_ON : keyboard === "kitty" ? KITTY_KEYS_ON : "";
+	const keysOff = keyboard === "win32" ? WIN32_INPUT_OFF : keyboard === "kitty" ? KITTY_KEYS_OFF : "";
+	const inputModesOn = (): void => {
+		process.stdout.write(`\x1b[?2004h\x1b[?1004h${keysOn}`);
+	};
+	const inputModesOff = (): void => {
+		process.stdout.write(`${keysOff}\x1b[?1004l\x1b[?2004l`);
+	};
+	inputModesOn();
+	// However the process ends, the shell must not get focus or key reports, or our title.
 	const restoreTerminal = (): void => {
 		status.dispose();
-		process.stdout.write("\x1b[?1004l\x1b[?2004l");
+		inputModesOff();
+	};
+	screen.leave = () => {
+		inputModesOff();
+		process.stdout.write("\x1b[?25h");
+		if (process.stdin.isTTY) process.stdin.setRawMode(false);
+	};
+	screen.enter = () => {
+		if (process.stdin.isTTY) process.stdin.setRawMode(true);
+		inputModesOn();
+		// Inline, the editor wrote over the bottom: draw it all again (full screen repaints its own frame).
+		if (options.screen === "inline") controller.redraw();
 	};
 	process.once("exit", restoreTerminal);
 	try {
 		if (options.screen === "inline") await runInline(controller, render);
-		else await runFullscreen(controller, render);
+		else await runFullscreen(controller, render, screen);
 	} finally {
 		process.off("exit", restoreTerminal);
 		restoreTerminal();
@@ -276,7 +324,11 @@ async function runInline(controller: TuiController, render: InkRender): Promise<
  * The full-screen TUI (P33): the alternate screen, tau's own transcript view, every frame
  * one synchronized write, and the conversation written to the main screen on exit.
  */
-async function runFullscreen(controller: TuiController, render: InkRender): Promise<void> {
+async function runFullscreen(
+	controller: TuiController,
+	render: InkRender,
+	screen: { leave: () => void; enter: () => void },
+): Promise<void> {
 	const fullscreen = await import("./fullscreen.ts");
 	const { LineCache } = await import("./render/lines.ts");
 	const cache = new LineCache();
@@ -295,7 +347,7 @@ async function runFullscreen(controller: TuiController, render: InkRender): Prom
 	});
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
 	const ink = await inkFrameState(stdout);
-	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, () => {
+	const repaint = (): void => {
 		// Lay out at the new size, then draw that frame now rather than after Ink's 32 ms render
 		// throttle. Every frame paints the whole screen, so nothing is cleared beforehand.
 		controller.relayout();
@@ -303,7 +355,19 @@ async function runFullscreen(controller: TuiController, render: InkRender): Prom
 			ink.lastOutput = "";
 			ink.onRender();
 		}
-	});
+	};
+	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, repaint);
+	// Handing the terminal over (Ctrl+G, Ctrl+Z): back to the main screen, then in again and repaint.
+	const { leave, enter } = screen;
+	screen.leave = () => {
+		process.stdout.write(fullscreen.LEAVE_FULLSCREEN);
+		leave();
+	};
+	screen.enter = () => {
+		enter();
+		process.stdout.write(fullscreen.ENTER_FULLSCREEN);
+		repaint();
+	};
 	try {
 		await controller.start();
 		controller.notice(

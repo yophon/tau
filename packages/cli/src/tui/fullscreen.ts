@@ -7,11 +7,14 @@
  * write. On exit the terminal is restored and the conversation is written to
  * the main screen, where it stays in the scrollback.
  */
+
+import { stripVTControlCharacters } from "node:util";
 import { Box, type DOMElement, measureElement, Text, useInput, useStdout } from "ink";
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
+import { strWidth } from "./input/width.ts";
 import type { Block } from "./model.ts";
-import { renderBottom } from "./render/bottom.ts";
+import { CARET_MARK, renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineCache, type LineOptions } from "./render/lines.ts";
 import { listRows } from "./render/list.ts";
 import {
@@ -84,10 +87,21 @@ const INK_CLEAR = /^\x1b\[2J(?:\x1b\[3J)?(?:\x1b\[H|\x1b\[0f)/;
  * does not depend on where the cursor was left (a resize can move it). Empty: nothing to paint.
  */
 export function paintFrame(chunk: string): string {
-	const frame = chunk.replace(INK_CLEAR, "").replace(INK_ERASE, "");
+	let frame = chunk.replace(INK_CLEAR, "").replace(INK_ERASE, "");
 	if (frame === "") return "";
+	// The caret (P38a, pi): the real cursor ends up there, for the input method's window.
+	let caret = "";
+	const at = frame.indexOf(CARET_MARK);
+	if (at !== -1) {
+		const before = frame.slice(0, at);
+		const lineStart = before.lastIndexOf("\n") + 1;
+		const row = before.split("\n").length;
+		const column = strWidth(stripVTControlCharacters(before.slice(lineStart))) + 1;
+		frame = before + frame.slice(at + CARET_MARK.length);
+		caret = `\x1b[${row};${column}H`;
+	}
 	const rows = frame.replaceAll("\n", "\x1b[K\n");
-	return `${SYNC_BEGIN}\x1b[H${rows}${frame.endsWith("\n") ? "" : "\x1b[K"}\x1b[J${SYNC_END}`;
+	return `${SYNC_BEGIN}\x1b[H${rows}${frame.endsWith("\n") ? "" : "\x1b[K"}\x1b[J${caret}${SYNC_END}`;
 }
 
 /** The stdout Ink draws on in full screen: every write is painted with paintFrame. */
@@ -214,7 +228,8 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	const screenRows = stdout?.rows ?? 24;
 
 	// Mouse and focus reports never get here: the filtered stdin hands them to the controller.
-	useInput((input, key) => controller.handleInput(input, key));
+	// Keys reach the controller through the filtered stdin (P38a); this keeps Ink's raw mode on.
+	useInput(() => undefined);
 
 	// Where the lists and approval options are on screen, for clicks (after each layout).
 	const listRef = useRef<DOMElement>(null);
@@ -347,6 +362,7 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 				listRef,
 				approvalRef,
 				widgetsRef,
+				caret: true,
 				...(search ? { search } : {}),
 			}),
 		),

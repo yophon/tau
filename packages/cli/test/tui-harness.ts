@@ -27,6 +27,7 @@ import { App } from "../src/tui/app.ts";
 import { TuiController } from "../src/tui/controller.ts";
 import { FullscreenApp } from "../src/tui/fullscreen.ts";
 import type { ApprovalPromptRequest } from "../src/tui/model.ts";
+import { CARET_MARK } from "../src/tui/render/bottom.ts";
 import { LineCache } from "../src/tui/render/lines.ts";
 import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "../src/tui/types.ts";
 
@@ -186,7 +187,8 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	await pause(5);
 	const frame = (): string => {
 		controller.store.flush();
-		return ink.lastFrame() ?? "";
+		// The full-screen caret mark (P38a) is for the painter; tests read the frame without it.
+		return (ink.lastFrame() ?? "").replaceAll(CARET_MARK, "");
 	};
 	const waitFor = async (test: (frame: string) => boolean, what: string): Promise<string> => {
 		const deadline = Date.now() + 3000;

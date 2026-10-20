@@ -1,4 +1,4 @@
-// Input layer of the P25 TUI: editor, widths, decoder, pastes, history,
+// Input layer of the P25 TUI: editor, widths, key splitting, pastes, history,
 // completion and key routing (cases ported from yo-agent surface-cli tests).
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -7,9 +7,9 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { applyEditorCommand } from "../src/tui/controller.ts";
 import { acceptCompletion, computeCompletion, fuzzyFilter } from "../src/tui/input/completion.ts";
-import { InputDecoder } from "../src/tui/input/decoder.ts";
 import * as ed from "../src/tui/input/editor.ts";
 import { PersistentHistory } from "../src/tui/input/history.ts";
+import { InputSplitter, keyboardMode, parseKey, Win32Translator } from "../src/tui/input/keys.ts";
 import { expandPastes, foldPaste, newPasteStore } from "../src/tui/input/paste.ts";
 import { cellWidth, strWidth, truncateCells } from "../src/tui/input/width.ts";
 import { type KeyContext, routeKey } from "../src/tui/keymap.ts";
@@ -132,61 +132,167 @@ describe("applyEditorCommand", () => {
 	});
 });
 
-describe("InputDecoder: bracketed paste", () => {
-	it("a whole paste in one chunk (Ink stripped the first ESC)", () => {
-		const d = new InputDecoder();
-		assert.deepEqual(d.feed("[200~hello\nworld\x1b[201~"), [{ kind: "paste", text: "hello\nworld" }]);
-		assert.equal(d.pasting, false);
+describe("InputSplitter: bracketed paste (pi StdinBuffer)", () => {
+	it("a whole paste in one read", () => {
+		assert.deepEqual(new InputSplitter().feed("\x1b[200~hello\nworld\x1b[201~"), [
+			{ kind: "paste", text: "hello\nworld" },
+		]);
 	});
 
-	it("over several chunks; Enter and Tab inside are literal", () => {
-		const d = new InputDecoder();
-		assert.deepEqual(d.feed("[200~line1"), []);
-		assert.equal(d.pasting, true);
-		assert.deepEqual(d.feed("", { return: true }), []);
-		assert.deepEqual(d.feed("", { tab: true }), []);
-		assert.deepEqual(d.feed("line2"), []);
-		assert.deepEqual(d.feed("[201~"), [{ kind: "paste", text: "line1\r\tline2" }]);
-		assert.equal(d.pasting, false);
+	it("over several reads; Enter, Tab and escapes inside are literal; the end marker may be split", () => {
+		const s = new InputSplitter();
+		assert.deepEqual(s.feed("\x1b[200~line1\r"), []);
+		assert.deepEqual(s.feed("\tline2\x1b[A"), []);
+		assert.deepEqual(s.feed("\x1b[20"), []);
+		assert.deepEqual(s.feed("1~x"), [
+			{ kind: "paste", text: "line1\r\tline2\x1b[A" },
+			{ kind: "text", text: "x" },
+		]);
 	});
 
-	it("keeps a prefix before the start and decodes what follows the end", () => {
-		assert.deepEqual(new InputDecoder().feed("\x1b[200~x\x1b[201~"), [{ kind: "paste", text: "x" }]);
-		assert.deepEqual(new InputDecoder().feed("ab[200~pasted\x1b[201~"), [
-			{ kind: "key", ch: "ab", key: {} },
+	it("keeps what comes before and after a paste", () => {
+		assert.deepEqual(new InputSplitter().feed("ab\x1b[200~pasted\x1b[201~\r"), [
+			{ kind: "text", text: "ab" },
 			{ kind: "paste", text: "pasted" },
+			{ kind: "key", ch: "", key: { return: true } },
 		]);
-		assert.deepEqual(new InputDecoder().feed("[200~one\x1b[201~xy[200~two\x1b[201~"), [
-			{ kind: "paste", text: "one" },
-			{ kind: "key", ch: "xy", key: {} },
-			{ kind: "paste", text: "two" },
-		]);
-	});
-
-	it("passes ordinary keys through", () => {
-		const d = new InputDecoder();
-		assert.deepEqual(d.feed("h", {}), [{ kind: "key", ch: "h", key: {} }]);
-		assert.deepEqual(d.feed("", { return: true }), [{ kind: "key", ch: "", key: { return: true } }]);
-		assert.deepEqual(d.feed("abc"), [{ kind: "key", ch: "abc", key: {} }]);
 	});
 });
 
-describe("InputDecoder: merged pseudo-terminal chunks", () => {
-	it("text + Enter in one chunk splits into text and enter events", () => {
-		const d = new InputDecoder();
-		assert.deepEqual(d.feed("hi\r"), [{ kind: "text", text: "hi" }, { kind: "enter" }]);
-		assert.deepEqual(d.feed("a\r\nb\nc"), [
-			{ kind: "text", text: "a" },
-			{ kind: "enter" },
-			{ kind: "text", text: "b" },
-			{ kind: "enter" },
-			{ kind: "text", text: "c" },
+describe("InputSplitter: several keys in one read (tech debt #21)", () => {
+	it("splits every key out of a read", () => {
+		assert.deepEqual(new InputSplitter().feed("\x1b[B\x1b[B\x1b[B"), [
+			{ kind: "key", ch: "", key: { downArrow: true } },
+			{ kind: "key", ch: "", key: { downArrow: true } },
+			{ kind: "key", ch: "", key: { downArrow: true } },
+		]);
+		assert.deepEqual(new InputSplitter().feed("ab\x1b[D"), [
+			{ kind: "text", text: "ab" },
+			{ kind: "key", ch: "", key: { leftArrow: true } },
+		]);
+		assert.deepEqual(new InputSplitter().feed("hi\r"), [
+			{ kind: "text", text: "hi" },
+			{ kind: "key", ch: "", key: { return: true } },
 		]);
 	});
 
-	it("a plain Enter key is not split", () => {
-		const events = new InputDecoder().feed("\r", { return: true });
-		assert.deepEqual(events, [{ kind: "key", ch: "\r", key: { return: true } }]);
+	it("LF after text in one read is Enter (typed ahead in cooked mode); alone it is Ctrl+J", () => {
+		assert.deepEqual(new InputSplitter().feed("exit\n"), [
+			{ kind: "text", text: "exit" },
+			{ kind: "key", ch: "", key: { return: true } },
+		]);
+		assert.deepEqual(new InputSplitter().feed("\n"), [{ kind: "key", ch: "\n", key: {} }]);
+	});
+
+	it("Esc twice in one read is two Esc keys; a lone Esc at the end is the Esc key", () => {
+		const esc = { kind: "key", ch: "", key: { escape: true } };
+		assert.deepEqual(new InputSplitter().feed("\x1b\x1b"), [esc, esc]);
+		assert.deepEqual(new InputSplitter().feed("\x1b"), [esc]);
+	});
+
+	it("gives up on a cut-off sequence after the timeout: an Alt key, then the rest as typed", () => {
+		const s = new InputSplitter();
+		assert.deepEqual(s.feed("\x1b[1;5"), []);
+		assert.deepEqual(s.flush(), [
+			{ kind: "key", ch: "[", key: { meta: true } },
+			{ kind: "text", text: "1;5" },
+		]);
+	});
+});
+
+describe("parseKey: what Windows Terminal and others send", () => {
+	const key = (sequence: string, kitty = false) => parseKey(sequence, kitty);
+	it("editing keys Ink dropped or misread", () => {
+		assert.deepEqual(key("\x1b[H"), { ch: "", key: { home: true } });
+		assert.deepEqual(key("\x1b[F"), { ch: "", key: { end: true } });
+		assert.deepEqual(key("\x1b[1~"), { ch: "", key: { home: true } });
+		assert.deepEqual(key("\x1b[3~"), { ch: "", key: { delete: true } });
+		assert.deepEqual(key("\x7f"), { ch: "", key: { backspace: true } });
+		assert.deepEqual(key("\x1b[1;5D"), { ch: "", key: { leftArrow: true, ctrl: true } });
+		assert.deepEqual(key("\x1b[1;5C"), { ch: "", key: { rightArrow: true, ctrl: true } });
+		assert.deepEqual(key("\x1b\x7f"), { ch: "", key: { backspace: true, meta: true } });
+		assert.deepEqual(key("\x1bd"), { ch: "d", key: { meta: true } });
+		assert.deepEqual(key("\x1b[3;5~"), { ch: "", key: { delete: true, ctrl: true } });
+	});
+
+	it("control keys, Alt+Enter, Shift+Tab", () => {
+		assert.deepEqual(key("\x03"), { ch: "c", key: { ctrl: true } });
+		assert.deepEqual(key("\x1a"), { ch: "z", key: { ctrl: true } });
+		assert.deepEqual(key("\x1f"), { ch: "-", key: { ctrl: true } });
+		assert.deepEqual(key("\n"), { ch: "\n", key: {} });
+		assert.deepEqual(key("\x1b\r"), { ch: "", key: { return: true, meta: true } });
+		assert.deepEqual(key("\x1b[Z"), { ch: "", key: { tab: true, shift: true } });
+	});
+
+	it("kitty CSI-u and modifyOtherKeys: Shift+Enter, Ctrl+letters, printable text; releases are not keys", () => {
+		assert.deepEqual(key("\x1b[13;2u"), { ch: "", key: { return: true, shift: true } });
+		assert.deepEqual(key("\x1b[27;2;13~"), { ch: "", key: { return: true, shift: true } });
+		assert.deepEqual(key("\x1b[99;5u"), { ch: "c", key: { ctrl: true } });
+		assert.deepEqual(key("\x1b[27u"), { ch: "", key: { escape: true } });
+		assert.deepEqual(key("\x1b[97u"), { text: "a" });
+		assert.deepEqual(key("\x1b[97:65;2u"), { text: "A" });
+		assert.equal(key("\x1b[97;1:3u"), undefined);
+		// Under kitty keys, ESC CR and LF are the Shift+Enter mappings (pi).
+		assert.deepEqual(key("\x1b\r", true), { ch: "", key: { return: true, shift: true } });
+	});
+
+	it("mouse reports and terminal replies are not keys", () => {
+		assert.equal(key("\x1b[<0;1;1M"), undefined);
+		assert.equal(key("\x1b[?1u"), undefined);
+	});
+});
+
+describe("Win32Translator: Windows Terminal's win32-input-mode (Claude Code)", () => {
+	const ev = (vk: number, uc: number, down: 0 | 1, state = 0, repeat = 1) =>
+		`\x1b[${vk};0;${uc};${down};${state};${repeat}_`;
+	const tokens = (data: string) => new InputSplitter().feed(data);
+	it("characters become text; releases and modifier keys alone drop out", () => {
+		assert.deepEqual(tokens(ev(0x10, 0, 1, 0x10) + ev(0x41, 65, 1, 0x10) + ev(0x41, 65, 0, 0x10) + ev(0x42, 98, 1)), [
+			{ kind: "text", text: "Ab" },
+		]);
+	});
+
+	it("Shift+Enter, Ctrl+Backspace, Escape, Ctrl+Left keep their modifiers", () => {
+		assert.deepEqual(tokens(ev(0x0d, 13, 1, 0x10)), [{ kind: "key", ch: "", key: { return: true, shift: true } }]);
+		assert.deepEqual(tokens(ev(0x0d, 13, 1)), [{ kind: "key", ch: "", key: { return: true } }]);
+		assert.deepEqual(tokens(ev(0x08, 8, 1, 0x08)), [{ kind: "key", ch: "", key: { backspace: true, ctrl: true } }]);
+		assert.deepEqual(tokens(ev(0x1b, 27, 1) + ev(0x41, 97, 1)), [
+			{ kind: "key", ch: "", key: { escape: true } },
+			{ kind: "text", text: "a" },
+		]);
+		assert.deepEqual(tokens(ev(0x25, 0, 1, 0x08)), [{ kind: "key", ch: "", key: { leftArrow: true, ctrl: true } }]);
+		assert.deepEqual(tokens(ev(0x2e, 0, 1)), [{ kind: "key", ch: "", key: { delete: true } }]);
+	});
+
+	it("Ctrl+C is ETX; Alt+letter and AltGr", () => {
+		assert.deepEqual(tokens(ev(0x43, 3, 1, 0x08)), [{ kind: "key", ch: "c", key: { ctrl: true } }]);
+		assert.deepEqual(tokens(ev(0x44, 100, 1, 0x02)), [{ kind: "key", ch: "d", key: { meta: true } }]);
+		// AltGr (Right Alt + Left Ctrl) types a character.
+		assert.deepEqual(tokens(ev(0x51, 64, 1, 0x09)), [{ kind: "text", text: "@" }]);
+	});
+
+	it("an event cut across reads, surrogate pairs, repeats, and text spelled out by events", () => {
+		const s = new InputSplitter();
+		const press = ev(0x41, 120, 1);
+		assert.deepEqual(s.feed(press.slice(0, 7)), []);
+		assert.deepEqual(s.feed(press.slice(7)), [{ kind: "text", text: "x" }]);
+		assert.deepEqual(tokens(ev(0, 0xd83d, 1) + ev(0, 0xde00, 1)), [{ kind: "text", text: "😀" }]);
+		assert.deepEqual(tokens(ev(0x28, 0, 1, 0, 3)), [
+			{ kind: "key", ch: "", key: { downArrow: true } },
+			{ kind: "key", ch: "", key: { downArrow: true } },
+			{ kind: "key", ch: "", key: { downArrow: true } },
+		]);
+		// A bracketed paste whose characters come as events still arrives as one paste.
+		const spelled = [..."\x1b[200~hi\x1b[201~"].map((ch) => ev(0, ch.charCodeAt(0), 1)).join("");
+		assert.deepEqual(tokens(spelled), [{ kind: "paste", text: "hi" }]);
+		assert.equal(new Win32Translator().translate("plain"), "plain");
+	});
+
+	it("which keyboard reporting to ask for", () => {
+		assert.equal(keyboardMode({ WT_SESSION: "x" }, "win32"), "win32");
+		assert.equal(keyboardMode({ WT_SESSION: "x", SSH_TTY: "/dev/pts/1" }, "win32"), "kitty");
+		assert.equal(keyboardMode({}, "linux"), "kitty");
+		assert.equal(keyboardMode({ TAU_KEYBOARD: "legacy", WT_SESSION: "x" }, "win32"), "none");
 	});
 });
 
@@ -314,6 +420,7 @@ describe("keymap", () => {
 		assert.equal(routeKey("x", { ctrl: true }, picking), undefined);
 		const menu = { ...idle, menuOpen: true };
 		assert.deepEqual(routeKey("", { tab: true }, menu), { type: "menu-accept" });
+		assert.deepEqual(routeKey("", { return: true }, menu), { type: "menu-accept", submit: true });
 		assert.deepEqual(routeKey("x", {}, menu), { type: "insert", text: "x" });
 	});
 
@@ -321,17 +428,52 @@ describe("keymap", () => {
 		assert.deepEqual(routeKey("c", { ctrl: true }, busy), { type: "interrupt" });
 		assert.deepEqual(routeKey("", { escape: true }, busy), { type: "interrupt" });
 		assert.deepEqual(routeKey("c", { ctrl: true }, idle), { type: "exit-request" });
+		// Claude Code: Ctrl+C on a draft clears it first.
+		assert.deepEqual(routeKey("c", { ctrl: true }, editing), { type: "clear-draft" });
 		assert.deepEqual(routeKey("", { escape: true }, idle), { type: "clear-input" });
 		assert.deepEqual(routeKey("", { escape: true }, { ...busy, promptActive: true }), { type: "prompt-cancel" });
-		assert.deepEqual(routeKey("d", { ctrl: true }, idle), { type: "exit-request" });
+		// pi: Ctrl+D on an empty input exits at once.
+		assert.deepEqual(routeKey("d", { ctrl: true }, idle), { type: "exit" });
 		assert.deepEqual(routeKey("d", { ctrl: true }, editing), { type: "delete-forward" });
 	});
 
-	it("Enter submits; Alt+Enter queues while running and is a newline when idle; Ctrl+J is a newline", () => {
-		assert.deepEqual(routeKey("\r", { return: true }, idle), { type: "submit" });
-		assert.deepEqual(routeKey("\r", {}, idle), { type: "newline" });
-		assert.deepEqual(routeKey("\r", {}, busy), { type: "queue" });
+	it("Enter submits; Shift+Enter and Ctrl+J are newlines; Alt+Enter and Tab queue while running", () => {
+		assert.deepEqual(routeKey("", { return: true }, idle), { type: "submit" });
+		assert.deepEqual(routeKey("", { return: true, shift: true }, idle), { type: "newline" });
+		assert.deepEqual(routeKey("", { return: true, shift: true }, busy), { type: "newline" });
+		assert.deepEqual(routeKey("", { return: true, meta: true }, idle), { type: "newline" });
+		assert.deepEqual(routeKey("", { return: true, meta: true }, busy), { type: "queue" });
+		assert.deepEqual(routeKey("", { tab: true }, busy), { type: "queue" });
+		assert.deepEqual(routeKey("", { tab: true }, idle), { type: "complete-path" });
 		assert.deepEqual(routeKey("\n", {}, idle), { type: "newline" });
+	});
+
+	it("Windows Terminal's editing keys (pi's defaults, Claude Code's Ctrl+Backspace)", () => {
+		assert.deepEqual(routeKey("", { home: true }, editing), { type: "cursor-home" });
+		assert.deepEqual(routeKey("", { end: true }, editing), { type: "cursor-end" });
+		assert.deepEqual(routeKey("", { delete: true }, editing), { type: "delete-forward" });
+		assert.deepEqual(routeKey("", { backspace: true }, editing), { type: "backspace" });
+		assert.deepEqual(routeKey("", { backspace: true, ctrl: true }, editing), { type: "delete-word-back" });
+		assert.deepEqual(routeKey("", { backspace: true, meta: true }, editing), { type: "delete-word-back" });
+		assert.deepEqual(routeKey("", { delete: true, ctrl: true }, editing), { type: "delete-word-forward" });
+		assert.deepEqual(routeKey("d", { meta: true }, editing), { type: "delete-word-forward" });
+		assert.deepEqual(routeKey("", { leftArrow: true, ctrl: true }, editing), { type: "word-left" });
+		assert.deepEqual(routeKey("", { rightArrow: true, ctrl: true }, editing), { type: "word-right" });
+		assert.deepEqual(routeKey("y", { ctrl: true }, editing), { type: "yank" });
+		assert.deepEqual(routeKey("y", { meta: true }, editing), { type: "yank-pop" });
+		assert.deepEqual(routeKey("r", { ctrl: true }, editing), { type: "history-search" });
+		assert.deepEqual(routeKey("-", { ctrl: true }, editing), { type: "undo" });
+		assert.deepEqual(routeKey("z", { ctrl: true }, { ...editing, platform: "win32" }), { type: "undo" });
+		assert.deepEqual(routeKey("z", { ctrl: true }, { ...editing, platform: "linux" }), { type: "suspend" });
+	});
+
+	it("full screen: PgUp/PgDn, Ctrl+Home/End and Ctrl+↑/↓ move the transcript; Home/End move an open list", () => {
+		const full = { ...idle, fullscreen: true };
+		assert.deepEqual(routeKey("", { pageUp: true }, full), { type: "scroll-page", direction: -1 });
+		assert.deepEqual(routeKey("", { end: true, ctrl: true }, full), { type: "scroll-edge", to: "bottom" });
+		assert.deepEqual(routeKey("", { upArrow: true, ctrl: true }, full), { type: "jump-prompt", direction: -1 });
+		assert.deepEqual(routeKey("", { home: true }, { ...idle, pickerOpen: true }), { type: "list-edge", to: "top" });
+		assert.equal(routeKey("", { pageUp: true }, idle), undefined);
 	});
 
 	it("line editing, toggles, words, history and printable text", () => {
@@ -347,7 +489,7 @@ describe("keymap", () => {
 		assert.deepEqual(routeKey("", { meta: true, rightArrow: true }, idle), { type: "word-right" });
 		assert.deepEqual(routeKey("", { upArrow: true }, idle), { type: "history-prev" });
 		assert.deepEqual(routeKey("", { upArrow: true }, editing), { type: "cursor-up" });
-		assert.deepEqual(routeKey("", { delete: true }, idle), { type: "backspace" });
+		assert.deepEqual(routeKey("", { backspace: true }, idle), { type: "backspace" });
 		assert.deepEqual(routeKey("中", {}, idle), { type: "insert", text: "中" });
 		assert.equal(routeKey("x", { ctrl: true }, idle), undefined);
 		assert.equal(routeKey("x", { meta: true }, idle), undefined);

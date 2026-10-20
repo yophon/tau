@@ -5,12 +5,13 @@
  * routes global keys (interrupt, exit), submit/newline, line editing, words,
  * history, deletion and finally printable text.
  *
- * What Ink 5 delivers (measured in yo-agent 4.6b): Alt+Enter is ch '\r' with
- * key.return false; Ctrl+J is ch '\n'; Alt+B/F are 'b'/'f' with meta; Home and
- * End are swallowed (no Key flag), so Ctrl+A/E move to the line start/end.
+ * Keys come from tau's own parser (input/keys.ts, P38a): Ctrl+letter is the
+ * letter with ctrl, Alt+key the key with meta, named keys set their flag with
+ * an empty character. Default bindings follow pi's keybindings.ts, with Claude
+ * Code's where pi has none (Ctrl+C clears a draft, Ctrl+R searches history).
  */
 
-/** The subset of Ink's Key the router reads (kept local so tests need no Ink). */
+/** A parsed key's modifiers and name (the shape of Ink's Key, plus the keys Ink did not report). */
 export interface KeyLike {
 	upArrow?: boolean;
 	downArrow?: boolean;
@@ -18,6 +19,9 @@ export interface KeyLike {
 	rightArrow?: boolean;
 	pageUp?: boolean;
 	pageDown?: boolean;
+	home?: boolean;
+	end?: boolean;
+	insert?: boolean;
 	return?: boolean;
 	escape?: boolean;
 	ctrl?: boolean;
@@ -25,6 +29,7 @@ export interface KeyLike {
 	shift?: boolean;
 	tab?: boolean;
 	backspace?: boolean;
+	/** Forward delete (the Delete key). */
 	delete?: boolean;
 }
 
@@ -37,7 +42,7 @@ export interface KeyContext {
 	menuOpen: boolean;
 	/** The editor answers a prompt (deny-and-tell, ctx.ui.input): Esc cancels it. */
 	promptActive: boolean;
-	/** Full screen (P34): Ctrl+F searches the transcript instead of moving the cursor. */
+	/** Full screen (P34): Ctrl+F searches the transcript instead of moving the cursor; PgUp/PgDn scroll it. */
 	fullscreen?: boolean;
 	/** The transcript search bar is open: typing edits the query. */
 	searchOpen?: boolean;
@@ -46,8 +51,11 @@ export interface KeyContext {
 	/** A turn, compaction, bash command or navigation is running. */
 	running: boolean;
 	bufferEmpty: boolean;
+	/** The cursor is on the input's first (last) visual row, so ↑ (↓) leaves it for history (Claude Code). */
 	cursorAtFirstRow: boolean;
 	cursorAtLastRow: boolean;
+	/** process.platform: Ctrl+Z undoes on Windows and suspends elsewhere (pi). */
+	platform?: string;
 }
 
 export type KeyCommand =
@@ -67,6 +75,12 @@ export type KeyCommand =
 	| { type: "picker-toggle" }
 	/** PgUp/PgDn in the open list (picker or completion menu). */
 	| { type: "list-page"; direction: 1 | -1 }
+	/** Home/End in the open list. */
+	| { type: "list-edge"; to: "top" | "bottom" }
+	/** Full screen: PgUp/PgDn, Ctrl+Home/End and Ctrl+↑/↓ (the previous or next prompt) move the transcript. */
+	| { type: "scroll-page"; direction: 1 | -1 }
+	| { type: "scroll-edge"; to: "top" | "bottom" }
+	| { type: "jump-prompt"; direction: 1 | -1 }
 	| { type: "search-open" }
 	| { type: "search-insert"; text: string }
 	| { type: "search-backspace" }
@@ -76,10 +90,17 @@ export type KeyCommand =
 	| { type: "selection-clear" }
 	| { type: "menu-up" }
 	| { type: "menu-down" }
-	| { type: "menu-accept" }
+	/** Tab completes; Enter on a command or argument also runs it (pi, Claude Code). */
+	| { type: "menu-accept"; submit?: boolean }
+	/** Backspace in a picker that filters as you type. */
+	| { type: "picker-backspace" }
 	| { type: "menu-close" }
 	| { type: "interrupt" }
 	| { type: "exit-request" }
+	/** Ctrl+D on an empty input (pi): exit at once. */
+	| { type: "exit" }
+	/** Ctrl+C on an idle input with text (Claude Code): clear it into history (↑ brings it back). */
+	| { type: "clear-draft" }
 	| { type: "cycle-mode" }
 	| { type: "queue" }
 	| { type: "submit" }
@@ -100,14 +121,25 @@ export type KeyCommand =
 	| { type: "word-left" }
 	| { type: "word-right" }
 	| { type: "delete-word-back" }
+	| { type: "delete-word-forward" }
 	| { type: "kill-line-end" }
 	| { type: "delete-forward" }
 	| { type: "backspace" }
+	| { type: "undo" }
+	| { type: "yank" }
+	| { type: "yank-pop" }
+	/** Ctrl+R (Claude Code): search the prompt history. */
+	| { type: "history-search" }
+	/** Tab with no menu open (pi): complete the path before the cursor. */
+	| { type: "complete-path" }
+	/** Ctrl+Z outside Windows (pi, Claude Code): suspend to the shell. */
+	| { type: "suspend" }
 	| { type: "history-prev" }
 	| { type: "history-next" }
 	| { type: "insert"; text: string };
 
 export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand | undefined {
+	const plain = !key.ctrl && !key.meta;
 	// ① Approval panel: Ctrl+C still interrupts the turn the approval belongs to.
 	if (ctx.approvalOpen) {
 		if (key.ctrl && ch === "c") return { type: "interrupt" };
@@ -115,7 +147,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.downArrow) return { type: "approval-down" };
 		if (key.return) return { type: "approval-confirm" };
 		if (key.escape) return { type: "approval-reject" };
-		if (/^[1-9]$/.test(ch) && !key.ctrl && !key.meta) return { type: "approval-choose", index: Number(ch) - 1 };
+		if (/^[1-9]$/.test(ch) && plain) return { type: "approval-choose", index: Number(ch) - 1 };
 		return undefined;
 	}
 
@@ -124,11 +156,13 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.upArrow) return { type: "picker-up" };
 		if (key.downArrow) return { type: "picker-down" };
 		if (key.pageUp || key.pageDown) return { type: "list-page", direction: key.pageUp ? -1 : 1 };
+		if ((key.home || key.end) && !key.ctrl) return { type: "list-edge", to: key.home ? "top" : "bottom" };
 		if (key.return) return { type: "picker-confirm" };
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
 		if (key.ctrl && ch === "s") return { type: "picker-alt" };
+		if (key.backspace) return { type: "picker-backspace" };
 		if (ch === " ") return { type: "picker-toggle" };
-		if (ch.length === 1 && ch.trim() !== "" && !key.ctrl && !key.meta) return { type: "picker-key", key: ch };
+		if (ch.length === 1 && ch.trim() !== "" && plain) return { type: "picker-key", key: ch };
 		return undefined;
 	}
 
@@ -137,8 +171,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.escape || (key.ctrl && ch === "c")) return { type: "search-close" };
 		if (key.return || key.downArrow || (key.ctrl && (ch === "g" || ch === "f"))) return { type: "search-next" };
 		if (key.upArrow) return { type: "search-prev" };
-		if (key.backspace || key.delete) return { type: "search-backspace" };
-		if (ch !== "" && !key.ctrl && !key.meta && !key.tab) return { type: "search-insert", text: ch };
+		if (key.backspace) return { type: "search-backspace" };
+		if (ch !== "" && plain && !key.tab) return { type: "search-insert", text: ch };
 		return undefined;
 	}
 	if (ctx.fullscreen && key.ctrl && ch === "f") return { type: "search-open" };
@@ -148,30 +182,48 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.upArrow) return { type: "menu-up" };
 		if (key.downArrow) return { type: "menu-down" };
 		if (key.pageUp || key.pageDown) return { type: "list-page", direction: key.pageUp ? -1 : 1 };
-		if (key.tab || key.return) return { type: "menu-accept" };
+		if ((key.home || key.end) && !key.ctrl) return { type: "list-edge", to: key.home ? "top" : "bottom" };
+		if (key.tab) return { type: "menu-accept" };
+		if (key.return && !key.shift && !key.meta) return { type: "menu-accept", submit: true };
 		if (key.escape) return { type: "menu-close" };
+	}
+
+	// Full screen: the transcript scrolls under the input.
+	if (ctx.fullscreen) {
+		if (key.pageUp || key.pageDown) return { type: "scroll-page", direction: key.pageUp ? -1 : 1 };
+		if (key.ctrl && (key.home || key.end)) return { type: "scroll-edge", to: key.home ? "top" : "bottom" };
+		if (key.ctrl && (key.upArrow || key.downArrow)) return { type: "jump-prompt", direction: key.upArrow ? -1 : 1 };
 	}
 
 	// ④ A prompt answered in the editor: Esc gives it up.
 	if (ctx.promptActive && key.escape) return { type: "prompt-cancel" };
 
-	// ⑤ Esc clears a transcript selection first. Ctrl+C / Esc: interrupt while running; idle Ctrl+C asks to exit, Esc clears the input.
+	// ⑤ Esc clears a transcript selection first. Ctrl+C / Esc interrupt while running. Idle, Ctrl+C
+	// clears a draft and then asks to exit (Claude Code); Esc clears the input (twice: the session tree).
 	if (key.escape && ctx.selectionActive) return { type: "selection-clear" };
-	if (key.ctrl && ch === "c") return ctx.running ? { type: "interrupt" } : { type: "exit-request" };
+	if (key.ctrl && ch === "c") {
+		if (ctx.running) return { type: "interrupt" };
+		return ctx.bufferEmpty ? { type: "exit-request" } : { type: "clear-draft" };
+	}
 	if (key.escape) return ctx.running ? { type: "interrupt" } : { type: "clear-input" };
 
 	if (key.tab && key.shift) return { type: "cycle-mode" };
 
-	// ⑥ Enter submits; Alt+Enter (ch '\r' without key.return) queues while running, else a newline; Ctrl+J is a newline.
-	if (key.return) return { type: "submit" };
-	if (ch === "\r") return ctx.running ? { type: "queue" } : { type: "newline" };
+	// ⑥ Enter submits; Shift+Enter and Ctrl+J are newlines (pi). Alt+Enter and Tab queue while running
+	// (pi's follow-up key; Codex's Tab: Windows Terminal takes Alt+Enter for full screen), else newline / path.
+	if (key.return) {
+		if (key.shift) return { type: "newline" };
+		if (key.meta) return ctx.running ? { type: "queue" } : { type: "newline" };
+		return { type: "submit" };
+	}
 	if (ch === "\n") return { type: "newline" };
+	if (key.tab && plain) return ctx.running ? { type: "queue" } : { type: "complete-path" };
 
 	// pi's paste key is Alt+V on Windows (the terminal keeps Ctrl+V) and Ctrl+V elsewhere; both work everywhere here.
 	if ((key.ctrl || key.meta) && ch === "v") return { type: "paste-clipboard" };
 
-	// ⑦ Line editing (readline habits).
-	if (key.ctrl) {
+	// ⑦ Line editing (readline habits, pi's defaults).
+	if (key.ctrl && !key.meta) {
 		switch (ch) {
 			case "a":
 				return { type: "cursor-home" };
@@ -184,7 +236,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 			case "k":
 				return { type: "kill-line-end" };
 			case "d":
-				return ctx.bufferEmpty ? { type: "exit-request" } : { type: "delete-forward" };
+				return ctx.bufferEmpty ? { type: "exit" } : { type: "delete-forward" };
 			case "b":
 				return { type: "cursor-left" };
 			case "f":
@@ -195,27 +247,48 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 				return { type: "toggle-reasoning" };
 			case "g":
 				return { type: "external-editor" };
+			case "y":
+				return { type: "yank" };
+			case "r":
+				return { type: "history-search" };
+			case "-":
+				return { type: "undo" };
+			case "z":
+				return ctx.platform === "win32" ? { type: "undo" } : { type: "suspend" };
+		}
+	}
+	if (key.meta && !key.ctrl) {
+		switch (ch) {
+			case "b":
+				return { type: "word-left" };
+			case "f":
+				return { type: "word-right" };
+			case "d":
+				return { type: "delete-word-forward" };
+			case "y":
+				return { type: "yank-pop" };
 		}
 	}
 
-	if (key.meta && (ch === "b" || key.leftArrow)) return { type: "word-left" };
-	if (key.meta && (ch === "f" || key.rightArrow)) return { type: "word-right" };
-
-	if (key.leftArrow) return { type: "cursor-left" };
-	if (key.rightArrow) return { type: "cursor-right" };
+	if (key.home) return key.ctrl ? undefined : { type: "cursor-home" };
+	if (key.end) return key.ctrl ? undefined : { type: "cursor-end" };
+	if (key.leftArrow) return key.ctrl || key.meta ? { type: "word-left" } : { type: "cursor-left" };
+	if (key.rightArrow) return key.ctrl || key.meta ? { type: "word-right" } : { type: "cursor-right" };
 	if (key.upArrow) return ctx.cursorAtFirstRow ? { type: "history-prev" } : { type: "cursor-up" };
 	if (key.downArrow) return ctx.cursorAtLastRow ? { type: "history-next" } : { type: "cursor-down" };
 
-	// Both terminal backspace encodings delete backwards; forward delete is Ctrl+D.
-	if (key.backspace || key.delete) return { type: "backspace" };
+	if (key.backspace) return key.ctrl || key.meta ? { type: "delete-word-back" } : { type: "backspace" };
+	if (key.delete) return key.ctrl || key.meta ? { type: "delete-word-forward" } : { type: "delete-forward" };
 
-	if (ch !== "" && !key.ctrl && !key.meta && !key.tab) return { type: "insert", text: ch };
+	if (ch !== "" && plain && !key.tab) return { type: "insert", text: ch };
 	return undefined;
 }
 
 /** Keys the TUI binds itself; an extension shortcut on one of them is ignored. */
 export const BUILTIN_KEYS: ReadonlySet<string> = new Set([
 	"enter",
+	"shift+enter",
+	"alt+enter",
 	"escape",
 	"tab",
 	"shift+tab",
@@ -223,48 +296,60 @@ export const BUILTIN_KEYS: ReadonlySet<string> = new Set([
 	"down",
 	"left",
 	"right",
+	"home",
+	"end",
+	"pageup",
+	"pagedown",
 	"backspace",
 	"delete",
-	"alt+enter",
+	"ctrl+backspace",
+	"alt+backspace",
+	"ctrl+delete",
+	"alt+delete",
+	"ctrl+left",
+	"ctrl+right",
+	"ctrl+up",
+	"ctrl+down",
+	"ctrl+home",
+	"ctrl+end",
 	"alt+b",
+	"alt+d",
 	"alt+f",
+	"alt+y",
 	"alt+left",
 	"alt+right",
 	"alt+v",
-	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "o", "t", "u", "v", "w"].map((letter) => `ctrl+${letter}`),
+	"ctrl+-",
+	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "o", "r", "t", "u", "v", "w", "y", "z"].map(
+		(letter) => `ctrl+${letter}`,
+	),
 ]);
 
 /** A key as an extension shortcut id (`ctrl+x`, `alt+k`, `shift+tab`, `f`); undefined for text. */
 export function keyId(ch: string, key: KeyLike): string | undefined {
-	const named = key.return
-		? "enter"
-		: key.escape
-			? "escape"
-			: key.tab
-				? "tab"
-				: key.upArrow
-					? "up"
-					: key.downArrow
-						? "down"
-						: key.leftArrow
-							? "left"
-							: key.rightArrow
-								? "right"
-								: key.backspace
-									? "backspace"
-									: key.delete
-										? "delete"
-										: ch === "\r"
-											? "enter"
-											: ch.length === 1
-												? ch.toLowerCase()
-												: undefined;
+	const names: Array<[boolean | undefined, string]> = [
+		[key.return, "enter"],
+		[key.escape, "escape"],
+		[key.tab, "tab"],
+		[key.upArrow, "up"],
+		[key.downArrow, "down"],
+		[key.leftArrow, "left"],
+		[key.rightArrow, "right"],
+		[key.home, "home"],
+		[key.end, "end"],
+		[key.pageUp, "pageup"],
+		[key.pageDown, "pagedown"],
+		[key.insert, "insert"],
+		[key.backspace, "backspace"],
+		[key.delete, "delete"],
+	];
+	const named = names.find(([flag]) => flag)?.[1] ?? (ch.length === 1 ? ch.toLowerCase() : undefined);
 	if (named === undefined) return undefined;
-	// Ink delivers Alt+Enter as a bare "\r" without key.return.
-	const meta = key.meta || (ch === "\r" && !key.return);
-	const modifiers = [key.ctrl ? "ctrl" : "", meta ? "alt" : "", key.shift && named.length > 1 ? "shift" : ""].filter(
-		(part) => part !== "",
-	);
+	const modifiers = [
+		key.ctrl ? "ctrl" : "",
+		key.meta ? "alt" : "",
+		key.shift && named.length > 1 ? "shift" : "",
+	].filter((part) => part !== "");
 	// A plain printable key is text, not a shortcut.
 	if (modifiers.length === 0 && named.length === 1) return undefined;
 	return [...modifiers, named].join("+");

@@ -110,6 +110,13 @@ export function deleteWordBack(state: EditorState): EditorState {
 	return { text: state.text.slice(0, from) + state.text.slice(state.cursor), cursor: from };
 }
 
+/** Alt+D (pi): delete the word after the cursor. */
+export function deleteWordForward(state: EditorState): EditorState {
+	const to = wordRight(state).cursor;
+	if (to === state.cursor) return state;
+	return { text: state.text.slice(0, state.cursor) + state.text.slice(to), cursor: state.cursor };
+}
+
 function lineSpan(state: EditorState): { start: number; end: number } {
 	const start = state.text.lastIndexOf("\n", state.cursor - 1) + 1;
 	const nl = state.text.indexOf("\n", state.cursor);
@@ -172,6 +179,60 @@ function moveRow(state: EditorState, delta: -1 | 1): EditorState | undefined {
 	let units = 0;
 	for (let i = 0; i < Math.min(column, targetGraphemes.length); i++) units += (targetGraphemes[i] ?? "").length;
 	return { ...state, cursor: offset + units };
+}
+
+/** The input box's text width at a terminal width: border (2), padding (2) and the prompt prefix (2) come off. */
+export function inputTextWidth(columns: number): number {
+	return Math.max(10, columns - 6);
+}
+
+/** Visual rows (layout's soft wrap) with their offsets in the whole text. */
+function visualRows(text: string, width: number): Array<{ start: number; end: number; last: boolean }> {
+	const rows: Array<{ start: number; end: number; last: boolean }> = [];
+	let offset = 0;
+	for (const line of text.split("\n")) {
+		const pieces = wrapLine(line, Math.max(1, width));
+		pieces.forEach((piece, index) => {
+			const start = offset + piece.start;
+			rows.push({ start, end: start + piece.text.length, last: index === pieces.length - 1 });
+		});
+		offset += line.length + 1;
+	}
+	return rows;
+}
+
+/** The visual row the cursor is on (a cursor on a wrap boundary belongs to the next piece, as in layout). */
+function cursorVisualRow(rows: ReturnType<typeof visualRows>, cursor: number): number {
+	const index = rows.findIndex((row) => (cursor >= row.start && cursor < row.end) || (row.last && cursor === row.end));
+	return index === -1 ? rows.length - 1 : index;
+}
+
+/** Where the cursor is among the input's visual rows, so ↑/↓ move inside a wrapped prompt first (Claude Code). */
+export function visualPosition(state: EditorState, width: number): { row: number; rows: number } {
+	const rows = visualRows(state.text, width);
+	return { row: cursorVisualRow(rows, state.cursor), rows: rows.length };
+}
+
+/** Up/down one visual row keeping the cell column; undefined on the first/last row (history instead). */
+export function moveVisual(state: EditorState, width: number, delta: -1 | 1): EditorState | undefined {
+	const rows = visualRows(state.text, width);
+	const current = cursorVisualRow(rows, state.cursor);
+	const target = rows[current + delta];
+	const from = rows[current];
+	if (!target || !from) return undefined;
+	let column = 0;
+	for (const g of graphemes(state.text.slice(from.start, state.cursor))) column += cellWidth(g);
+	let cursor = target.start;
+	let cells = 0;
+	for (const g of graphemes(state.text.slice(target.start, target.end))) {
+		const width = cellWidth(g);
+		if (cells + width > column) break;
+		cells += width;
+		cursor += g.length;
+	}
+	// The end of a piece that wraps belongs to the next row: stop one grapheme short of it.
+	if (!target.last && cursor === target.end && cursor > target.start) cursor = prevBoundary(state.text, cursor);
+	return { ...state, cursor };
 }
 
 export interface VisualLine {

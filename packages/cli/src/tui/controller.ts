@@ -6,9 +6,9 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve as resolvePath } from "node:path";
 import {
 	type Agent,
 	type AgentEvent,
@@ -42,13 +42,15 @@ import {
 	type CompletionItem,
 	type CompletionSources,
 	computeCompletion,
+	fuzzyScore,
 	listFiles,
 } from "./input/completion.ts";
-import { InputDecoder } from "./input/decoder.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
-import { type PointerEvent, rawKey, takeInputEvents, WHEEL_ROWS } from "./input/mouse.ts";
-import { expandPastes, foldPaste, newPasteStore } from "./input/paste.ts";
+import { InputSplitter, type InputToken } from "./input/keys.ts";
+import { KillRing } from "./input/kill-ring.ts";
+import { inputReport, type PointerEvent, WHEEL_ROWS } from "./input/mouse.ts";
+import { expandPastes, foldPaste, markerAfter, markerBefore, newPasteStore } from "./input/paste.ts";
 import { BUILTIN_KEYS, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
 import {
 	type ApprovalPromptRequest,
@@ -56,6 +58,7 @@ import {
 	approvalOptions,
 	initialState,
 	type PickerItem,
+	type PromptView,
 	type TaskKind,
 } from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
@@ -122,12 +125,27 @@ export class TuiController {
 	shortcutConflicts: string[] = [];
 
 	private readonly deps: TuiDeps;
-	private readonly decoder = new InputDecoder();
+	private readonly splitter = new InputSplitter();
+	/** pi's 50 ms wait for the rest of an escape sequence cut off at the end of a read. */
+	private splitTimer: ReturnType<typeof setTimeout> | undefined;
+	/** Editor snapshots for Ctrl+Z / Ctrl+- (pi's undo stack). */
+	private readonly undoStack: ed.EditorState[] = [];
+	private readonly killRing = new KillRing();
+	/** pi's lastAction: typing a word is one undo step, consecutive kills accumulate, Alt+Y follows a yank. */
+	private lastEdit: "type-word" | "kill" | "yank" | undefined;
+	/** The text the last yank inserted, ending at the cursor (Alt+Y replaces it). */
+	private lastYank = "";
+	/** The draft put aside when ↑ starts browsing history, back past the newest entry (pi). */
+	private historyDraft: ed.EditorState | undefined;
+	/** The draft put aside while the input box answers a prompt (deny-and-tell, ctx.ui.input). */
+	private promptDraft: ed.EditorState | undefined;
 	private readonly pastes = newPasteStore();
 	private readonly history: PersistentHistory;
 	private historyIndex: number;
 	private files: string[] | undefined;
 	private filesLoading = false;
+	/** Where the `@` token the file list was loaded for starts. */
+	private fileTokenStart: number | undefined;
 	private menuCache:
 		| { text: string; cursor: number; files: unknown; suppressed: unknown; result: Completion | undefined }
 		| undefined;
@@ -562,8 +580,6 @@ export class TuiController {
 		return this.options.screen !== "inline";
 	}
 
-	/** A mouse report cut off at the end of the last read. */
-	private inputPending = "";
 	/** Whether the terminal window has focus; undefined until the terminal reports it. */
 	focused: boolean | undefined;
 	/** Where the clickable parts are on screen, from the last full-screen layout. */
@@ -576,44 +592,56 @@ export class TuiController {
 	}
 
 	/**
-	 * One read from the terminal, before Ink sees it: mouse and focus reports and the scroll
-	 * keys Ink drops are handled here; the rest is returned for Ink.
+	 * One read from the terminal (P38a): tau parses it whole — keys, pastes, mouse and focus
+	 * reports — so nothing is left for Ink, which only keeps the terminal in raw mode.
 	 */
 	filterInput(data: string): string {
-		const taken = takeInputEvents(this.inputPending, data);
-		this.inputPending = taken.pending;
-		for (const event of taken.events) {
-			if (event.kind === "focus") this.focused = event.focused;
-			else this.handlePointer(event);
+		if (this.splitTimer) clearTimeout(this.splitTimer);
+		this.splitTimer = undefined;
+		this.handleTokens(this.splitter.feed(data));
+		if (this.splitter.pending) {
+			this.splitTimer = setTimeout(() => {
+				this.splitTimer = undefined;
+				this.handleTokens(this.splitter.flush());
+			}, 50);
+			this.splitTimer.unref?.();
 		}
-		if (taken.rest !== "" && this.handleRawKey(taken.rest)) return "";
-		// Esc pressed twice quickly reaches us as one "\x1b\x1b" chunk, which Ink would read as
-		// a single (meta) key: hand each Esc over on its own (P37b double Esc, Esc twice to deny).
-		if (taken.rest.length >= 2 && [...taken.rest].every((ch) => ch === "\x1b")) {
-			for (let i = 0; i < taken.rest.length; i++) this.handleKey("", { escape: true });
-			return "";
-		}
-		return taken.rest;
+		return "";
 	}
 
-	/** PgUp/PgDn, Home/End and Ctrl+↑/↓; true when taken (an open list gets PgUp/PgDn through Ink). */
-	private handleRawKey(data: string): boolean {
-		const key = rawKey(data);
-		if (!key) return false;
-		if (this.state.approval) return false;
-		if (this.openList()) return key.kind === "edge" && !key.ctrl && this.moveList({ kind: "edge", to: key.to });
-		if (!this.fullscreen) return false;
-		switch (key.kind) {
-			case "page":
-				this.scrollBy(key.direction * Math.max(1, this.viewport.height - 2));
-				return true;
-			case "edge":
-				if (!key.ctrl) return false;
-				this.scrollTo(key.to);
-				return true;
-			case "prompt":
-				return this.jumpToPrompt(key.direction);
+	/** Tell the splitter whether the terminal took kitty keyboard flags (tests; the reply sets it too). */
+	setKittyKeys(active: boolean): void {
+		this.splitter.kittyActive = active;
+	}
+
+	private handleTokens(tokens: readonly InputToken[]): void {
+		for (const token of tokens) {
+			if (token.kind === "paste") this.insertPaste(token.text);
+			else if (token.kind === "text") this.handleText(token.text);
+			else if (token.kind === "key") this.handleKey(token.ch, token.key);
+			else this.handleSequence(token.sequence);
 		}
+	}
+
+	/** Typed text: the panels take it one key at a time ("1" chooses, it does not type). */
+	private handleText(text: string): void {
+		if (this.state.approval || this.state.picker) {
+			for (const ch of text) this.handleKey(ch, {});
+		} else if (this.state.search) {
+			this.execute({ type: "search-insert", text });
+		} else {
+			this.disarmExit();
+			this.execute({ type: "insert", text });
+		}
+	}
+
+	/** Mouse and focus reports; the kitty keyboard reply (pi). Other sequences are not input. */
+	private handleSequence(sequence: string): void {
+		const report = inputReport(sequence);
+		if (report?.kind === "focus") this.focused = report.focused;
+		else if (report) this.handlePointer(report);
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the reply starts with ESC
+		else if (/^\x1b\[\?\d+u$/.test(sequence)) this.splitter.kittyActive = true;
 	}
 
 	private handlePointer(event: PointerEvent): void {
@@ -903,22 +931,17 @@ export class TuiController {
 		return true;
 	}
 
-	handleInput(raw: string, key: KeyLike): void {
-		for (const event of this.decoder.feed(raw, key)) {
-			if (event.kind === "paste") {
-				this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(event.text))));
-			} else if (event.kind === "text") {
-				// Merged chunks still go through the panels: "1\r" chooses, it does not type.
-				if (this.state.approval || this.state.picker) for (const ch of event.text) this.handleKey(ch, {});
-				else if (this.state.search) this.execute({ type: "search-insert", text: event.text });
-				else this.execute({ type: "insert", text: event.text });
-			} else if (event.kind === "enter") {
-				if (this.state.approval || this.state.picker || this.state.search) this.handleKey("\r", { return: true });
-				else this.execute({ type: "submit" });
-			} else {
-				this.handleKey(event.ch, event.key);
-			}
+	/** A bracketed paste (or Alt+V text): folded when large (pi), one undo step. */
+	private insertPaste(text: string): void {
+		if (this.state.approval || this.state.picker) return;
+		if (this.state.search) {
+			this.execute({ type: "search-insert", text: text.replace(/\s+/g, " ") });
+			return;
 		}
+		this.pushUndo();
+		this.lastEdit = undefined;
+		this.leaveHistory();
+		this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(text))));
 	}
 
 	private handleKey(ch: string, key: KeyLike): void {
@@ -947,12 +970,119 @@ export class TuiController {
 			selectionActive: state.selection !== undefined,
 			running: state.task !== undefined,
 			bufferEmpty: state.editor.text === "",
-			cursorAtFirstRow: ed.cursorRow(state.editor) === 0,
-			cursorAtLastRow: ed.cursorRow(state.editor) === ed.rowCount(state.editor) - 1,
+			...this.cursorRows(),
+			platform: this.deps.platform ?? process.platform,
 		});
 		if (!command) return;
 		if (command.type !== "exit-request") this.disarmExit();
 		this.execute(command);
+	}
+
+	/** Whether the cursor is on the input's first or last visual row (↑/↓ leave it for history there). */
+	private cursorRows(): { cursorAtFirstRow: boolean; cursorAtLastRow: boolean } {
+		const { row, rows } = ed.visualPosition(this.state.editor, ed.inputTextWidth(this.columns()));
+		return { cursorAtFirstRow: row === 0, cursorAtLastRow: row === rows - 1 };
+	}
+
+	private pushUndo(): void {
+		this.undoStack.push(this.state.editor);
+		if (this.undoStack.length > 200) this.undoStack.shift();
+	}
+
+	/** Editing the text ends history browsing (pi exitHistoryBrowsing): ↑ starts again from the newest entry. */
+	private leaveHistory(): void {
+		this.historyIndex = this.history.list().length;
+		this.historyDraft = undefined;
+	}
+
+	/**
+	 * Editing keys around the pure editor functions (pi's editor): undo snapshots (typing a
+	 * word is one step), the kill ring, paste markers that move and delete whole, ↑/↓ by
+	 * visual row. False for commands that are not editing.
+	 */
+	private editCommand(command: KeyCommand): boolean {
+		const current = this.state.editor;
+		switch (command.type) {
+			case "undo": {
+				const previous = this.undoStack.pop();
+				if (previous) this.setEditor(previous);
+				this.lastEdit = undefined;
+				return true;
+			}
+			case "yank": {
+				const text = this.killRing.peek();
+				if (text === undefined) return true;
+				this.pushUndo();
+				this.leaveHistory();
+				this.setEditor(ed.insert(current, text));
+				this.lastYank = text;
+				this.lastEdit = "yank";
+				return true;
+			}
+			case "yank-pop": {
+				if (this.lastEdit !== "yank" || this.killRing.length <= 1) return true;
+				this.pushUndo();
+				const start = Math.max(0, current.cursor - this.lastYank.length);
+				const without = { text: current.text.slice(0, start) + current.text.slice(current.cursor), cursor: start };
+				this.killRing.rotate();
+				const text = this.killRing.peek() ?? "";
+				this.setEditor(ed.insert(without, text));
+				this.lastYank = text;
+				this.lastEdit = "yank";
+				return true;
+			}
+			case "cursor-up":
+			case "cursor-down": {
+				const moved = ed.moveVisual(current, ed.inputTextWidth(this.columns()), command.type === "cursor-up" ? -1 : 1);
+				if (moved) this.setEditor(moved);
+				this.lastEdit = undefined;
+				return true;
+			}
+		}
+		const next = this.markerEdit(current, command) ?? applyEditorCommand(current, command);
+		if (next === undefined) return false;
+		if (next.text === current.text) {
+			if (next.cursor !== current.cursor) this.lastEdit = undefined;
+			this.setEditor(next);
+			return true;
+		}
+		const kill = KILLS[command.type];
+		if (command.type === "insert") {
+			if (/\s/.test(command.text) || this.lastEdit !== "type-word") this.pushUndo();
+			this.lastEdit = "type-word";
+		} else {
+			this.pushUndo();
+			if (kill) {
+				const removed = current.text.length - next.text.length;
+				const killed =
+					kill === "back"
+						? current.text.slice(next.cursor, current.cursor)
+						: current.text.slice(current.cursor, current.cursor + removed);
+				this.killRing.push(killed, { prepend: kill === "back", accumulate: this.lastEdit === "kill" });
+			}
+			this.lastEdit = kill ? "kill" : undefined;
+		}
+		this.leaveHistory();
+		this.setEditor(next);
+		return true;
+	}
+
+	/** A paste marker next to the cursor moves and deletes as one unit (pi's atomic segments). */
+	private markerEdit(current: ed.EditorState, command: KeyCommand): ed.EditorState | undefined {
+		const { text, cursor } = current;
+		if (command.type === "backspace" || command.type === "cursor-left") {
+			const length = markerBefore(this.pastes, text, cursor);
+			if (length === 0) return undefined;
+			if (command.type === "cursor-left") return { text, cursor: cursor - length };
+			return { text: text.slice(0, cursor - length) + text.slice(cursor), cursor: cursor - length };
+		}
+		if (command.type === "delete-forward" || command.type === "cursor-right") {
+			const length = markerAfter(this.pastes, text, cursor);
+			if (length === 0) return undefined;
+			if (command.type === "cursor-right") return { text, cursor: cursor + length };
+			return { text: text.slice(0, cursor) + text.slice(cursor + length), cursor };
+		}
+		return undefined;
 	}
 
 	private setEditor(editor: ed.EditorState): void {
@@ -973,14 +1103,8 @@ export class TuiController {
 	 * tree, or the fork picker (pi doubleEscapeAction); only these presses count.
 	 */
 	private escape(): void {
-		const text = this.state.editor.text;
-		if (text !== "") {
-			// A draft goes into history; blank lines just go.
-			if (text.trim() !== "") {
-				this.history.push(text);
-				this.historyIndex = this.history.list().length;
-			}
-			this.setEditor(ed.EMPTY);
+		if (this.state.editor.text !== "") {
+			this.clearDraft();
 			this.lastEscapeAt = 0;
 			return;
 		}
@@ -993,6 +1117,16 @@ export class TuiController {
 			return;
 		}
 		this.lastEscapeAt = now;
+	}
+
+	/** Clear the input; a draft goes into history so ↑ brings it back (Claude Code), blank lines just go. */
+	private clearDraft(): void {
+		const text = this.state.editor.text;
+		if (text.trim() !== "") this.history.push(text);
+		this.pushUndo();
+		this.leaveHistory();
+		this.lastEdit = undefined;
+		this.setEditor(ed.EMPTY);
 	}
 
 	/**
@@ -1134,12 +1268,17 @@ export class TuiController {
 			this.dispatch({ type: "menu-select", index: 0 });
 			if (token !== this.state.menu.suppressedToken) this.dispatch({ type: "menu-suppress", token: undefined });
 		}
-		if (completion?.kind === "file" && this.files === undefined && !this.filesLoading) {
+		// Each new `@` lists the files again (pi runs fd per query): files created since show up.
+		const fileToken = completion?.kind === "file" ? completion.tokenStart : undefined;
+		const freshToken = fileToken !== undefined && fileToken !== this.fileTokenStart;
+		this.fileTokenStart = fileToken;
+		if (completion?.kind === "file" && (this.files === undefined || freshToken) && !this.filesLoading) {
 			this.filesLoading = true;
 			void (this.deps.fileLister ?? listFiles)(this.options.cwd)
 				.catch(() => [] as string[])
 				.then((files) => {
 					this.files = files;
+					this.filesLoading = false;
 					this.menuCache = undefined;
 					this.dispatch({ type: "menu-select", index: this.state.menu.selected });
 					this.store.flush();
@@ -1155,12 +1294,35 @@ export class TuiController {
 			return;
 		}
 		this.lastEscapeAt = 0;
-		const edited = applyEditorCommand(state.editor, command);
-		if (edited !== undefined) {
-			this.setEditor(edited);
-			return;
-		}
+		if (this.editCommand(command)) return;
 		switch (command.type) {
+			case "clear-draft":
+				this.clearDraft();
+				return;
+			case "exit":
+				void this.stop();
+				return;
+			case "scroll-page":
+				this.scrollBy(command.direction * Math.max(1, this.viewport.height - 2));
+				return;
+			case "scroll-edge":
+				this.scrollTo(command.to);
+				return;
+			case "jump-prompt":
+				this.jumpToPrompt(command.direction);
+				return;
+			case "list-edge":
+				this.moveList({ kind: "edge", to: command.to });
+				return;
+			case "history-search":
+				void this.searchHistory();
+				return;
+			case "complete-path":
+				this.completePath();
+				return;
+			case "suspend":
+				this.deps.suspend?.();
+				return;
 			case "approval-up":
 			case "approval-down":
 				this.disarmReject();
@@ -1214,6 +1376,12 @@ export class TuiController {
 			case "picker-toggle": {
 				const picker = state.picker;
 				if (picker?.checked) this.dispatch({ type: "picker-toggle", id: picker.id, index: picker.selected });
+				else if (picker?.all) this.filterPicker(`${picker.query ?? ""} `);
+				return;
+			}
+			case "picker-backspace": {
+				const query = state.picker?.query;
+				if (query) this.filterPicker([...query].slice(0, -1).join(""));
 				return;
 			}
 			case "picker-confirm": {
@@ -1243,6 +1411,10 @@ export class TuiController {
 			}
 			case "picker-key": {
 				const picker = state.picker;
+				if (picker?.all) {
+					this.filterPicker((picker.query ?? "") + command.key);
+					return;
+				}
 				const item = picker?.items.find((candidate) => candidate.key === command.key.toLowerCase());
 				if (!picker || !item) return;
 				this.dispatch({ type: "picker-close", id: picker.id });
@@ -1263,13 +1435,17 @@ export class TuiController {
 				const completion = this.completion();
 				const item = completion?.items[Math.min(state.menu.selected, completion.items.length - 1)];
 				if (!completion || !item) return;
-				// A fully typed command name or argument runs right away (Enter completes and submits in one step).
-				if ((completion.kind === "slash" || completion.kind === "argument") && item.value === completion.token) {
+				const runs = command.submit === true && (completion.kind === "slash" || completion.kind === "argument");
+				// Enter on a command or argument completes and runs it in one step (pi, Claude Code).
+				if (runs && item.value === completion.token) {
 					this.submit();
 					return;
 				}
 				const next = acceptCompletion(state.editor.text, completion, item);
-				this.setEditor(ed.fromText(next.text, next.cursor));
+				this.pushUndo();
+				this.leaveHistory();
+				this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
+				if (runs) this.submit();
 				return;
 			}
 			case "menu-close": {
@@ -1337,7 +1513,7 @@ export class TuiController {
 			const content = await (this.deps.readClipboard ?? readClipboard)();
 			if (!content) return;
 			if (content.kind === "text") {
-				this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(content.text))));
+				this.insertPaste(content.text);
 				return;
 			}
 			let inserted: string;
@@ -1364,6 +1540,7 @@ export class TuiController {
 				}
 				inserted = (this.deps.saveImage ?? saveClipboardImage)(bytes, imageExtension(mimeType));
 			}
+			this.pushUndo();
 			this.setEditor(ed.insert(this.state.editor, inserted));
 		} catch (error) {
 			this.notice("error", `Failed to paste from clipboard: ${errorText(error)}`);
@@ -1416,17 +1593,26 @@ export class TuiController {
 		return this.agent.getAllTools().some((tool) => tool.name === "write" || tool.name === "bash");
 	}
 
-	/** Ctrl+G: edit the input in $VISUAL / $EDITOR (Notepad on Windows, nano elsewhere). */
+	/**
+	 * Ctrl+G: edit the input in $VISUAL / $EDITOR (Notepad on Windows, nano elsewhere), also
+	 * while a turn runs, for a long steer (pi). The editor gets pastes expanded; the terminal
+	 * is handed over while it runs (pi stops its TUI around the editor).
+	 */
 	openExternalEditor(): void {
-		if (this.state.task !== undefined || this.state.approval || this.state.picker) return;
+		if (this.state.approval || this.state.picker) return;
+		const text = expandPastes(this.pastes, this.state.editor.text);
 		let edited: string | undefined;
 		try {
-			edited = (this.deps.editText ?? editInExternalEditor)(this.state.editor.text);
+			const edit = () => (this.deps.editText ?? editInExternalEditor)(text);
+			edited = this.deps.handOverScreen ? this.deps.handOverScreen(edit) : edit();
 		} catch (error) {
 			this.notice("error", `External editor failed: ${errorText(error)}`);
 			return;
 		}
-		if (edited !== undefined) this.setEditor(ed.fromText(edited.replace(/\r\n/g, "\n").replace(/\n+$/, "")));
+		if (edited === undefined) return;
+		this.pushUndo();
+		this.leaveHistory();
+		this.setEditor(ed.fromText(edited.replace(/\r\n/g, "\n").replace(/\n+$/, "")));
 	}
 
 	private disarmExit(): void {
@@ -1450,8 +1636,15 @@ export class TuiController {
 		}
 		const items = this.history.list();
 		if (this.historyIndex > 0) {
+			// Entering history keeps the draft for the way back (pi historyDraft).
+			if (this.historyIndex >= items.length) {
+				this.historyDraft = this.state.editor;
+				this.pushUndo();
+			}
 			this.historyIndex -= 1;
-			this.setEditor(ed.fromText(items[this.historyIndex] ?? ""));
+			// Going up puts the cursor at the start, so the next ↑ goes further back (pi).
+			this.setEditor(ed.fromText(items[this.historyIndex] ?? "", 0));
+			this.lastEdit = undefined;
 		}
 	}
 
@@ -1459,7 +1652,13 @@ export class TuiController {
 		const items = this.history.list();
 		if (this.historyIndex < items.length) {
 			this.historyIndex += 1;
-			this.setEditor(ed.fromText(this.historyIndex < items.length ? (items[this.historyIndex] ?? "") : ""));
+			if (this.historyIndex < items.length) {
+				this.setEditor(ed.fromText(items[this.historyIndex] ?? ""));
+			} else {
+				this.setEditor(this.historyDraft ?? ed.EMPTY);
+				this.historyDraft = undefined;
+			}
+			this.lastEdit = undefined;
 		}
 	}
 
@@ -1493,9 +1692,9 @@ export class TuiController {
 		}
 		const prompt = this.state.prompt;
 		if (prompt) {
-			const text = this.takeInput();
+			const text = expandPastes(this.pastes, this.state.editor.text).trim();
 			if (text === "" && prompt.kind === "tell") return;
-			this.dispatch({ type: "prompt-close", id: prompt.id });
+			this.closePrompt(prompt.id);
 			this.settlePrompt(prompt.id, text === "" ? undefined : text);
 			return;
 		}
@@ -2210,13 +2409,10 @@ export class TuiController {
 			// instruction reach the model together.
 			this.tellFor = view;
 			const promptId = this.nextDialogId++;
-			this.dispatch({
-				type: "prompt-open",
-				prompt: {
-					id: promptId,
-					kind: "tell",
-					title: `Denied ${view.request.toolName}. What should the agent do instead?`,
-				},
+			this.openPrompt({
+				id: promptId,
+				kind: "tell",
+				title: `Denied ${view.request.toolName}. What should the agent do instead?`,
 			});
 			this.dispatch({ type: "approval-close", id: view.id });
 			this.prompts.set(promptId, (text) => {
@@ -2261,7 +2457,7 @@ export class TuiController {
 			const promptId = this.state.prompt.id;
 			this.tellFor = undefined;
 			this.prompts.delete(promptId);
-			this.dispatch({ type: "prompt-close", id: promptId });
+			this.closePrompt(promptId);
 		}
 	}
 
@@ -2271,7 +2467,13 @@ export class TuiController {
 			this.pickers.set(id, resolve);
 			this.dispatch({
 				type: "picker-open",
-				picker: { id, title, items, selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)) },
+				picker: {
+					id,
+					title,
+					items,
+					selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)),
+					...filterable(items),
+				},
 			});
 			this.store.flush();
 		});
@@ -2311,7 +2513,14 @@ export class TuiController {
 			this.pickers.set(id, (value, isAlt) => resolve(value === undefined ? undefined : { value, alt: isAlt === true }));
 			this.dispatch({
 				type: "picker-open",
-				picker: { id, title, items, selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)), alt },
+				picker: {
+					id,
+					title,
+					items,
+					selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)),
+					alt,
+					...filterable(items),
+				},
 			});
 			this.store.flush();
 		});
@@ -2321,10 +2530,7 @@ export class TuiController {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.prompts.set(id, resolve);
-			this.dispatch({
-				type: "prompt-open",
-				prompt: { id, kind, title, ...(placeholder !== undefined ? { placeholder } : {}) },
-			});
+			this.openPrompt({ id, kind, title, ...(placeholder !== undefined ? { placeholder } : {}) });
 			this.store.flush();
 		});
 	}
@@ -2332,9 +2538,64 @@ export class TuiController {
 	private cancelPrompt(): void {
 		const prompt = this.state.prompt;
 		if (!prompt) return;
-		this.setEditor(ed.EMPTY);
-		this.dispatch({ type: "prompt-close", id: prompt.id });
+		this.closePrompt(prompt.id);
 		this.settlePrompt(prompt.id, undefined);
+	}
+
+	/** Show the picker's items that match the query (every word, in the label or the hint). */
+	private filterPicker(query: string): void {
+		const picker = this.state.picker;
+		if (!picker?.all) return;
+		this.dispatch({ type: "picker-filter", id: picker.id, query, items: filterItems(picker.all, query) });
+	}
+
+	/** Ctrl+R (Claude Code): the prompt history, newest first; typing filters; the pick goes into the input box. */
+	async searchHistory(): Promise<void> {
+		if (this.state.approval || this.state.picker || this.state.prompt) return;
+		const entries = [...new Set([...this.history.list()].reverse())].slice(0, 1000);
+		if (entries.length === 0) {
+			this.flash("No history yet.");
+			return;
+		}
+		const items = entries.map((text, index) => ({ label: text.replace(/\s*\n\s*/g, " ↵ "), value: String(index) }));
+		const choice = await this.pick("Search history", items);
+		if (choice === undefined) return;
+		this.pushUndo();
+		this.leaveHistory();
+		this.setEditor(ed.fromText(entries[Number(choice)] ?? ""));
+	}
+
+	/** Tab with no menu (pi): complete the path before the cursor as far as it is unambiguous, list the rest. */
+	completePath(): void {
+		const { text, cursor } = this.state.editor;
+		const result = completePathAt(text, cursor, this.options.cwd, this.deps.listDirectory ?? listDirectory);
+		if (!result) return;
+		if (result.insert !== "") {
+			this.pushUndo();
+			this.leaveHistory();
+			this.setEditor({
+				text: text.slice(0, cursor) + result.insert + text.slice(cursor),
+				cursor: cursor + result.insert.length,
+			});
+		}
+		if (result.candidates.length > 1) {
+			const shown = result.candidates.slice(0, 12).join("  ");
+			this.flash(result.candidates.length > 12 ? `${shown}  … ${result.candidates.length - 12} more` : shown);
+		}
+	}
+
+	/** The input box answers a prompt: the draft in it waits aside until the prompt closes. */
+	private openPrompt(prompt: PromptView): void {
+		if (this.state.prompt === undefined) this.promptDraft = this.state.editor;
+		this.setEditor(ed.EMPTY);
+		this.dispatch({ type: "prompt-open", prompt });
+	}
+
+	private closePrompt(id: number): void {
+		this.dispatch({ type: "prompt-close", id });
+		if (this.state.prompt !== undefined) return;
+		this.setEditor(this.promptDraft ?? ed.EMPTY);
+		this.promptDraft = undefined;
 	}
 
 	private settlePrompt(id: number, value: string | undefined): void {
@@ -2343,6 +2604,77 @@ export class TuiController {
 		resolve?.(value);
 	}
 }
+
+/** A picker filters as you type unless an item is picked by its key (y/n). */
+function filterable(items: PickerItem[]): { all?: PickerItem[]; query?: string } {
+	return items.some((item) => item.key !== undefined) ? {} : { all: items, query: "" };
+}
+
+/** Items matching every word of the query, in the label or the hint; best label matches first. */
+export function filterItems(items: readonly PickerItem[], query: string): PickerItem[] {
+	const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+	if (words.length === 0) return [...items];
+	return items
+		.map((item, index) => {
+			const haystack = `${item.label} ${item.hint ?? ""}`;
+			const scores = words.map((word) => fuzzyScore(haystack, word));
+			return { item, index, score: scores.every((score) => score >= 0) ? fuzzyScore(item.label, query.trim()) : -2 };
+		})
+		.filter((entry) => entry.score > -2)
+		.sort((a, b) => b.score - a.score || a.index - b.index)
+		.map((entry) => entry.item);
+}
+
+/** Directory entries (names; directories end with "/"); empty when it cannot be read. */
+function listDirectory(dir: string): string[] {
+	try {
+		return readdirSync(dir, { withFileTypes: true }).map((entry) =>
+			entry.isDirectory() ? `${entry.name}/` : entry.name,
+		);
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Shell-style completion of the path-like word before the cursor (./, ../, ~/, or with a
+ * slash): the common prefix of the matching entries to insert, and the names that match.
+ */
+export function completePathAt(
+	text: string,
+	cursor: number,
+	cwd: string,
+	list: (dir: string) => string[],
+): { insert: string; candidates: string[] } | undefined {
+	const word = /(?:^|\s)@?([^\s@]*)$/.exec(text.slice(0, cursor))?.[1] ?? "";
+	if (!/^(?:\.{1,2}\/|~\/)|\//.test(word)) return undefined;
+	const slash = word.lastIndexOf("/");
+	const dirPart = word.slice(0, slash + 1);
+	const prefix = word.slice(slash + 1);
+	const base = dirPart.startsWith("~/") ? join(homedir(), dirPart.slice(2)) : resolvePath(cwd, dirPart || ".");
+	const names = list(base)
+		.filter(
+			(name) =>
+				name.toLowerCase().startsWith(prefix.toLowerCase()) && (prefix.startsWith(".") || !name.startsWith(".")),
+		)
+		.sort();
+	if (names.length === 0) return undefined;
+	let common = names[0] as string;
+	for (const name of names) {
+		let i = 0;
+		while (i < common.length && i < name.length && common[i]?.toLowerCase() === name[i]?.toLowerCase()) i++;
+		common = common.slice(0, i);
+	}
+	return { insert: common.slice(prefix.length), candidates: names };
+}
+
+/** Kills that go to the kill ring, and which way they delete (pi). */
+const KILLS: Partial<Record<KeyCommand["type"], "back" | "forward">> = {
+	"kill-line-start": "back",
+	"delete-word-back": "back",
+	"kill-line-end": "forward",
+	"delete-word-forward": "forward",
+};
 
 function customKey(message: CustomMessage): string {
 	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
@@ -2375,6 +2707,8 @@ export function applyEditorCommand(current: ed.EditorState, command: KeyCommand)
 			return ed.wordRight(current);
 		case "delete-word-back":
 			return ed.deleteWordBack(current);
+		case "delete-word-forward":
+			return ed.deleteWordForward(current);
 		case "kill-line-end":
 			return ed.killToLineEnd(current);
 		case "delete-forward":

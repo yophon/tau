@@ -4,6 +4,26 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P38a)
+- CLI TUI: tau reads keys itself (pi's StdinBuffer splitting and parseKey);
+  Ink only keeps the terminal in raw mode. Several keys in one read all count
+  (tech debt #21). Windows Terminal: Home/End, Delete (forward), Ctrl+←/→,
+  Ctrl+Backspace, Alt+Backspace, Alt+D work; win32-input-mode is turned on
+  (Claude Code) so Shift+Enter is a newline; elsewhere kitty keyboard flags
+  are requested (pi). `TAU_KEYBOARD=legacy` turns both off.
+- CLI TUI: while working, Tab queues a follow-up (Codex; Windows Terminal
+  takes Alt+Enter for full screen); idle, Tab completes a path. Ctrl+C on a
+  draft clears it into history (Claude Code); Ctrl+D on an empty input exits.
+  Enter on a highlighted command or argument runs it in one step.
+- CLI TUI: undo (Ctrl+Z on Windows, Ctrl+- elsewhere) and a kill ring
+  (Ctrl+Y, Alt+Y) after pi; Ctrl+Z suspends outside Windows. ↑ keeps the draft
+  for the way back and moves inside a wrapped prompt first; a prompt in the
+  input box puts the draft aside. Ctrl+R searches the prompt history; pickers
+  filter as you type. Long one-line pastes fold; paste markers delete whole;
+  Ctrl+G (also while working) gets the pasted text. `@` lists files again
+  for each completion, offers directories and quotes paths with spaces. In
+  full screen the terminal cursor sits at the caret (input methods).
+
 ### Added (P37)
 - kernel: Claude Code permission rules (`parsePermissionRule`,
   `matchPermissionRules`, `parseShellCommand`, `canonicalPath`):
