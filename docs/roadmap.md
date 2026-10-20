@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-20（P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
+> 最后更新：2026-10-20（P39 规格确认；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -323,6 +323,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 1054 个测试，1051 通过、3 跳过；check、pack smoke 通过；smoke-tui 新增 keys 场景，全部三十二个场景在全屏与 inline 下各跑一遍都通过。按键改由 tau 自己拆分和解析（照抄 pi 的 `StdinBuffer` 与 `parseKey`；Windows Terminal 用 win32-input-mode，其他终端协商 kitty 键盘协议），还清技术债 #21。基准：中文 7500 行 Ctrl+F 2529 → 138 毫秒，全屏转圈一次 5168 → 67 字节，正在生成的千行代码块每帧 107 → 7 毫秒。真 DeepSeek：写文件时内容边生成边显示，编辑显示带行号的 diff，推理折叠成「Thought for Ns」。审查找出的问题全部修掉，其中较重的有：kitty 标志推在进全屏之前（全屏里 Shift+Enter 无效）、Windows Terminal 把粘贴拆成按键事件且跨读入时可能卡在粘贴里、工具调用前的文字显示两次、CRLF 文件的 diff 在全屏里变空白。新增依赖 `highlight.js` 10.7.3（pi 同版本）。D41。真机验收待用户执行。偏差见规格书「实施记录」。
 
+## Phase 39 🚧 放宽限制与日常功能
+
+规格书（2026-10-20 确认；用户：「全做，按你的建议来」）：[specs/phase-39-loose-limits-daily-features.md](specs/phase-39-loose-limits-daily-features.md)。39a 四项限制对齐同类（命令拿完整环境变量、删掉 secret-guard、信任照 pi 每个目录记一次、记忆照 Claude Code 写入不限只加载前 200 行）；39b `/diff`（Codex）；39c `/btw` 旁支问题（Claude Code）；39d Ctrl+B 与超时转后台（Claude Code）；39e `keybindings.json` 改键（pi）；39f 会话树画出分支（pi）。
+
 ## 产品层后续 ⬜ 待定
 
 主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
@@ -365,7 +369,7 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - **远程执行**：工具跑在另一台机器上，会话与凭据留在本地（pi 的 ssh 示例与 pi-env）；与 D 组的 bash 沙箱、网关放在哪台机器一起考虑。
 - **扩展安装命令**：`tau install <包>` 生成 `.tau/extensions` 里的导入文件；有外部扩展之后再做。
 - **TUI 余项**（P33、P34 范围外）：按终端类型自动退回 inline、复制开关（滚动条、Ctrl+Z 挂起并入 P38）。
-- **P38 范围外的新功能**（2026-10-20 记）：keybindings.json 改键（pi、Claude Code）、Ctrl+B 把前台命令转到后台（Claude Code）、`/btw` 运行中问旁支问题（Claude Code、Codex）、`/diff`（Codex）、会话树显示分支结构（pi）。
+- ~~P38 范围外的新功能~~：keybindings.json、Ctrl+B、`/btw`、`/diff`、会话树分支已进 P39。
 - 不做：预设、提示里内联命令（用户：没什么应用场景）；计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；改完自动诊断（用户在钩子里配类型检查即可）；`/review`、`/commit`；自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
 
 ## 技术债登记
