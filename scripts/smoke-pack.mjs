@@ -253,8 +253,15 @@ try {
 	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, ...pinned], { cwd: tuiDir });
 	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
 	// The TUI also loads the CLI modules it shares with the REPL (P34f: session titles).
-	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON.
-	for (const shared of ["session-title.js", "handoff.js", "dirty-repo.js", "git-paths.js", "statusline-input.js"]) {
+	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON; P39: /diff.
+	for (const shared of [
+		"session-title.js",
+		"handoff.js",
+		"dirty-repo.js",
+		"git-paths.js",
+		"statusline-input.js",
+		"git-diff.js",
+	]) {
 		cpSync(join(packageDir("cli"), "dist", shared), join(tuiDir, shared));
 	}
 	writeFileSync(join(tuiDir, "main.mjs"), TUI_MJS);
