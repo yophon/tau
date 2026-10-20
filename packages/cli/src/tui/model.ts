@@ -211,6 +211,9 @@ export interface UiState {
 	aside?: { index: number; scroll: number };
 }
 
+/** Answer rows the /btw overlay shows inline (full screen: about half the screen, P39c). */
+export const ASIDE_ROWS = 12;
+
 export interface AsideExchange {
 	id: number;
 	question: string;

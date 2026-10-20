@@ -2157,6 +2157,8 @@ async function main(): Promise<void> {
 			saveTrust: (trusted) => saveProjectTrust(cwd, trusted),
 			// P39d: Ctrl+B moves the running bash command to the background.
 			background: workspace.background,
+			// P39e: pi's keybindings.json.
+			keybindingsPath: join(home, ".tau", "keybindings.json"),
 			setApprovalPrompt: (prompt) => {
 				approvalPromptRef.current = prompt;
 			},

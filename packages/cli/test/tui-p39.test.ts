@@ -2,12 +2,21 @@
 // background (Claude Code), keybindings.json (pi) and the session tree with branches (pi).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { gitDiff } from "../src/git-diff.ts";
+import {
+	getKeybindings,
+	Keybindings,
+	keybindingsTemplate,
+	normalizeKey,
+	pressedKey,
+	setKeybindings,
+} from "../src/tui/keybindings.ts";
+import { routeKey } from "../src/tui/keymap.ts";
 import { gitDiffLines, summarizeDiff } from "../src/tui/render/git-diff.ts";
 import { lineText } from "../src/tui/render/spans.ts";
 import { DOWN, deferred, ESC, type Harness, type HarnessOptions, harness as start, textTool } from "./tui-harness.ts";
@@ -188,5 +197,88 @@ describe("P39d Ctrl+B", () => {
 		assert.equal(moved, 1);
 		assert.equal(h.controller.state.editor.cursor, 1, "the cursor stays");
 		await h.waitFor((f) => f.includes("Moved the command to the background (/tasks)"), "the flash");
+	});
+});
+
+describe("P39e keybindings.json (pi)", () => {
+	afterEach(() => setKeybindings(new Keybindings()));
+
+	it("spells keys one way: modifier aliases and order, named-key aliases; presses the same way", () => {
+		assert.equal(normalizeKey("Shift+Ctrl+O"), "ctrl+shift+o");
+		assert.equal(normalizeKey("meta+Enter"), "alt+enter");
+		assert.equal(normalizeKey("pageUp"), "pageup");
+		assert.equal(normalizeKey("esc"), "escape");
+		assert.equal(normalizeKey("ctrl+-"), "ctrl+-");
+		assert.equal(normalizeKey("ctrl++"), "ctrl++");
+		assert.equal(normalizeKey("ctl+k"), undefined);
+		assert.equal(normalizeKey("ctrl+ctrl+k"), undefined);
+		assert.equal(normalizeKey("ctrl+kk"), undefined);
+		assert.equal(pressedKey("a", { ctrl: true }), "ctrl+a");
+		assert.equal(pressedKey("L", {}), "shift+l");
+		assert.equal(pressedKey("?", { shift: true }), "?");
+		assert.equal(pressedKey("", { tab: true, shift: true }), "shift+tab");
+		assert.equal(pressedKey("", { return: true, meta: true }), "alt+enter");
+		assert.equal(pressedKey("\n", {}), "ctrl+j");
+		assert.equal(pressedKey("", { pageUp: true }), "pageup");
+	});
+
+	it("a user entry replaces that action's defaults; conflicts and mistakes are reported", () => {
+		const keys = new Keybindings({
+			"tui.editor.cursorLineStart": "ctrl+q",
+			"app.history.search": ["alt+r", "ctrl+r"],
+			"app.redraw": "ctrl+k",
+			"tui.editor.deleteToLineEnd": "ctrl+k",
+			"app.nope": "x",
+			"app.exit": ["ctrl+", 3],
+		});
+		const ctx = {
+			approvalOpen: false,
+			pickerOpen: false,
+			menuOpen: false,
+			promptActive: false,
+			running: false,
+			bufferEmpty: false,
+			cursorAtFirstRow: true,
+			cursorAtLastRow: true,
+			keys,
+		};
+		assert.deepEqual(routeKey("q", { ctrl: true }, ctx), { type: "cursor-home" });
+		assert.equal(routeKey("a", { ctrl: true }, ctx), undefined, "Ctrl+A no longer goes to the line start");
+		assert.deepEqual(routeKey("", { home: true }, ctx), undefined);
+		assert.deepEqual(routeKey("r", { meta: true }, ctx), { type: "history-search" });
+		assert.deepEqual(keys.conflicts, [{ key: "ctrl+k", actions: ["app.redraw", "tui.editor.deleteToLineEnd"] }]);
+		assert.deepEqual(keys.problems, ['unknown action "app.nope"', "app.exit: expected a key or a list of keys"]);
+		assert.equal(keys.label("app.history.search"), "Alt+R / Ctrl+R");
+		assert.equal(new Keybindings({ "app.exit": "ctrl+" }).problems[0], 'app.exit: "ctrl+" is not a key');
+	});
+
+	it("is read at start, /keybindings writes the file with every action, /hotkeys shows the keys in force, /reload reads again", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "tau-keys-"));
+		const path = join(dir, "keybindings.json");
+		writeFileSync(path, JSON.stringify({ "app.history.search": "alt+r", "app.bogus": "x" }));
+		const h = await harness({ responses: [], tui: { keybindingsPath: path } });
+		await h.waitFor((f) => f.includes('keybindings.json: unknown action "app.bogus"'), "the problem");
+		await h.waitFor((f) => f.includes("Alt+R history"), "the hint line with the rebound key");
+		await h.submit("/hotkeys");
+		await h.waitFor((f) => /Alt\+R\s+search the prompt history/.test(f), "the rebound key in /hotkeys");
+		// /keybindings: the editor gets the file; what it returns is saved and read.
+		rmSync(path);
+		h.editorResult.value = JSON.stringify({ "app.redraw": "alt+l" });
+		await h.submit("/keybindings");
+		await h.waitFor((f) => f.includes("Keybindings:"), "the notice");
+		assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { "app.redraw": "alt+l" });
+		assert.equal(getKeybindings().label("app.redraw"), "Alt+L");
+		assert.equal(getKeybindings().label("app.history.search"), "Ctrl+R", "defaults again for the rest");
+		writeFileSync(path, JSON.stringify({ "app.redraw": "ctrl+l", "app.history.search": "ctrl+e" }));
+		await h.submit("/reload");
+		await h.waitFor((f) => f.includes("Ctrl+E history"), "the reloaded keys");
+	});
+
+	it("the template /keybindings creates lists every action with its keys", () => {
+		const template = JSON.parse(keybindingsTemplate(new Keybindings({ "app.redraw": "alt+l" }, "linux")));
+		assert.equal(template["app.redraw"], "alt+l");
+		assert.deepEqual(template["tui.editor.cursorLineStart"], ["home", "ctrl+a"]);
+		assert.equal(template["app.suspend"], "ctrl+z");
+		assert.deepEqual(new Keybindings({}, "win32").keys("app.suspend"), []);
 	});
 });

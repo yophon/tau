@@ -13,6 +13,7 @@ import React, { useEffect, useRef, useState, useSyncExternalStore } from "react"
 import type { TuiController } from "./controller.ts";
 import { stripEscapes, strWidth } from "./input/width.ts";
 import type { Block } from "./model.ts";
+import { asideMaxScroll } from "./render/aside.ts";
 import { CARET_END, CARET_MARK, renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineCache, type LineOptions } from "./render/lines.ts";
 import { listRows } from "./render/list.ts";
@@ -358,7 +359,7 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	const frameHeight = Math.max(3, screenRows - 1);
 	// The /btw overlay may take about half the screen (P39c).
 	const asideRows = Math.max(6, Math.floor(frameHeight / 2) - 4);
-	controller.setAsideRows(asideRows);
+	controller.setAsideMaxScroll(asideMaxScroll(state, columns, asideRows));
 	// The view takes what the bottom area leaves, in the same layout pass: it is given up to a
 	// frame of rows and clips the rest (the top while following, the bottom when scrolled), so a
 	// resize never draws a frame with the old split. Its measured height feeds scrolling, clicks

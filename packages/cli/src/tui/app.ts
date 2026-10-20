@@ -11,7 +11,8 @@ import { Box, Static, Text, useInput, useStdout } from "ink";
 import React, { useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
 import { stripEscapes, strWidth } from "./input/width.ts";
-import type { Block } from "./model.ts";
+import { ASIDE_ROWS, type Block, type UiState } from "./model.ts";
+import { asideMaxScroll } from "./render/aside.ts";
 import { renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineOptions } from "./render/lines.ts";
 import type { RunTuiOptions, TuiDeps } from "./types.ts";
@@ -52,6 +53,7 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 		showReasoning: state.showReasoning,
 		colors: stdout?.hasColors?.() === true,
 	};
+	asideLimit(controller, state, columns);
 	return h(
 		Box,
 		{ flexDirection: "column" },
@@ -66,6 +68,11 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 		state.live.length > 0 ? h(Text, { key: "live" }, liveRows(state.live, options, stdout?.rows ?? 24)) : null,
 		renderBottom(state, columns, controller.completion()),
 	);
+}
+
+/** The /btw answer's scroll limit for the controller (P39c); computed where the rows are laid out. */
+function asideLimit(controller: TuiController, state: UiState, columns: number): void {
+	if (state.aside) controller.setAsideMaxScroll(asideMaxScroll(state, columns, ASIDE_ROWS));
 }
 
 type ResizeStream = {

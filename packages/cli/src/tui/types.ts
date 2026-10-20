@@ -64,6 +64,8 @@ export interface RunTuiOptions {
 	saveTrust?(trusted: boolean): Promise<string[]>;
 	/** P39d: the workspace's background commands; Ctrl+B moves the running bash command there (Claude Code). */
 	background?: { readonly foregroundCount: number; moveToBackground(): number };
+	/** P39e: ~/.tau/keybindings.json (pi), read at start and on /reload; absent = the default keys. */
+	keybindingsPath?: string;
 	/** Install the TUI approval prompt into the host's approval loop (P15). */
 	setApprovalPrompt?(prompt: (request: ApprovalPromptRequest) => Promise<ApprovalAnswer>): void;
 	buildAgent(

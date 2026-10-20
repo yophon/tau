@@ -11,9 +11,17 @@ import { fmtCost, fmtElapsed, fmtInt, riskColor, SPINNER_FRAMES, shortPath } fro
 import type { Completion } from "../input/completion.ts";
 import * as ed from "../input/editor.ts";
 import { strWidth, truncateAnsi, truncateCells } from "../input/width.ts";
-import { type ApprovalView, approvalOptions, type PickerView, type StatusInfo, type UiState } from "../model.ts";
+import { getKeybindings, keyLabel } from "../keybindings.ts";
+import {
+	type ApprovalView,
+	ASIDE_ROWS,
+	approvalOptions,
+	type PickerView,
+	type StatusInfo,
+	type UiState,
+} from "../model.ts";
 import { approvalBody, approvalTitle } from "./approval.ts";
-import { ASIDE_ROWS, renderAside } from "./aside.ts";
+import { renderAside } from "./aside.ts";
 import { styledLine } from "./blocks.ts";
 import { INLINE_LIST_ROWS, listWindow } from "./list.ts";
 import type { StyledLine } from "./spans.ts";
@@ -314,16 +322,17 @@ export function hintText(state: UiState, completion: Completion | undefined): st
 	if (completion && completion.items.length > 0) return "Tab, Enter or a click to complete · Esc to close";
 	if (state.prompt?.kind === "tell") return "Enter to deny and send this · Esc to go back to the approval";
 	if (state.prompt) return "Enter to submit · Esc to cancel";
-	if (state.task === "turn") return "Enter to steer · Tab to queue · Esc to interrupt · Ctrl+O details";
-	if (state.task) return "Esc to interrupt";
-	return "Enter to send · Shift+Enter newline · @ file · / commands · Ctrl+R history · Shift+Tab mode";
+	// The keys the key table gives (P39e): a rebound key shows as rebound.
+	const key = (action: string): string => {
+		const first = getKeybindings().keys(action)[0];
+		return first === undefined ? "(unbound)" : keyLabel(first);
+	};
+	if (state.task === "turn") {
+		return `${key("tui.input.submit")} to steer · ${key("tui.input.tab")} to queue · ${key("app.interrupt")} to interrupt · ${key("app.tools.expand")} details`;
+	}
+	if (state.task) return `${key("app.interrupt")} to interrupt`;
+	return `${key("tui.input.submit")} to send · ${key("tui.input.newLine")} newline · @ file · / commands · ${key("app.history.search")} history · ${key("app.permissionMode.cycle")} mode`;
 }
-
-const keyLabel = (key: string): string =>
-	key
-		.split("+")
-		.map((part) => (part.length === 1 ? part.toUpperCase() : `${part.charAt(0).toUpperCase()}${part.slice(1)}`))
-		.join("+");
 
 /** One status line; parts are dropped from the right until it fits. */
 export function statusText(status: StatusInfo, width: number): string {

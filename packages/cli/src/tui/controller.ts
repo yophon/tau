@@ -6,9 +6,9 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, resolve as resolvePath } from "node:path";
+import { dirname, join, resolve as resolvePath } from "node:path";
 import {
 	type Agent,
 	type AgentEvent,
@@ -51,7 +51,15 @@ import { InputSplitter, type InputToken } from "./input/keys.ts";
 import { KillRing } from "./input/kill-ring.ts";
 import { inputReport, type PointerEvent, WHEEL_ROWS } from "./input/mouse.ts";
 import { expandPastes, foldPaste, markerAfter, markerBefore, newPasteStore } from "./input/paste.ts";
-import { BUILTIN_KEYS, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
+import {
+	getKeybindings,
+	Keybindings,
+	keybindingsTemplate,
+	normalizeKey,
+	pressedKey,
+	setKeybindings,
+} from "./keybindings.ts";
+import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
 import {
 	type ApprovalPromptRequest,
 	type ApprovalView,
@@ -63,7 +71,6 @@ import {
 	type TaskKind,
 } from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
-import { ASIDE_ROWS, asideMaxScroll } from "./render/aside.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
@@ -300,7 +307,45 @@ export class TuiController {
 
 	// ── lifecycle ────────────────────────────────────────────────────────────
 
+	/**
+	 * Read ~/.tau/keybindings.json into the key table (P39e, pi: at start and on /reload).
+	 * Unknown actions, keys that are not keys and keys given two actions are said once.
+	 */
+	loadKeybindings(): void {
+		const path = this.options.keybindingsPath;
+		if (!path) return;
+		const bindings = Keybindings.load(path, this.deps.platform ?? process.platform);
+		setKeybindings(bindings);
+		const issues = [
+			...bindings.problems,
+			...bindings.conflicts.map((conflict) => `${conflict.key} is bound to ${conflict.actions.join(" and ")}`),
+		];
+		if (issues.length > 0) this.notice("warn", `keybindings.json: ${issues.join("; ")}`);
+	}
+
+	/**
+	 * /keybindings (Claude Code): the file, created with every action and its current keys
+	 * when missing, in the external editor; read again afterwards.
+	 */
+	async editKeybindings(): Promise<void> {
+		const path = this.options.keybindingsPath;
+		if (!path) {
+			this.notice("dim", "No keybindings file in this mode.");
+			return;
+		}
+		if (!existsSync(path)) {
+			mkdirSync(dirname(path), { recursive: true });
+			writeFileSync(path, keybindingsTemplate(getKeybindings()), "utf8");
+		}
+		const current = readFileSync(path, "utf8");
+		const edited = await this.ui.editor?.("Keybindings", current);
+		if (edited !== undefined && edited !== current) writeFileSync(path, edited, "utf8");
+		this.loadKeybindings();
+		this.notice("dim", `Keybindings: ${path} (also read again on /reload).`);
+	}
+
 	async start(): Promise<void> {
+		this.loadKeybindings();
 		this.agent.setUi(this.ui);
 		this.options.setApprovalPrompt?.((request) => this.requestApproval(request));
 		this.attachHostActions(this.extensions);
@@ -377,8 +422,9 @@ export class TuiController {
 
 	/** Extension shortcuts on a key the TUI already uses lose; note them for /diagnostics. */
 	private checkShortcuts(): void {
+		const builtin = builtinKeys();
 		this.shortcutConflicts = [...this.extensions.shortcuts.values()]
-			.filter((shortcut) => BUILTIN_KEYS.has(shortcut.key.toLowerCase()))
+			.filter((shortcut) => builtin.has(normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()))
 			.map((shortcut) => `${shortcut.name} (${shortcut.key})`);
 		if (this.shortcutConflicts.length > 0) {
 			this.notice(
@@ -516,12 +562,12 @@ export class TuiController {
 		this.listHeight = Math.max(1, rows);
 	}
 
-	/** Answer rows the /btw overlay shows (full screen: about half the screen, P39c). */
-	private asideRows = ASIDE_ROWS;
+	/** How far the open /btw answer can scroll, as the last frame laid it out (P39c). */
+	private asideMax = 0;
 	private asideSeq = 0;
 
-	setAsideRows(rows: number): void {
-		this.asideRows = Math.max(1, rows);
+	setAsideMaxScroll(rows: number): void {
+		this.asideMax = Math.max(0, rows);
 	}
 
 	/** Reopen the /btw overlay on the newest exchange (`/btw` with no question). */
@@ -1022,10 +1068,11 @@ export class TuiController {
 			!state.prompt &&
 			state.editor.text === "";
 		if (idle && this.extensions.shortcuts.size > 0) {
-			const id = keyId(ch, key);
-			if (id !== undefined && !BUILTIN_KEYS.has(id)) {
+			// A plain printable key is text, not a shortcut (keyId); the rest compare in one spelling (P39e).
+			const id = keyId(ch, key) === undefined ? undefined : pressedKey(ch, key);
+			if (id !== undefined && !builtinKeys().has(id)) {
 				for (const shortcut of this.extensions.shortcuts.values()) {
-					if (shortcut.key.toLowerCase() === id) {
+					if ((normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()) === id) {
 						void this.runShortcut(shortcut.name);
 						return;
 					}
@@ -1457,8 +1504,7 @@ export class TuiController {
 				this.dispatch({ type: "aside-close" });
 				return;
 			case "aside-scroll": {
-				const max = asideMaxScroll(state, this.columns(), this.asideRows);
-				const scroll = Math.max(0, Math.min(max, (state.aside?.scroll ?? 0) + command.delta));
+				const scroll = Math.max(0, Math.min(this.asideMax, (state.aside?.scroll ?? 0) + command.delta));
 				if (state.aside && scroll !== state.aside.scroll) {
 					this.dispatch({ type: "aside-scroll", delta: scroll - state.aside.scroll });
 				}
@@ -2553,6 +2599,8 @@ export class TuiController {
 		const previousExtensions = this.extensions;
 		const previousAgent = this.agent;
 		let previousShutdown = false;
+		// pi reads keybindings.json again on /reload too (P39e).
+		this.loadKeybindings();
 		await this.runTask("reload", "Reloading extensions", async () => {
 			try {
 				await previousExtensions.notifySessionShutdown("quit", previousAgent.extensionContext());

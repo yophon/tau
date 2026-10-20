@@ -28,6 +28,7 @@ import { entryRendererMatches, isRenderComponent } from "./extensions.ts";
 import { errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
 import type { CompletionItem } from "./input/completion.ts";
 import { truncateCells } from "./input/width.ts";
+import { getKeybindings } from "./keybindings.ts";
 import type { PickerItem } from "./model.ts";
 import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
@@ -424,6 +425,13 @@ const BUILTINS: BuiltinCommand[] = [
 			lines.push(row("model", `${tui.model} · ${tui.thinkingLevel ?? "default"} reasoning`));
 			lines.push(row("mode", tui.agent.getPermissionMode()));
 			tui.lines(lines);
+		},
+	},
+	{
+		name: "keybindings",
+		description: "Change keys: open ~/.tau/keybindings.json (created with every action) in your editor",
+		run: async (tui) => {
+			await tui.editKeybindings();
 		},
 	},
 	{
@@ -1237,39 +1245,78 @@ function findSession(sessions: SessionMetadata[], selector: string): SessionMeta
 	return undefined;
 }
 
-const KEYS: Array<[string, string]> = [
-	["Enter", "send; while working, steer the current turn"],
-	["Tab", "while working: queue a follow-up for after the turn; idle: complete / commands, @ files and paths"],
-	["Shift+Enter, Ctrl+J", "newline (Alt+Enter too, where the terminal passes it)"],
-	["Esc", "interrupt; clear the input when idle (↑ brings it back)"],
-	["Esc Esc", "on an empty input: session tree (/settings → Double Esc)"],
-	["Ctrl+C", "interrupt; clear the input; on an empty input press twice to exit"],
-	["Ctrl+D", "on an empty input: exit"],
-	["↑ / ↓", "move in the input, then history; ↑ on an empty input takes queued messages back"],
-	["Ctrl+B", "while a command runs: move it to the background (/tasks); otherwise cursor left (tmux: press twice)"],
-	["Ctrl+R", "search the prompt history"],
-	["?", "on an empty input: these shortcuts"],
-	["Ctrl+L", "draw the screen again"],
-	["Ctrl+O", "expand or collapse tool details"],
-	["Ctrl+T", "show or hide reasoning"],
-	["Shift+Tab", "permission mode: supervised → accept-edits → autonomous → read-only (/mode for bypass)"],
-	["Ctrl+G", "edit the input in $VISUAL / $EDITOR (also while working)"],
-	["Alt+V / Ctrl+V", "paste an image or copied files from the clipboard"],
-	["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],
-	["#fact", "save a fact to long-term project memory"],
-	["Home/End, Ctrl+A/E", "start / end of the line"],
-	["Ctrl+←/→, Alt+B/F", "move by word"],
-	["Ctrl+Backspace, Ctrl+W", "delete the word before; Alt+D or Ctrl+Delete the word after"],
-	["Ctrl+U / Ctrl+K", "delete to the start / end of the line"],
-	["Ctrl+Y, Alt+Y", "paste back deleted text; Alt+Y right after cycles older deletions"],
-	[process.platform === "win32" ? "Ctrl+Z, Ctrl+-" : "Ctrl+-", "undo"],
-	...(process.platform === "win32" ? [] : ([["Ctrl+Z", "suspend (fg brings tau back)"]] as Array<[string, string]>)),
-	["Ctrl+F", "full screen: search the conversation (Enter/↓ next, ↑ previous, Esc close)"],
-	["Ctrl+↑ / Ctrl+↓", "full screen: jump to the previous / next message you sent"],
-	["PgUp/PgDn, wheel", "full screen: scroll; Ctrl+Home / Ctrl+End to the start / end"],
-	["Drag, double/triple click", "full screen: select text, a word, a line; copied on release"],
-	["Click", "full screen: a tool's title row opens or shuts it; menu, picker and approval items choose"],
-];
+/**
+ * The keyboard shortcuts for /hotkeys and the ? panel, with the keys the key table
+ * gives each action (P39e: changed in ~/.tau/keybindings.json, they show changed).
+ */
+function keyRows(): Array<[string, string]> {
+	const kb = getKeybindings();
+	const keys = (...actions: string[]): string =>
+		actions
+			.map((action) => kb.label(action, ""))
+			.filter((label) => label !== "")
+			.join(", ") || "unbound";
+	return [
+		[keys("tui.input.submit"), "send; while working, steer the current turn"],
+		[
+			keys("tui.input.tab"),
+			"while working: queue a follow-up for after the turn; idle: complete / commands, @ files and paths",
+		],
+		[keys("tui.input.newLine"), `newline (${keys("app.message.followUp")} too, where the terminal passes it)`],
+		[keys("app.interrupt"), "interrupt; clear the input when idle (↑ brings it back)"],
+		["Esc Esc", "on an empty input: session tree (/settings → Double Esc)"],
+		[keys("app.clear"), "interrupt; clear the input; on an empty input press twice to exit"],
+		[keys("app.exit"), "on an empty input: exit"],
+		[
+			keys("tui.editor.cursorUp", "tui.editor.cursorDown"),
+			"move in the input, then history; ↑ on an empty input takes queued messages back",
+		],
+		[
+			keys("app.task.background"),
+			"while a command runs: move it to the background (/tasks); otherwise cursor left (tmux: press twice)",
+		],
+		[keys("app.history.search"), "search the prompt history"],
+		["?", "on an empty input: these shortcuts"],
+		[keys("app.redraw"), "draw the screen again"],
+		[keys("app.tools.expand"), "expand or collapse tool details"],
+		[keys("app.thinking.toggle"), "show or hide reasoning"],
+		[
+			keys("app.permissionMode.cycle"),
+			"permission mode: supervised → accept-edits → autonomous → read-only (/mode for bypass)",
+		],
+		[keys("app.editor.external"), "edit the input in $VISUAL / $EDITOR (also while working)"],
+		[keys("app.clipboard.pasteImage"), "paste an image or copied files from the clipboard"],
+		["!cmd / !!cmd", "run a shell command (!! keeps it out of the context)"],
+		["#fact", "save a fact to long-term project memory"],
+		[keys("tui.editor.cursorLineStart", "tui.editor.cursorLineEnd"), "start / end of the line"],
+		[keys("tui.editor.cursorWordLeft", "tui.editor.cursorWordRight"), "move by word"],
+		[
+			keys("tui.editor.deleteWordBackward"),
+			`delete the word before; ${keys("tui.editor.deleteWordForward")} the word after`,
+		],
+		[keys("tui.editor.deleteToLineStart", "tui.editor.deleteToLineEnd"), "delete to the start / end of the line"],
+		[
+			keys("tui.editor.yank", "tui.editor.yankPop"),
+			"paste back deleted text; the second right after cycles older deletions",
+		],
+		[keys("tui.editor.undo"), "undo"],
+		...(kb.keys("app.suspend").length > 0
+			? ([[keys("app.suspend"), "suspend (fg brings tau back)"]] as Array<[string, string]>)
+			: []),
+		[keys("tui.altScreen.search"), "full screen: search the conversation (Enter/↓ next, ↑ previous, Esc close)"],
+		[
+			keys("tui.altScreen.previousPrompt", "tui.altScreen.nextPrompt"),
+			"full screen: jump to the previous / next message you sent",
+		],
+		[
+			`${keys("tui.altScreen.pageUp", "tui.altScreen.pageDown")}, wheel`,
+			`full screen: scroll; ${keys("tui.altScreen.top", "tui.altScreen.bottom")} to the start / end`,
+		],
+		["Drag, double/triple click", "full screen: select text, a word, a line; copied on release"],
+		["Click", "full screen: a tool's title row opens or shuts it; menu, picker and approval items choose"],
+		["/keybindings", "change any of these keys (~/.tau/keybindings.json)"],
+	];
+}
 
 function helpLines(extensions: ExtensionRegistry): StyledLine[] {
 	const row = (name: string, what: string): StyledLine => [
@@ -1292,7 +1339,7 @@ function helpLines(extensions: ExtensionRegistry): StyledLine[] {
 /** The shortcuts as picker rows (P38c: ? on an empty input, Claude Code), extension shortcuts after. */
 export function shortcutItems(extensions: ExtensionRegistry): PickerItem[] {
 	const rows: Array<[string, string]> = [
-		...KEYS,
+		...keyRows(),
 		...[...extensions.shortcuts.values()].map((shortcut): [string, string] => [
 			shortcut.key,
 			shortcut.description ?? shortcut.name,
@@ -1307,7 +1354,7 @@ function hotkeyLines(extensions: ExtensionRegistry): StyledLine[] {
 		span(what, { dim: true }),
 	];
 	const lines: StyledLine[] = [plainLine("Keys", { bold: true })];
-	for (const [key, what] of KEYS) lines.push(row(key, what));
+	for (const [key, what] of keyRows()) lines.push(row(key, what));
 	const shortcuts = [...extensions.shortcuts.values()];
 	if (shortcuts.length > 0) {
 		lines.push(plainLine("Extension shortcuts", { bold: true }));

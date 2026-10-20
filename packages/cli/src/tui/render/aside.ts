@@ -6,13 +6,10 @@
 import { Box, Text } from "ink";
 import React from "react";
 import { truncateCells } from "../input/width.ts";
-import type { AsideExchange, UiState } from "../model.ts";
+import { ASIDE_ROWS, type AsideExchange, type UiState } from "../model.ts";
 import { blockLines } from "./lines.ts";
 
 const h = React.createElement;
-
-/** Answer rows the panel shows at most when the layout does not say (inline). */
-export const ASIDE_ROWS = 12;
 
 /** The answer as rows of the panel's inner width (ANSI styled, wrapped like an assistant reply). */
 export function asideAnswerRows(exchange: AsideExchange, width: number): string[] {

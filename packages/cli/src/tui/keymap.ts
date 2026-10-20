@@ -11,6 +11,8 @@
  * Code's where pi has none (Ctrl+C clears a draft, Ctrl+R searches history).
  */
 
+import { getKeybindings, type Keybindings, keybindingsFor, pressedKey } from "./keybindings.ts";
+
 /** A parsed key's modifiers and name (the shape of Ink's Key, plus the keys Ink did not report). */
 export interface KeyLike {
 	upArrow?: boolean;
@@ -40,6 +42,10 @@ export interface KeyContext {
 	pickerOpen: boolean;
 	/** The /btw overlay is open (P39c): it takes the keys after approvals and pickers. */
 	asideOpen?: boolean;
+	/** The open picker is the session tree (P39f): its fold, filter and label keys come first. */
+	treeOpen?: boolean;
+	/** The key table (P39e); the process's (getKeybindings) when absent. */
+	keys?: Keybindings;
 	/** The completion menu has items. */
 	menuOpen: boolean;
 	/** The editor answers a prompt (deny-and-tell, ctx.ui.input): Esc cancels it. */
@@ -77,6 +83,8 @@ export type KeyCommand =
 	| { type: "picker-alt" }
 	/** Space in a multi-select list (P35): check or uncheck the selected item. */
 	| { type: "picker-toggle" }
+	/** A session tree key (P39f, pi app.tree.* and app.message.copy). */
+	| { type: "tree-key"; action: TreeAction }
 	/** The /btw overlay (P39c, Claude Code's keys): close, scroll, step between answers, copy, clear earlier. */
 	| { type: "aside-close" }
 	| { type: "aside-scroll"; delta: number }
@@ -158,40 +166,55 @@ export type KeyCommand =
 
 export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand | undefined {
 	const plain = !key.ctrl && !key.meta;
+	// P39e: what each key does comes from the key table (~/.tau/keybindings.json, pi's action names).
+	const bindings = ctx.keys ?? keybindingsFor(ctx.platform);
+	const pressed = pressedKey(ch, key);
+	const is = (action: string): boolean => bindings.matches(pressed, action);
 	// ① Approval panel: Ctrl+C still interrupts the turn the approval belongs to.
 	if (ctx.approvalOpen) {
-		if (key.ctrl && ch === "c") return { type: "interrupt" };
+		if (is("app.clear")) return { type: "interrupt" };
 		// The conversation scrolls behind the panel (P38b): read what is being approved.
-		if (ctx.fullscreen && (key.pageUp || key.pageDown)) return { type: "scroll-page", direction: key.pageUp ? -1 : 1 };
+		if (ctx.fullscreen && (is("tui.altScreen.pageUp") || is("tui.altScreen.pageDown"))) {
+			return { type: "scroll-page", direction: is("tui.altScreen.pageUp") ? -1 : 1 };
+		}
 		// Ctrl+O shows the whole diff or command in the panel (P38c).
-		if (key.ctrl && ch === "o") return { type: "toggle-verbose" };
-		if (key.upArrow) return { type: "approval-up" };
-		if (key.downArrow) return { type: "approval-down" };
-		if (key.return) return { type: "approval-confirm" };
-		if (key.escape) return { type: "approval-reject" };
+		if (is("app.tools.expand")) return { type: "toggle-verbose" };
+		if (is("tui.select.up")) return { type: "approval-up" };
+		if (is("tui.select.down")) return { type: "approval-down" };
+		if (is("tui.select.confirm")) return { type: "approval-confirm" };
+		if (is("tui.select.cancel")) return { type: "approval-reject" };
 		if (/^[1-9]$/.test(ch) && plain) return { type: "approval-choose", index: Number(ch) - 1 };
 		return undefined;
 	}
 
-	// ② Pickers swallow the rest of the input.
+	// ② Pickers swallow the rest of the input. The session tree's own keys come first (P39f, pi).
 	if (ctx.pickerOpen) {
-		if (key.upArrow) return { type: "picker-up" };
-		if (key.downArrow) return { type: "picker-down" };
-		if (key.pageUp || key.pageDown) return { type: "list-page", direction: key.pageUp ? -1 : 1 };
+		if (ctx.treeOpen) {
+			for (const action of TREE_ACTIONS) if (is(action)) return { type: "tree-key", action };
+		}
+		if (is("tui.select.up")) return { type: "picker-up" };
+		if (is("tui.select.down")) return { type: "picker-down" };
+		if (is("tui.select.pageUp") || is("tui.select.pageDown")) {
+			return { type: "list-page", direction: is("tui.select.pageUp") ? -1 : 1 };
+		}
+		// pi's tree pages with ←/→ (its cursorLeft/cursorRight).
+		if (ctx.treeOpen && (is("tui.editor.cursorLeft") || is("tui.editor.cursorRight"))) {
+			return { type: "list-page", direction: is("tui.editor.cursorLeft") ? -1 : 1 };
+		}
 		if ((key.home || key.end) && !key.ctrl) return { type: "list-edge", to: key.home ? "top" : "bottom" };
-		if (key.return) return { type: "picker-confirm" };
-		if (key.escape || (key.ctrl && ch === "c")) return { type: "picker-cancel" };
+		if (is("tui.select.confirm")) return { type: "picker-confirm" };
+		if (is("tui.select.cancel")) return { type: "picker-cancel" };
 		if (key.ctrl && ch === "s") return { type: "picker-alt" };
 		if (key.ctrl && (ch === "r" || ch === "d")) return { type: "picker-action", key: `ctrl+${ch}` };
-		if (key.backspace) return { type: "picker-backspace" };
-		if (ch === " ") return { type: "picker-toggle" };
-		if (ch.length === 1 && ch.trim() !== "" && plain) return { type: "picker-key", key: ch };
+		if (is("tui.editor.deleteCharBackward")) return { type: "picker-backspace" };
+		if (ch === " " && !ctx.treeOpen) return { type: "picker-toggle" };
+		if (ch.length === 1 && (ch.trim() !== "" || ctx.treeOpen) && plain) return { type: "picker-key", key: ch };
 		return undefined;
 	}
 
 	// The /btw overlay (P39c): Claude Code's keys; the rest is swallowed.
 	if (ctx.asideOpen) {
-		if (key.escape || key.return || (ch === " " && plain) || (key.ctrl && ch === "c")) return { type: "aside-close" };
+		if (key.escape || key.return || (ch === " " && plain) || is("app.clear")) return { type: "aside-close" };
 		if (key.upArrow && !key.shift) return { type: "aside-scroll", delta: -1 };
 		if (key.downArrow && !key.shift) return { type: "aside-scroll", delta: 1 };
 		if (key.pageUp || key.pageDown) return { type: "aside-scroll", delta: key.pageUp ? -10 : 10 };
@@ -208,168 +231,124 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 
 	// ③ The search bar (P34b): typing edits the query; Enter/↓ and ↑ move between matches.
 	if (ctx.searchOpen) {
-		if (key.escape || (key.ctrl && ch === "c")) return { type: "search-close" };
-		if (key.return || key.downArrow || (key.ctrl && (ch === "g" || ch === "f"))) return { type: "search-next" };
-		if (key.upArrow) return { type: "search-prev" };
+		if (is("tui.altScreen.searchClose")) return { type: "search-close" };
+		if (is("tui.altScreen.searchNext")) return { type: "search-next" };
+		if (is("tui.altScreen.searchPrevious")) return { type: "search-prev" };
 		if (key.backspace) return { type: "search-backspace" };
 		if (ch !== "" && plain && !key.tab) return { type: "search-insert", text: ch };
 		return undefined;
 	}
-	if (ctx.fullscreen && key.ctrl && ch === "f") return { type: "search-open" };
+	if (ctx.fullscreen && is("tui.altScreen.search")) return { type: "search-open" };
 
 	// Completion menu: only navigation, accept and close; other keys keep filtering.
 	if (ctx.menuOpen) {
-		if (key.upArrow) return { type: "menu-up" };
-		if (key.downArrow) return { type: "menu-down" };
-		if (key.pageUp || key.pageDown) return { type: "list-page", direction: key.pageUp ? -1 : 1 };
+		if (is("tui.select.up")) return { type: "menu-up" };
+		if (is("tui.select.down")) return { type: "menu-down" };
+		if (is("tui.select.pageUp") || is("tui.select.pageDown")) {
+			return { type: "list-page", direction: is("tui.select.pageUp") ? -1 : 1 };
+		}
 		if ((key.home || key.end) && !key.ctrl) return { type: "list-edge", to: key.home ? "top" : "bottom" };
-		if (key.tab) return { type: "menu-accept" };
-		if (key.return && !key.shift && !key.meta) return { type: "menu-accept", submit: true };
-		if (key.escape) return { type: "menu-close" };
+		if (is("tui.input.tab")) return { type: "menu-accept" };
+		if (is("tui.select.confirm")) return { type: "menu-accept", submit: true };
+		// Ctrl+C keeps its global meaning (clear the input) rather than only closing the menu.
+		if (is("tui.select.cancel") && !is("app.clear")) return { type: "menu-close" };
 	}
 
 	// Full screen: the transcript scrolls under the input.
 	if (ctx.fullscreen) {
-		if (key.pageUp || key.pageDown) return { type: "scroll-page", direction: key.pageUp ? -1 : 1 };
-		if (key.ctrl && (key.home || key.end)) return { type: "scroll-edge", to: key.home ? "top" : "bottom" };
-		if (key.ctrl && (key.upArrow || key.downArrow)) return { type: "jump-prompt", direction: key.upArrow ? -1 : 1 };
+		if (is("tui.altScreen.pageUp")) return { type: "scroll-page", direction: -1 };
+		if (is("tui.altScreen.pageDown")) return { type: "scroll-page", direction: 1 };
+		if (is("tui.altScreen.top")) return { type: "scroll-edge", to: "top" };
+		if (is("tui.altScreen.bottom")) return { type: "scroll-edge", to: "bottom" };
+		if (is("tui.altScreen.previousPrompt")) return { type: "jump-prompt", direction: -1 };
+		if (is("tui.altScreen.nextPrompt")) return { type: "jump-prompt", direction: 1 };
 	}
 
 	// ④ A prompt answered in the editor: Esc gives it up.
-	if (ctx.promptActive && key.escape) return { type: "prompt-cancel" };
+	if (ctx.promptActive && is("app.interrupt")) return { type: "prompt-cancel" };
 
 	// ⑤ Esc clears a transcript selection first. Ctrl+C / Esc interrupt while running. Idle, Ctrl+C
 	// clears a draft and then asks to exit (Claude Code); Esc clears the input (twice: the session tree).
-	if (key.escape && ctx.selectionActive) return { type: "selection-clear" };
-	if (key.ctrl && ch === "c") {
+	if (ctx.selectionActive && is("app.interrupt")) return { type: "selection-clear" };
+	if (is("app.clear")) {
 		if (ctx.running) return { type: "interrupt" };
 		return ctx.bufferEmpty ? { type: "exit-request" } : { type: "clear-draft" };
 	}
-	if (key.escape) return ctx.running ? { type: "interrupt" } : { type: "clear-input" };
+	if (is("app.interrupt")) return ctx.running ? { type: "interrupt" } : { type: "clear-input" };
 	// Claude Code's Ctrl+B (task:background); otherwise it stays pi's cursor left.
-	if (key.ctrl && !key.meta && ch === "b" && ctx.foregroundCommand) return { type: "background-command" };
+	if (ctx.foregroundCommand && is("app.task.background")) return { type: "background-command" };
 
-	if (key.tab && key.shift) return { type: "cycle-mode" };
+	if (is("app.permissionMode.cycle")) return { type: "cycle-mode" };
 
 	// ⑥ Enter submits; Shift+Enter and Ctrl+J are newlines (pi). Alt+Enter and Tab queue while running
 	// (pi's follow-up key; Codex's Tab: Windows Terminal takes Alt+Enter for full screen), else newline / path.
-	if (key.return) {
-		if (key.shift) return { type: "newline" };
-		if (key.meta) return ctx.running ? { type: "queue" } : { type: "newline" };
-		return { type: "submit" };
-	}
-	// Ctrl+J: LF from legacy terminals, CSI-u under kitty keys (pi binds newLine to ctrl+j too).
-	if (ch === "\n" || (key.ctrl && !key.meta && ch === "j")) return { type: "newline" };
-	if (key.tab && plain) return ctx.running ? { type: "queue" } : { type: "complete-path" };
+	if (is("tui.input.newLine")) return { type: "newline" };
+	if (is("app.message.followUp")) return ctx.running ? { type: "queue" } : { type: "newline" };
+	if (is("tui.input.submit")) return { type: "submit" };
+	if (is("tui.input.tab")) return ctx.running ? { type: "queue" } : { type: "complete-path" };
 
 	// pi's paste key is Alt+V on Windows (the terminal keeps Ctrl+V) and Ctrl+V elsewhere; both work everywhere here.
-	if ((key.ctrl || key.meta) && ch === "v") return { type: "paste-clipboard" };
+	if (is("app.clipboard.pasteImage")) return { type: "paste-clipboard" };
 
-	// ⑦ Line editing (readline habits, pi's defaults).
-	if (key.ctrl && !key.meta) {
-		switch (ch) {
-			case "a":
-				return { type: "cursor-home" };
-			case "e":
-				return { type: "cursor-end" };
-			case "u":
-				return { type: "kill-line-start" };
-			case "w":
-				return { type: "delete-word-back" };
-			case "k":
-				return { type: "kill-line-end" };
-			case "d":
-				return ctx.bufferEmpty ? { type: "exit" } : { type: "delete-forward" };
-			case "b":
-				return { type: "cursor-left" };
-			case "f":
-				return { type: "cursor-right" };
-			case "o":
-				return { type: "toggle-verbose" };
-			case "t":
-				return { type: "toggle-reasoning" };
-			case "g":
-				return { type: "external-editor" };
-			case "y":
-				return { type: "yank" };
-			case "r":
-				return { type: "history-search" };
-			case "l":
-				return { type: "redraw" };
-			case "-":
-				return { type: "undo" };
-			case "z":
-				return ctx.platform === "win32" ? { type: "undo" } : { type: "suspend" };
-		}
-	}
-	if (key.meta && !key.ctrl) {
-		switch (ch) {
-			case "b":
-				return { type: "word-left" };
-			case "f":
-				return { type: "word-right" };
-			case "d":
-				return { type: "delete-word-forward" };
-			case "y":
-				return { type: "yank-pop" };
-		}
-	}
-
-	if (key.home) return key.ctrl ? undefined : { type: "cursor-home" };
-	if (key.end) return key.ctrl ? undefined : { type: "cursor-end" };
-	if (key.leftArrow) return key.ctrl || key.meta ? { type: "word-left" } : { type: "cursor-left" };
-	if (key.rightArrow) return key.ctrl || key.meta ? { type: "word-right" } : { type: "cursor-right" };
-	if (key.upArrow) return ctx.cursorAtFirstRow ? { type: "history-prev" } : { type: "cursor-up" };
-	if (key.downArrow) return ctx.cursorAtLastRow ? { type: "history-next" } : { type: "cursor-down" };
-
-	if (key.backspace) return key.ctrl || key.meta ? { type: "delete-word-back" } : { type: "backspace" };
-	if (key.delete) return key.ctrl || key.meta ? { type: "delete-word-forward" } : { type: "delete-forward" };
+	// ⑦ Line editing (readline habits, pi's defaults). Ctrl+D on an empty input exits (pi).
+	if (ctx.bufferEmpty && is("app.exit")) return { type: "exit" };
+	const editing: Array<[string, KeyCommand]> = [
+		["tui.editor.cursorLineStart", { type: "cursor-home" }],
+		["tui.editor.cursorLineEnd", { type: "cursor-end" }],
+		["tui.editor.deleteToLineStart", { type: "kill-line-start" }],
+		["tui.editor.deleteToLineEnd", { type: "kill-line-end" }],
+		["tui.editor.deleteWordBackward", { type: "delete-word-back" }],
+		["tui.editor.deleteWordForward", { type: "delete-word-forward" }],
+		["tui.editor.deleteCharForward", { type: "delete-forward" }],
+		["tui.editor.deleteCharBackward", { type: "backspace" }],
+		["tui.editor.cursorWordLeft", { type: "word-left" }],
+		["tui.editor.cursorWordRight", { type: "word-right" }],
+		["tui.editor.cursorLeft", { type: "cursor-left" }],
+		["tui.editor.cursorRight", { type: "cursor-right" }],
+		["app.tools.expand", { type: "toggle-verbose" }],
+		["app.thinking.toggle", { type: "toggle-reasoning" }],
+		["app.editor.external", { type: "external-editor" }],
+		["tui.editor.yank", { type: "yank" }],
+		["tui.editor.yankPop", { type: "yank-pop" }],
+		["app.history.search", { type: "history-search" }],
+		["app.redraw", { type: "redraw" }],
+		["tui.editor.undo", { type: "undo" }],
+		["app.suspend", { type: "suspend" }],
+		["tui.editor.historyPrevious", { type: "history-prev" }],
+		["tui.editor.historyNext", { type: "history-next" }],
+	];
+	for (const [action, command] of editing) if (is(action)) return command;
+	if (is("tui.editor.cursorUp")) return ctx.cursorAtFirstRow ? { type: "history-prev" } : { type: "cursor-up" };
+	if (is("tui.editor.cursorDown")) return ctx.cursorAtLastRow ? { type: "history-next" } : { type: "cursor-down" };
 
 	if (ch === "?" && plain && ctx.bufferEmpty && !ctx.promptActive) return { type: "shortcuts" };
-	if (ch !== "" && plain && !key.tab) return { type: "insert", text: ch };
+	// Text: a key bound to nothing above (a modified key that is not text does nothing).
+	if (ch !== "" && plain && !key.tab && !key.return && !key.escape) return { type: "insert", text: ch };
 	return undefined;
 }
 
-/** Keys the TUI binds itself; an extension shortcut on one of them is ignored. */
-export const BUILTIN_KEYS: ReadonlySet<string> = new Set([
-	"enter",
-	"shift+enter",
-	"alt+enter",
-	"escape",
-	"tab",
-	"shift+tab",
-	"up",
-	"down",
-	"left",
-	"right",
-	"home",
-	"end",
-	"pageup",
-	"pagedown",
-	"backspace",
-	"delete",
-	"ctrl+backspace",
-	"alt+backspace",
-	"ctrl+delete",
-	"alt+delete",
-	"ctrl+left",
-	"ctrl+right",
-	"ctrl+up",
-	"ctrl+down",
-	"ctrl+home",
-	"ctrl+end",
-	"alt+b",
-	"alt+d",
-	"alt+f",
-	"alt+y",
-	"alt+left",
-	"alt+right",
-	"alt+v",
-	"ctrl+-",
-	...["a", "b", "c", "d", "e", "f", "g", "j", "k", "l", "o", "r", "t", "u", "v", "w", "y", "z"].map(
-		(letter) => `ctrl+${letter}`,
-	),
-]);
+/** The session tree's actions (P39f, pi app.tree.*), checked before the list keys while it is open. */
+export const TREE_ACTIONS = [
+	"app.tree.foldOrUp",
+	"app.tree.unfoldOrDown",
+	"app.tree.editLabel",
+	"app.tree.toggleLabelTimestamp",
+	"app.tree.filter.default",
+	"app.tree.filter.noTools",
+	"app.tree.filter.userOnly",
+	"app.tree.filter.labeledOnly",
+	"app.tree.filter.all",
+	"app.tree.filter.cycleForward",
+	"app.tree.filter.cycleBackward",
+	"app.message.copy",
+] as const;
+
+export type TreeAction = (typeof TREE_ACTIONS)[number];
+
+/** Keys the TUI binds itself (the key table's, P39e); an extension shortcut on one of them is ignored. */
+export function builtinKeys(): ReadonlySet<string> {
+	return getKeybindings().boundKeys();
+}
 
 /** A key as an extension shortcut id (`ctrl+x`, `alt+k`, `shift+tab`, `f`); undefined for text. */
 export function keyId(ch: string, key: KeyLike): string | undefined {
