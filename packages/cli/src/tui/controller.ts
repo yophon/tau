@@ -30,7 +30,7 @@ import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty
 import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
 import { autoTitle } from "../session-title.ts";
-import { type StatusLineFacts, statusLineInput } from "../statusline.ts";
+import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
 import { commandList, runCommand } from "./commands.ts";

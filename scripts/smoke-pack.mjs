@@ -253,7 +253,10 @@ try {
 	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, ...pinned], { cwd: tuiDir });
 	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
 	// The TUI also loads the CLI modules it shares with the REPL (P34f: session titles).
-	cpSync(join(packageDir("cli"), "dist", "session-title.js"), join(tuiDir, "session-title.js"));
+	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON.
+	for (const shared of ["session-title.js", "handoff.js", "dirty-repo.js", "git-paths.js", "statusline-input.js"]) {
+		cpSync(join(packageDir("cli"), "dist", shared), join(tuiDir, shared));
+	}
 	writeFileSync(join(tuiDir, "main.mjs"), TUI_MJS);
 	const tui = run("node", ["main.mjs"], { cwd: tuiDir });
 	if (!tui.stdout.includes("pack smoke tui ok")) throw new Error(`tui smoke failed:\n${tui.stdout}`);

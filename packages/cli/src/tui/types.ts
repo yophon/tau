@@ -12,7 +12,7 @@ import type {
 	UiCapability,
 	UserContent,
 } from "@yophon/tau-kernel";
-import type { StatusLineFacts } from "../statusline.ts";
+import type { StatusLineFacts } from "../statusline-input.ts";
 import type { ClipboardContent } from "./clipboard-read.ts";
 import type { ApprovalPromptRequest } from "./model.ts";
 
