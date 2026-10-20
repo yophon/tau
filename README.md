@@ -188,6 +188,15 @@ history in the terminal's scrollback; to make it the default, set
 `"tui": { "mode": "inline" }` in `~/.tau/settings.json` (or pick it in
 `/settings` → Screen, or set `TAU_TUI_MODE=inline`).
 
+The input box edits the way pi's does in Windows Terminal too: Home/End,
+Delete, Ctrl+←/→, Ctrl+Backspace, undo (Ctrl+Z on Windows, Ctrl+- elsewhere)
+and Ctrl+Y for deleted text; Shift+Enter is a newline, Tab queues a message
+for after the running turn, Ctrl+R searches your prompt history and `?` on
+an empty input lists every shortcut. Edits show their diff, a file being
+written shows while the model writes it, and reasoning folds into one
+"Thought for Ns" line (Ctrl+T or a click opens it). If keys misbehave in an
+unusual terminal, `TAU_KEYBOARD=legacy` turns the extended key reporting off.
+
 ### Models
 
 `~/.tau/models.json` uses a subset of pi's format. Keys are never stored by

@@ -239,6 +239,16 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D41：TUI 自己解析按键，交互细节照抄 pi、Claude Code、Codex，不加限制（2026-10-20，P38，用户确认）
+
+- **按键不再经 Ink 解析**：Ink 5 把一次读到的内容当成一个键（连续的方向键只算一次，技术债 #21），吞掉 Home/End，把 Delete 读成 Backspace，也读不了 kitty 的 CSI-u。tau 照抄 pi 的 `StdinBuffer` 拆分与 `parseKey` 解析（`input/keys.ts`），Ink 只负责保持原始模式。Windows Terminal 里照 Claude Code 打开 win32-input-mode（Node 在 Windows 上的原始模式就是 VT 输入，控制台直接把这些序列交给程序），其他终端照 pi 协商 kitty 键盘协议；两者都转成同一种 VT/CSI-u 再解析。`TAU_KEYBOARD=legacy` 关掉两者，供真机出问题时退回。
+- **键位取三家里 Windows Terminal 能用的那个**：Alt+Enter 被 Windows Terminal 拿去切全屏，排队改用 Codex 的 Tab（pi 在 Windows 上用的 Ctrl+Q 在 tau 里已是 ask_user 的回答键）；Shift+Enter 换行；撤销照 pi（Windows 上 Ctrl+Z，其他平台 Ctrl+-，Unix 上 Ctrl+Z 挂起）；Ctrl+C 先清空草稿、Ctrl+R 搜历史、`?` 列快捷键、`/clear` 开新会话、Esc 一次拒绝审批照 Claude Code。
+- **显示照抄**：编辑结果带 pi 的 `details.diff`（带文件行号；内核无依赖，只对改到的行做 LCS，结果与 pi 用 `diff` 包算的一致）；工具参数边生成边显示（pi 的 toolcall_delta，内核新增 `tool_call_delta` 事件，OpenAI 兼容与 Anthropic 两个传输都发）；推理折叠成「Thought for Ns」、连续读取合成一行（Claude Code）；代码高亮用 pi 的 highlight.js 10.7.3 与同一组语言；复制时去掉装饰、接回软折行（Codex）；链接用 OSC 8（pi 的终端判断）。
+- **会话树照 pi 回到用户消息之前**：选自己发的一条消息时，叶子移到它的父节点，原文返回到输入框，切换前问「Summarize branch?」（缺省不总结）。之前 tau 停在那条消息上（P8 时没有界面能接住原文），现在内核 `navigateTo` 返回 `editorText`。
+- **性能照 pi**：全屏只重写变了的行（pi 的 alt-screen 渲染），字宽按字缓存，正在生成的内容不高亮、结束后再高亮。
+- **不加任何限制或确认**（用户：几个阶段「莫名其妙的加一堆限制而不是优化功能、体验」）；双击 Esc 拒绝审批这类从 yo-agent 带来、别家没有的二次确认去掉。
+- 不做（记进 Backlog E）：keybindings.json 改键、Ctrl+B 把前台命令转后台、`/btw`、`/diff`、会话树显示分支结构；按终端类型自动退回 inline、复制开关。原生按键模块（pi 在 Windows 上判断 Shift）不做，用终端协议。
+
 ## D40：权限规则、worktree 与状态栏照抄 Claude Code，安全措施不比大热项目严（2026-10-19，P37，用户确认）
 
 - **权限规则照抄 Claude Code 的 `permissions`**：`allow`/`ask`/`deny` 的写法、deny → ask → allow 的判定顺序、与档位和钩子的关系、项目文件的 allow 要先信任而 deny/ask 不用、「总是允许」存成项目本地文件里的规则（bash 按命令前缀、WebFetch 按域名、改文件只对会话切 accept-edits）、`--add-dir`、`--allowedTools`/`--disallowedTools`、`/permissions`。规则引擎是纯 ES，放进内核（`permission-rules.ts`），读写设置文件在 CLI。现成的 Claude Code 规则复制过来按原意生效，Claude Code 自己也不生效的写法（`Write(路径)`）照样不生效。

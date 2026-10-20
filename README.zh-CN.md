@@ -165,6 +165,13 @@ Ctrl+Home/Ctrl+End；Ctrl+F 搜索；拖动选中即复制；点工具调用展�
 想缺省用它，在 `~/.tau/settings.json` 写 `"tui": { "mode": "inline" }`（或在
 `/settings` → Screen 里选，或设 `TAU_TUI_MODE=inline`）。
 
+输入框在 Windows Terminal 里也照 pi 的习惯：Home/End、Delete、Ctrl+←/→、
+Ctrl+Backspace、撤销（Windows 上 Ctrl+Z，其他系统 Ctrl+-）、Ctrl+Y 找回删掉的
+文字；Shift+Enter 换行，Tab 把消息排到当前这一轮之后，Ctrl+R 搜历史，空输入框
+按 `?` 列出全部快捷键。编辑直接显示 diff，模型写文件时内容边生成边显示，推理
+折叠成一行「Thought for Ns」（Ctrl+T 或点一下展开）。少见的终端里按键不对劲
+时，`TAU_KEYBOARD=legacy` 关掉扩展按键上报。
+
 ### 模型
 
 `~/.tau/models.json` 用 pi 格式的子集。tau 从不保存密钥：`apiKey` 写

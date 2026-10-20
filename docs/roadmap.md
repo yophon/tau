@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-20（P38 规格确认；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
+> 最后更新：2026-10-20（P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；**当前工作 = 发 0.4.0（含 P22–P32）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -317,9 +317,11 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 **完成记录**：全量 983 个测试，980 通过、3 跳过；check、pack smoke、smoke:browser、smoke:quickjs 通过；smoke-tui 新增五个场景，全部三十一个场景在全屏与 inline 下各跑一遍都通过。真 DeepSeek：deny 规则拦下写 `.env` 且模型照实转述，allow 规则放行命令，RPC 里「总是允许」存成 `Bash(git status *)`，`/handoff` 的提示完整，`--worktree` 下文件只落在 worktree 里。三人审查找出的问题全部修掉，其中 worktree 退出检查原来可能不问就删掉有提交的分支，改为按「只有这个 worktree 有的提交」判断；shell 解析补上 here-document 与算术展开里的命令替换。D40。真机验收待用户执行。偏差见规格书「实施记录」，使用说明见 [permissions.md](permissions.md)、[statusline.md](statusline.md)、[worktrees.md](worktrees.md)。
 
-## Phase 38 🚧 TUI 体验打磨
+## Phase 38 ✅ TUI 体验打磨（2026-10-20）
 
 规格书（2026-10-20 确认；只改功能和体验，不加限制；开放问题按建议）：[specs/phase-38-tui-polish.md](specs/phase-38-tui-polish.md)。38a 输入框与按键（Windows Terminal 的编辑键、Shift+Enter、Tab 排队、撤销与 kill ring、草稿不丢、Ctrl+R、输入法光标、粘贴、@ 补全、斜杠菜单、技术债 #21）；38b 对话区（编辑显示 diff、工具参数边生成边显示、推理折叠、连续读取合成一行、Markdown 与高亮、少写一次性提示、重试原地更新、复制去装饰、链接、活动行、右边框与滚动的 bug）；38c 会话与选择器（打字过滤、`/resume` 搜索改名、会话树照 pi 回到用户消息之前、`/clear` 开新会话、Esc 一次拒绝审批、运行中斜杠命令排队、`?` 快捷键面板）；38d 性能（字宽缓存、差量重画）。
+
+**完成记录**：全量 1054 个测试，1051 通过、3 跳过；check、pack smoke 通过；smoke-tui 新增 keys 场景，全部三十二个场景在全屏与 inline 下各跑一遍都通过。按键改由 tau 自己拆分和解析（照抄 pi 的 `StdinBuffer` 与 `parseKey`；Windows Terminal 用 win32-input-mode，其他终端协商 kitty 键盘协议），还清技术债 #21。基准：中文 7500 行 Ctrl+F 2529 → 138 毫秒，全屏转圈一次 5168 → 67 字节，正在生成的千行代码块每帧 107 → 7 毫秒。真 DeepSeek：写文件时内容边生成边显示，编辑显示带行号的 diff，推理折叠成「Thought for Ns」。审查找出的问题全部修掉，其中较重的有：kitty 标志推在进全屏之前（全屏里 Shift+Enter 无效）、Windows Terminal 把粘贴拆成按键事件且跨读入时可能卡在粘贴里、工具调用前的文字显示两次、CRLF 文件的 diff 在全屏里变空白。新增依赖 `highlight.js` 10.7.3（pi 同版本）。D41。真机验收待用户执行。偏差见规格书「实施记录」。
 
 ## 产品层后续 ⬜ 待定
 
@@ -379,6 +381,5 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 | 19 | 网关每个对话各加载一份扩展（P30） | MCP 服务器按对话各起一套 stdio 进程，对话多时进程数随之增长 | 现由驻留上限（缺省 16）与空闲卸载控制；出现实测瓶颈再做共享连接池 |
 | 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
-| 21 | TUI 一块输入里有多个方向键（按住 ↓、终端合并发送）时只处理第一个（P37 smoke 发现，Esc 已单独拆开） | 长列表里按住方向键移动得比按的次数少 | 在 stdin 过滤层把多个 CSI 键拆开逐个处理 |
 
-（#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
+（#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
