@@ -2,13 +2,22 @@
 // keys in one read (tech debt #21), Shift+Enter, undo and the kill ring (pi), drafts
 // kept across history and prompts, Ctrl+C clearing a draft and Ctrl+R (Claude Code),
 // type-to-filter pickers, one Enter running a command, paste markers, path completion.
+// P38b: the edit diff, streaming tool calls, read groups, copying source text, links,
+// the scrollbar.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
+import { codeBlocks } from "../src/tui/commands.ts";
 import { completePathAt, filterItems } from "../src/tui/controller.ts";
-import { paintFrame } from "../src/tui/fullscreen.ts";
+import { paintFrame, withScrollbar } from "../src/tui/fullscreen.ts";
 import { acceptCompletion, computeCompletion, fileReference } from "../src/tui/input/completion.ts";
 import * as ed from "../src/tui/input/editor.ts";
+import { type Block, initialState, reduce, type StatusInfo, type ToolBlock } from "../src/tui/model.ts";
 import { CARET_MARK } from "../src/tui/render/bottom.ts";
+import { blockLines, groupSummary } from "../src/tui/render/lines.ts";
+import { lineText } from "../src/tui/render/spans.ts";
+import { toolView } from "../src/tui/render/tool-views.ts";
+import { buildTranscript, linkAt, rangeText } from "../src/tui/transcript.ts";
 import { DOWN, ENTER, ESC, harness, UP } from "./tui-harness.ts";
 
 const HOME = "\x1b[H";
@@ -290,5 +299,147 @@ describe("P38a the real cursor sits at the caret (pi, for input methods)", () =>
 		// Row 2; "› 中文" is 6 cells, so the caret is in column 7.
 		assert.ok(painted.endsWith("\x1b[2;7H\x1b[?2026l"), JSON.stringify(painted.slice(-30)));
 		assert.ok(!paintFrame("no caret").includes(";1H"));
+	});
+});
+
+const STATUS = {
+	model: "m",
+	mode: "supervised",
+	contextTokens: 0,
+	inputTokens: 0,
+	outputTokens: 0,
+	costUsd: 0,
+	cwd: "/",
+	items: [],
+} as StatusInfo;
+const texts = (lines: ReturnType<typeof toolView>["body"]) => lines.map(lineText);
+
+describe("P38b tool calls", () => {
+	it("a write shows its path and newest lines while the model writes it; the real call replaces it", () => {
+		const delta = (argumentsText: string) =>
+			({
+				type: "agent-event",
+				event: { type: "tool_call_delta", index: 0, name: "write", argumentsText },
+				at: 0,
+			}) as const;
+		let state = reduce(initialState(STATUS), delta('{"path":"src/gen.ts","content":"one\\ntw'));
+		const block = state.live.at(-1) as ToolBlock;
+		assert.equal(block.status, "streaming");
+		assert.equal(toolView(block, false).head, "write(src/gen.ts)");
+		assert.deepEqual(texts(toolView(block, false).body), ["one", "tw"]);
+		state = reduce(state, delta('{"path":"src/gen.ts","content":"one\\ntwo\\nthree"}'));
+		assert.equal(state.live.filter((b) => b.kind === "tool").length, 1);
+		assert.deepEqual(texts(toolView(state.live.at(-1) as ToolBlock, false).body), ["one", "two", "three"]);
+		state = reduce(state, {
+			type: "agent-event",
+			event: {
+				type: "assistant_message",
+				message: {
+					role: "assistant",
+					content: [],
+					api: "x",
+					provider: "x",
+					model: "m",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "toolUse",
+					timestamp: 0,
+				},
+			},
+			at: 0,
+		} as never);
+		assert.equal(state.live.filter((b) => b.kind === "tool").length, 0);
+	});
+
+	it("an edit's result diff shows numbered lines without expanding", async () => {
+		const diff = " 1 a\n-2 old line\n+2 new line";
+		const edit = {
+			name: "edit",
+			description: "edit",
+			parameters: { type: "object", properties: {} },
+			execute: async () => ({ content: [{ type: "text" as const, text: "Edited a.ts" }], details: { diff } }),
+		};
+		const h = await harness({
+			responses: [
+				makeSseResponse(toolCallTurn("edit", { path: "a.ts", oldText: "old line", newText: "new line" })),
+				makeSseResponse(textTurn("done")),
+			],
+			tools: [edit],
+		});
+		try {
+			await h.submit("change it");
+			const frame = await h.waitFor((f) => f.includes("done") && /Worked for \d/.test(f), "the answer");
+			assert.match(frame, /-2 old line/);
+			assert.match(frame, /\+2 new line/);
+		} finally {
+			h.cleanup();
+		}
+	});
+
+	it("consecutive reads and searches are one line in Claude Code's words", () => {
+		const tool = (name: string, status: ToolBlock["status"]): ToolBlock => ({
+			kind: "tool",
+			id: name,
+			callId: name,
+			name,
+			args: {},
+			status,
+			output: "",
+		});
+		assert.equal(
+			groupSummary([tool("read", "ok"), tool("read", "ok"), tool("grep", "ok")]),
+			"Read 2 files, searched for 1 pattern",
+		);
+		assert.equal(groupSummary([tool("read", "ok"), tool("ls", "running")]), "Reading 1 file, listing 1 directory…");
+	});
+});
+
+describe("P38b copying and links", () => {
+	const rowsOf = (blocks: Block[], width = 40) =>
+		buildTranscript(blocks, (block) =>
+			blockLines(block, { width, verbose: false, showReasoning: false, colors: false }),
+		);
+
+	it("copying gives the source text: no code bar or bullet, soft wraps joined", () => {
+		const words = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda";
+		const transcript = rowsOf([
+			{ kind: "assistant", id: "a", text: `${words}\n\n\`\`\`\nconst x = 1;\n\`\`\`\n- item one`, done: true },
+		]);
+		const all = { start: { row: 0, col: 0 }, end: { row: transcript.rows.length - 1, col: 999 } };
+		const text = rangeText(transcript.rows, all, transcript.meta);
+		assert.ok(text.includes(words), text);
+		assert.ok(text.includes("\nconst x = 1;\n"), text);
+		assert.ok(!text.includes("│"), text);
+		assert.ok(text.includes("item one") && !text.includes("• item"), text);
+	});
+
+	it("finds the link under a column of a styled row", () => {
+		const row = `see \x1b]8;;https://example.com\x07\x1b[4mdocs\x1b[24m\x1b]8;;\x07 now`;
+		assert.equal(linkAt(row, 5), "https://example.com");
+		assert.equal(linkAt(row, 1), undefined);
+		assert.equal(linkAt(row, 9), undefined);
+	});
+
+	it("/copy picks a code block out of an answer", () => {
+		assert.deepEqual(codeBlocks("text\n```ts\nconst a = 1;\n```\nmore\n~~~\nls\n~~~"), [
+			{ language: "ts", code: "const a = 1;" },
+			{ language: "", code: "ls" },
+		]);
+	});
+
+	it("the scrollbar thumb sits where the view is", () => {
+		const rows = Array.from({ length: 10 }, () => "x");
+		const top = withScrollbar(rows, 0, 100, 10, 20);
+		assert.ok(top[0]?.endsWith("┃\x1b[39m"));
+		assert.ok(!top[9]?.includes("┃"));
+		const bottom = withScrollbar(rows, 90, 100, 10, 20);
+		assert.ok(bottom[9]?.includes("┃") && !bottom[0]?.includes("┃"));
+		assert.deepEqual(withScrollbar(rows, 0, 5, 10, 20), rows);
 	});
 });

@@ -31,7 +31,9 @@ describe("P25 TUI", () => {
 	it("starts with a one-line header and a status line, no diagnostics dump", async () => {
 		const h = await harness({ responses: [] });
 		const frame = await h.waitFor((f) => f.includes("tau · "), "the header");
-		assert.match(frame, /tau · test-model · \S+ · autonomous/);
+		// The header no longer repeats what the status line says (P38b).
+		assert.match(frame, /tau · \/help for commands/);
+		assert.match(frame, /test-model · autonomous/);
 		assert.doesNotMatch(frame, /diagnostics|Host surfaces|Ready/);
 		assert.match(frame, /Enter to send/);
 	});
@@ -40,7 +42,7 @@ describe("P25 TUI", () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("Hello **there**"))] });
 		await h.type("hi");
 		await h.key(ENTER);
-		const frame = await h.waitFor((f) => f.includes("Hello there") && /· \d/.test(f), "the answer");
+		const frame = await h.waitFor((f) => f.includes("Hello there") && /Worked for \d/.test(f), "the answer");
 		assert.match(frame, /› hi/);
 		assert.doesNotMatch(frame, /\*\*/);
 		assert.equal(h.requests.length, 1);
@@ -96,7 +98,7 @@ describe("P25 TUI", () => {
 		await h.waitFor((f) => f.includes("What should the agent do instead?"), "the tell prompt");
 		await h.type("use git clean");
 		await h.key(ENTER);
-		await h.waitFor((f) => f.includes("ok") && /· \d/.test(f), "the turn to finish");
+		await h.waitFor((f) => f.includes("ok") && /Worked for \d/.test(f), "the turn to finish");
 		assert.equal(executions.length, 0);
 		const last = JSON.stringify(h.requests.at(-1)?.messages);
 		assert.match(last, /use git clean/);
@@ -177,7 +179,7 @@ describe("P25 TUI", () => {
 		await h.waitFor((f) => f.includes("done"), "the turn to end");
 	});
 
-	it("parallel tool calls each get a block", async () => {
+	it("parallel reads join one group line (P38b); expanded, each read in order", async () => {
 		const h = await harness({
 			responses: [
 				makeSseResponse(
@@ -189,11 +191,18 @@ describe("P25 TUI", () => {
 				makeSseResponse(textTurn("both read")),
 			],
 			tools: [textTool("read", "1\tx")],
+			// Full screen redraws the transcript when Ctrl+O changes it.
+			fullscreen: true,
 		});
 		await h.type("read both");
 		await h.key(ENTER);
 		const frame = await h.waitFor((f) => f.includes("both read"), "the answer");
-		assert.ok(frame.indexOf("read(a.ts)") < frame.indexOf("read(b.ts)"));
+		assert.ok(frame.includes("Read 2 files"), frame);
+		assert.ok(!frame.includes("read(a.ts)"), frame);
+		const expanded = await h.waitFor((f) => f.includes("both read"), "the answer");
+		h.controller.execute({ type: "toggle-verbose" });
+		const open = await h.waitFor((f) => f.includes("read(b.ts)"), "the expanded group");
+		assert.ok(open.indexOf("read(a.ts)") < open.indexOf("read(b.ts)"), expanded);
 	});
 
 	it("keeps the input box aligned with CJK text", async () => {

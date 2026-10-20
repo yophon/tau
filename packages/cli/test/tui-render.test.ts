@@ -4,7 +4,15 @@ import { describe, it } from "node:test";
 import type { AgentEvent, AssistantMessage, ToolCall } from "@yophon/tau-kernel";
 import { rewrappedRows, takeOverResize } from "../src/tui/app.ts";
 import { strWidth } from "../src/tui/input/width.ts";
-import { type Block, initialState, reduce, type StatusInfo, type UiAction, type UiState } from "../src/tui/model.ts";
+import {
+	type Block,
+	initialState,
+	readableError,
+	reduce,
+	type StatusInfo,
+	type UiAction,
+	type UiState,
+} from "../src/tui/model.ts";
 import { approvalBody } from "../src/tui/render/approval.ts";
 import { hintText, statusText } from "../src/tui/render/bottom.ts";
 import { collapseContext, diffStat, diffStrings, toStyled } from "../src/tui/render/diff.ts";
@@ -127,12 +135,37 @@ describe("tool views", () => {
 		assert.deepEqual(texts(long.body), ["… 4 more lines", "5", "6", "7", "8", "9"]);
 	});
 
-	it("edit folds to +n -m and expands to a colored diff", () => {
+	it("edit shows its diff without expanding (P38b, pi); the result's diff has file line numbers", () => {
 		const block = tool({ name: "edit", args: { path: "a.ts", oldText: "a\nb", newText: "a\nc" } });
 		const folded = toolView(block, false);
 		assert.equal(folded.head, "edit(a.ts)");
-		assert.deepEqual(texts(folded.body), ["+1 -1"]);
-		assert.ok(toolView(block, true).body.some((line) => lineText(line).includes("+ c")));
+		assert.deepEqual(texts(folded.body), ["  a", "- b", "+ c"]);
+		const done = tool({ name: "edit", args: block.args, diff: "  9 a\n-10 const x = 1;\n+10 const x = 2;" });
+		const rows = toolView(done, false).body;
+		assert.deepEqual(texts(rows), ["  9 a", "-10 const x = 1;", "+10 const x = 2;"]);
+		// pi's intra-line diff: the changed word in inverse, the rest plain.
+		const added = rows[2] ?? [];
+		assert.deepEqual(
+			added.filter((part) => part.inverse).map((part) => part.text),
+			["2"],
+		);
+		// A long diff folds after 16 rows; expanded it is whole.
+		const long = tool({
+			name: "edit",
+			args: block.args,
+			diff: Array.from({ length: 30 }, (_, i) => `+${i + 1} x`).join("\n"),
+		});
+		assert.equal(toolView(long, false).body.length, 17);
+		assert.equal(lineText(toolView(long, false).body[16] ?? []), "… 14 more lines");
+		assert.equal(toolView(long, true).body.length, 30);
+	});
+
+	it("write shows its first ten lines (pi)", () => {
+		const content = Array.from({ length: 12 }, (_, i) => `line ${i + 1}`).join("\n");
+		const view = toolView(tool({ name: "write", args: { path: "b.ts", content } }), false);
+		assert.deepEqual(texts(view.body).slice(0, 2), ["line 1", "line 2"]);
+		assert.equal(texts(view.body).at(-1), "… 2 more lines");
+		assert.equal(toolView(tool({ name: "write", args: { path: "b.ts", content } }), true).body.length, 12);
 	});
 
 	it("errors show in red; MCP names show as server:tool", () => {
@@ -299,7 +332,7 @@ describe("reducer", () => {
 		let state = run([
 			{ type: "task-start", task: "turn", activity: "Thinking", at: 0 },
 			{ type: "tool_start", toolCall: call("t1") },
-			{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "503" },
+			{ type: "compaction_failed", reason: "threshold", aborted: false, errorMessage: "503" },
 		]);
 		assert.deepEqual(kinds(state.committed), []);
 		assert.deepEqual(kinds(state.live), ["tool", "notice"]);
@@ -389,14 +422,51 @@ describe("reducer", () => {
 		assert.equal(state.approval?.id, 2);
 	});
 
-	it("an errored message adds an error notice; /clear starts a new epoch", () => {
+	it("an errored message adds one error notice when the run ends; /clear starts a new epoch", () => {
 		let state = run([
 			{ type: "assistant_message", message: { ...assistant(""), stopReason: "error", errorMessage: "rate limited" } },
 		]);
+		assert.equal(state.committed.length, 0);
+		state = run([{ type: "task-end" }], state);
 		assert.match((state.committed.at(-1) as { text: string }).text, /rate limited/);
 		state = run([{ type: "clear" }], state);
 		assert.equal(state.committed.length, 0);
 		assert.equal(state.epoch, 1);
+	});
+});
+
+describe("P38b retries", () => {
+	const http500 = 'HTTP 500: {"error":{"message":"Internal server error","type":"server_error"}}';
+	it("a retried error shows on the activity line only; the error message, not the JSON", () => {
+		let state = run([
+			{ type: "task-start", task: "turn", activity: "Thinking", at: 0 },
+			{ type: "assistant_message", message: { ...assistant(""), stopReason: "error", errorMessage: http500 } },
+			{ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: http500 },
+		]);
+		assert.equal(state.activity, "Retrying in 2s (1/3): HTTP 500: Internal server error");
+		assert.deepEqual(kinds([...state.committed, ...state.live]), []);
+		state = run([{ type: "auto_retry_end", success: true, attempt: 2 }, { type: "task-end" }], state);
+		assert.deepEqual(kinds([...state.committed, ...state.live]), []);
+	});
+
+	it("giving up writes one line", () => {
+		const state = run([
+			{ type: "task-start", task: "turn", activity: "Thinking", at: 0 },
+			{ type: "assistant_message", message: { ...assistant(""), stopReason: "error", errorMessage: http500 } },
+			{ type: "auto_retry_end", success: false, attempt: 3, finalError: http500 },
+			{ type: "task-end" },
+		]);
+		const notices = [...state.committed, ...state.live].filter((block) => block.kind === "notice");
+		assert.deepEqual(
+			notices.map((block) => (block as { text: string }).text),
+			["Gave up after 3 attempts: HTTP 500: Internal server error"],
+		);
+	});
+
+	it("reads the message out of an error body", () => {
+		assert.equal(readableError('HTTP 429: {"error":"slow down"}'), "HTTP 429: slow down");
+		assert.equal(readableError('{"message":"bad key"}'), "bad key");
+		assert.equal(readableError("socket hang up\nat x"), "socket hang up");
 	});
 });
 
@@ -439,7 +509,7 @@ describe("P26a tool views", () => {
 		assert.deepEqual(texts(toolView(tool({ name: "ls", args: {}, result: "a/\nb.txt" }), false).body), ["2 entries"]);
 	});
 
-	it("edit with edits[] sums the stats and shows every diff when expanded", () => {
+	it("edit with edits[] shows every diff", () => {
 		const block = tool({
 			name: "edit",
 			args: {
@@ -450,7 +520,6 @@ describe("P26a tool views", () => {
 				],
 			},
 		});
-		assert.deepEqual(texts(toolView(block, false).body), ["+2 -3 in 2 places"]);
 		const expanded = texts(toolView(block, true).body);
 		assert.ok(
 			expanded.includes("- a") && expanded.includes("+ b") && expanded.includes("···") && expanded.includes("+ e"),

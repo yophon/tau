@@ -49,13 +49,20 @@ test("agent loop executes tool calls and completes with a final message", async 
 
 	const events: string[] = [];
 	let text = "";
+	const streamed: string[] = [];
 	for await (const event of agent.prompt("run the echo tool")) {
 		events.push(event.type);
 		if (event.type === "text_delta") text += event.delta;
+		if (event.type === "tool_call_delta") streamed.push(`${event.index} ${event.name} ${event.argumentsText}`);
 	}
 
 	assert.equal(text, "All done");
+	// The arguments so far, growing with each fragment (P38b).
+	assert.deepEqual(streamed, ['0 echo_tool {"te', '0 echo_tool {"text":"hi"}']);
 	assert.deepEqual(events, [
+		// The call shows while its arguments stream (P38b): one delta per fragment.
+		"tool_call_delta",
+		"tool_call_delta",
 		"assistant_message",
 		"tool_start",
 		"tool_result",

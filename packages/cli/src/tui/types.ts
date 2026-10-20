@@ -76,6 +76,8 @@ export interface RunTuiOptions {
 	screen?: "fullscreen" | "inline";
 	/** P37b: ask before switching sessions with uncommitted changes (session.dirtyRepoGuard). */
 	dirtyRepoGuard?: boolean;
+	/** P38b: reasoning shown in full instead of one "Thought for Ns" row (tui.showReasoning; default off). */
+	showReasoning?: boolean;
 	/** P37b: Esc twice on an empty input (pi doubleEscapeAction; default "tree"). */
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37b: save a /settings choice (section.key in ~/.tau/settings.json). */
@@ -120,6 +122,8 @@ export interface TuiDeps {
 	handOverScreen?: <T>(run: () => T) => T;
 	/** Ctrl+Z outside Windows: suspend to the shell, come back on SIGCONT. */
 	suspend?: () => void;
+	/** A click on a link (P38b); defaults to the system browser. */
+	openUrl?: (url: string) => void;
 	/** Tab path completion: a directory's entries, directories ending in "/". */
 	listDirectory?: (dir: string) => string[];
 }

@@ -114,6 +114,11 @@ export type { JsonSchema, ToolDefinition } from "./messages.ts";
 export type ChatStreamEvent =
 	| { type: "text_delta"; delta: string }
 	| { type: "reasoning_delta"; delta: string }
+	/**
+	 * A tool call's arguments so far, while they stream (P38b, pi's toolcall_delta): hosts
+	 * show the call before it is complete. `index` tells calls of one response apart.
+	 */
+	| { type: "tool_call_delta"; index: number; id?: string; name: string; argumentsText: string }
 	| { type: "tool_call"; toolCall: ToolCall }
 	| { type: "response_end"; message: AssistantMessage };
 
@@ -631,6 +636,15 @@ export async function* streamChatCompletion(
 			}
 			if (name && !entry.name) entry.name = name;
 			if (wireToolCall.function?.arguments) entry.argumentsText += wireToolCall.function.arguments;
+			if (entry.name !== "") {
+				pendingEvents.push({
+					type: "tool_call_delta",
+					index: rawToolCalls.indexOf(entry),
+					...(entry.id ? { id: entry.id } : {}),
+					name: entry.name,
+					argumentsText: entry.argumentsText,
+				});
+			}
 		}
 	};
 

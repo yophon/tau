@@ -2109,6 +2109,7 @@ async function main(): Promise<void> {
 					: {}),
 			}),
 			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
+			showReasoning: userSettings.showReasoning ?? false,
 			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),
 			autoTitle: autoTitleOn(userSettings.autoTitle),
 			notify: userSettings.tuiNotify ?? "auto",

@@ -12,6 +12,7 @@
  * epoch instead.
  */
 import type { AgentEvent, ApprovalRequest } from "@yophon/tau-kernel";
+import { estimateStringTokens } from "@yophon/tau-kernel";
 import type { Tone } from "./format.ts";
 import type { EditorState } from "./input/editor.ts";
 import { EMPTY } from "./input/editor.ts";
@@ -19,33 +20,59 @@ import { splitCompletedMarkdown } from "./render/markdown.ts";
 import type { StyledLine } from "./render/spans.ts";
 import type { Selection } from "./transcript.ts";
 
-export type ToolStatus = "running" | "ok" | "error" | "aborted";
+/** "streaming": the model is still writing the call's arguments (P38b). */
+export type ToolStatus = "streaming" | "running" | "ok" | "error" | "aborted";
 
 export type Block =
 	| { kind: "user"; id: string; text: string; images: number }
 	| { kind: "assistant"; id: string; text: string; done: boolean }
-	| { kind: "reasoning"; id: string; text: string; done: boolean }
 	| {
-			kind: "tool";
+			kind: "reasoning";
 			id: string;
-			callId: string;
-			name: string;
-			args: Record<string, unknown>;
-			status: ToolStatus;
-			/** Streamed output (tool_update chunks, stdout and stderr interleaved). */
-			output: string;
-			/** Final result text. */
-			result?: string;
-			exitCode?: number;
-			durationMs?: number;
-			/** Called from another tool (ctx.executeTool). */
-			nested?: boolean;
-			/** An extension tool renderer's output; replaces the built-in view. */
-			rendered?: StyledLine[];
+			text: string;
+			done: boolean;
+			/** When the reasoning began and ended (P38b: the collapsed row says how long it took). */
+			startedAt?: number;
+			endedAt?: number;
+			/** A later paragraph of a reasoning run that was split while shown: no row of its own when collapsed. */
+			continued?: boolean;
 	  }
+	| ToolBlock
+	/**
+	 * Consecutive read, grep, find and ls calls (P38b, Claude Code and Codex): one summary
+	 * line. Open while more could join; closed when anything else comes after it.
+	 */
+	| { kind: "group"; id: string; tools: ToolBlock[]; closed: boolean }
 	| { kind: "notice"; id: string; tone: Tone; text: string }
 	/** Pre-styled lines: extension message/entry renderers, help text, the startup header. */
 	| { kind: "lines"; id: string; lines: StyledLine[]; done: boolean };
+
+export interface ToolBlock {
+	kind: "tool";
+	id: string;
+	callId: string;
+	name: string;
+	args: Record<string, unknown>;
+	status: ToolStatus;
+	/** Streamed output (tool_update chunks, stdout and stderr interleaved). */
+	output: string;
+	/** Final result text. */
+	result?: string;
+	exitCode?: number;
+	durationMs?: number;
+	/** Called from another tool (ctx.executeTool). */
+	nested?: boolean;
+	/** An extension tool renderer's output; replaces the built-in view. */
+	rendered?: StyledLine[];
+	/** The edit tool's numbered diff (P38b, pi's details.diff). */
+	diff?: string;
+	/** While streaming: the arguments so far, and which call of the response this is. */
+	argsText?: string;
+	streamIndex?: number;
+}
+
+/** Tools whose consecutive calls show as one line (Claude Code: read and search). */
+export const GROUPED_TOOLS: ReadonlySet<string> = new Set(["read", "grep", "find", "ls"]);
 
 export type ApprovalChoice = "once" | "always" | "deny" | "deny-tell";
 
@@ -151,6 +178,10 @@ export interface UiState {
 	menu: { selected: number; start: number; suppressedToken?: string };
 	verbose: boolean;
 	showReasoning: boolean;
+	/** A failed response's error, written once the run ends unless a retry follows (P38b, Claude Code). */
+	pendingError?: string;
+	/** Tokens the model has written this task, estimated as they stream (P38b: the activity line counts them). */
+	streamedTokens: number;
 	exitArmed: boolean;
 	rejectArmed: boolean;
 	status: StatusInfo;
@@ -170,7 +201,7 @@ export interface UiState {
 	flash?: string;
 }
 
-export function initialState(status: StatusInfo): UiState {
+export function initialState(status: StatusInfo, options: { showReasoning?: boolean } = {}): UiState {
 	return {
 		committed: [],
 		epoch: 0,
@@ -182,7 +213,9 @@ export function initialState(status: StatusInfo): UiState {
 		editor: EMPTY,
 		menu: { selected: 0, start: 0 },
 		verbose: false,
-		showReasoning: true,
+		// Collapsed to "Thought for Ns" unless the setting says otherwise (P38b, Claude Code).
+		showReasoning: options.showReasoning ?? false,
+		streamedTokens: 0,
 		exitArmed: false,
 		rejectArmed: false,
 		status,
@@ -259,7 +292,9 @@ function isDone(block: Block): boolean {
 		case "lines":
 			return block.done;
 		case "tool":
-			return block.status !== "running";
+			return block.status !== "running" && block.status !== "streaming";
+		case "group":
+			return block.closed && block.tools.every(isDone);
 		default:
 			return true;
 	}
@@ -275,14 +310,24 @@ function commitReady(state: UiState): UiState {
 
 function pushLive(state: UiState, block: DistributiveOmit<Block, "id">): UiState {
 	const [id, next] = nextId(state);
-	return commitReady({ ...next, live: [...next.live, { id, ...block } as Block] });
+	// Anything but reasoning after a group of reads ends the group.
+	const live = block.kind === "reasoning" ? next.live : closeGroups(next.live);
+	return commitReady({ ...next, live: [...live, { id, ...block } as Block] });
+}
+
+function closeGroups(live: readonly Block[]): Block[] {
+	return live.map((block) => (block.kind === "group" && !block.closed ? { ...block, closed: true } : block));
 }
 
 /** Close streaming text blocks (an assistant message ended, or a tool started after them). */
-function finishStreams(state: UiState): UiState {
+function finishStreams(state: UiState, at?: number): UiState {
 	let changed = false;
 	const live = state.live.map((block) => {
-		if ((block.kind === "assistant" || block.kind === "reasoning") && !block.done) {
+		if (block.kind === "reasoning" && !block.done) {
+			changed = true;
+			return { ...block, done: true, ...(at !== undefined ? { endedAt: at } : {}) };
+		}
+		if (block.kind === "assistant" && !block.done) {
 			changed = true;
 			return { ...block, done: true };
 		}
@@ -291,27 +336,67 @@ function finishStreams(state: UiState): UiState {
 	return changed ? commitReady({ ...state, live }) : state;
 }
 
-/** Append a streamed delta to the newest open block of `kind`; split off finished paragraphs. */
-function appendStream(state: UiState, kind: "assistant" | "reasoning", delta: string): UiState {
+/**
+ * Append a streamed delta to the newest open block of `kind`; split off finished paragraphs.
+ * Collapsed reasoning is one row, so it stays one block until it ends (and can say how long).
+ */
+function appendStream(state: UiState, kind: "assistant" | "reasoning", delta: string, at?: number): UiState {
 	const last = state.live.at(-1);
 	if (last && last.kind === kind && !last.done) {
 		const text = last.text + delta;
-		const split = splitCompletedMarkdown(text);
+		const split = kind === "reasoning" && !state.showReasoning ? undefined : splitCompletedMarkdown(text);
 		if (!split) return { ...state, live: [...state.live.slice(0, -1), { ...last, text }] };
 		const finished = { ...last, text: split.head, done: true };
 		const [id, next] = nextId({ ...state, live: [...state.live.slice(0, -1), finished] });
-		return commitReady({ ...next, live: [...next.live, { kind, id, text: split.tail, done: false }] });
+		const tail: Block =
+			kind === "reasoning"
+				? { kind, id, text: split.tail, done: false, continued: true }
+				: { kind, id, text: split.tail, done: false };
+		return commitReady({ ...next, live: [...next.live, tail] });
 	}
 	// A new stream closes any other open stream (reasoning before the answer, say).
-	return appendStream(pushLive(finishStreams(state), { kind, text: "", done: false }), kind, delta);
+	const opened =
+		kind === "reasoning"
+			? pushLive(finishStreams(state, at), {
+					kind,
+					text: "",
+					done: false,
+					...(at !== undefined ? { startedAt: at } : {}),
+				})
+			: pushLive(finishStreams(state, at), { kind, text: "", done: false });
+	return appendStream(opened, kind, delta, at);
 }
 
-function patchTool(state: UiState, callId: string, patch: (tool: Extract<Block, { kind: "tool" }>) => Block): UiState {
+/** What the model writes, estimated in tokens for the activity line (Claude Code's ↓ counter). */
+function countStreamed(state: UiState, event: AgentEvent): UiState {
+	let text = "";
+	if (event.type === "text_delta" || event.type === "reasoning_delta") text = event.delta;
+	else if (event.type === "tool_call_delta") {
+		const open = state.live.find(
+			(block) => block.kind === "tool" && block.status === "streaming" && block.streamIndex === event.index,
+		);
+		const before = open?.kind === "tool" ? (open.argsText?.length ?? 0) : 0;
+		text = event.argumentsText.slice(before);
+	}
+	if (text === "") return state;
+	return { ...state, streamedTokens: state.streamedTokens + estimateStringTokens(text) };
+}
+
+/** Calls shown while their arguments streamed (P38b): the real ones replace them. */
+function dropStreamingCalls(live: readonly Block[]): Block[] {
+	return live.filter((block) => !(block.kind === "tool" && block.status === "streaming"));
+}
+
+function patchTool(state: UiState, callId: string, patch: (tool: ToolBlock) => ToolBlock): UiState {
 	let found = false;
 	const live = state.live.map((block) => {
 		if (block.kind === "tool" && block.callId === callId) {
 			found = true;
 			return patch(block);
+		}
+		if (block.kind === "group" && block.tools.some((tool) => tool.callId === callId)) {
+			found = true;
+			return { ...block, tools: block.tools.map((tool) => (tool.callId === callId ? patch(tool) : tool)) };
 		}
 		return block;
 	});
@@ -322,6 +407,35 @@ function promoteApproval(state: UiState): UiState {
 	if (state.approval || state.prompt?.kind === "tell" || state.approvalQueue.length === 0) return state;
 	const [next, ...rest] = state.approvalQueue;
 	return { ...state, approval: next, approvalQueue: rest };
+}
+
+/**
+ * A provider error as people read it: "HTTP 500: Internal error" rather than the JSON body
+ * the endpoint sent (the error's own message inside it; first line only).
+ */
+export function readableError(text: string): string {
+	const line = text.trim();
+	const json = /^(.*?)(\{[\s\S]*\})\s*$/.exec(line);
+	if (json) {
+		try {
+			const body = JSON.parse(json[2] as string) as { error?: { message?: unknown } | string; message?: unknown };
+			const inner = typeof body.error === "string" ? body.error : (body.error?.message ?? body.message);
+			if (typeof inner === "string" && inner.trim() !== "") {
+				return `${(json[1] as string).replace(/[:\s]+$/, "")}${json[1] ? ": " : ""}${inner.trim()}`.split(
+					"\n",
+				)[0] as string;
+			}
+		} catch {
+			// Not JSON after all.
+		}
+	}
+	return line.split("\n")[0] ?? "";
+}
+
+/** The numbered diff an edit result carries in its details (pi). */
+export function resultDiff(details: unknown): string | undefined {
+	const diff = (details as { diff?: unknown } | null | undefined)?.diff;
+	return typeof diff === "string" && diff !== "" ? diff : undefined;
 }
 
 function exitCode(details: unknown, structured: unknown): number | undefined {
@@ -337,13 +451,27 @@ function exitCode(details: unknown, structured: unknown): number | undefined {
 export function reduce(state: UiState, action: UiAction): UiState {
 	switch (action.type) {
 		case "agent-event":
-			return reduceEvent(state, action.event);
+			return reduceEvent(state, action.event, action.at);
 		case "task-start":
-			return { ...state, task: action.task, activity: action.activity, taskStartedAt: action.at };
+			return { ...state, task: action.task, activity: action.activity, taskStartedAt: action.at, streamedTokens: 0 };
 		case "task-end": {
-			// Whatever is still open is final now: streams end, unfinished tools were aborted.
-			const live = state.live.map((block): Block => {
+			if (state.pendingError !== undefined) {
+				const failed = pushLive(
+					{ ...state, pendingError: undefined },
+					{ kind: "notice", tone: "error", text: `Error: ${state.pendingError}` },
+				);
+				return reduce(failed, action);
+			}
+			// Whatever is still open is final now: streams end, unfinished tools were aborted,
+			// a call whose arguments never finished is not a call.
+			const live = closeGroups(dropStreamingCalls(state.live)).map((block): Block => {
 				if (block.kind === "tool" && block.status === "running") return { ...block, status: "aborted" };
+				if (block.kind === "group") {
+					return {
+						...block,
+						tools: block.tools.map((tool) => (tool.status === "running" ? { ...tool, status: "aborted" } : tool)),
+					};
+				}
 				if ((block.kind === "assistant" || block.kind === "reasoning" || block.kind === "lines") && !block.done) {
 					return { ...block, done: true };
 				}
@@ -514,7 +642,16 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			for (const block of action.blocks) {
 				const [id, withId] = nextId(next);
 				next = withId;
-				blocks.push({ ...block, id } as Block);
+				if (block.kind === "group") {
+					const tools = block.tools.map((tool) => {
+						const [toolId, after] = nextId(next);
+						next = after;
+						return { ...tool, id: toolId };
+					});
+					blocks.push({ ...block, id, tools });
+				} else {
+					blocks.push({ ...block, id } as Block);
+				}
 			}
 			return commitReady({ ...next, live: [...next.live, ...blocks] });
 		}
@@ -523,18 +660,22 @@ export function reduce(state: UiState, action: UiAction): UiState {
 	}
 }
 
-function reduceEvent(state: UiState, event: AgentEvent): UiState {
+function reduceEvent(previous: UiState, event: AgentEvent, at?: number): UiState {
+	const state = countStreamed(previous, event);
 	switch (event.type) {
 		case "text_delta":
 			return event.delta === ""
 				? state
-				: { ...appendStream(state, "assistant", event.delta), activity: state.task ? "Responding" : state.activity };
+				: {
+						...appendStream(state, "assistant", event.delta, at),
+						activity: state.task ? "Responding" : state.activity,
+					};
 		case "reasoning_delta":
 			return event.delta === ""
 				? state
-				: { ...appendStream(state, "reasoning", event.delta), activity: state.task ? "Thinking" : state.activity };
+				: { ...appendStream(state, "reasoning", event.delta, at), activity: state.task ? "Thinking" : state.activity };
 		case "assistant_message": {
-			let next = state;
+			let next = { ...state, live: dropStreamingCalls(state.live) };
 			const message = event.message;
 			// A message that arrived without streaming (or with an empty stream) still shows its text.
 			const streamed = state.live.some((block) => block.kind === "assistant" && !block.done);
@@ -545,13 +686,10 @@ function reduceEvent(state: UiState, event: AgentEvent): UiState {
 					.join("");
 				if (text !== "") next = pushLive(next, { kind: "assistant", text, done: false });
 			}
-			next = finishStreams(next);
+			next = finishStreams(next, at);
+			// Written when the run ends, unless a retry follows (one line, not one per attempt).
 			if (message.stopReason === "error") {
-				next = pushLive(next, {
-					kind: "notice",
-					tone: "error",
-					text: `Error: ${message.errorMessage ?? "unknown provider error"}`,
-				});
+				next = { ...next, pendingError: readableError(message.errorMessage ?? "unknown provider error") };
 			}
 			return { ...next, activity: next.task ? "Thinking" : next.activity };
 		}
@@ -567,22 +705,55 @@ function reduceEvent(state: UiState, event: AgentEvent): UiState {
 				const images = parts.filter((part) => part.type === "image").length;
 				const index = state.queued.findIndex((queued) => queued.text === text);
 				if (index !== -1) next = { ...next, queued: next.queued.filter((_, i) => i !== index) };
-				return pushLive(finishStreams(next), { kind: "user", text, images });
+				return pushLive(finishStreams(next, at), { kind: "user", text, images });
 			}
 			return state;
 		}
-		case "tool_start":
-			return {
-				...pushLive(finishStreams(state), {
-					kind: "tool",
-					callId: event.toolCall.id,
-					name: event.toolCall.name,
-					args: event.toolCall.arguments,
-					status: "running",
-					output: "",
-				}),
-				activity: `Running ${event.toolCall.name}`,
+		case "tool_call_delta": {
+			const open = state.live.find(
+				(block) => block.kind === "tool" && block.status === "streaming" && block.streamIndex === event.index,
+			);
+			if (open) {
+				return {
+					...state,
+					live: state.live.map((block) =>
+						block === open ? { ...block, name: event.name, argsText: event.argumentsText } : block,
+					),
+				};
+			}
+			return pushLive(finishStreams(state, at), {
+				kind: "tool",
+				callId: `streaming-${event.index}`,
+				name: event.name,
+				args: {},
+				status: "streaming",
+				output: "",
+				argsText: event.argumentsText,
+				streamIndex: event.index,
+			});
+		}
+		case "tool_start": {
+			const finished = finishStreams(state, at);
+			const tool = {
+				kind: "tool" as const,
+				callId: event.toolCall.id,
+				name: event.toolCall.name,
+				args: event.toolCall.arguments,
+				status: "running" as const,
+				output: "",
 			};
+			const activity = `Running ${event.toolCall.name}`;
+			if (!GROUPED_TOOLS.has(tool.name)) return { ...pushLive(finished, tool), activity };
+			// A read or search joins the open group, else starts one.
+			const group = finished.live.find((block) => block.kind === "group" && !block.closed);
+			if (group?.kind === "group") {
+				const [id, next] = nextId(finished);
+				const joined = { ...group, tools: [...group.tools, { ...tool, id }] };
+				return { ...next, live: next.live.map((block) => (block === group ? joined : block)), activity };
+			}
+			const [id, next] = nextId(finished);
+			return { ...pushLive(next, { kind: "group", tools: [{ ...tool, id }], closed: false }), activity };
+		}
 		case "tool_update":
 			return patchTool(state, event.toolCall.id, (tool) => ({ ...tool, output: tool.output + event.partialOutput }));
 		case "tool_result": {
@@ -594,11 +765,26 @@ function reduceEvent(state: UiState, event: AgentEvent): UiState {
 			return {
 				...patchTool(state, event.toolCall.id, (tool) => {
 					const code = exitCode(event.result.details, structured);
+					const diff = resultDiff(event.result.details);
+					// Interrupted while printing: keep what it printed (P38b, Claude Code), marked interrupted.
+					if (
+						event.result.isError &&
+						tool.output.trim() !== "" &&
+						/^(operation |command )?(was )?aborted\.?$/i.test(text.trim())
+					) {
+						return {
+							...tool,
+							status: "aborted",
+							result: tool.output,
+							...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+						};
+					}
 					return {
 						...tool,
 						status: event.result.isError ? "error" : "ok",
 						result: text,
 						...(code !== undefined ? { exitCode: code } : {}),
+						...(diff !== undefined ? { diff } : {}),
 						...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
 					};
 				}),
@@ -619,22 +805,23 @@ function reduceEvent(state: UiState, event: AgentEvent): UiState {
 					? `${capitalize(event.reason)} compaction aborted.`
 					: `${capitalize(event.reason)} compaction failed, continuing: ${(event.errorMessage ?? "").split("\n")[0]}`,
 			});
+		// Retries show on the activity line, updated in place (Claude Code, Codex).
 		case "auto_retry_start":
 			return {
-				...pushLive(state, {
-					kind: "notice",
-					tone: "warn",
-					text: `Retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${event.errorMessage.split("\n")[0]}`,
-				}),
-				activity: "Waiting to retry",
+				...state,
+				pendingError: undefined,
+				activity: `Retrying in ${Math.round(event.delayMs / 1000)}s (${event.attempt}/${event.maxAttempts}): ${readableError(event.errorMessage)}`,
 			};
 		case "auto_retry_end":
 			return !event.success && event.finalError !== undefined
-				? pushLive(state, {
-						kind: "notice",
-						tone: "error",
-						text: `Gave up after ${event.attempt} attempts: ${event.finalError.split("\n")[0]}`,
-					})
+				? pushLive(
+						{ ...state, pendingError: undefined },
+						{
+							kind: "notice",
+							tone: "error",
+							text: `Gave up after ${event.attempt} attempts: ${readableError(event.finalError)}`,
+						},
+					)
 				: state;
 		default:
 			return state;

@@ -270,6 +270,8 @@ export interface AgentOptions {
 export type AgentEvent =
 	| { type: "text_delta"; delta: string }
 	| { type: "reasoning_delta"; delta: string }
+	/** A tool call's arguments so far, while the model writes them (P38b, pi's toolcall_delta). */
+	| { type: "tool_call_delta"; index: number; name: string; argumentsText: string }
 	| { type: "assistant_message"; message: AssistantMessage }
 	| { type: "user_message"; message: UserMessage | CustomMessage }
 	| { type: "tool_start"; toolCall: ToolCall }
@@ -1968,6 +1970,15 @@ export class Agent {
 							yield { type: "reasoning_delta", delta: event.delta };
 							break;
 						}
+						case "tool_call_delta":
+							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
+							yield {
+								type: "tool_call_delta",
+								index: event.index,
+								name: event.name,
+								argumentsText: event.argumentsText,
+							};
+							break;
 						case "tool_call":
 							partial.content.push(event.toolCall);
 							await this.extensions?.notifyMessageUpdate(partial, event, ctx);

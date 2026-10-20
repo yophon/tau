@@ -12,6 +12,8 @@ export interface Span {
 	inverse?: boolean;
 	/** Ink color name. */
 	color?: string;
+	/** A URL the text links to (OSC 8, P38b). */
+	link?: string;
 }
 
 export type StyledLine = Span[];

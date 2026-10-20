@@ -4,6 +4,9 @@
  * lives in the controller's store; this file only lays it out and forwards keys.
  */
 
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { Box, Static, Text, useInput, useStdout } from "ink";
 import React, { useSyncExternalStore } from "react";
@@ -184,8 +187,6 @@ async function inkFrameState(stdout: object): Promise<InkFrameState | undefined>
 export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promise<void> {
 	const { render } = await import("ink");
 	const { TuiController } = await import("./controller.ts");
-	const { homedir } = await import("node:os");
-	const { join } = await import("node:path");
 	const envHistory = process.env.TAU_HISTORY;
 	const historyFile =
 		deps.historyFile ?? (envHistory !== undefined ? envHistory || undefined : join(homedir(), ".tau", "history.jsonl"));
@@ -219,8 +220,8 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 		onProblem: (tone, text) => controller.notice(tone, text),
 	});
 	// P34e: the title spins while a run works, the tab shows progress (Windows Terminal).
-	const { basename } = await import("node:path");
-	const { TerminalStatus, supportsProgress } = await import("./terminal-status.ts");
+	const { TerminalStatus, supportsHyperlinks, supportsProgress } = await import("./terminal-status.ts");
+	(await import("./render/markdown.ts")).useHyperlinks(supportsHyperlinks());
 	const status = new TerminalStatus(
 		(data) => process.stdout.write(data),
 		{ title: options.terminalTitle !== false, progress: supportsProgress() },
@@ -272,6 +273,33 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 		process.off("exit", restoreTerminal);
 		restoreTerminal();
 		restoreConsole();
+	}
+	// How to come back to this conversation (P38b, Codex prints "codex resume <id>").
+	const metadata = await controller.sessionStore?.getMetadata().catch(() => undefined);
+	if (metadata?.filePath && controller.agent.messages.some((message) => message.role === "user")) {
+		process.stdout.write(`\x1b[2mTo continue this session: tau --session "${metadata.filePath}"\x1b[22m\n`);
+	}
+}
+
+/** Full-screen starts that show the scrolling tip. */
+const FULLSCREEN_TIP_STARTS = 3;
+
+/** Count one more showing of a tip in ~/.tau/tui-state.json; how many there have been (best effort). */
+function countTip(name: string): number {
+	try {
+		const file = join(homedir(), ".tau", "tui-state.json");
+		let state: { tips?: Record<string, number> } = {};
+		try {
+			state = JSON.parse(readFileSync(file, "utf8")) as typeof state;
+		} catch {
+			// No state yet.
+		}
+		const count = (state.tips?.[name] ?? 0) + 1;
+		mkdirSync(join(homedir(), ".tau"), { recursive: true });
+		writeFileSync(file, `${JSON.stringify({ ...state, tips: { ...state.tips, [name]: count } }, null, 2)}\n`);
+		return count;
+	} catch {
+		return 1;
 	}
 }
 
@@ -370,10 +398,13 @@ async function runFullscreen(
 	};
 	try {
 		await controller.start();
-		controller.notice(
-			"dim",
-			"Full screen: wheel or PgUp/PgDn to scroll · Ctrl+F to search · drag to select and copy · click a tool to open it · tau --inline for the classic view",
-		);
+		// The first few full-screen starts explain it; after that it is known (P38b).
+		if (countTip("fullscreen") <= FULLSCREEN_TIP_STARTS) {
+			controller.notice(
+				"dim",
+				"Full screen: wheel or PgUp/PgDn to scroll · Ctrl+F to search · drag to select and copy · click a tool to open it · tau --inline for the classic view",
+			);
+		}
 		await controller.done;
 		controller.store.flush();
 	} finally {

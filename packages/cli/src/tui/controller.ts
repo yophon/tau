@@ -4,7 +4,7 @@
  * plain TypeScript with no Ink, so tests drive it directly and the Ink tree
  * stays a thin view (the logic the P8 TUI kept in one closure).
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -35,7 +35,7 @@ import { copyToClipboard } from "./clipboard.ts";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
 import { commandList, runCommand } from "./commands.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
-import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, shortPath, type Tone } from "./format.ts";
+import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, type Tone } from "./format.ts";
 import {
 	acceptCompletion,
 	type Completion,
@@ -68,7 +68,7 @@ import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
-import { blockAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
+import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
 import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "./types.ts";
 
 /** Image types models take as they are (P36b); others are converted to PNG before saving. */
@@ -206,18 +206,21 @@ export class TuiController {
 			this.resolveDone = resolve;
 		});
 		this.store = new TuiStore(
-			initialState({
-				model: options.model,
-				mode: options.permissionMode,
-				...(options.thinkingLevel !== undefined ? { thinking: options.thinkingLevel } : {}),
-				contextTokens: 0,
-				...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}),
-				inputTokens: 0,
-				outputTokens: 0,
-				costUsd: 0,
-				cwd: options.cwd,
-				items: [],
-			}),
+			initialState(
+				{
+					model: options.model,
+					mode: options.permissionMode,
+					...(options.thinkingLevel !== undefined ? { thinking: options.thinkingLevel } : {}),
+					contextTokens: 0,
+					...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}),
+					inputTokens: 0,
+					outputTokens: 0,
+					costUsd: 0,
+					cwd: options.cwd,
+					items: [],
+				},
+				{ showReasoning: options.showReasoning ?? false },
+			),
 		);
 		this.ui = {
 			confirm: async (title, message) =>
@@ -292,12 +295,14 @@ export class TuiController {
 		this.agent.setUi(this.ui);
 		this.options.setApprovalPrompt?.((request) => this.requestApproval(request));
 		this.attachHostActions(this.extensions);
+		// The status line shows model, directory and mode; the header does not repeat them (P38b).
+		const version = this.options.statusLineContext?.().version;
 		this.dispatch({
 			type: "lines",
 			lines: [
 				[
 					span("tau", { bold: true, color: "cyan" }),
-					span(` · ${this.model} · ${shortPath(this.options.cwd)} · ${this.options.permissionMode}`, { dim: true }),
+					span(`${version ? ` · v${version}` : ""} · /help for commands · /hotkeys for keys`, { dim: true }),
 				],
 			],
 		});
@@ -653,6 +658,8 @@ export class TuiController {
 		if (event.kind === "press") {
 			if (event.button !== 0) {
 				this.press = undefined;
+				// Full screen holds the mouse, so Windows Terminal's right-click paste never fires: paste here (pi).
+				if (event.button === 2 && (this.deps.platform ?? process.platform) === "win32") void this.pasteText();
 				return;
 			}
 			const target = this.targetAt(event.y);
@@ -780,15 +787,24 @@ export class TuiController {
 		}
 		const range = selectionRange(selection, transcript.rows);
 		if (range && (this.dragMoved || selection.granularity !== "character")) {
-			void this.copySelection(rangeText(transcript.rows, range));
+			void this.copySelection(rangeText(transcript.rows, range, transcript.meta));
 			return;
 		}
-		// A click: no selection; on a tool block's title row it opens or shuts that block.
+		// A click: no selection; on a link it opens the link (pi); on a tool block's title row (or a
+		// reasoning block) it opens or shuts that block.
 		this.dispatch({ type: "selection" });
 		if (this.lastClick?.count !== 1) return;
+		const url = linkAt(transcript.rows[selection.anchor.row] ?? "", selection.anchor.col);
+		if (url !== undefined) {
+			(this.deps.openUrl ?? openUrl)(url);
+			return;
+		}
 		const hit = blockAt(transcript, selection.anchor.row);
-		if (hit?.block.kind === "tool" && selection.anchor.row === hit.start + 1) {
+		if ((hit?.block.kind === "tool" || hit?.block.kind === "group") && selection.anchor.row === hit.start + 1) {
 			this.dispatch({ type: "toggle-block", id: hit.block.id, verbose: this.state.verbose });
+			this.lastClick.toggled = hit.block.id;
+		} else if (hit?.block.kind === "reasoning" && !hit.block.continued) {
+			this.dispatch({ type: "toggle-block", id: hit.block.id, verbose: this.state.showReasoning });
 			this.lastClick.toggled = hit.block.id;
 		}
 	}
@@ -1476,15 +1492,15 @@ export class TuiController {
 				return;
 			case "toggle-verbose":
 				this.dispatch({ type: "toggle-verbose" });
+				// Toggles say so on the hint line, not in the conversation (P38b, pi showStatus).
 				// Inline, what is in the scrollback stays as written; full screen redraws every block.
-				this.notice(
-					"dim",
-					`Tool details ${this.state.verbose ? "expanded" : "collapsed"}${this.fullscreen ? "" : " for new output"}.`,
+				this.flash(
+					`Tool details ${this.state.verbose ? "expanded" : "collapsed"}${this.fullscreen ? "" : " for new output"}`,
 				);
 				return;
 			case "toggle-reasoning":
 				this.dispatch({ type: "toggle-reasoning" });
-				this.notice("dim", `Reasoning ${this.state.showReasoning ? "shown" : "hidden"}.`);
+				this.flash(`Reasoning ${this.state.showReasoning ? "shown" : "collapsed"}`);
 				return;
 			case "external-editor":
 				this.openExternalEditor();
@@ -1547,6 +1563,16 @@ export class TuiController {
 		}
 	}
 
+	/** Right-click paste (P38b, pi): the clipboard's text, as a paste. */
+	private async pasteText(): Promise<void> {
+		try {
+			const content = await (this.deps.readClipboard ?? readClipboard)();
+			if (content?.kind === "text") this.insertPaste(content.text);
+		} catch (error) {
+			this.notice("error", `Failed to paste from clipboard: ${errorText(error)}`);
+		}
+	}
+
 	/** /copy */
 	copyText(text: string): Promise<string> {
 		return (this.deps.copy ?? copyToClipboard)(text);
@@ -1572,16 +1598,17 @@ export class TuiController {
 		this.options.setPermissionMode?.(next);
 		this.dispatch({ type: "status", status: { mode: next } });
 		this.triggerStatusLine();
+		// The status line shows the mode; what it means flashes on the hint line (Claude Code).
 		if (next === "bypass") {
-			this.notice("warn", "Bypass: every approval is skipped (Shift+Tab or /mode to switch back).");
+			this.flash("Bypass: every approval is skipped (Shift+Tab or /mode to switch back)");
 		} else if (next === "autonomous") {
-			this.notice("warn", "Autonomous: tool calls run without asking (Shift+Tab to switch).");
+			this.flash("Autonomous: tool calls run without asking (Shift+Tab to switch)");
 		} else if (next === "accept-edits") {
-			this.notice("info", "Accept edits: file edits in this directory run without asking; commands still ask.");
+			this.flash("Accept edits: file edits in this directory run without asking; commands still ask");
 		} else if (next === "read-only") {
-			this.notice("info", "Read-only: tools that change files or run commands are denied.");
+			this.flash("Read-only: tools that change files or run commands are denied");
 		} else {
-			this.notice("info", "Supervised: medium- and high-risk tool calls ask first.");
+			this.flash("Supervised: medium- and high-risk tool calls ask first");
 		}
 		// Started read-only, the write tools were never loaded (D20); a reload builds them.
 		if (this.options.permissionMode === "read-only" && next !== "read-only" && !this.writeToolsLoaded()) {
@@ -1854,14 +1881,15 @@ export class TuiController {
 			this.attention("done", firstLine(text).slice(0, 80), elapsed);
 		}
 		const after = this.agent.getSessionUsage();
-		const parts = [fmtElapsed(this.now() - startedAt)];
+		// Claude Code's past-tense line after a turn, with what it used.
+		const parts = [`Worked for ${fmtElapsed(this.now() - startedAt)}`];
 		const inTokens =
 			after.input + after.cacheRead + after.cacheWrite - (before.input + before.cacheRead + before.cacheWrite);
 		const outTokens = after.output - before.output;
 		if (inTokens > 0 || outTokens > 0) parts.push(`↑${fmtInt(inTokens)} ↓${fmtInt(outTokens)}`);
 		const cost = fmtCost(after.cost.total - before.cost.total);
 		if (cost) parts.push(cost);
-		this.notice("dim", `· ${parts.join(" · ")}`);
+		this.notice("dim", parts.join(" · "));
 		void this.titleSession();
 	}
 
@@ -2238,7 +2266,7 @@ export class TuiController {
 		this.showSession(
 			reason === "new"
 				? "New session."
-				: `${reason === "fork" ? "Forked to" : "Resumed"} ${metadata.name ? `"${metadata.name}" ` : ""}${metadata.filePath ?? metadata.id} (${messageCount} messages).`,
+				: `${reason === "fork" ? "Forked to" : "Resumed"} ${metadata.name ? `"${metadata.name}"` : `session ${metadata.id.slice(0, 8)}`} (${messageCount} messages).`,
 		);
 		await this.refreshSurfaces();
 		if (reason === "resume") await this.restoreSessionModel(store);
@@ -2758,6 +2786,23 @@ function isAbortError(error: unknown): boolean {
 /** The branch at `cwd`: in linked worktrees and repository subdirectories too (P37d, pi). */
 export function readGitBranch(cwd: string): string | undefined {
 	return readBranchFromGit(cwd);
+}
+
+/** Open a URL in the browser (the URL handler on Windows, open on macOS, xdg-open elsewhere), detached. */
+export function openUrl(url: string): void {
+	if (!/^https?:\/\//i.test(url) && !/^file:/i.test(url)) return;
+	// rundll32 takes the URL as one argument: no cmd.exe quoting of & and spaces.
+	const [command, args] =
+		process.platform === "win32"
+			? ["rundll32", ["url.dll,FileProtocolHandler", url]]
+			: process.platform === "darwin"
+				? ["open", [url]]
+				: ["xdg-open", [url]];
+	try {
+		spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
+	} catch {
+		// No browser to open: nothing to do.
+	}
 }
 
 /** Write the text to a temp file, run the editor on it in the foreground, read it back. */

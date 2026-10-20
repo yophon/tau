@@ -127,7 +127,7 @@ describe("P27 built-in commands", () => {
 		await h.key(ESC);
 		assert.deepEqual(h.controller.agent.getActiveTools(), ["read"]);
 		await h.submit("hi");
-		await h.waitFor((f) => f.includes("done") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("done") && /Worked for \d/.test(f), "the answer");
 		const declared = JSON.stringify(h.requests[0]);
 		assert.ok(!declared.includes('"name":"bash"'));
 		await h.submit("/tools expand");
@@ -139,7 +139,7 @@ describe("P27 built-in commands", () => {
 		await h.submit("/usage");
 		await h.waitFor((f) => f.includes("No model calls on this branch yet."), "the empty case");
 		await h.submit("count tokens please");
-		await h.waitFor((f) => f.includes("first answer") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("first answer") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/cost");
 		const frame = await h.waitFor((f) => f.includes("session total, every branch"), "the table");
 		assert.match(frame, /1\s+\d+.*count tokens please/);
@@ -148,7 +148,7 @@ describe("P27 built-in commands", () => {
 	it("/context shows the window estimate by part", async () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("ok"))], tools: [textTool("bash", "ok")] });
 		await h.submit("hello");
-		await h.waitFor((f) => f.includes("ok") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("ok") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/context");
 		const frame = await h.waitFor((f) => f.includes("Estimated by part"), "the breakdown");
 		assert.match(frame, /tool definitions \(1\)/);
@@ -158,7 +158,7 @@ describe("P27 built-in commands", () => {
 	it("/export writes HTML by default, escaped; works without a session file", async () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("<b>bold</b> answer"))] });
 		await h.submit("question & more");
-		await h.waitFor((f) => f.includes("answer") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("answer") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/export");
 		await h.waitFor((f) => f.includes("Exported the session to"), "the export");
 		const file = readdirSync(h.controller.options.cwd).find((name) => name.endsWith(".html"));
@@ -193,7 +193,7 @@ describe("P27 built-in commands", () => {
 	it("/init asks the model to write AGENTS.md", async () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("wrote it"))] });
 		await h.submit("/init");
-		await h.waitFor((f) => f.includes("wrote it") && /· \d/.test(f), "the turn");
+		await h.waitFor((f) => f.includes("wrote it") && /Worked for \d/.test(f), "the turn");
 		assert.ok(JSON.stringify(h.requests[0]).includes("create an AGENTS.md file"));
 	});
 
@@ -272,7 +272,7 @@ describe("P27 extension commands", () => {
 		await h.submit("/todos");
 		await h.waitFor((f) => f.includes("The todo list is empty."), "the empty list");
 		await h.submit("plan it");
-		await h.waitFor((f) => f.includes("planned") && /· \d/.test(f), "the turn");
+		await h.waitFor((f) => f.includes("planned") && /Worked for \d/.test(f), "the turn");
 		await h.submit("/todos");
 		await h.waitFor((f) => f.includes("Todos (1/2 done)") && f.includes("fix bug"), "the list");
 	});
@@ -357,7 +357,7 @@ describe("P28 /model with a model table", () => {
 			},
 		});
 		await h.submit("first question");
-		await h.waitFor((f) => f.includes("FROM_FIRST") && /· \d/.test(f), "the first answer");
+		await h.waitFor((f) => f.includes("FROM_FIRST") && /Worked for \d/.test(f), "the first answer");
 		await h.submit("/model");
 		await h.waitFor(
 			(f) => f.includes("Model (current: first/test-model)") && f.includes("200k ctx · anthropic"),
@@ -373,7 +373,7 @@ describe("P28 /model with a model table", () => {
 		assert.match(h.frame(), /other\/model-b · autonomous/);
 		assert.equal(h.controller.agent.getContextUsage().contextWindow, 200_000);
 		await h.submit("second question");
-		await h.waitFor((f) => f.includes("FROM_OTHER") && /· \d/.test(f), "the other provider's answer");
+		await h.waitFor((f) => f.includes("FROM_OTHER") && /Worked for \d/.test(f), "the other provider's answer");
 		assert.equal(h.requests.length, 1);
 		assert.equal(otherRequests.length, 1);
 		assert.equal((otherRequests[0] as { model: string }).model, "model-b");

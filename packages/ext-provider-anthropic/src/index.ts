@@ -747,6 +747,13 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 						pendingEvents.push({ type: "reasoning_delta", delta: delta.thinking });
 					} else if (delta.type === "input_json_delta" && block.type === "toolCall") {
 						block.partialJson = (block.partialJson ?? "") + (delta.partial_json ?? "");
+						pendingEvents.push({
+							type: "tool_call_delta",
+							index: event.index ?? 0,
+							id: block.id,
+							name: block.name,
+							argumentsText: block.partialJson,
+						});
 					} else if (delta.type === "signature_delta" && block.type === "thinking") {
 						block.thinkingSignature = (block.thinkingSignature ?? "") + (delta.signature ?? "");
 					}

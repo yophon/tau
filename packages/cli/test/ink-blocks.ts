@@ -89,6 +89,13 @@ export function renderBlock(block: Block, options: RenderOptions): React.ReactEl
 			return linesElement(block.lines, block.id);
 		case "tool":
 			return toolElement(block, options);
+		case "group":
+			// P38b groups came after this oracle was frozen; it draws their calls one by one.
+			return h(
+				Box,
+				{ key: block.id, flexDirection: "column" },
+				...block.tools.map((tool) => toolElement(tool, options)),
+			);
 	}
 }
 

@@ -86,7 +86,7 @@ const INK_CLEAR = /^\x1b\[2J(?:\x1b\[3J)?(?:\x1b\[H|\x1b\[0f)/;
  * cleared first, so the terminal never shows a blank screen between frames, and the paint
  * does not depend on where the cursor was left (a resize can move it). Empty: nothing to paint.
  */
-export function paintFrame(chunk: string): string {
+export function paintFrame(chunk: string, columns?: number): string {
 	let frame = chunk.replace(INK_CLEAR, "").replace(INK_ERASE, "");
 	if (frame === "") return "";
 	// The caret (P38a, pi): the real cursor ends up there, for the input method's window.
@@ -100,8 +100,17 @@ export function paintFrame(chunk: string): string {
 		frame = before + frame.slice(at + CARET_MARK.length);
 		caret = `\x1b[${row};${column}H`;
 	}
-	const rows = frame.replaceAll("\n", "\x1b[K\n");
-	return `${SYNC_BEGIN}\x1b[H${rows}${frame.endsWith("\n") ? "" : "\x1b[K"}\x1b[J${caret}${SYNC_END}`;
+	// Each row clears what an older frame left after it. A row as wide as the screen leaves the
+	// cursor on its last cell, which erasing would wipe (P38b: the boxes lost their right border).
+	const lines = frame.split("\n");
+	const painted = lines
+		.map((row, i) => {
+			if (i === lines.length - 1 && row === "") return row;
+			const full = columns !== undefined && strWidth(stripVTControlCharacters(row)) >= columns;
+			return full ? row : `${row}\x1b[K`;
+		})
+		.join("\n");
+	return `${SYNC_BEGIN}\x1b[H${painted}\x1b[J${caret}${SYNC_END}`;
 }
 
 /** The stdout Ink draws on in full screen: every write is painted with paintFrame. */
@@ -112,7 +121,7 @@ export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream
 				return (chunk: unknown, ...rest: unknown[]) => {
 					const write = (...args: unknown[]) => (target.write as (...a: unknown[]) => boolean).apply(target, args);
 					if (typeof chunk !== "string") return write(chunk, ...rest);
-					const painted = paintFrame(chunk);
+					const painted = paintFrame(chunk, target.columns);
 					if (painted !== "") return write(painted, ...rest);
 					const callback = rest.find((arg): arg is () => void => typeof arg === "function");
 					callback?.();
@@ -125,6 +134,26 @@ export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream
 		set(target, property, value) {
 			return Reflect.set(target, property, value, target);
 		},
+	});
+}
+
+/** The view's rows with a scrollbar thumb in the last column: where `top` is in `total` rows. */
+export function withScrollbar(
+	rows: readonly string[],
+	top: number,
+	total: number,
+	height: number,
+	columns: number,
+): string[] {
+	if (total <= height || height <= 0) return [...rows];
+	const size = Math.max(1, Math.round((height * height) / total));
+	const start = Math.min(height - size, Math.round((top / Math.max(1, total - height)) * (height - size)));
+	return rows.map((row, i) => {
+		if (i >= height) return row;
+		const thumb = i >= start && i < start + size;
+		const width = strWidth(stripVTControlCharacters(row));
+		const pad = " ".repeat(Math.max(0, columns - 1 - width));
+		return width >= columns ? row : `${row}${pad}${thumb ? "\x1b[36m┃\x1b[39m" : " "}`;
 	});
 }
 
@@ -265,8 +294,10 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	}
 	// A tool block clicked open or shut (P34d) overrides Ctrl+O; the cache keys on the result.
 	const optionsFor = (block: Block): LineOptions => {
-		const verbose = state.expanded[block.id];
-		return verbose === undefined ? options : { ...options, verbose };
+		const open = state.expanded[block.id];
+		if (open === undefined) return options;
+		// A reasoning block clicked open shows its text; a tool block its details.
+		return block.kind === "reasoning" ? { ...options, showReasoning: open } : { ...options, verbose: open };
 	};
 	const committedLines = (block: Block) => cache.lines(block, optionsFor(block));
 	const liveLines = (block: Block) => blockLines(block, optionsFor(block));
@@ -323,8 +354,10 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 			if (span) add(row, { ...span, style: "selection" });
 		}
 	}
-	const painted =
+	const lit =
 		highlights.size === 0 ? shown : shown.map((row, i) => highlightColumns(row, highlights.get(first + i) ?? []));
+	// Scrolled up: a scrollbar in the last column, which blocks leave free (P38b, pi's ScrollView).
+	const painted = following ? lit : withScrollbar(lit, top, rows.length, viewHeight, columns);
 	const search = state.search
 		? { query: state.search.query, count: matches.length, current: state.search.current }
 		: undefined;
@@ -350,14 +383,8 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 		h(
 			Box,
 			{ key: "bottom", flexDirection: "column", flexShrink: 0 },
-			below > 0
-				? h(
-						Text,
-						{ key: "below", color: "cyan" },
-						`↓ ${below} more line${below === 1 ? "" : "s"} below · Ctrl+End or PgDn to go down`,
-					)
-				: null,
 			renderBottom(state, columns, controller.completion(), {
+				...(below > 0 ? { below } : {}),
 				listRows: rowsForLists,
 				listRef,
 				approvalRef,

@@ -560,11 +560,11 @@ async function runFullscreenScrollSmoke(root, baseUrl) {
 		if (!shown.includes("LINE_080") || /more lines? below/.test(shown))
 			throw new Error(`Ctrl+End did not return to the end:\n${shown}`);
 		// Two wheel notches up (SGR reports as the terminal sends them), nothing typed: 6 rows
-		// scrolled, plus the one the "below" hint takes from the view.
+		// scrolled (the "below" hint is on the hint line since P38b, so the view keeps its height).
 		await session.send("-l", "\x1b[<64;20;5M\x1b[<64;20;5M");
 		await sleep(300);
 		shown = await screen();
-		if (!/↓ 7 more lines below/.test(shown) || shown.includes("[<64")) {
+		if (!/↓ 6 more lines below/.test(shown) || shown.includes("[<64")) {
 			throw new Error(`The mouse wheel did not scroll the view:\n${shown}`);
 		}
 		await session.send("exit", "Enter");

@@ -143,6 +143,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 	// ① Approval panel: Ctrl+C still interrupts the turn the approval belongs to.
 	if (ctx.approvalOpen) {
 		if (key.ctrl && ch === "c") return { type: "interrupt" };
+		// The conversation scrolls behind the panel (P38b): read what is being approved.
+		if (ctx.fullscreen && (key.pageUp || key.pageDown)) return { type: "scroll-page", direction: key.pageUp ? -1 : 1 };
 		if (key.upArrow) return { type: "approval-up" };
 		if (key.downArrow) return { type: "approval-down" };
 		if (key.return) return { type: "approval-confirm" };

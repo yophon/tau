@@ -123,10 +123,52 @@ function inkRows(block: Block, options: RenderOptions): string[] {
 	return frame === "" ? [] : frame.split("\n");
 }
 
+describe("P38b markdown wraps under its prefix", () => {
+	const rows = (text: string, width: number) =>
+		blockLines(
+			{ kind: "assistant", id: "m", text, done: true },
+			{ width, verbose: false, showReasoning: false, colors: false },
+		);
+
+	it("a wrapped list item continues under its text; nested items keep their indent", () => {
+		const out = rows(`- ${LONG_EN}\n  - nested ${LONG_EN}`, 40);
+		const first = out.findIndex((row) => row.startsWith("• This"));
+		assert.ok(first > 0, out.join("\n"));
+		assert.ok(out[first + 1]?.startsWith("  ") && !out[first + 1]?.startsWith("   "), out.join("\n"));
+		const nested = out.findIndex((row) => row.startsWith("  • nested"));
+		assert.ok(out[nested + 1]?.startsWith("    "), out.join("\n"));
+	});
+
+	it("a wrapped code line keeps the bar; a blank code line keeps it too", () => {
+		const out = rows(
+			"```ts\nconst veryLongVariableName = someFunction(argumentNumberOne, argumentNumberTwo);\n\nx\n```",
+			40,
+		);
+		const code = out.filter((row) => row.startsWith("│"));
+		assert.ok(code.length >= 4, out.join("\n"));
+		assert.deepEqual(out.slice(1, 2), ["╭─ ts"]);
+	});
+
+	it("quotes keep their bar; table cells keep inline styles", () => {
+		const out = rows(`> ${LONG_EN}`, 40);
+		assert.ok(
+			out.slice(1).every((row) => row.startsWith("│ ")),
+			out.join("\n"),
+		);
+		const table = rows("| Option | Default |\n|---|---|\n| `--flag` | **on** |", 80);
+		assert.ok(
+			table.some((row) => /^--flag\s+on\s*$/.test(row)),
+			table.join("\n"),
+		);
+	});
+});
+
 describe("blockLines matches Ink", () => {
 	for (const width of [40, 80, 120]) {
 		for (const verbose of [false, true]) {
 			for (const [name, block] of SAMPLES) {
+				// P38b: wrapped markdown keeps its bar and list indent, which the frozen oracle never did.
+				if (name === "assistant markdown") continue;
 				it(`${name} at ${width} columns${verbose ? " (verbose)" : ""}`, () => {
 					const options = { width, verbose, showReasoning: true };
 					const ours = blockLines(block, { ...options, colors: false }).map((row) => row.trimEnd());
@@ -138,10 +180,12 @@ describe("blockLines matches Ink", () => {
 		}
 	}
 
-	it("hidden reasoning takes no rows", () => {
-		const block: Block = { kind: "reasoning", id: "r", text: "x", done: true };
-		assert.deepEqual(blockLines(block, { width: 80, verbose: false, showReasoning: false }), []);
-		assert.deepEqual(inkRows(block, { width: 80, verbose: false, showReasoning: false }), []);
+	it("collapsed reasoning is one row (P38b, Claude Code); a continued paragraph has none", () => {
+		const hidden = { width: 80, verbose: false, showReasoning: false, colors: false };
+		const block: Block = { kind: "reasoning", id: "r", text: "x", done: true, startedAt: 1000, endedAt: 13_500 };
+		assert.deepEqual(blockLines(block, hidden), ["", "Thought for 13s"]);
+		assert.deepEqual(blockLines({ ...block, done: false }, hidden), ["", "Thinking…"]);
+		assert.deepEqual(blockLines({ ...block, continued: true }, hidden), []);
 	});
 });
 

@@ -113,3 +113,103 @@ export function toStyled(lines: DiffLine[], options: { numbers?: boolean } = {})
 export function renderDiff(oldText: string, newText: string, keep = 2): StyledLine[] {
 	return toStyled(collapseContext(diffStrings(oldText, newText), keep));
 }
+
+/** Words, runs of spaces and single symbols: the units a changed line is compared in. */
+function words(text: string): string[] {
+	return text.match(/\s+|[\p{L}\p{N}_]+|[^\s\p{L}\p{N}_]/gu) ?? [];
+}
+
+/**
+ * pi's renderIntraLineDiff: a line changed into one other line shows the words that
+ * changed in inverse (leading indentation is never highlighted).
+ */
+function intraLine(oldText: string, newText: string): { removed: StyledLine; added: StyledLine } {
+	const a = words(oldText);
+	const b = words(newText);
+	if (a.length * b.length > 40_000) {
+		return { removed: [span(oldText, { color: "red" })], added: [span(newText, { color: "green" })] };
+	}
+	const dp: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+	const at = (i: number, j: number): number => (dp[i] as number[])[j] as number;
+	for (let i = a.length - 1; i >= 0; i--) {
+		for (let j = b.length - 1; j >= 0; j--) {
+			(dp[i] as number[])[j] = a[i] === b[j] ? at(i + 1, j + 1) + 1 : Math.max(at(i + 1, j), at(i, j + 1));
+		}
+	}
+	const removed: StyledLine = [];
+	const added: StyledLine = [];
+	const push = (line: StyledLine, text: string, changed: boolean): void => {
+		const color = line === removed ? "red" : "green";
+		// Indentation before the first change stays plain.
+		const highlight = changed && !(line.length === 0 && text.trim() === "");
+		const last = line.at(-1);
+		if (last && (last.inverse === true) === highlight) last.text += text;
+		else line.push(span(text, highlight ? { color, inverse: true } : { color }));
+	};
+	let i = 0;
+	let j = 0;
+	while (i < a.length && j < b.length) {
+		if (a[i] === b[j]) {
+			push(removed, a[i] as string, false);
+			push(added, b[j] as string, false);
+			i++;
+			j++;
+		} else if (at(i + 1, j) >= at(i, j + 1)) {
+			push(removed, a[i++] as string, true);
+		} else {
+			push(added, b[j++] as string, true);
+		}
+	}
+	while (i < a.length) push(removed, a[i++] as string, true);
+	while (j < b.length) push(added, b[j++] as string, true);
+	return { removed, added };
+}
+
+/**
+ * The edit tool's numbered diff (P38b, pi's renderDiff): `-12 old` red, `+12 new`
+ * green, context dim, and a line changed into one other line has its changed words
+ * in inverse.
+ */
+export function renderNumberedDiff(diff: string): StyledLine[] {
+	const rows = diff.split("\n").map((line) => {
+		const match = /^([+\- ])(\s*\d*) (.*)$/.exec(line);
+		return match
+			? { mark: match[1] as string, number: match[2] as string, text: (match[3] as string).replace(/\t/g, "   ") }
+			: undefined;
+	});
+	const out: StyledLine[] = [];
+	const gutter = (mark: string, number: string, color?: string): StyledLine => [
+		span(`${mark}${number} `, color ? { color } : { dim: true }),
+	];
+	for (let i = 0; i < rows.length; i++) {
+		const row = rows[i];
+		if (!row) {
+			out.push(plainLine(diff.split("\n")[i] ?? "", { dim: true }));
+			continue;
+		}
+		if (row.mark === "-") {
+			const removed: NonNullable<typeof row>[] = [];
+			while (rows[i]?.mark === "-") removed.push(rows[i++] as NonNullable<typeof row>);
+			const added: NonNullable<typeof row>[] = [];
+			while (rows[i]?.mark === "+") added.push(rows[i++] as NonNullable<typeof row>);
+			i--;
+			if (removed.length === 1 && added.length === 1) {
+				const old = removed[0] as NonNullable<typeof row>;
+				const next = added[0] as NonNullable<typeof row>;
+				const changed = intraLine(old.text, next.text);
+				out.push([...gutter("-", old.number, "red"), ...changed.removed]);
+				out.push([...gutter("+", next.number, "green"), ...changed.added]);
+				continue;
+			}
+			for (const line of removed) out.push([...gutter("-", line.number, "red"), span(line.text, { color: "red" })]);
+			for (const line of added) out.push([...gutter("+", line.number, "green"), span(line.text, { color: "green" })]);
+			continue;
+		}
+		if (row.mark === "+") {
+			out.push([...gutter("+", row.number, "green"), span(row.text, { color: "green" })]);
+			continue;
+		}
+		out.push([...gutter(" ", row.number), span(row.text, { dim: true })]);
+	}
+	return out;
+}

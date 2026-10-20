@@ -157,7 +157,7 @@ describe("P25b commands and sessions", () => {
 		await h.waitFor((f) => f.includes("Model set to other-model."), "the switch");
 		assert.match(h.frame(), /other-model · autonomous/);
 		await h.submit("hi");
-		await h.waitFor((f) => f.includes("ok") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("ok") && /Worked for \d/.test(f), "the answer");
 		assert.equal((h.requests[0] as unknown as { model: string }).model, "other-model");
 	});
 
@@ -217,7 +217,7 @@ describe("P25b commands and sessions", () => {
 			extensions: [surfaces],
 		});
 		await h.submit("first question");
-		await h.waitFor((f) => f.includes("FIRST_ANSWER") && /· \d/.test(f), "the first answer");
+		await h.waitFor((f) => f.includes("FIRST_ANSWER") && /Worked for \d/.test(f), "the first answer");
 		const original = (await h.controller.sessionStore?.getMetadata())?.id;
 		await h.submit("/name original");
 		await h.waitFor((f) => f.includes('Session named "original".'), "the name");
@@ -323,7 +323,7 @@ describe("P25c commands and keys", () => {
 			extensions: [watcher],
 		});
 		await h.submit("hello");
-		await h.waitFor((f) => f.includes("ANSWER_ONE") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("ANSWER_ONE") && /Worked for \d/.test(f), "the answer");
 		const before = (await h.controller.sessionStore?.getMetadata())?.id;
 		await h.submit("/new");
 		await h.waitFor((f) => f.includes("New session."), "the new session");
@@ -337,7 +337,7 @@ describe("P25c commands and keys", () => {
 	it("/clone copies the session at its current position", async () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("CLONED_ANSWER"))], sessions: true });
 		await h.submit("question");
-		await h.waitFor((f) => f.includes("CLONED_ANSWER") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("CLONED_ANSWER") && /Worked for \d/.test(f), "the answer");
 		const original = await h.controller.sessionStore?.getMetadata();
 		const originalMessages = h.controller.agent.messages.filter((message) => message.role !== "system").length;
 		await h.submit("/clone");
@@ -350,7 +350,7 @@ describe("P25c commands and keys", () => {
 	it("/export writes JSONL and /session shows the id and entry count", async () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("EXPORTED"))], sessions: true });
 		await h.submit("question");
-		await h.waitFor((f) => f.includes("EXPORTED") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("EXPORTED") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/export out.jsonl");
 		await h.waitFor((f) => f.includes("Exported the session to"), "the export");
 		const lines = readFileSync(join(h.controller.options.cwd, "out.jsonl"), "utf8").trim().split("\n");
@@ -368,7 +368,7 @@ describe("P25c commands and keys", () => {
 		await h.submit("/copy");
 		await h.waitFor((f) => f.includes("Nothing to copy yet."), "the empty case");
 		await h.submit("hi");
-		await h.waitFor((f) => f.includes("COPY ME") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("COPY ME") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/copy");
 		await h.waitFor((f) => f.includes("via the test clipboard"), "the copy");
 		assert.deepEqual(h.copied, ["COPY **ME**"]);
@@ -388,7 +388,7 @@ describe("P25c commands and keys", () => {
 		assert.match(h.frame(), /test-model · autonomous/);
 		assert.equal(h.controller.agent.getPermissionMode(), "autonomous");
 		await h.submit("run tests");
-		await h.waitFor((f) => f.includes("ran") && /· \d/.test(f), "the run");
+		await h.waitFor((f) => f.includes("ran") && /Worked for \d/.test(f), "the run");
 		assert.doesNotMatch(h.frame(), /wants to run/);
 		assert.equal(executions.length, 1);
 		await h.key("\x1b[Z");

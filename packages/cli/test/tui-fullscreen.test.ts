@@ -210,9 +210,10 @@ describe("P33 exit transcript", () => {
 		assert.match(text, /^› pricing smoke\n\n.*SMOKE_PRICING_OK\n$/s);
 	});
 
-	it("an empty conversation writes nothing", () => {
+	it("an empty conversation writes nothing; collapsed reasoning is its one row", () => {
 		assert.equal(transcriptText([], options), "");
-		assert.equal(transcriptText([{ kind: "reasoning", id: "r", text: "hidden", done: true }], options), "");
+		const reasoning: Block = { kind: "reasoning", id: "r", text: "hidden", done: true, startedAt: 0, endedAt: 4000 };
+		assert.match(transcriptText([reasoning], options), /^Thought for 4\.0s\n$/);
 	});
 });
 

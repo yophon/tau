@@ -270,7 +270,7 @@ const BUILTINS: BuiltinCommand[] = [
 			}
 			const picked = await tui.pick("Jump to a user message", items);
 			if (picked === undefined) {
-				tui.notice("dim", "Navigation cancelled.");
+				tui.flash("Navigation cancelled.");
 				return;
 			}
 			if (picked.startsWith(INFO)) {
@@ -410,16 +410,41 @@ const BUILTINS: BuiltinCommand[] = [
 	},
 	{
 		name: "copy",
-		description: "Copy the last answer to the clipboard",
-		run: async (tui) => {
-			const last = tui.agent.messages.findLast((message) => message.role === "assistant");
-			const text = last ? messageText(last).trim() : "";
-			if (text === "") {
-				tui.notice("dim", "Nothing to copy yet.");
+		args: "[N]",
+		description: "Copy an answer (the last, or the Nth from the end); with code blocks, pick one",
+		run: async (tui, args) => {
+			// Claude Code's /copy [N]: answers with text, newest first.
+			const answers = tui.agent.messages
+				.filter((message) => message.role === "assistant")
+				.map((message) => messageText(message).trim())
+				.filter((text) => text !== "")
+				.reverse();
+			const n = args.trim() === "" ? 1 : Number(args.trim());
+			if (!Number.isInteger(n) || n < 1) {
+				tui.notice("error", "Usage: /copy [N] (1 = the last answer)");
 				return;
 			}
-			const how = await tui.copyText(text);
-			tui.notice("dim", `Copied the last answer (${text.length} characters) via ${how}.`);
+			const text = answers[n - 1];
+			if (text === undefined) {
+				tui.notice("dim", answers.length === 0 ? "Nothing to copy yet." : `There are only ${answers.length} answers.`);
+				return;
+			}
+			let chosen = text;
+			const blocks = codeBlocks(text);
+			if (blocks.length > 0) {
+				const picked = await tui.pick("Copy", [
+					{ label: "The whole answer", hint: `${text.length} characters`, value: "all" },
+					...blocks.map((block, index) => ({
+						label: block.language ? `Code block ${index + 1} (${block.language})` : `Code block ${index + 1}`,
+						hint: block.code.split("\n")[0]?.slice(0, 60) ?? "",
+						value: String(index),
+					})),
+				]);
+				if (picked === undefined) return;
+				chosen = picked === "all" ? text : (blocks[Number(picked)]?.code ?? text);
+			}
+			const how = await tui.copyText(chosen);
+			tui.flash(`Copied ${chosen.length} characters via ${how}`);
 		},
 	},
 	{
@@ -649,8 +674,10 @@ const BUILTINS: BuiltinCommand[] = [
 			}
 			const picked = await tui.pick("Settings", items);
 			if (picked === undefined) return;
-			if (picked === "reasoning") tui.execute({ type: "toggle-reasoning" });
-			else if (picked === "details") tui.execute({ type: "toggle-verbose" });
+			if (picked === "reasoning") {
+				tui.execute({ type: "toggle-reasoning" });
+				tui.options.saveSetting?.("tui", "showReasoning", tui.state.showReasoning);
+			} else if (picked === "details") tui.execute({ type: "toggle-verbose" });
 			else if (picked === "screen") await pickScreen(tui);
 			else if (picked === "double-esc") await pickDoubleEscape(tui);
 			else if (picked === "dirty-guard") await pickDirtyGuard(tui);
@@ -695,6 +722,26 @@ const BUILTINS: BuiltinCommand[] = [
 ];
 
 const screenName = (mode: "fullscreen" | "inline"): string => (mode === "inline" ? "inline" : "full screen");
+
+/** The fenced code blocks of markdown text, without their fences. */
+export function codeBlocks(markdown: string): Array<{ language: string; code: string }> {
+	const blocks: Array<{ language: string; code: string }> = [];
+	let open: { language: string; lines: string[] } | undefined;
+	for (const line of markdown.split("\n")) {
+		const fence = /^\s*(```|~~~)\s*(\S*)\s*$/.exec(line);
+		if (fence) {
+			if (open) {
+				blocks.push({ language: open.language, code: open.lines.join("\n") });
+				open = undefined;
+			} else {
+				open = { language: fence[2] ?? "", lines: [] };
+			}
+			continue;
+		}
+		open?.lines.push(line);
+	}
+	return blocks;
+}
 
 /** /settings → Double Esc (P37b, pi doubleEscapeAction): saved as tui.doubleEscapeAction. */
 async function pickDoubleEscape(tui: TuiController): Promise<void> {

@@ -34,6 +34,8 @@ export interface TauSettings {
 	askUserWait?: boolean;
 	/** P37b: session.dirtyRepoGuard — ask before switching sessions with uncommitted changes (default false, pi's opt-in extension). */
 	dirtyRepoGuard?: boolean;
+	/** P38b: tui.showReasoning — reasoning in full instead of one collapsed row (default off, Claude Code). */
+	showReasoning?: boolean;
 	/** P37b: tui.doubleEscapeAction — Esc twice on an empty input (pi; default "tree"). */
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37d: worktree.baseRef ("fresh" default | "head") and worktree.symlinkDirectories (Claude Code). */
@@ -97,7 +99,8 @@ export function readSettings(path: string): TauSettings {
 	if (typeof tui === "object" && tui !== null) {
 		const mode = (tui as Record<string, unknown>).mode;
 		if (mode === "fullscreen" || mode === "inline") settings.tuiMode = mode;
-		const { notify, title, doubleEscapeAction } = tui as Record<string, unknown>;
+		const { notify, title, doubleEscapeAction, showReasoning } = tui as Record<string, unknown>;
+		if (typeof showReasoning === "boolean") settings.showReasoning = showReasoning;
 		if (notify === "auto" || notify === "off") settings.tuiNotify = notify;
 		if (typeof title === "boolean") settings.tuiTitle = title;
 		if (doubleEscapeAction === "tree" || doubleEscapeAction === "fork" || doubleEscapeAction === "none") {

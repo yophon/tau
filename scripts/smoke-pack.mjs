@@ -164,7 +164,7 @@ controller.store.flush();
 await new Promise((resolve) => setTimeout(resolve, 100));
 ink.unmount();
 await controller.stop();
-if (!output.includes("tau · m") || !output.includes("╭")) throw new Error(\`unexpected TUI output: \${output}\`);
+if (!output.includes("tau · /help for commands") || !output.includes("╭")) throw new Error(\`unexpected TUI output: \${output}\`);
 console.log("pack smoke tui ok");
 `;
 
@@ -249,7 +249,7 @@ try {
 	const tuiDir = join(workDir, "tui-consumer");
 	mkdirSync(tuiDir);
 	writeFileSync(join(tuiDir, "package.json"), JSON.stringify({ name: "tui-consumer", type: "module" }, null, "\t"));
-	const pinned = ["ink", "react", "string-width"].map((name) => `${name}@${cliPkg.dependencies[name]}`);
+	const pinned = ["ink", "react", "string-width", "highlight.js"].map((name) => `${name}@${cliPkg.dependencies[name]}`);
 	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, ...pinned], { cwd: tuiDir });
 	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
 	// The TUI also loads the CLI modules it shares with the REPL (P34f: session titles).

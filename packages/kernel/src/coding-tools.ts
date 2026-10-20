@@ -1,5 +1,6 @@
 import { encodeBase64 } from "./base64.ts";
 import type { BackgroundShell, FileSystem, ImageProcessor, Shell } from "./capabilities.ts";
+import { editDiff, type LocatedEdit } from "./edit-diff.ts";
 import { ShellError } from "./errors.ts";
 import type { PermissionMode } from "./policy.ts";
 import { createFindTool, createGrepTool, createLsTool } from "./search-tools.ts";
@@ -336,6 +337,11 @@ function readEdits(args: Record<string, unknown>): TextEdit[] {
  * one place, edits must not overlap, and nothing is written unless all succeed.
  */
 export function applyEdits(content: string, edits: readonly TextEdit[], path: string): string {
+	return applyLocated(content, locateEdits(content, edits, path));
+}
+
+/** Where each edit's oldText is (exactly one place each, no overlaps), in file order. */
+function locateEdits(content: string, edits: readonly TextEdit[], path: string): LocatedEdit[] {
 	const located = edits.map((edit, index) => {
 		const label = edits.length === 1 ? "oldText" : `edits[${index}].oldText`;
 		if (edit.oldText === "") throw new Error(`${label} is empty`);
@@ -354,9 +360,13 @@ export function applyEdits(content: string, edits: readonly TextEdit[], path: st
 			throw new Error(`edits[${previous.index}] and edits[${current.index}] overlap; merge them into one edit`);
 		}
 	}
+	return ordered.map(({ at, oldText, newText }) => ({ at, oldText, newText }));
+}
+
+function applyLocated(content: string, located: readonly LocatedEdit[]): string {
 	let result = content;
 	// Back to front, so earlier offsets stay valid.
-	for (const edit of ordered.reverse()) {
+	for (const edit of [...located].reverse()) {
 		result = result.slice(0, edit.at) + edit.newText + result.slice(edit.at + edit.oldText.length);
 	}
 	return result;
@@ -401,9 +411,14 @@ function createEditTool(fs: FileSystem): Tool {
 			const edits = readEdits(args);
 			return withFileMutationQueue(path, fs.cwd, async () => {
 				const content = await fs.readTextFile(path);
-				const updated = applyEdits(content, edits, path);
-				await fs.writeTextFile(path, updated);
-				return textResult(edits.length === 1 ? `Edited ${path}` : `Edited ${path} (${edits.length} replacements)`);
+				const located = locateEdits(content, edits, path);
+				await fs.writeTextFile(path, applyLocated(content, located));
+				// pi's details: the numbered diff hosts show, and where the change starts.
+				const { diff, firstChangedLine } = editDiff(content, located);
+				return textResult(
+					edits.length === 1 ? `Edited ${path}` : `Edited ${path} (${edits.length} replacements)`,
+					firstChangedLine === undefined ? { diff } : { diff, firstChangedLine },
+				);
 			});
 		}),
 	};

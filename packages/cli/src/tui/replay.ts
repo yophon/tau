@@ -5,7 +5,7 @@
  * state) are skipped; summaries show as one line.
  */
 import { type AgentMessage, userContentText } from "@yophon/tau-kernel";
-import type { ReplayBlock } from "./model.ts";
+import { GROUPED_TOOLS, type ReplayBlock, resultDiff, type ToolBlock } from "./model.ts";
 
 export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock[] {
 	const results = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
@@ -35,6 +35,7 @@ export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock
 						.filter((content) => content.type === "text")
 						.map((content) => (content as { text: string }).text)
 						.join("\n");
+					const diff = resultDiff(result?.details);
 					blocks.push({
 						kind: "tool",
 						callId: part.id,
@@ -44,6 +45,7 @@ export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock
 						output: "",
 						...(resultText !== undefined ? { result: resultText } : {}),
 						...(result?.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+						...(diff !== undefined ? { diff } : {}),
 					});
 				}
 				if (message.stopReason === "error") {
@@ -68,5 +70,21 @@ export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock
 				break;
 		}
 	}
-	return blocks;
+	return groupReads(blocks);
+}
+
+/** Consecutive reads and searches as one group, as the live view shows them (P38b). */
+function groupReads(blocks: ReplayBlock[]): ReplayBlock[] {
+	const out: ReplayBlock[] = [];
+	for (const block of blocks) {
+		if (block.kind !== "tool" || !GROUPED_TOOLS.has(block.name)) {
+			out.push(block);
+			continue;
+		}
+		const tool = { ...block, id: "" } as ToolBlock;
+		const last = out.at(-1);
+		if (last?.kind === "group") last.tools.push(tool);
+		else out.push({ kind: "group", tools: [tool], closed: true });
+	}
+	return out;
 }

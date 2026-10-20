@@ -7,22 +7,31 @@
 import { stripVTControlCharacters } from "node:util";
 import { cellWidth, graphemes } from "./input/width.ts";
 import type { Block } from "./model.ts";
+import { type RowMeta, rowMeta } from "./render/lines.ts";
 
 export interface TranscriptRows {
 	rows: string[];
 	/** Each block's first row (the blank row above it), in block order. */
 	starts: number[];
 	blocks: Block[];
+	/** How each row copies (P38b): decoration to skip, soft wraps to join. */
+	meta: RowMeta[];
 }
 
 export function buildTranscript(blocks: readonly Block[], lines: (block: Block) => string[]): TranscriptRows {
 	const rows: string[] = [];
 	const starts: number[] = [];
+	const meta: RowMeta[] = [];
 	for (const block of blocks) {
 		starts.push(rows.length);
-		for (const row of lines(block)) rows.push(row);
+		const blockRows = lines(block);
+		const known = rowMeta(blockRows);
+		blockRows.forEach((row, i) => {
+			rows.push(row);
+			meta.push(known?.[i] ?? { indent: 0 });
+		});
 	}
-	return { rows, starts, blocks: [...blocks] };
+	return { rows, starts, blocks: [...blocks], meta };
 }
 
 /** The block a row belongs to, and the row its rows start at. */
@@ -38,6 +47,33 @@ export function blockAt(transcript: TranscriptRows, row: number): { block: Block
 	}
 	const block = blocks[low];
 	return block ? { block, start: starts[low] as number } : undefined;
+}
+
+/** The OSC 8 hyperlink at a column of a styled row (P38b: a click opens it, pi). */
+export function linkAt(row: string, col: number): string | undefined {
+	let link: string | undefined;
+	let at = 0;
+	for (let i = 0; i < row.length; ) {
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: hyperlinks and styles start with ESC
+		const osc = /^\x1b\]8;[^;\x07]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/.exec(row.slice(i));
+		if (osc) {
+			link = osc[1] === "" ? undefined : osc[1];
+			i += osc[0].length;
+			continue;
+		}
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: SGR codes take no cells
+		const sgr = /^\x1b\[[0-9;]*m/.exec(row.slice(i));
+		if (sgr) {
+			i += sgr[0].length;
+			continue;
+		}
+		const ch = String.fromCodePoint(row.codePointAt(i) as number);
+		const width = cellWidth(ch);
+		if (col >= at && col < at + Math.max(1, width)) return link;
+		at += width;
+		i += ch.length;
+	}
+	return undefined;
 }
 
 export interface Cell {
@@ -129,19 +165,28 @@ export function rangeOnRow(range: TextRange, row: number): { start: number; end:
 	};
 }
 
-/** The selected text: each row's columns, without escapes or trailing spaces, joined by newlines (pi). */
-export function rangeText(rows: readonly string[], range: TextRange): string {
-	const out: string[] = [];
+/**
+ * The selected text: each row's columns, without escapes or trailing spaces, joined by newlines
+ * (pi). With row metadata (P38b, Codex) it is the source text: a row's decoration (bars,
+ * bullets, gutters) is left out and soft-wrapped rows join back into one line.
+ */
+export function rangeText(rows: readonly string[], range: TextRange, meta?: readonly RowMeta[]): string {
+	let out = "";
+	let first = true;
 	for (let row = range.start.row; row <= range.end.row && row < rows.length; row++) {
 		const span = rangeOnRow(range, row);
 		if (!span) continue;
+		const info = meta?.[row];
+		const from = Math.max(span.start, info?.indent ?? 0);
 		const text = cells(rows[row] ?? "")
-			.filter((cell) => cell.col >= span.start && cell.col < span.end)
+			.filter((cell) => cell.col >= from && cell.col < span.end)
 			.map((cell) => cell.text)
 			.join("");
-		out.push(text.trimEnd());
+		if (!first) out = info?.join !== undefined ? out + info.join : `${out.trimEnd()}\n`;
+		out += text;
+		first = false;
 	}
-	return out.join("\n");
+	return out.trimEnd();
 }
 
 export type HighlightStyle = "match" | "current" | "selection";

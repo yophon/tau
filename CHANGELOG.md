@@ -4,6 +4,33 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P38b)
+- kernel: the edit tool's result carries pi's `details.diff` (numbered lines,
+  context, `...`) and `firstChangedLine` (`editDiff`). Transports stream a
+  call's arguments as `tool_call_delta` (OpenAI-compatible and Anthropic); the
+  agent passes it on as an AgentEvent and to `message_update` (pi
+  toolcall_delta).
+
+### Changed (P38b)
+- CLI TUI: an edit shows its diff without expanding (file line numbers, the
+  changed words highlighted); a write shows its first ten lines, highlighted
+  (highlight.js 10.7.3, pi's languages); a call shows while the model writes
+  its arguments. Reasoning folds into "Thought for Ns" (click or Ctrl+T to
+  read; `tui.showReasoning`). Consecutive read/grep/find/ls calls show as one
+  line ("Read 3 files, searched for 2 patterns"). Wrapped markdown keeps its
+  code bar, quote bar and list indent; code blocks are highlighted; table cells
+  keep inline styles. Retries update the activity line instead of adding
+  lines; errors show their message, not the JSON body. Expanded tool output is
+  whole; an interrupted command keeps what it printed. Selecting copies the
+  source text (no bars or bullets, soft wraps joined); `/copy [N]` can copy one
+  code block. Links are OSC 8 hyperlinks where the terminal supports them and
+  open on a click; right-click pastes in full screen on Windows. The activity
+  line counts tokens and says when it waits for an approval; a turn ends with
+  "Worked for 12s · ↑… ↓…". Toggles flash on the hint line. Fixed: full screen
+  lost the boxes' right border; PgDn stopped one row short. A scrollbar shows
+  while scrolled. The header no longer repeats the status line; the full-screen
+  tip shows on the first three starts; exiting prints how to resume.
+
 ### Changed (P38a)
 - CLI TUI: tau reads keys itself (pi's StdinBuffer splitting and parseKey);
   Ink only keeps the terminal in raw mode. Several keys in one read all count

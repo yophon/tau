@@ -7,7 +7,9 @@
  */
 import { firstLine } from "../format.ts";
 import type { Block } from "../model.ts";
-import { diffStat, diffStrings, renderDiff } from "./diff.ts";
+import { renderDiff, renderNumberedDiff } from "./diff.ts";
+import { highlightCode, languageOf } from "./highlight.ts";
+import { parsePartialJson } from "./partial-json.ts";
 import { plainLine, type StyledLine, span } from "./spans.ts";
 
 export type ToolBlock = Extract<Block, { kind: "tool" }>;
@@ -44,8 +46,22 @@ function head(lines: string[], n: number): StyledLine[] {
 	return shown;
 }
 
+/**
+ * Expanded (Ctrl+O, a click): all of it (P38b, Claude Code's transcript view). A finished result
+ * is capped for the model already; a command still running shows its newest lines.
+ */
+const FULL = 2000;
+
+/** Rows a collapsed edit or write shows before "… N more lines" (Ctrl+O or a click shows all). */
+export const FILE_PREVIEW_ROWS = { edit: 16, write: 10 };
+
+function clip(rows: StyledLine[], n: number): StyledLine[] {
+	if (rows.length <= n) return rows;
+	return [...rows.slice(0, n), plainLine(`… ${rows.length - n} more lines`, { dim: true })];
+}
+
 function errorBody(tool: ToolBlock, verbose: boolean): StyledLine[] {
-	return tail(outputLines(tool), verbose ? 30 : 3, false).map((line) =>
+	return tail(outputLines(tool), verbose ? FULL : 3, false).map((line) =>
 		line.map((part) => (part.dim ? part : { ...part, color: "red" })),
 	);
 }
@@ -102,34 +118,41 @@ const RENDERERS: Record<string, Renderer> = {
 		// (The trailing-whitespace trim leaves just the number.)
 		if (/^\s*\d+\t?$/.test(lines.at(-1) ?? "")) lines.pop();
 		const body = [plainLine(`${lines.length} line${lines.length === 1 ? "" : "s"}`, { dim: true })];
-		if (verbose) body.push(...head(lines, 40));
+		if (verbose) body.push(...head(lines, FULL));
 		return { ...view, body };
 	},
 
+	// pi: a write shows its first lines (all when expanded); an edit shows its diff.
 	write: (tool, verbose) => {
-		const content = str(tool.args, "content");
+		const content = str(tool.args, "content").replace(/\n$/, "");
 		const lines = content === "" ? [] : content.split("\n");
 		const view = { head: `write(${str(tool.args, "path")})`, body: [] as StyledLine[] };
 		if (tool.status === "error") return { ...view, body: errorBody(tool, verbose) };
-		const body = [plainLine(`${lines.length} line${lines.length === 1 ? "" : "s"}`, { dim: true })];
-		if (verbose) body.push(...head(lines, 20));
-		return { ...view, body };
+		// Highlighted by the file's language (pi); only what is shown is highlighted.
+		const shown = verbose ? lines : lines.slice(0, FILE_PREVIEW_ROWS.write);
+		const rows = highlightCode(shown.join("\n").replace(/\t/g, "   "), languageOf(str(tool.args, "path")), {
+			dim: true,
+		}).map((line) => (line.length > 0 ? line : plainLine("")));
+		if (lines.length > shown.length) rows.push(plainLine(`… ${lines.length - shown.length} more lines`, { dim: true }));
+		return { ...view, body: rows };
+	},
+
+	// The question, not its JSON; the result is written for the model (P38b).
+	ask_user: (tool, verbose) => {
+		const questions = Array.isArray(tool.args.questions) ? tool.args.questions : [];
+		const first = (questions[0] ?? {}) as Record<string, unknown>;
+		const title = typeof first.question === "string" ? firstLine(first.question, 60) : "";
+		const more = questions.length > 1 ? ` +${questions.length - 1}` : "";
+		const view = { head: `ask_user(${title}${more})`, body: [] as StyledLine[] };
+		return tool.status === "error" ? { ...view, body: errorBody(tool, verbose) } : view;
 	},
 
 	edit: (tool, verbose) => {
-		const edits = editPairs(tool.args);
 		const view = { head: `edit(${str(tool.args, "path")})`, body: [] as StyledLine[] };
 		if (tool.status === "error") return { ...view, body: errorBody(tool, verbose) };
-		if (verbose) return { ...view, body: editDiff(edits) };
-		let add = 0;
-		let del = 0;
-		for (const edit of edits) {
-			const stat = diffStat(diffStrings(edit.oldText, edit.newText));
-			add += stat.add;
-			del += stat.del;
-		}
-		const where = edits.length > 1 ? [span(` in ${edits.length} places`, { dim: true })] : [];
-		return { ...view, body: [[span(`+${add} `, { color: "green" }), span(`-${del}`, { color: "red" }), ...where]] };
+		// The result's numbered diff (file line numbers); before it, the arguments' own diff.
+		const rows = tool.diff !== undefined ? renderNumberedDiff(tool.diff) : editDiff(editPairs(tool.args));
+		return { ...view, body: verbose ? rows : clip(rows, FILE_PREVIEW_ROWS.edit) };
 	},
 
 	grep: (tool, verbose) => {
@@ -143,7 +166,7 @@ const RENDERERS: Record<string, Renderer> = {
 			head: title,
 			body: [
 				plainLine(`${matches} match${matches === 1 ? "" : "es"}`, { dim: true }),
-				...head(lines, verbose ? 50 : 3),
+				...head(lines, verbose ? FULL : 3),
 			],
 		};
 	},
@@ -154,7 +177,7 @@ const RENDERERS: Record<string, Renderer> = {
 		if (tool.status !== "ok") return { head: view, body: [] };
 		const lines = resultLines(tool).filter((line) => line !== "No files found matching pattern");
 		const body = [plainLine(`${lines.length} file${lines.length === 1 ? "" : "s"}`, { dim: true })];
-		if (lines.length > 0) body.push(...head(lines, verbose ? 50 : 3));
+		if (lines.length > 0) body.push(...head(lines, verbose ? FULL : 3));
 		return { head: view, body };
 	},
 
@@ -170,7 +193,7 @@ const RENDERERS: Record<string, Renderer> = {
 
 	bash: (tool, verbose) => {
 		const lines = outputLines(tool).filter((line) => !/^Exit code -?\d+$/.test(line));
-		const body = tail(lines, verbose ? 30 : 5);
+		const body = tail(lines, verbose ? FULL : 5);
 		if (tool.exitCode !== undefined && tool.exitCode !== 0) {
 			body.push(plainLine(`exit ${tool.exitCode}`, { color: "red" }));
 		} else if (tool.status === "error" && tool.exitCode === undefined && lines.length === 0) {
@@ -184,7 +207,7 @@ const RENDERERS: Record<string, Renderer> = {
 		const codeLines = code.split("\n").length;
 		const body: StyledLine[] = [];
 		if (verbose) body.push(...code.split("\n").map((line) => plainLine(line, { color: "cyan" })));
-		body.push(...(tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? 30 : 5)));
+		body.push(...(tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? FULL : 5)));
 		return { head: `codemode(${codeLines} line${codeLines === 1 ? "" : "s"} of JavaScript)`, body };
 	},
 
@@ -211,9 +234,9 @@ const RENDERERS: Record<string, Renderer> = {
 		const head = `subagent(${what})${tool.args.background === true ? " · background" : ""}`;
 		if (tool.status === "error") return { head, body: errorBody(tool, verbose) };
 		// While running: the children's tool calls, one line each; then the answer's first lines.
-		if (tool.result === undefined) return { head, body: tail(outputLines(tool), verbose ? 30 : 6) };
+		if (tool.result === undefined) return { head, body: tail(outputLines(tool), verbose ? FULL : 6) };
 		const answer = (tool.result ?? "").trim().split("\n");
-		const shown = answer.slice(0, verbose ? 60 : 8).map((line) => plainLine(line, { dim: true }));
+		const shown = answer.slice(0, verbose ? FULL : 8).map((line) => plainLine(line, { dim: true }));
 		if (answer.length > shown.length)
 			shown.push(plainLine(`… ${answer.length - shown.length} more lines`, { dim: true }));
 		return { head, body: shown };
@@ -258,14 +281,14 @@ const RENDERERS: Record<string, Renderer> = {
 			head: view,
 			body: [
 				plainLine(`${titles.length} result${titles.length === 1 ? "" : "s"}`, { dim: true }),
-				...head(verbose ? lines : titles, verbose ? 60 : 3),
+				...head(verbose ? lines : titles, verbose ? FULL : 3),
 			],
 		};
 	},
 
 	tool_search: (tool, verbose) => ({
 		head: `tool_search(${firstLine(str(tool.args, "query"), 60)})`,
-		body: tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? 30 : 3),
+		body: tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? FULL : 3),
 	}),
 };
 
@@ -287,9 +310,27 @@ export function displayToolName(name: string): string {
 	return mcp ? `${mcp[1]}:${mcp[2]}` : name;
 }
 
+/** The last arguments parsed for a streaming call (one call streams at a time; the text only grows). */
+let streamed: { text: string; args: Record<string, unknown> } | undefined;
+
+/**
+ * A call whose arguments are still streaming (P38b, pi): its title from what has arrived,
+ * and for a write the newest lines of the content as the model writes them.
+ */
+function streamingView(tool: ToolBlock): ToolView {
+	const text = tool.argsText ?? "";
+	if (streamed?.text !== text) streamed = { text, args: parsePartialJson(text) };
+	const view = toolView({ ...tool, args: streamed.args, status: "running", argsText: undefined }, false);
+	if (tool.name !== "write") return { head: view.head, body: [] };
+	const content = str(streamed.args, "content");
+	const lines = content === "" ? [] : content.split("\n");
+	return { head: view.head, body: tail(lines, FILE_PREVIEW_ROWS.write) };
+}
+
 export function toolView(tool: ToolBlock, verbose: boolean): ToolView {
+	if (tool.status === "streaming") return streamingView(tool);
 	const renderer = RENDERERS[tool.name];
 	if (renderer) return renderer(tool, verbose);
-	const body = tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? 30 : 5);
+	const body = tool.status === "error" ? errorBody(tool, verbose) : tail(outputLines(tool), verbose ? FULL : 5);
 	return { head: `${displayToolName(tool.name)}(${genericArgs(tool.args)})`, body };
 }

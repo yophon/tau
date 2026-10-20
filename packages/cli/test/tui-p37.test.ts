@@ -21,7 +21,7 @@ describe("P37b /handoff", () => {
 			sessions: true,
 		});
 		await h.submit("build the parser");
-		await h.waitFor((f) => f.includes("PARSER_DONE") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("PARSER_DONE") && /Worked for \d/.test(f), "the answer");
 		const source = await h.controller.sessionStore?.getMetadata();
 		await h.submit("/handoff now do the gateway part");
 		await h.waitFor((f) => f.includes("Handoff ready."), "the handoff");
@@ -88,7 +88,7 @@ describe("P37b Esc", () => {
 			deps: { now: () => clock.now },
 		});
 		await h.submit("first message");
-		await h.waitFor((f) => f.includes("FIRST") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("FIRST") && /Worked for \d/.test(f), "the answer");
 		await h.key(ESC);
 		clock.now += 600;
 		await h.key(ESC);
@@ -102,7 +102,7 @@ describe("P37b Esc", () => {
 	it("two Escs arriving as one chunk count as two (a real terminal sends them together)", async () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("FIRST"))], sessions: true });
 		await h.submit("first message");
-		await h.waitFor((f) => f.includes("FIRST") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("FIRST") && /Worked for \d/.test(f), "the answer");
 		await h.key("\x1b\x1b");
 		await h.waitFor((f) => f.includes("Jump to a user message"), "the tree picker");
 		h.cleanup();
@@ -131,7 +131,7 @@ describe("P37b Esc", () => {
 			deps: { now: () => clock.now },
 		});
 		await fork.submit("hello");
-		await fork.waitFor((f) => f.includes("ANSWER") && /· \d/.test(f), "the answer");
+		await fork.waitFor((f) => f.includes("ANSWER") && /Worked for \d/.test(f), "the answer");
 		await fork.key(ESC);
 		await fork.key(ESC);
 		await fork.waitFor((f) => f.includes("Fork from"), "the fork picker");
@@ -165,7 +165,7 @@ describe("P37b review fixes", () => {
 			sessions: true,
 		});
 		await h.submit("hello");
-		await h.waitFor((f) => f.includes("ANSWER") && /· \d/.test(f), "the answer");
+		await h.waitFor((f) => f.includes("ANSWER") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/handoff next");
 		await h.waitFor((f) => f.includes("Handoff failed: the model returned an empty prompt."), "the notice");
 		h.cleanup();

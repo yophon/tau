@@ -118,6 +118,7 @@ test("full event order for a prompt with one streaming tool call", async () => {
 		"turn_start:0",
 		"context",
 		"message_start", // assistant (streaming)
+		"message_update:tool_call_delta",
 		"message_update:tool_call",
 		"message_end",
 		"tool_call",

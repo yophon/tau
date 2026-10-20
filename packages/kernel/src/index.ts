@@ -77,6 +77,7 @@ export {
 	loadProjectContextFiles,
 	renderProjectContext,
 } from "./context-files.ts";
+export { editDiff, type LocatedEdit } from "./edit-diff.ts";
 export {
 	describeError,
 	FileError,

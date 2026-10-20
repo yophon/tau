@@ -22,19 +22,34 @@ const h = React.createElement;
 /** Input rows shown at most; taller input scrolls around the cursor. */
 export const INPUT_MAX_ROWS = 10;
 
-function ActivityLine(props: { activity: string; startedAt: number | undefined }): React.ReactElement {
+function ActivityLine(props: {
+	activity: string;
+	startedAt: number | undefined;
+	tokens: number;
+	waiting: boolean;
+}): React.ReactElement {
 	const [tick, setTick] = useState(0);
 	useEffect(() => {
 		const timer = setInterval(() => setTick((value) => (value + 1) % SPINNER_FRAMES.length), 120);
 		return () => clearInterval(timer);
 	}, []);
 	const elapsed = props.startedAt === undefined ? 0 : Date.now() - props.startedAt;
+	// An approval waits on you, not the model (P38b, Claude Code): say so, without the clock.
+	if (props.waiting) {
+		return h(Text, { key: "activity" }, h(Text, { key: "what", color: "yellow" }, "Waiting for your approval"));
+	}
+	const details = [
+		elapsed >= 1000 ? fmtElapsed(elapsed) : "",
+		props.tokens > 0 ? `↓ ${fmtInt(props.tokens)} tokens` : "",
+	]
+		.filter((part) => part !== "")
+		.join(" · ");
 	return h(
 		Text,
 		{ key: "activity" },
 		h(Text, { key: "spin", color: "cyan" }, `${SPINNER_FRAMES[tick]} `),
 		h(Text, { key: "what" }, `${props.activity || "Working"}…`),
-		elapsed >= 1000 ? h(Text, { key: "time", dimColor: true }, ` ${fmtElapsed(elapsed)}`) : null,
+		details !== "" ? h(Text, { key: "time", dimColor: true }, ` ${details}`) : null,
 	);
 }
 
@@ -109,6 +124,8 @@ export interface BottomLayout {
 	search?: { query: string; count: number; current: number };
 	/** Full screen: mark the caret for the painter (CARET_MARK). */
 	caret?: boolean;
+	/** Full screen, scrolled up: rows below the view (said on the hint line, so the view keeps its height). */
+	below?: number;
 }
 
 const INLINE_LAYOUT: BottomLayout = { listRows: INLINE_LIST_ROWS };
@@ -331,7 +348,15 @@ export function renderBottom(
 		children.push(renderPicker(state.picker, layout));
 	} else {
 		if (state.task) {
-			children.push(h(ActivityLine, { key: "activity", activity: state.activity, startedAt: state.taskStartedAt }));
+			children.push(
+				h(ActivityLine, {
+					key: "activity",
+					activity: state.activity,
+					startedAt: state.taskStartedAt,
+					tokens: state.streamedTokens,
+					waiting: state.approval !== undefined,
+				}),
+			);
 		}
 		for (const [i, queued] of state.queued.entries()) {
 			children.push(
@@ -367,6 +392,17 @@ export function renderBottom(
 		children.push(h(Text, { key: "hint", color: "yellow" }, "Press again to exit"));
 	} else if (state.rejectArmed) {
 		children.push(h(Text, { key: "hint", color: "yellow" }, "Press Esc again to deny"));
+	} else if (layout.below && !state.approval && !state.picker && !state.search && !state.flash) {
+		children.push(
+			h(
+				Text,
+				{ key: "hint", color: "cyan" },
+				truncateCells(
+					`↓ ${layout.below} more line${layout.below === 1 ? "" : "s"} below · PgDn or Ctrl+End to go down`,
+					Math.max(10, columns - 1),
+				),
+			),
+		);
 	} else {
 		children.push(
 			h(Text, { key: "hint", dimColor: true }, truncateCells(hintText(state, completion), Math.max(10, columns - 1))),

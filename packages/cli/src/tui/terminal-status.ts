@@ -20,6 +20,22 @@ const progress = (state: 0 | 2 | 3 | 4) => `\x1b]9;4;${state};0\x07`;
 const title = (text: string) => `\x1b]0;${text.replace(/[\x00-\x1f\x7f]/g, " ")}\x07`;
 
 /** Windows Terminal and ConEmu show OSC 9;4 progress; elsewhere it is not sent. */
+/** Terminals that show OSC 8 hyperlinks (pi's terminal capabilities); tmux only when configured, so not here. */
+export function supportsHyperlinks(env: Record<string, string | undefined> = process.env): boolean {
+	if (env.TMUX) return false;
+	const program = (env.TERM_PROGRAM ?? "").toLowerCase();
+	return Boolean(
+		env.WT_SESSION ||
+			env.KITTY_WINDOW_ID ||
+			env.TERM === "xterm-kitty" ||
+			env.WEZTERM_PANE ||
+			env.ITERM_SESSION_ID ||
+			env.WARP_SESSION_ID ||
+			env.GHOSTTY_RESOURCES_DIR ||
+			["iterm.app", "wezterm", "vscode", "zed", "alacritty", "ghostty", "warpterminal"].includes(program),
+	);
+}
+
 export function supportsProgress(env: NodeJS.ProcessEnv = process.env): boolean {
 	return env.WT_SESSION !== undefined || env.ConEmuANSI === "ON";
 }
