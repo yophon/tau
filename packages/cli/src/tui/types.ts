@@ -73,6 +73,12 @@ export interface RunTuiOptions {
 	sessionReason: "startup" | "resume";
 	/** P33: the alternate screen with tau's own transcript view (default), or the inline view in the main screen. */
 	screen?: "fullscreen" | "inline";
+	/** P37b: ask before switching sessions with uncommitted changes (session.dirtyRepoGuard). */
+	dirtyRepoGuard?: boolean;
+	/** P37b: Esc twice on an empty input (pi doubleEscapeAction; default "tree"). */
+	doubleEscapeAction?: "tree" | "fork" | "none";
+	/** P37b: save a /settings choice (section.key in ~/.tau/settings.json). */
+	saveSetting?(section: "tui" | "session", key: string, value: unknown): void;
 }
 
 /** Test seams; the real TUI uses the defaults. */
@@ -82,6 +88,8 @@ export interface TuiDeps {
 	fileLister?: (cwd: string) => Promise<string[]>;
 	columns?: () => number;
 	now?: () => number;
+	/** P37b: changed files in the repository (git status --porcelain); undefined outside one. */
+	uncommittedFiles?: (cwd: string) => Promise<number | undefined>;
 	/** Ctrl+G: edit text in an external editor; undefined keeps the input. */
 	editText?: (text: string) => string | undefined;
 	/** /copy: put text on the clipboard; returns how. */

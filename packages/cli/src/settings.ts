@@ -32,6 +32,10 @@ export interface TauSettings {
 	tuiTitle?: boolean;
 	/** P35: askUser.wait — ask_user waits for the answer (default false: the model goes on and the answer arrives later). */
 	askUserWait?: boolean;
+	/** P37b: session.dirtyRepoGuard — ask before switching sessions with uncommitted changes (default false, pi's opt-in extension). */
+	dirtyRepoGuard?: boolean;
+	/** P37b: tui.doubleEscapeAction — Esc twice on an empty input (pi; default "tree"). */
+	doubleEscapeAction?: "tree" | "fork" | "none";
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -91,14 +95,18 @@ export function readSettings(path: string): TauSettings {
 	if (typeof tui === "object" && tui !== null) {
 		const mode = (tui as Record<string, unknown>).mode;
 		if (mode === "fullscreen" || mode === "inline") settings.tuiMode = mode;
-		const { notify, title } = tui as Record<string, unknown>;
+		const { notify, title, doubleEscapeAction } = tui as Record<string, unknown>;
 		if (notify === "auto" || notify === "off") settings.tuiNotify = notify;
 		if (typeof title === "boolean") settings.tuiTitle = title;
+		if (doubleEscapeAction === "tree" || doubleEscapeAction === "fork" || doubleEscapeAction === "none") {
+			settings.doubleEscapeAction = doubleEscapeAction;
+		}
 	}
 	const session = raw.session;
 	if (typeof session === "object" && session !== null) {
-		const autoTitle = (session as Record<string, unknown>).autoTitle;
+		const { autoTitle, dirtyRepoGuard } = session as Record<string, unknown>;
 		if (typeof autoTitle === "boolean") settings.autoTitle = autoTitle;
+		if (typeof dirtyRepoGuard === "boolean") settings.dirtyRepoGuard = dirtyRepoGuard;
 	}
 	const askUser = raw.askUser;
 	if (typeof askUser === "object" && askUser !== null) {
@@ -134,9 +142,14 @@ export function tuiScreen(
 
 /** Save tui.mode (P33, /settings), keeping the file's other tui keys. */
 export function writeTuiMode(path: string, mode: "fullscreen" | "inline"): void {
-	const tui = readJson(path).tui;
-	const current = typeof tui === "object" && tui !== null && !Array.isArray(tui) ? tui : {};
-	writeSettings(path, { tui: { ...current, mode } });
+	writeSectionKey(path, "tui", "mode", mode);
+}
+
+/** Save one key inside a section (tui.doubleEscapeAction, session.dirtyRepoGuard), keeping the rest. */
+export function writeSectionKey(path: string, section: string, key: string, value: unknown): void {
+	const raw = readJson(path)[section];
+	const current = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : {};
+	writeSettings(path, { [section]: { ...current, [key]: value } });
 }
 
 /** Merge keys into a settings file, keeping the rest (undefined deletes a key). */

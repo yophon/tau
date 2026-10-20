@@ -133,9 +133,16 @@ export interface SessionStore {
 	getEntries(): Promise<SessionEntry[]>;
 }
 
+/** Options for a new session: an id, and the session it continues from (pi newSession's parentSession, P37b /handoff). */
+export interface CreateSessionOptions {
+	id?: string;
+	/** Source file path (JSONL) or source session id (in-memory), as fork() records it. */
+	parentSession?: string;
+}
+
 /** Mirrors pi's SessionRepo. */
 export interface SessionRepo {
-	create(options?: { id?: string }): Promise<SessionStore>;
+	create(options?: CreateSessionOptions): Promise<SessionStore>;
 	open(metadata: SessionMetadata): Promise<SessionStore>;
 	list(): Promise<SessionMetadata[]>;
 	delete(metadata: SessionMetadata): Promise<void>;
@@ -290,11 +297,12 @@ export class InMemorySessionRepo implements SessionRepo {
 		this.cwd = cwd;
 	}
 
-	async create(options?: { id?: string }): Promise<SessionStore> {
+	async create(options?: CreateSessionOptions): Promise<SessionStore> {
 		const metadata: SessionMetadata = {
 			id: options?.id ?? uuidv7(this.platform.randomBytes),
 			cwd: this.cwd,
 			timestamp: new Date().toISOString(),
+			...(options?.parentSession ? { parentSession: options.parentSession } : {}),
 		};
 		const store = new InMemorySessionStore(metadata, this.platform.randomBytes);
 		this.stores.set(metadata.id, store);
@@ -547,10 +555,17 @@ export class JsonlSessionRepo implements SessionRepo {
 		);
 	}
 
-	async create(options?: { id?: string }): Promise<SessionStore> {
+	async create(options?: CreateSessionOptions): Promise<SessionStore> {
 		const id = options?.id ?? uuidv7(this.platform.randomBytes);
 		const timestamp = new Date().toISOString();
-		const header: SessionHeader = { type: "session", version: 3, id, timestamp, cwd: this.cwd };
+		const header: SessionHeader = {
+			type: "session",
+			version: 3,
+			id,
+			timestamp,
+			cwd: this.cwd,
+			...(options?.parentSession ? { parentSession: options.parentSession } : {}),
+		};
 		const fileName = `${timestamp.replaceAll(":", "-")}_${id}.jsonl`;
 		const filePath = joinSessionPath(this.sessionsDir, fileName);
 		return new JsonlSessionStore(this.fs, filePath, header, new EntryTree(), this.platform.randomBytes, false);

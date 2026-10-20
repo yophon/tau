@@ -26,6 +26,8 @@ import {
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
+import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
+import { generateHandoffPrompt } from "../handoff.ts";
 import { autoTitle } from "../session-title.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
@@ -151,6 +153,8 @@ export class TuiController {
 	private tellFor: ApprovalView | undefined;
 	private readonly toolOutput = new Map<string, string>();
 	private exitTimer: ReturnType<typeof setTimeout> | undefined;
+	/** When the last Esc on an empty, idle input came (pi's double-Esc window, P37b); 0 when none counts. */
+	private lastEscapeAt = 0;
 	private rejectTimer: ReturnType<typeof setTimeout> | undefined;
 	private stopped = false;
 	private resolveDone: (() => void) | undefined;
@@ -897,6 +901,98 @@ export class TuiController {
 		this.setEditor(ed.fromText(text));
 	}
 
+	/** pi's window for Esc twice. */
+	static readonly DOUBLE_ESCAPE_MS = 500;
+
+	/**
+	 * Esc while idle (P37b). With text: clear it and keep it in history so ↑ brings it
+	 * back (Claude Code). On an empty input: two presses within 500 ms open the session
+	 * tree, or the fork picker (pi doubleEscapeAction); only these presses count.
+	 */
+	private escape(): void {
+		const text = this.state.editor.text;
+		if (text.trim() !== "") {
+			this.history.push(text);
+			this.historyIndex = this.history.list().length;
+			this.setEditor(ed.EMPTY);
+			this.lastEscapeAt = 0;
+			return;
+		}
+		const action = this.options.doubleEscapeAction ?? "tree";
+		if (action === "none") return;
+		const now = this.now();
+		if (this.lastEscapeAt !== 0 && now - this.lastEscapeAt < TuiController.DOUBLE_ESCAPE_MS) {
+			this.lastEscapeAt = 0;
+			void this.runSlash(`/${action}`);
+			return;
+		}
+		this.lastEscapeAt = now;
+	}
+
+	/**
+	 * pi's dirty-repo-guard (P37b): with session.dirtyRepoGuard on and uncommitted
+	 * changes, ask before switching sessions. True when the switch may go ahead.
+	 */
+	async guardDirty(action: SwitchAction): Promise<boolean> {
+		if (!this.options.dirtyRepoGuard) return true;
+		const count = await (this.deps.uncommittedFiles ?? uncommittedFiles)(this.options.cwd);
+		if (!count) return true;
+		const question = dirtyRepoQuestion(count, action);
+		const answer = await this.pick(question.title, [
+			{ label: question.options[0], value: "yes", key: "y" },
+			{ label: question.options[1], value: "no", key: "n" },
+		]);
+		if (answer === "yes") return true;
+		this.notice("warn", "Commit your changes first.");
+		return false;
+	}
+
+	/**
+	 * /handoff <goal> (P37b, pi): write a prompt that carries what matters into a new
+	 * session, then open that session with the prompt in the input box.
+	 */
+	async runHandoff(goal: string): Promise<void> {
+		if (goal === "") {
+			this.notice("error", "Usage: /handoff <goal for the new session>");
+			return;
+		}
+		if (this.state.task !== undefined) {
+			this.notice("error", "Wait for the current turn to finish (or press Esc) before /handoff.");
+			return;
+		}
+		const store = this.sessionStore;
+		if (!store) {
+			this.notice("error", "No active session (--no-session).");
+			return;
+		}
+		if (conversationLength(this.agent.messages) === 0) {
+			this.notice("error", "No conversation to hand off.");
+			return;
+		}
+		let prompt: string | undefined;
+		await this.runTask("handoff", "Generating handoff prompt", async (signal) => {
+			try {
+				prompt = await generateHandoffPrompt(this.agent, this.agent.messages, goal, signal);
+			} catch (error) {
+				this.notice(
+					isAbortError(error) ? "dim" : "error",
+					isAbortError(error) ? "Handoff cancelled." : `Handoff failed: ${errorText(error)}`,
+				);
+			}
+		});
+		if (!prompt) return;
+		if (!(await this.guardDirty("new session"))) return;
+		const source = await store.getMetadata();
+		const next = await this.options.sessionRepo.create({ parentSession: source.filePath ?? source.id });
+		const result = await this.switchSession(next, "new");
+		if (result.cancelled) {
+			this.notice("dim", "New session cancelled by an extension.");
+			return;
+		}
+		this.setInput(prompt);
+		this.notice("info", "Handoff ready. Edit it, then press Enter to send.");
+	}
+
 	/** Completion for the current input (cached per text/cursor/files/suppression). */
 	completion(): Completion | undefined {
 		const { editor, menu } = this.state;
@@ -986,6 +1082,12 @@ export class TuiController {
 
 	execute(command: KeyCommand): void {
 		const state = this.state;
+		// Esc on an idle input (P37b): clears a draft into history, or counts toward Esc twice.
+		if (command.type === "clear-input") {
+			this.escape();
+			return;
+		}
+		this.lastEscapeAt = 0;
 		const edited = applyEditorCommand(state.editor, command);
 		if (edited !== undefined) {
 			this.setEditor(edited);

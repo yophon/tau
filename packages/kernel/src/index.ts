@@ -334,6 +334,7 @@ export {
 } from "./search-tools.ts";
 export {
 	type ContextEditableContent,
+	type CreateSessionOptions,
 	type ForkOptions,
 	getEntriesToFork,
 	InMemorySessionRepo,

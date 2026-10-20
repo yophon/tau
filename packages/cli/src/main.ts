@@ -79,6 +79,7 @@ import {
 import { createBackgroundExtension } from "./background.ts";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
+import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
 import { createHooksExtension, HookRunner, loadHookConfig, withHookApprovals } from "./hooks.ts";
 import type { MemoryScope } from "./memory.ts";
@@ -111,7 +112,7 @@ import {
 } from "./permissions.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
-import { readSettings, tuiScreen, writeSettings, writeTuiMode } from "./settings.ts";
+import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
 import { conversationLength } from "./tui/controller.ts";
 
 /** The CLI package version (src/ and dist/ both sit one level below package.json). */
@@ -1983,6 +1984,9 @@ async function main(): Promise<void> {
 			...(firstPrompt !== undefined ? { initialPrompts: [firstPrompt, ...messages.slice(1)] } : {}),
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
+			dirtyRepoGuard: userSettings.dirtyRepoGuard === true,
+			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
+			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),
 			autoTitle: autoTitleOn(userSettings.autoTitle),
 			notify: userSettings.tuiNotify ?? "auto",
 			terminalTitle: userSettings.tuiTitle !== false,
@@ -2213,6 +2217,17 @@ async function main(): Promise<void> {
 					continue;
 				}
 				const arg = input.slice("/fork".length).trim();
+				// pi's dirty-repo-guard (P37b), when session.dirtyRepoGuard turns it on.
+				if (userSettings.dirtyRepoGuard === true && ui) {
+					const count = await uncommittedFiles(cwd);
+					if (count) {
+						const question = dirtyRepoQuestion(count, "fork");
+						if ((await ui.select(question.title, question.options)) !== question.options[0]) {
+							console.log(dim("Commit your changes first."));
+							continue;
+						}
+					}
+				}
 				try {
 					// A full copy has no fork point to negotiate over, so the
 					// session_before_fork event only fires for entry-targeted forks.

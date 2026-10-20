@@ -231,6 +231,7 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("error", `No session matches "${args}".`);
 				return;
 			}
+			if (!(await tui.guardDirty("switch session"))) return;
 			const result = await tui.switchSession(await tui.options.sessionRepo.open(selected), "resume");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension.");
 		},
@@ -311,6 +312,7 @@ const BUILTINS: BuiltinCommand[] = [
 				}
 				target = picked === FULL_SESSION ? "" : picked;
 			}
+			if (!(await tui.guardDirty("fork"))) return;
 			if (target !== "") {
 				const decision = await tui.extensions.runSessionBeforeFork(
 					{ entryId: target, position: "before" },
@@ -337,9 +339,16 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
+			if (!(await tui.guardDirty("new session"))) return;
 			const result = await tui.switchSession(await tui.options.sessionRepo.create(), "new");
 			if (result.cancelled) tui.notice("dim", "New session cancelled by an extension.");
 		},
+	},
+	{
+		name: "handoff",
+		args: "<goal>",
+		description: "Start a new session with a prompt that carries what matters from this one",
+		run: (tui, args) => tui.runHandoff(args.trim()),
 	},
 	{
 		name: "clone",
@@ -350,6 +359,7 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
+			if (!(await tui.guardDirty("fork"))) return;
 			const leaf = await store.getLeafId();
 			const copy = await tui.options.sessionRepo.fork(
 				await store.getMetadata(),
@@ -377,6 +387,7 @@ const BUILTINS: BuiltinCommand[] = [
 				lines.push(row("id", metadata.id));
 				if (metadata.name) lines.push(row("name", metadata.name));
 				if (metadata.filePath) lines.push(row("file", metadata.filePath));
+				if (metadata.parentSession) lines.push(row("parent", metadata.parentSession));
 				lines.push(row("entries", String(entries.length)));
 			} else {
 				lines.push(row("file", "none (--no-session)"));
@@ -465,6 +476,7 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("dim", "Import cancelled.");
 				return;
 			}
+			if (!(await tui.guardDirty("switch session"))) return;
 			const imported = await tui.options.sessionRepo.importFile(source);
 			const result = await tui.switchSession(imported, "resume");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the imported file was kept).");
@@ -625,11 +637,23 @@ const BUILTINS: BuiltinCommand[] = [
 			if (tui.options.saveTuiMode) {
 				items.push({ label: "Screen", hint: screenName(tui.options.screen ?? "fullscreen"), value: "screen" });
 			}
+			if (tui.options.saveSetting) {
+				items.push(
+					{ label: "Double Esc", hint: tui.options.doubleEscapeAction ?? "tree", value: "double-esc" },
+					{
+						label: "Uncommitted-changes check",
+						hint: tui.options.dirtyRepoGuard ? "on" : "off",
+						value: "dirty-guard",
+					},
+				);
+			}
 			const picked = await tui.pick("Settings", items);
 			if (picked === undefined) return;
 			if (picked === "reasoning") tui.execute({ type: "toggle-reasoning" });
 			else if (picked === "details") tui.execute({ type: "toggle-verbose" });
 			else if (picked === "screen") await pickScreen(tui);
+			else if (picked === "double-esc") await pickDoubleEscape(tui);
+			else if (picked === "dirty-guard") await pickDirtyGuard(tui);
 			else await findBuiltin(picked)?.run(tui, "");
 		},
 	},
@@ -671,6 +695,39 @@ const BUILTINS: BuiltinCommand[] = [
 ];
 
 const screenName = (mode: "fullscreen" | "inline"): string => (mode === "inline" ? "inline" : "full screen");
+
+/** /settings → Double Esc (P37b, pi doubleEscapeAction): saved as tui.doubleEscapeAction. */
+async function pickDoubleEscape(tui: TuiController): Promise<void> {
+	const picked = await tui.pick(
+		"Esc twice on an empty input",
+		[
+			{ label: "Session tree (/tree)", value: "tree" },
+			{ label: "Fork from a message (/fork)", value: "fork" },
+			{ label: "Nothing", value: "none" },
+		],
+		["tree", "fork", "none"].indexOf(tui.options.doubleEscapeAction ?? "tree"),
+	);
+	if (picked !== "tree" && picked !== "fork" && picked !== "none") return;
+	tui.options.doubleEscapeAction = picked;
+	tui.options.saveSetting?.("tui", "doubleEscapeAction", picked);
+	tui.notice("info", `Esc twice now opens: ${picked}.`);
+}
+
+/** /settings → Uncommitted-changes check (P37b, pi dirty-repo-guard): saved as session.dirtyRepoGuard. */
+async function pickDirtyGuard(tui: TuiController): Promise<void> {
+	const picked = await tui.pick(
+		"Ask before switching sessions with uncommitted changes",
+		[
+			{ label: "On", value: "on" },
+			{ label: "Off", value: "off" },
+		],
+		tui.options.dirtyRepoGuard ? 0 : 1,
+	);
+	if (picked !== "on" && picked !== "off") return;
+	tui.options.dirtyRepoGuard = picked === "on";
+	tui.options.saveSetting?.("session", "dirtyRepoGuard", picked === "on");
+	tui.notice("info", `Uncommitted-changes check: ${picked}.`);
+}
 
 /** /settings → Screen (P33): saved as tui.mode; the screen changes on the next start. */
 async function pickScreen(tui: TuiController): Promise<void> {
@@ -976,7 +1033,8 @@ const KEYS: Array<[string, string]> = [
 	["Enter", "send; while working, steer the current turn"],
 	["Alt+Enter", "queue a follow-up while working; a newline when idle"],
 	["Ctrl+J", "newline"],
-	["Esc", "interrupt; clear the input when idle"],
+	["Esc", "interrupt; clear the input when idle (↑ brings it back)"],
+	["Esc Esc", "on an empty input: session tree (/settings → Double Esc)"],
 	["Ctrl+C", "interrupt; press twice to exit when idle"],
 	["↑ / ↓", "history; ↑ on an empty input takes queued messages back"],
 	["Ctrl+O", "expand or collapse tool details"],

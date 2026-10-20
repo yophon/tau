@@ -102,7 +102,7 @@ export interface PromptView {
 	placeholder?: string;
 }
 
-export type TaskKind = "turn" | "compaction" | "bash" | "navigate" | "reload";
+export type TaskKind = "turn" | "compaction" | "bash" | "navigate" | "reload" | "handoff";
 
 export interface QueuedInput {
 	kind: "steer" | "followUp";

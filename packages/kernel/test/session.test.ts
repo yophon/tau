@@ -360,3 +360,17 @@ test("entry ids are 8 random hex digits even within one clock window (pi generat
 	);
 	assert.equal(new Set(ids).size, ids.length);
 });
+
+test("create({ parentSession }) records where a session came from (P37b /handoff)", async () => {
+	const memory = new InMemorySessionRepo(fakePlatform([]), "/test");
+	assert.equal((await (await memory.create({ parentSession: "source-id" })).getMetadata()).parentSession, "source-id");
+	const dir = await mkdtemp(join(tmpdir(), "tau-session-parent-"));
+	try {
+		const repo = new JsonlSessionRepo(new NodeFileSystem(dir), fakePlatform([]), dir, "/test");
+		const store = await repo.create({ parentSession: "/x/source.jsonl" });
+		assert.equal((await store.getMetadata()).parentSession, "/x/source.jsonl");
+		assert.equal((await (await repo.create()).getMetadata()).parentSession, undefined);
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
