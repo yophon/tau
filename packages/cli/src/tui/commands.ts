@@ -19,6 +19,7 @@ import {
 	type ThinkingLevel,
 	type Usage,
 } from "@yophon/tau-kernel";
+import { type GitDiff, gitDiff } from "../git-diff.ts";
 import { relativeTime, sessionLabel } from "../session-title.ts";
 import type { TuiController } from "./controller.ts";
 import { conversationLength } from "./controller.ts";
@@ -28,6 +29,7 @@ import { errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
 import type { CompletionItem } from "./input/completion.ts";
 import { truncateCells } from "./input/width.ts";
 import type { PickerItem } from "./model.ts";
+import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
 
 export interface BuiltinCommand {
@@ -422,6 +424,40 @@ const BUILTINS: BuiltinCommand[] = [
 			lines.push(row("model", `${tui.model} · ${tui.thinkingLevel ?? "default"} reasoning`));
 			lines.push(row("mode", tui.agent.getPermissionMode()));
 			tui.lines(lines);
+		},
+	},
+	{
+		name: "diff",
+		description: "Show the uncommitted changes, untracked files included (git diff)",
+		run: async (tui) => {
+			// Codex's /diff: the transcript shows it; the model never sees it.
+			let diff: GitDiff;
+			try {
+				diff = await gitDiff(tui.options.cwd);
+			} catch (error) {
+				tui.notice("error", `/diff failed: ${errorText(error)}`);
+				return;
+			}
+			if (!diff.repo) {
+				tui.notice("dim", "Not a git repository.");
+				return;
+			}
+			if (diff.text.trim() === "") {
+				tui.notice("dim", "No changes.");
+				return;
+			}
+			const { files, added, removed } = summarizeDiff(diff.text);
+			tui.lines([
+				[
+					span("git diff", { bold: true }),
+					span(` · ${files} file${files === 1 ? "" : "s"} · `, { dim: true }),
+					span(`+${added}`, { color: "green" }),
+					span(" "),
+					span(`-${removed}`, { color: "red" }),
+					...(diff.untracked > 0 ? [span(` · ${diff.untracked} untracked`, { dim: true })] : []),
+				],
+				...gitDiffLines(diff.text),
+			]);
 		},
 	},
 	{
@@ -1011,6 +1047,7 @@ export function parseCommandLine(text: string): { name: string; args: string } |
  */
 const RUNS_DURING_A_TURN = new Set([
 	"help",
+	"diff",
 	"hotkeys",
 	"session",
 	"copy",
