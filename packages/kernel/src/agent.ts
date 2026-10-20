@@ -1333,6 +1333,20 @@ export class Agent {
 	}
 
 	/**
+	 * Label an entry of the session tree, or clear its label with an empty one (P39f, the
+	 * host's /tree; pi's setLabel through appendLabelChange). Throws for an unknown entry.
+	 */
+	async setLabel(entryId: string, label: string | undefined): Promise<void> {
+		await this.flushWrites();
+		if (!this.entriesById.has(entryId)) throw new SessionError("not_found", `Entry ${entryId} not found`);
+		const text = label?.trim();
+		await this.enqueueWrite(async () => {
+			await this.session.appendLabel(entryId, text ? text : undefined);
+			await this.refresh();
+		});
+	}
+
+	/**
 	 * A side question (P39c, Claude Code's /btw): the conversation as the next request would
 	 * send it (same prefix, so a warm prompt cache serves it), the newest 20 earlier side
 	 * exchanges, then the question. Nothing joins the conversation and no tool runs; the

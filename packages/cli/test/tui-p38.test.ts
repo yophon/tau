@@ -485,11 +485,16 @@ describe("P38c sessions and commands", () => {
 			await h.waitFor((f) => f.includes("ANSWER_TWO"), "the second answer");
 			await h.waitFor(() => h.controller.state.task === undefined, "the turn to end");
 			await h.submit("/tree");
-			await h.waitFor((f) => f.includes("Go back to a message"), "the tree");
-			// It opens at the newest message on the path.
+			await h.waitFor((f) => f.includes("Session tree"), "the tree");
+			// It opens at the current leaf (pi): the last answer; one up is the message.
 			assert.match(
 				h.controller.state.picker?.items[h.controller.state.picker.selected]?.label ?? "",
-				/second question/,
+				/assistant: ANSWER_TWO/,
+			);
+			await h.key(UP);
+			assert.match(
+				h.controller.state.picker?.items[h.controller.state.picker.selected]?.label ?? "",
+				/user: second question/,
 			);
 			await h.key(ENTER);
 			await h.waitFor((f) => f.includes("Summarize branch?"), "the summary question");

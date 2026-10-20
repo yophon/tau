@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import type { SessionEntry } from "@yophon/tau-kernel";
 import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { gitDiff } from "../src/git-diff.ts";
 import {
@@ -19,9 +20,22 @@ import {
 import { routeKey } from "../src/tui/keymap.ts";
 import { gitDiffLines, summarizeDiff } from "../src/tui/render/git-diff.ts";
 import { lineText } from "../src/tui/render/spans.ts";
-import { DOWN, deferred, ESC, type Harness, type HarnessOptions, harness as start, textTool } from "./tui-harness.ts";
+import { buildTree, SessionTreeView } from "../src/tui/session-tree.ts";
+import {
+	DOWN,
+	deferred,
+	ENTER,
+	ESC,
+	type Harness,
+	type HarnessOptions,
+	harness as start,
+	textTool,
+	UP,
+} from "./tui-harness.ts";
 
 const CTRL_B = "\x02";
+const CTRL_U = "\x15";
+const CTRL_X = "\x18";
 
 const open: Harness[] = [];
 async function harness(options: HarnessOptions): Promise<Harness> {
@@ -280,5 +294,186 @@ describe("P39e keybindings.json (pi)", () => {
 		assert.deepEqual(template["tui.editor.cursorLineStart"], ["home", "ctrl+a"]);
 		assert.equal(template["app.suspend"], "ctrl+z");
 		assert.deepEqual(new Keybindings({}, "win32").keys("app.suspend"), []);
+	});
+});
+
+describe("P39f session tree (pi's tree selector)", () => {
+	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
+	let clock = 0;
+	const base = (id: string, parentId: string | null) => ({
+		id,
+		parentId,
+		timestamp: new Date(2026, 9, 20, 12, 0, clock++).toISOString(),
+	});
+	const user = (id: string, parentId: string | null, text: string): SessionEntry => ({
+		...base(id, parentId),
+		type: "message",
+		message: { role: "user", content: text, timestamp: 0 },
+	});
+	const assistant = (
+		id: string,
+		parentId: string | null,
+		text: string,
+		calls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> = [],
+	): SessionEntry =>
+		({
+			...base(id, parentId),
+			type: "message",
+			message: {
+				role: "assistant",
+				content: [
+					...(text ? [{ type: "text" as const, text }] : []),
+					...calls.map((call) => ({ type: "toolCall" as const, ...call })),
+				],
+				api: "openai-completions",
+				provider: "p",
+				model: "m",
+				usage,
+				stopReason: calls.length > 0 ? "toolUse" : "stop",
+				timestamp: 0,
+			},
+		}) as SessionEntry;
+	const result = (id: string, parentId: string, callId: string): SessionEntry => ({
+		...base(id, parentId),
+		type: "message",
+		message: {
+			role: "toolResult",
+			toolCallId: callId,
+			toolName: "read",
+			content: [{ type: "text", text: "file body" }],
+			isError: false,
+			timestamp: 0,
+		},
+	});
+	/** u1 → a1 → (u2 → a2) | (u3 → call → result → a3, the leaf); a label on u2; a system message and a leaf move. */
+	const entries = (): SessionEntry[] => [
+		{
+			...base("s0", null),
+			type: "message",
+			message: { role: "system", content: "prompt", timestamp: 0 },
+		} as SessionEntry,
+		user("u1", "s0", "first question"),
+		assistant("a1", "u1", "first answer"),
+		user("u2", "a1", "old branch"),
+		assistant("a2", "u2", "old answer"),
+		user("u3", "a1", "new branch"),
+		assistant("c3", "u3", "", [{ id: "call1", name: "read", arguments: { path: "src/app.ts", offset: 10, limit: 5 } }]),
+		result("r3", "c3", "call1"),
+		assistant("a3", "r3", "new answer"),
+		{ ...base("l1", "a3"), type: "label", targetId: "u2", label: "keep" },
+		{ ...base("m1", "a3"), type: "leaf", leafId: "a3" } as SessionEntry,
+	];
+
+	it("draws branches as pi does: the current branch first and marked, tool calls in one line, bookkeeping hidden", () => {
+		const view = new SessionTreeView(buildTree(entries()), "a3");
+		assert.deepEqual(
+			view.rows().map((row) => row.text),
+			[
+				"• user: first question",
+				"• assistant: first answer",
+				"├⊟ • user: new branch",
+				"│     • [read: src/app.ts:10-14]",
+				"│     • assistant: new answer",
+				"└⊟ [keep] user: old branch",
+				"      assistant: old answer",
+			],
+		);
+		assert.equal(view.selected()?.entry.id, "a3", "it opens at the current leaf");
+		assert.equal(view.status(), "(5/7)");
+	});
+
+	it("filters, searches, folds and jumps between branches with pi's semantics", () => {
+		const view = new SessionTreeView(buildTree(entries()), "a3");
+		view.setFilter("user-only");
+		assert.deepEqual(
+			view.rows().map((row) => row.text),
+			["• user: first question", "├─ • user: new branch", "└─ [keep] user: old branch"],
+		);
+		assert.equal(view.status(), "(2/3) [user]");
+		view.setFilter("user-only");
+		assert.equal(view.filterMode, "default", "the same filter key goes back to the default view");
+		view.setFilter("no-tools");
+		assert.ok(!view.rows().some((row) => row.text.includes("[read:")));
+		view.setFilter("labeled-only");
+		assert.deepEqual(
+			view.rows().map((row) => row.text),
+			["[keep] user: old branch"],
+		);
+		view.setFilter("all");
+		assert.ok(view.rows().some((row) => row.text.includes("[label: keep]")));
+		assert.ok(!view.rows().some((row) => row.text.includes("prompt") || row.text.includes("[leaf")));
+		view.cycleFilter(1);
+		assert.equal(view.filterMode, "default");
+		view.type("old ans");
+		assert.deepEqual(
+			view.rows().map((row) => row.text),
+			["assistant: old answer"],
+		);
+		assert.equal(view.clearSearch(), true);
+		assert.equal(view.clearSearch(), false, "a second Esc closes");
+		// Fold the new branch at its first entry: its rows go, the marker shows; unfold brings them back.
+		view.select(2);
+		view.foldOrUp();
+		assert.equal(view.rows()[2]?.text, "├⊞ • user: new branch");
+		assert.equal(view.rows().length, 5);
+		view.unfoldOrDown();
+		assert.equal(view.rows().length, 7);
+		// From inside a branch, foldOrUp on a row that cannot fold goes to the branch's start.
+		view.select(4);
+		view.foldOrUp();
+		assert.equal(view.selected()?.entry.id, "u3");
+		view.toggleLabelTimestamps();
+		assert.match(view.rows()[5]?.text ?? "", /^└⊟ \[keep\] 12:00 user: old branch$/);
+		assert.equal(view.copyText(), "new branch");
+	});
+
+	it("in the TUI: Ctrl+U filters, typing searches, Shift+L labels in the log, Enter on the other branch goes back there", async () => {
+		const h = await harness({
+			responses: [
+				makeSseResponse(textTurn("ANSWER_ONE")),
+				makeSseResponse(textTurn("ANSWER_TWO")),
+				makeSseResponse(textTurn("ANSWER_THREE")),
+			],
+			sessions: true,
+		});
+		await h.submit("first question");
+		await h.waitFor((f) => f.includes("ANSWER_ONE"), "the first answer");
+		await h.submit("second question");
+		await h.waitFor((f) => f.includes("ANSWER_TWO"), "the second answer");
+		await h.waitFor(() => h.controller.state.task === undefined, "the turn to end");
+		// Back before the second question and ask another: a branch.
+		await h.submit("/tree");
+		await h.waitFor((f) => f.includes("Session tree") && f.includes("(4/4)"), "the tree at the leaf");
+		await h.key(UP);
+		await h.key(ENTER);
+		await h.waitFor((f) => f.includes("Summarize branch?"), "the summary question");
+		await h.key(ENTER);
+		await h.waitFor(() => h.controller.state.editor.text === "second question", "the message back in the input");
+		h.controller.setInput("");
+		await h.submit("third question");
+		await h.waitFor((f) => f.includes("ANSWER_THREE"), "the third answer");
+		await h.waitFor(() => h.controller.state.task === undefined, "the turn to end");
+		await h.submit("/tree");
+		// A branch with entries under it shows ⊟ (it can fold, pi).
+		const tree = await h.waitFor((f) => f.includes("├⊟") && f.includes("└⊟"), "the branches");
+		assert.match(tree, /├⊟ • user: third question/);
+		assert.match(tree, /└⊟ user: second question/);
+		await h.key(CTRL_U);
+		await h.waitFor((f) => f.includes("[user]") && f.includes("(2/3)"), "the user filter");
+		await h.type("second");
+		await h.waitFor((f) => f.includes("Type to search: second") && f.includes("(1/1)"), "the search");
+		await h.key("L");
+		await h.waitFor((f) => f.includes("Label (empty removes it)"), "the label question");
+		await h.submit("keep");
+		await h.waitFor((f) => f.includes("[keep] user: second question"), "the label in the tree");
+		const entriesNow = (await h.controller.sessionStore?.getEntries()) ?? [];
+		assert.ok(entriesNow.some((entry) => entry.type === "label" && entry.label === "keep"));
+		await h.key(CTRL_X);
+		await h.waitFor((f) => f.includes("Copied 15 characters"), "the copy");
+		assert.equal(h.copied.at(-1), "second question");
+		await h.key(ENTER);
+		await h.waitFor((f) => f.includes("Summarize branch?"), "the summary question");
+		await h.key(ENTER);
+		await h.waitFor(() => h.controller.state.editor.text === "second question", "back on the other branch");
 	});
 });

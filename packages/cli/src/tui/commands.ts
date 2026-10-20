@@ -32,6 +32,7 @@ import { getKeybindings } from "./keybindings.ts";
 import type { PickerItem } from "./model.ts";
 import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
+import { buildTree } from "./session-tree.ts";
 
 export interface BuiltinCommand {
 	name: string;
@@ -231,7 +232,7 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "tree",
 		args: "[id]",
-		description: "Go back to one of your messages in this session (to edit and send it again)",
+		description: "Browse the session tree and go back to any point; your messages return to the input box (pi)",
 		run: async (tui, args) => {
 			const store = tui.sessionStore;
 			if (!store) {
@@ -242,35 +243,20 @@ const BUILTINS: BuiltinCommand[] = [
 				await tui.navigate(args);
 				return;
 			}
+			// P39f: pi's tree selector, every entry with its branches, opened at the current leaf.
 			const entries = await store.getEntries();
-			const onPath = new Set((await store.getPathToRoot(await store.getLeafId())).map((entry) => entry.id));
-			const items: PickerItem[] = [];
-			let newest = 0;
-			for (const entry of entries) {
-				const fallback =
-					entry.type === "message" && entry.message.role === "user"
-						? {
-								label: `${onPath.has(entry.id) ? "●" : "○"} ${firstLine(messageText(entry.message), 70)}`,
-								...(onPath.has(entry.id) ? {} : { hint: "another branch" }),
-							}
-						: undefined;
-				const presentation = await presentEntry(tui, entry, fallback);
-				if (!presentation) continue;
-				// The list opens at the newest message on the current path (pi opens at the leaf).
-				if (fallback && onPath.has(entry.id)) newest = items.length;
-				items.push({ ...presentation, value: fallback ? entry.id : `${INFO}${entry.id}` });
-			}
-			if (items.length === 0) {
-				tui.notice("dim", "No user messages in this session yet.");
+			const leafId = await store.getLeafId();
+			if (!entries.some((entry) => entry.type === "message" && entry.message.role === "user")) {
+				tui.notice("dim", "No messages in this session yet.");
 				return;
 			}
-			const picked = await tui.pick("Go back to a message", items, newest);
+			const picked = await tui.pickTree(buildTree(entries), leafId);
 			if (picked === undefined) {
 				tui.flash("Navigation cancelled.");
 				return;
 			}
-			if (picked.startsWith(INFO)) {
-				tui.notice("dim", "That entry is not a jump target.");
+			if (picked === leafId) {
+				tui.flash("Already at this point.");
 				return;
 			}
 			// pi: whether to summarize the branch being left, no summary first.

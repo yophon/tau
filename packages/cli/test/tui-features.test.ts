@@ -244,8 +244,11 @@ describe("P25b commands and sessions", () => {
 		await h.submit("/mark");
 		await h.waitFor((f) => f.includes("MARKED"), "the custom entry");
 		await h.submit("/tree");
-		const tree = await h.waitFor((f) => f.includes("Go back to a message"), "the tree picker");
-		assert.match(tree, /ENTRY_RENDERED/);
+		// P39f: pi's tree hides custom entries until the "all" filter (Ctrl+A) shows them.
+		const tree = await h.waitFor((f) => f.includes("Session tree"), "the tree picker");
+		assert.doesNotMatch(tree, /\[custom:/);
+		await h.key("\x01");
+		await h.waitFor((f) => f.includes("[custom:") && f.includes("[all]"), "the custom entry under all");
 		await h.key(ESC);
 		await h.waitFor((f) => f.includes("Navigation cancelled."), "the cancellation");
 	});

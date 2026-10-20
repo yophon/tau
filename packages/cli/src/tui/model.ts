@@ -129,6 +129,8 @@ export interface PickerView {
 	query?: string;
 	/** Keys that act on the selected item (pi's session picker: Ctrl+R rename, Ctrl+D delete). */
 	actions?: Array<{ key: string; label: string }>;
+	/** The session tree (P39f, pi's tree selector): the controller's SessionTreeView owns the rows and keys. */
+	tree?: { search: string; status: string };
 }
 
 /** A question answered in the editor: ctx.ui.input, or the text after "deny and tell". */

@@ -95,7 +95,7 @@ describe("P37b Esc", () => {
 		assert.equal(h.controller.state.picker, undefined, "600 ms apart: no tree");
 		clock.now += 200;
 		await h.key(ESC);
-		await h.waitFor((f) => f.includes("Go back to a message"), "the tree picker");
+		await h.waitFor((f) => f.includes("Session tree"), "the tree picker");
 		h.cleanup();
 	});
 
@@ -104,7 +104,7 @@ describe("P37b Esc", () => {
 		await h.submit("first message");
 		await h.waitFor((f) => f.includes("FIRST") && /Worked for \d/.test(f), "the answer");
 		await h.key("\x1b\x1b");
-		await h.waitFor((f) => f.includes("Go back to a message"), "the tree picker");
+		await h.waitFor((f) => f.includes("Session tree"), "the tree picker");
 		h.cleanup();
 	});
 

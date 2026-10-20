@@ -35,6 +35,7 @@ export type {
 export {
 	applyEdits,
 	BASH_STRUCTURED_OUTPUT_MAX_BYTES,
+	backgroundMovedText,
 	backgroundStartedText,
 	cleanReadPath,
 	createCodingTools,

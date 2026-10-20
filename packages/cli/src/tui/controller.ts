@@ -59,7 +59,7 @@ import {
 	pressedKey,
 	setKeybindings,
 } from "./keybindings.ts";
-import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
+import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey, type TreeAction } from "./keymap.ts";
 import {
 	type ApprovalPromptRequest,
 	type ApprovalView,
@@ -75,6 +75,7 @@ import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./rende
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
+import { SessionTreeView, type TreeNode } from "./session-tree.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
@@ -610,11 +611,128 @@ export class TuiController {
 		return { kind: "menu", count, selected: Math.min(menu.selected, count - 1), start: menu.start };
 	}
 
+	/** The open session tree (P39f), when the picker shown is it. */
+	private tree?: { id: number; view: SessionTreeView };
+
+	private activeTree(): { id: number; view: SessionTreeView } | undefined {
+		const tree = this.tree;
+		return tree && this.state.picker?.tree && this.state.picker.id === tree.id ? tree : undefined;
+	}
+
+	/**
+	 * /tree (P39f, pi's tree selector): the whole session as a tree in the picker; resolves
+	 * with the chosen entry's id, undefined when cancelled.
+	 */
+	pickTree(roots: TreeNode[], leafId: string | null): Promise<string | undefined> {
+		const id = this.nextDialogId++;
+		const view = new SessionTreeView(roots, leafId);
+		this.tree = { id, view };
+		return new Promise((resolve) => {
+			this.pickers.set(id, (value) => {
+				if (this.tree?.id === id) this.tree = undefined;
+				resolve(value);
+			});
+			this.showTree();
+			this.store.flush();
+		});
+	}
+
+	/** The tree's rows as the picker's items, the selection kept in view. */
+	private showTree(): void {
+		const tree = this.tree;
+		if (!tree) return;
+		const rows = tree.view.rows();
+		const selected = tree.view.selectedIndex;
+		const height = this.listHeight;
+		const previous =
+			this.state.picker?.id === tree.id ? (this.state.picker.start ?? 0) : selected - Math.floor(height / 2);
+		const start = Math.max(0, Math.min(previous, selected, rows.length - height), selected - height + 1);
+		this.dispatch({
+			type: "picker-open",
+			picker: {
+				id: tree.id,
+				title: "Session tree",
+				items: rows.map((row) => ({ label: row.text, value: row.id })),
+				selected,
+				start: Math.max(0, start),
+				tree: { search: tree.view.searchQuery, status: tree.view.status() },
+			},
+		});
+	}
+
+	/** A session tree key (P39f, pi's TreeList.handleInput). */
+	private async treeKey(action: TreeAction): Promise<void> {
+		const tree = this.activeTree();
+		if (!tree) return;
+		const { view } = tree;
+		switch (action) {
+			case "app.tree.foldOrUp":
+				view.foldOrUp();
+				break;
+			case "app.tree.unfoldOrDown":
+				view.unfoldOrDown();
+				break;
+			case "app.tree.filter.default":
+				view.setFilter("default");
+				break;
+			case "app.tree.filter.noTools":
+				view.setFilter("no-tools");
+				break;
+			case "app.tree.filter.userOnly":
+				view.setFilter("user-only");
+				break;
+			case "app.tree.filter.labeledOnly":
+				view.setFilter("labeled-only");
+				break;
+			case "app.tree.filter.all":
+				view.setFilter("all");
+				break;
+			case "app.tree.filter.cycleForward":
+				view.cycleFilter(1);
+				break;
+			case "app.tree.filter.cycleBackward":
+				view.cycleFilter(-1);
+				break;
+			case "app.tree.toggleLabelTimestamp":
+				view.toggleLabelTimestamps();
+				break;
+			case "app.message.copy": {
+				const text = view.copyText();
+				if (text === undefined) this.flash("Nothing to copy in that entry");
+				else void this.copySelection(text);
+				return;
+			}
+			case "app.tree.editLabel": {
+				const node = view.selected();
+				if (!node) return;
+				// pi swaps the list for a label input; here the editor asks, then the tree comes back.
+				this.dispatch({ type: "picker-close", id: tree.id });
+				const label = await this.ask(
+					"input",
+					node.label ? `Label (now "${node.label}"; empty removes it)` : "Label (empty removes it)",
+				);
+				if (label !== undefined) {
+					try {
+						await this.agent.setLabel(node.entry.id, label);
+						view.setLabel(node.entry.id, label.trim() || undefined);
+					} catch (error) {
+						this.notice("error", `Label failed: ${errorText(error)}`);
+					}
+				}
+				if (this.tree === tree) this.showTree();
+				return;
+			}
+		}
+		this.showTree();
+	}
+
 	/** Move the open list's selection or window; false when no list is open. */
 	moveList(move: ListMove): boolean {
 		const list = this.openList();
 		if (!list) return false;
 		const next = moveInList(list.count, list.selected, list.start, this.listHeight, move);
+		// The session tree keeps its own selection (its rows change with filters and folds).
+		this.activeTree()?.view.select(next.selected);
 		this.dispatch(
 			list.kind === "picker"
 				? { type: "picker-select", index: next.selected, start: next.start }
@@ -1083,6 +1201,7 @@ export class TuiController {
 		const command = routeKey(ch, key, {
 			approvalOpen: state.approval !== undefined,
 			pickerOpen: state.picker !== undefined,
+			treeOpen: state.picker?.tree !== undefined,
 			asideOpen: state.aside !== undefined,
 			menuOpen: menu !== undefined && menu.items.length > 0,
 			promptActive: state.prompt !== undefined,
@@ -1539,10 +1658,21 @@ export class TuiController {
 			case "prompt-cancel":
 				this.cancelPrompt();
 				return;
+			case "tree-key":
+				void this.treeKey(command.action);
+				return;
 			case "picker-up":
-			case "picker-down":
+			case "picker-down": {
+				const tree = this.activeTree();
+				if (tree) {
+					// pi's tree wraps around at either end.
+					tree.view.move(command.type === "picker-up" ? -1 : 1);
+					this.showTree();
+					return;
+				}
 				this.moveList({ kind: "step", delta: command.type === "picker-up" ? -1 : 1 });
 				return;
+			}
 			case "list-page":
 				this.moveList({ kind: "page", direction: command.direction });
 				return;
@@ -1580,6 +1710,12 @@ export class TuiController {
 				return;
 			}
 			case "picker-backspace": {
+				const tree = this.activeTree();
+				if (tree) {
+					tree.view.backspace();
+					this.showTree();
+					return;
+				}
 				const query = state.picker?.query;
 				if (query) this.filterPicker([...query].slice(0, -1).join(""));
 				return;
@@ -1610,6 +1746,12 @@ export class TuiController {
 				return;
 			}
 			case "picker-key": {
+				const tree = this.activeTree();
+				if (tree) {
+					tree.view.type(command.key);
+					this.showTree();
+					return;
+				}
 				const picker = state.picker;
 				if (picker?.all) {
 					this.filterPicker((picker.query ?? "") + command.key);
@@ -1623,6 +1765,11 @@ export class TuiController {
 			}
 			case "picker-cancel":
 				if (!state.picker) return;
+				// The tree's Esc clears its search first (pi).
+				if (this.activeTree()?.view.clearSearch()) {
+					this.showTree();
+					return;
+				}
 				this.dispatch({ type: "picker-close", id: state.picker.id });
 				if (state.picker.checked) this.settleMany(state.picker.id, undefined);
 				else this.settlePicker(state.picker.id, undefined);

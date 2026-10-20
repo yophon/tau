@@ -232,7 +232,17 @@ function renderPicker(picker: PickerView, layout: BottomLayout): React.ReactElem
 			{ key: "t", bold: true },
 			picker.title,
 			picker.query ? h(Text, { key: "q", bold: false, color: "cyan" }, `  ${picker.query}`) : null,
+			picker.tree ? h(Text, { key: "s", bold: false, dimColor: true }, `  ${picker.tree.status}`) : null,
 		),
+		// pi's tree: "Type to search:" and the query above the list.
+		picker.tree
+			? h(
+					Text,
+					{ key: "search", wrap: "truncate-end" },
+					h(Text, { key: "l", dimColor: true }, "Type to search:"),
+					picker.tree.search ? h(Text, { key: "v", color: "cyan" }, ` ${picker.tree.search}`) : null,
+				)
+			: null,
 		...renderList(
 			"picker",
 			picker.checked
@@ -247,7 +257,11 @@ function renderPicker(picker: PickerView, layout: BottomLayout): React.ReactElem
 			layout.listRef,
 		),
 		picker.items.length === 0
-			? h(Text, { key: "none", dimColor: true }, picker.query ? "No matches." : "Nothing to choose from.")
+			? h(
+					Text,
+					{ key: "none", dimColor: true },
+					picker.tree ? "No entries found" : picker.query ? "No matches." : "Nothing to choose from.",
+				)
 			: null,
 	);
 }
@@ -308,6 +322,25 @@ export function hintText(state: UiState, completion: Completion | undefined): st
 		return `↑↓ and Enter, or 1-${count}, to choose · Esc to deny · Ctrl+O ${state.verbose ? "less" : "all of it"}`;
 	}
 	if (state.picker?.checked) return "↑↓ to move · Space or a click to check · Enter to confirm · Esc to cancel";
+	if (state.picker?.tree) {
+		if (state.flash) return state.flash;
+		// pi's TreeHelp, with the keys the key table gives.
+		const kb = getKeybindings();
+		const first = (action: string): string => {
+			const key = kb.keys(action)[0];
+			return key === undefined ? "-" : keyLabel(key);
+		};
+		const filters = [
+			"app.tree.filter.default",
+			"app.tree.filter.noTools",
+			"app.tree.filter.userOnly",
+			"app.tree.filter.labeledOnly",
+			"app.tree.filter.all",
+		]
+			.map(first)
+			.join("/");
+		return `↑↓ move · ←→ page · ${first("app.tree.foldOrUp")}/${first("app.tree.unfoldOrDown")} branch · ${first("app.message.copy")} copy · ${first("app.tree.editLabel")} label · ${first("app.tree.toggleLabelTimestamp")} label time · filters ${filters} · ${first("app.tree.filter.cycleForward")} cycle · Enter go · Esc close`;
+	}
 	if (state.aside && !state.picker && !state.flash) {
 		const others = state.asides.length > 1 ? " · Shift+←→ other answers · x clear earlier" : "";
 		return `Space, Enter or Esc to close · ↑↓ scroll · c copy${others}`;
