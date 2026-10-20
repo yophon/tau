@@ -11,6 +11,7 @@ import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
 import { type Agent, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
+import { mainCheckoutOf } from "./git-paths.ts";
 import { createMemoryExtension, type MemoryScope } from "./memory.ts";
 import { resolveConfigValue } from "./models.ts";
 import { createSecretGuard } from "./secret-guard.ts";
@@ -101,7 +102,8 @@ function readCodemodeSettings(path: string): CodemodeSettings {
  * the gateway conversations recorded as an owner's).
  */
 export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
-	const project = join(home, ".tau", "projects", sessionDirSlug(cwd));
+	// P37d: every worktree of a repository shares the main checkout's project memory (Claude Code).
+	const project = join(home, ".tau", "projects", sessionDirSlug(mainCheckoutOf(cwd) ?? cwd));
 	return {
 		userFile: join(home, ".tau", "memory", "USER.md"),
 		project: { file: join(project, "MEMORY.md"), topicsDir: join(project, "memory") },

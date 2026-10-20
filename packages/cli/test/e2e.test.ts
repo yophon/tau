@@ -1490,3 +1490,55 @@ test("a project with only .tau/mcp.json goes through the trust gate (P37a)", asy
 		}
 	});
 });
+
+// --- P37d: --worktree -------------------------------------------------------------
+
+test("--worktree runs the session in a new worktree; -p leaves it in place (P37d)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const { execFileSync } = await import("node:child_process");
+		const env = {
+			...process.env,
+			GIT_AUTHOR_NAME: "t",
+			GIT_AUTHOR_EMAIL: "t@example.com",
+			GIT_COMMITTER_NAME: "t",
+			GIT_COMMITTER_EMAIL: "t@example.com",
+		};
+		const git = (...args: string[]) => execFileSync("git", args, { cwd, env, stdio: "ignore" });
+		try {
+			git("--version");
+		} catch {
+			return;
+		}
+		git("init", "-q", "-b", "main");
+		await writeFile(join(cwd, "AGENTS.md"), "WORKTREE_RULES\n");
+		git("add", ".");
+		git("commit", "-q", "-m", "first");
+		const mock = await startMockOpenAI([() => mockTextTurn("in the worktree"), () => mockTextTurn("again")]);
+		try {
+			const cli = startCli(["--worktree", "feat", "-p", "hi"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await cli.waitForExit(), 0, cli.output());
+			const worktree = join(cwd, ".tau", "worktrees", "feat");
+			assert.match(cli.output(), /Worktree feat on branch worktree-feat/);
+			const system = (mock.requests[0].messages as { role: string; content: string }[])[0].content;
+			assert.ok(system.includes(`Working directory: ${worktree}`), system);
+			assert.equal(
+				system.split("WORKTREE_RULES").length,
+				2,
+				"AGENTS.md once: the worktree's copy shadows the main one",
+			);
+			assert.ok(existsSync(worktree), "-p does not clean up");
+			const generated = startCli(["--worktree", "-p", "hi"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await generated.waitForExit(), 0, generated.output());
+			assert.match(
+				generated.output(),
+				/Worktree [a-z]+-[a-z]+-[a-z]+ on branch worktree-/,
+				"-p is not taken as a name",
+			);
+			const rpc = startCli(["--mode", "rpc", "--worktree"], { cwd, home, baseUrl: mock.baseUrl });
+			assert.equal(await rpc.waitForExit(), 1);
+			assert.match(rpc.output(), /--worktree works with the TUI, the REPL, -p and --mode json/);
+		} finally {
+			await mock.close();
+		}
+	});
+});

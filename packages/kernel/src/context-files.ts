@@ -67,29 +67,43 @@ async function loadFromDir(fs: FileSystem, dir: string): Promise<ContextFile | u
  */
 export async function loadProjectContextFiles(
 	fs: FileSystem,
-	options: { cwd: string; globalDir?: string },
+	options: {
+		cwd: string;
+		globalDir?: string;
+		/**
+		 * Files to leave out (P37d): the host passes the main checkout's AGENTS.md that a
+		 * nested worktree's own copy shadows (pi findShadowedContextFile; the kernel has no realpath).
+		 */
+		skip?: readonly string[];
+	},
 ): Promise<ContextFile[]> {
 	const files: ContextFile[] = [];
-	const seen = new Set<string>();
+	const seen = new Set<string>((options.skip ?? []).map(comparablePath));
 	if (options.globalDir !== undefined) {
 		const global = await loadFromDir(fs, options.globalDir);
 		if (global) {
 			files.push(global);
-			seen.add(global.path);
+			seen.add(comparablePath(global.path));
 		}
 	}
 	const ancestors: ContextFile[] = [];
 	let dir: string | undefined = options.cwd;
 	while (dir !== undefined) {
 		const found = await loadFromDir(fs, dir);
-		if (found && !seen.has(found.path)) {
+		if (found && !seen.has(comparablePath(found.path))) {
 			ancestors.unshift(found);
-			seen.add(found.path);
+			seen.add(comparablePath(found.path));
 		}
 		dir = parentDir(dir);
 	}
 	files.push(...ancestors);
 	return files;
+}
+
+/** One spelling per path for comparing: forward slashes, and case folded for Windows drive paths. */
+function comparablePath(path: string): string {
+	const slashed = path.replace(/\\/g, "/");
+	return /^[A-Za-z]:\//.test(slashed) ? slashed.toLowerCase() : slashed;
 }
 
 /** The `<project_context>` system prompt section (pi wording); "" when there are no files. */

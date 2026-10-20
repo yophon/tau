@@ -27,6 +27,7 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
+import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
 import { autoTitle } from "../session-title.ts";
 import { type StatusLineFacts, statusLineInput } from "../statusline.ts";
@@ -2410,14 +2411,9 @@ function isAbortError(error: unknown): boolean {
 }
 
 /** The git branch, best effort: the ref name in .git/HEAD, a short sha when detached. */
+/** The branch at `cwd`: in linked worktrees and repository subdirectories too (P37d, pi). */
 export function readGitBranch(cwd: string): string | undefined {
-	try {
-		const head = readFileSync(join(cwd, ".git", "HEAD"), "utf8").trim();
-		const match = head.match(/^ref: refs\/heads\/(.+)$/);
-		return match ? match[1] : head.slice(0, 7);
-	} catch {
-		return undefined;
-	}
+	return readBranchFromGit(cwd);
 }
 
 /** Write the text to a temp file, run the editor on it in the foreground, read it back. */

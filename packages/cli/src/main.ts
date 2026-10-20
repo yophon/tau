@@ -81,6 +81,7 @@ import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } fro
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
+import { shadowedContextFile } from "./git-paths.ts";
 import { createHooksExtension, HookRunner, loadHookConfig, withHookApprovals } from "./hooks.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
@@ -115,6 +116,7 @@ import { autoTitle, autoTitleOn } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
 import { createStatusLineExtension, StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/controller.ts";
+import { finishWorktreeSession, isWorktreeName, openWorktree, type WorktreeSession } from "./worktree.ts";
 
 /** The CLI package version (src/ and dist/ both sit one level below package.json). */
 const CLI_VERSION = (
@@ -186,6 +188,12 @@ Options:
                          (default: parallel, pi's default; env: TAU_TOOL_EXECUTION).
                          parallel runs a multi-tool batch concurrently after
                          sequential preflight (hooks/approval stay ordered).
+      --worktree [name]  Work in a new git worktree <repo>/.tau/worktrees/<name> on branch
+                         worktree-<name> (a name is generated when none is given; an
+                         existing one is opened again). On exit a clean worktree with a
+                         generated name is removed, otherwise you choose. Not with
+                         --mode rpc/acp or the gateway. settings: worktree.baseRef
+                         ("fresh" = origin's default branch, "head"), worktree.symlinkDirectories
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
       --no-session       Do not persist this conversation
@@ -249,6 +257,8 @@ interface CliOptions {
 	files: string[];
 	/** P37a: --add-dir, --allowed-tools, --disallowed-tools (Claude Code). */
 	addDirs?: string[];
+	/** P37d: --worktree [name] (Claude Code). */
+	worktree?: { name?: string };
 	allowedTools?: string[];
 	disallowedTools?: string[];
 }
@@ -365,6 +375,17 @@ function parseArgs(argv: string[]): CliOptions {
 			case "--add-dir":
 				options.addDirs = [...(options.addDirs ?? []), next()];
 				break;
+			case "--worktree": {
+				// The next word is the name when it looks like one (Claude Code's optional argument).
+				const candidate = argv[i + 1];
+				if (isWorktreeName(candidate) && !candidate.startsWith("-")) {
+					options.worktree = { name: candidate };
+					i++;
+				} else {
+					options.worktree = {};
+				}
+				break;
+			}
 			case "--allowed-tools":
 			case "--allowedTools":
 				options.allowedTools = [...(options.allowedTools ?? []), ...splitRuleList(next())];
@@ -1382,6 +1403,32 @@ async function main(): Promise<void> {
 			: {}),
 		...(Number.isFinite(envRetryDelay) && envRetryDelay > 0 ? { baseDelayMs: envRetryDelay } : {}),
 	};
+	// P37d: --worktree makes the worktree the working directory for everything below.
+	let worktreeSession: WorktreeSession | undefined;
+	if (options.worktree) {
+		if (options.mode === "rpc" || options.mode === "acp" || options.gateway) {
+			console.error("--worktree works with the TUI, the REPL, -p and --mode json.");
+			process.exit(1);
+		}
+		try {
+			worktreeSession = openWorktree({
+				cwd: process.cwd(),
+				...(options.worktree.name ? { name: options.worktree.name } : {}),
+				settings: userSettings.worktree ?? {},
+			});
+		} catch (error) {
+			console.error(`Error creating worktree: ${error instanceof Error ? error.message : String(error)}`);
+			process.exit(1);
+		}
+		const store = readTrustStore();
+		const main = store.trusted[worktreeSession.mainRoot];
+		const mainTrusted = main === true || (typeof main === "object" && main !== null && main.trusted);
+		process.chdir(worktreeSession.path);
+		// Trust follows the main checkout (Claude Code).
+		if (mainTrusted && store.trusted[resolve(process.cwd())] === undefined)
+			await saveProjectTrust(resolve(process.cwd()), true);
+		console.error(dim(`Worktree ${worktreeSession.name} on branch ${worktreeSession.branch}: ${worktreeSession.path}`));
+	}
 	const cwd = resolve(process.cwd());
 	const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
 	if (options.tui && options.print === undefined && !terminal) {
@@ -1627,6 +1674,10 @@ async function main(): Promise<void> {
 				: new WorkspacePermissions({
 						home: userHome(),
 						cwd,
+						// P37d: in a tau worktree, local rules live in the main checkout (Claude Code).
+						...(worktreeSession && cwd === resolve(worktreeSession.path)
+							? { localRoot: worktreeSession.mainRoot }
+							: {}),
 						projectTrusted: () => projectTrusted,
 						allowedTools: options.allowedTools ?? [],
 						disallowedTools: options.disallowedTools ?? [],
@@ -1705,7 +1756,14 @@ async function main(): Promise<void> {
 		const loadProjectContext = async (): Promise<string> =>
 			options.noContextFiles
 				? ""
-				: renderProjectContext(await loadProjectContextFiles(fs, { cwd, globalDir: join(userHome(), ".tau") }));
+				: renderProjectContext(
+						await loadProjectContextFiles(fs, {
+							cwd,
+							globalDir: join(userHome(), ".tau"),
+							// P37d (pi): a nested worktree's own AGENTS.md shadows the main checkout's.
+							skip: [shadowedContextFile(cwd)].filter((path): path is string => path !== undefined),
+						}),
+					);
 		let projectContext = await loadProjectContext();
 		const sessionRepo = new JsonlSessionRepo(
 			new NodeFileSystem("/"),
@@ -2004,6 +2062,18 @@ async function main(): Promise<void> {
 				addedDirs: workspace.permissions?.workingDirectories() ?? [],
 				provider: activeModel?.provider ?? config.provider ?? "openai-compat",
 				version: CLI_VERSION,
+				...(worktreeSession
+					? {
+							projectDir: worktreeSession.mainRoot,
+							worktree: {
+								name: worktreeSession.name,
+								path: worktreeSession.path,
+								branch: worktreeSession.branch,
+								originalCwd: worktreeSession.mainRoot,
+								...(worktreeSession.originalBranch ? { originalBranch: worktreeSession.originalBranch } : {}),
+							},
+						}
+					: {}),
 			}),
 			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
 			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),
@@ -2053,6 +2123,7 @@ async function main(): Promise<void> {
 			reloadExtensions,
 			sessionReason,
 		});
+		if (worktreeSession) await finishWorktree(worktreeSession, workspace.background);
 		return;
 	}
 
@@ -2295,6 +2366,31 @@ async function main(): Promise<void> {
 	}
 	await extensions.notifySessionShutdown("quit", agent.extensionContext());
 	readline.close();
+	if (worktreeSession && process.stdin.isTTY) await finishWorktree(worktreeSession, workspace.background);
+}
+
+/** A question on the terminal after the TUI or REPL ended. */
+async function askLine(question: string): Promise<string> {
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		return await rl.question(question);
+	} finally {
+		rl.close();
+	}
+}
+
+/** Leaving a worktree session (P37d): worktree.ts decides, the terminal answers. */
+async function finishWorktree(session: WorktreeSession, background: { stopAll(): void }): Promise<void> {
+	await finishWorktreeSession(session, {
+		ask: askLine,
+		log: (text) => console.log(dim(text)),
+		error: (text) => console.error(text),
+		beforeRemove: () => {
+			background.stopAll();
+			// Windows will not delete the directory the process stands in.
+			process.chdir(session.mainRoot);
+		},
+	});
 }
 
 await main();

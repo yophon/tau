@@ -36,6 +36,8 @@ export interface TauSettings {
 	dirtyRepoGuard?: boolean;
 	/** P37b: tui.doubleEscapeAction — Esc twice on an empty input (pi; default "tree"). */
 	doubleEscapeAction?: "tree" | "fork" | "none";
+	/** P37d: worktree.baseRef ("fresh" default | "head") and worktree.symlinkDirectories (Claude Code). */
+	worktree?: { baseRef?: "fresh" | "head"; symlinkDirectories?: string[] };
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -112,6 +114,20 @@ export function readSettings(path: string): TauSettings {
 	if (typeof askUser === "object" && askUser !== null) {
 		const wait = (askUser as Record<string, unknown>).wait;
 		if (typeof wait === "boolean") settings.askUserWait = wait;
+	}
+	const worktree = raw.worktree;
+	if (typeof worktree === "object" && worktree !== null) {
+		const { baseRef, symlinkDirectories } = worktree as Record<string, unknown>;
+		settings.worktree = {
+			...(baseRef === "fresh" || baseRef === "head" ? { baseRef } : {}),
+			...(Array.isArray(symlinkDirectories)
+				? {
+						symlinkDirectories: symlinkDirectories.filter(
+							(dir): dir is string => typeof dir === "string" && dir !== "",
+						),
+					}
+				: {}),
+		};
 	}
 	const audit = raw.audit;
 	if (typeof audit === "object" && audit !== null) {
