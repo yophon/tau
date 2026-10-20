@@ -1029,8 +1029,13 @@ export function whenCommandRuns(tui: TuiController, text: string): "now" | "late
 	const parsed = parseCommandLine(text);
 	if (!parsed) return "unknown";
 	const builtin = findBuiltin(parsed.name);
-	if (builtin) return RUNS_DURING_A_TURN.has(builtin.name) ? "now" : "later";
-	return tui.extensions.commands.has(parsed.name) ? "later" : "unknown";
+	if (builtin) {
+		// /follow joins a running turn; during another task (a compaction) it waits like a prompt.
+		if (builtin.name === "follow" && tui.state.task !== undefined && tui.state.task !== "turn") return "later";
+		return RUNS_DURING_A_TURN.has(builtin.name) ? "now" : "later";
+	}
+	// Extension commands run at once, even mid-turn (pi: "execute immediately, even during streaming").
+	return tui.extensions.commands.has(parsed.name) ? "now" : "unknown";
 }
 
 export async function runCommand(tui: TuiController, text: string): Promise<boolean> {
@@ -1050,7 +1055,7 @@ export async function runCommand(tui: TuiController, text: string): Promise<bool
 		await tui.renderNewMessages(start);
 		await tui.refreshSurfaces();
 		if (typeof output === "string") tui.notice("info", output);
-		else if (output?.action === "prompt") await tui.runPrompt(output.text);
+		else if (output?.action === "prompt") await tui.promptWhenFree(output.text);
 	} catch (error) {
 		tui.notice("error", `/${parsed.name} failed: ${errorText(error)}`);
 	}

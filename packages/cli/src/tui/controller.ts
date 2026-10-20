@@ -59,6 +59,7 @@ import {
 	initialState,
 	type PickerItem,
 	type PromptView,
+	type QueuedInput,
 	type TaskKind,
 } from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
@@ -260,7 +261,9 @@ export class TuiController {
 			// pi ui.editor: the external editor ($VISUAL / $EDITOR); the title has nowhere to go.
 			editor: async (_title, prefill) => {
 				try {
-					const edited = (this.deps.editText ?? editInExternalEditor)(prefill ?? "");
+					// The terminal is handed over as for Ctrl+G (key reports off, main screen, cooked mode).
+					const edit = () => (this.deps.editText ?? editInExternalEditor)(prefill ?? "");
+					const edited = this.deps.handOverScreen ? this.deps.handOverScreen(edit) : edit();
 					return edited?.replace(/\r\n/g, "\n");
 				} catch (error) {
 					this.notice("error", `External editor failed: ${errorText(error)}`);
@@ -697,7 +700,9 @@ export class TuiController {
 
 	/** The whole transcript at the current width, from the full-screen view (built on demand). */
 	private transcriptSource: (() => TranscriptRows) | undefined;
-	private lastClick: { row: number; x: number; at: number; count: number; toggled?: string } | undefined;
+	private lastClick:
+		| { row: number; x: number; at: number; count: number; toggled?: { id: string; verbose: boolean } }
+		| undefined;
 	private dragging = false;
 	private dragMoved = false;
 	private lastPointer = { x: 0, y: 0 };
@@ -733,7 +738,7 @@ export class TuiController {
 		const count = repeat ? Math.min(3, last.count + 1) : 1;
 		// The first click of a double click opened or shut a tool block: that was not meant.
 		if (count === 2 && last?.toggled) {
-			this.dispatch({ type: "toggle-block", id: last.toggled, verbose: this.state.verbose });
+			this.dispatch({ type: "toggle-block", ...last.toggled });
 			transcript = this.transcriptSource?.() ?? transcript;
 		}
 		const point = this.pointAt(transcript, x, y);
@@ -810,10 +815,12 @@ export class TuiController {
 		const hit = blockAt(transcript, selection.anchor.row);
 		if ((hit?.block.kind === "tool" || hit?.block.kind === "group") && selection.anchor.row === hit.start + 1) {
 			this.dispatch({ type: "toggle-block", id: hit.block.id, verbose: this.state.verbose });
-			this.lastClick.toggled = hit.block.id;
-		} else if (hit?.block.kind === "reasoning" && !hit.block.continued) {
-			this.dispatch({ type: "toggle-block", id: hit.block.id, verbose: this.state.showReasoning });
-			this.lastClick.toggled = hit.block.id;
+			this.lastClick.toggled = { id: hit.block.id, verbose: this.state.verbose };
+		} else if (hit?.block.kind === "reasoning") {
+			// The whole run opens or shuts, whichever of its paragraphs was clicked.
+			const id = hit.block.head ?? hit.block.id;
+			this.dispatch({ type: "toggle-block", id, verbose: this.state.showReasoning });
+			this.lastClick.toggled = { id, verbose: this.state.showReasoning };
 		}
 	}
 
@@ -1063,7 +1070,8 @@ export class TuiController {
 				return true;
 			}
 		}
-		const next = this.markerEdit(current, command) ?? applyEditorCommand(current, command);
+		const next =
+			this.markerEdit(current, command) ?? applyEditorCommand(current, command, [...this.pastes.entries.keys()]);
 		if (next === undefined) return false;
 		if (next.text === current.text) {
 			if (next.cursor !== current.cursor) this.lastEdit = undefined;
@@ -1558,6 +1566,9 @@ export class TuiController {
 				return;
 			case "toggle-reasoning":
 				this.dispatch({ type: "toggle-reasoning" });
+				// Ctrl+T is for reading what was thought: inline, the history is written again with it
+				// (full screen redraws every block anyway).
+				if (!this.fullscreen) this.redraw();
 				this.flash(`Reasoning ${this.state.showReasoning ? "shown" : "collapsed"}`);
 				return;
 			case "external-editor":
@@ -1710,7 +1721,7 @@ export class TuiController {
 		const state = this.state;
 		// Queued input and an empty editor: ↑ takes the queue back for editing (pi Alt+Up).
 		if (state.queued.length > 0 && state.editor.text === "") {
-			this.restoreQueuedInput(true);
+			this.takeBackQueued();
 			return;
 		}
 		const items = this.history.list();
@@ -1742,18 +1753,29 @@ export class TuiController {
 	}
 
 	/**
-	 * Take steering and follow-ups back into the editor; with `commands` (↑ on an empty input)
-	 * the waiting slash commands too — after a turn they stay queued and run.
+	 * ↑ on an empty input (pi Alt+Up): the queue back for editing. Input waiting behind a
+	 * command comes back one item at a time, the last first: commands joined into one input
+	 * would run as one command with the others as its arguments.
 	 */
-	private restoreQueuedInput(commands = false): void {
+	private takeBackQueued(): void {
+		const last = this.pending.pop();
+		if (!last) {
+			this.restoreQueuedInput();
+			return;
+		}
+		this.dispatch({ type: "queue-remove", input: queuedInput(last) });
+		this.setEditor(ed.fromText(last.text));
+	}
+
+	/** Take steering and follow-ups back into the editor; waiting commands stay queued and run after the turn. */
+	private restoreQueuedInput(): void {
 		const { steering, followUp } = this.agent.clearQueue();
 		const texts = [...steering, ...followUp]
 			.filter((message) => message.role === "user")
 			.map((message) => userContentText(message.content))
 			.filter((text) => text !== "");
-		if (commands) texts.push(...this.pendingCommands.splice(0));
 		this.dispatch({ type: "queue-clear" });
-		for (const text of this.pendingCommands) this.dispatch({ type: "queue-add", input: { kind: "command", text } });
+		for (const item of this.pending) this.dispatch({ type: "queue-add", input: queuedInput(item) });
 		if (texts.length === 0) return;
 		const current = this.state.editor.text;
 		this.setEditor(ed.fromText([...texts, ...(current.trim() === "" ? [] : [current])].join("\n")));
@@ -1762,7 +1784,16 @@ export class TuiController {
 	private takeInput(): string {
 		const text = expandPastes(this.pastes, this.state.editor.text).trim();
 		this.setEditor(ed.EMPTY);
+		this.forgetEdits();
+		// What a command lists (sessions for /resume) may have changed by the next time it is typed.
+		this.argumentCache.clear();
 		return text;
+	}
+
+	/** What was sent is not undone into the next draft (pi submitValue clears its undo stack). */
+	private forgetEdits(): void {
+		this.undoStack.length = 0;
+		this.lastEdit = undefined;
 	}
 
 	submit(): void {
@@ -1778,6 +1809,7 @@ export class TuiController {
 		if (prompt) {
 			const text = expandPastes(this.pastes, this.state.editor.text).trim();
 			if (text === "" && prompt.kind === "tell") return;
+			this.forgetEdits();
 			this.closePrompt(prompt.id);
 			this.settlePrompt(prompt.id, text === "" ? undefined : text);
 			return;
@@ -1823,6 +1855,11 @@ export class TuiController {
 	}
 
 	private queueFollowUp(): void {
+		// An open prompt (deny and tell, a question) is answered: the turn is waiting for it.
+		if (this.state.prompt) {
+			this.submit();
+			return;
+		}
 		const text = this.takeInput();
 		if (text === "") return;
 		this.history.push(text);
@@ -1831,26 +1868,39 @@ export class TuiController {
 			this.queueCommand(text);
 			return;
 		}
+		// Behind a waiting command a follow-up waits too: the queue runs in the order it shows.
+		if (this.pending.length > 0) {
+			this.queuePending({ kind: "prompt", text });
+			return;
+		}
 		this.sendQueued("followUp", text);
 	}
 
-	/** Slash commands waiting for the running task to end, run in order then (P38c). */
-	private readonly pendingCommands: string[] = [];
+	/**
+	 * Input waiting for the running task to end, run in order then (P38c): slash commands, and
+	 * follow-ups queued after one (Claude Code runs its queue in order).
+	 */
+	private readonly pending: PendingInput[] = [];
 	private runningCommands = false;
 
 	private queueCommand(text: string): void {
-		this.pendingCommands.push(text);
-		this.dispatch({ type: "queue-add", input: { kind: "command", text } });
+		this.queuePending({ kind: "command", text });
+	}
+
+	private queuePending(item: PendingInput): void {
+		this.pending.push(item);
+		this.dispatch({ type: "queue-add", input: queuedInput(item) });
 	}
 
 	private async runPendingCommands(): Promise<void> {
 		if (this.runningCommands) return;
 		this.runningCommands = true;
 		try {
-			while (this.pendingCommands.length > 0 && this.state.task === undefined && !this.stopped) {
-				const text = this.pendingCommands.shift() as string;
-				this.dispatch({ type: "queue-remove", text });
-				await this.runSlash(text);
+			while (this.pending.length > 0 && this.state.task === undefined && !this.stopped) {
+				const item = this.pending.shift() as PendingInput;
+				this.dispatch({ type: "queue-remove", input: queuedInput(item) });
+				if (item.kind === "command") await this.runSlash(item.text);
+				else await this.runPrompt(item.text);
 			}
 		} finally {
 			this.runningCommands = false;
@@ -1920,9 +1970,15 @@ export class TuiController {
 		}
 	}
 
+	/** A prompt an extension command or shortcut asked for: now, or once the running task ends. */
+	async promptWhenFree(text: string): Promise<void> {
+		if (this.state.task === undefined) await this.runPrompt(text);
+		else this.pendingStarts.push(text);
+	}
+
 	private startPending(): void {
 		if (this.state.task !== undefined || this.stopped) return;
-		if (this.pendingCommands.length > 0) {
+		if (this.pending.length > 0) {
 			void this.runPendingCommands();
 			return;
 		}
@@ -1936,13 +1992,15 @@ export class TuiController {
 		const startedAt = this.now();
 		let interrupted = false;
 		let failure: string | undefined;
-		// Messages that arrived since the last run (a background subagent's result) show first.
-		await this.renderUnshownMessages();
-		if (input !== null) {
-			const images = typeof input === "string" ? 0 : input.filter((part) => part.type === "image").length;
-			this.dispatch({ type: "user", text: userContentText(input), images });
-		}
+		// The slot is taken before anything is awaited: whoever checks state.task next (a queued
+		// command, /follow) sees this turn and waits for it.
 		await this.runTask("turn", "Thinking", async (signal) => {
+			// Messages that arrived since the last run (a background subagent's result) show first.
+			await this.renderUnshownMessages();
+			if (input !== null) {
+				const images = typeof input === "string" ? 0 : input.filter((part) => part.type === "image").length;
+				this.dispatch({ type: "user", text: userContentText(input), images });
+			}
 			try {
 				// input null = an extension-triggered continuation without new user input.
 				const stream = input === null ? this.agent.resume(signal) : this.agent.prompt(input, signal);
@@ -2141,7 +2199,7 @@ export class TuiController {
 			await this.renderNewMessages(start);
 			await this.refreshSurfaces();
 			if (typeof output === "string") this.notice("info", output);
-			else if (output?.action === "prompt") await this.runPrompt(output.text);
+			else if (output?.action === "prompt") await this.promptWhenFree(output.text);
 		} catch (error) {
 			this.notice("error", `Shortcut ${name} failed: ${errorText(error)}`);
 		}
@@ -2284,7 +2342,9 @@ export class TuiController {
 				const count = conversationLength(this.agent.messages);
 				if (result.editorText !== undefined) {
 					this.showSession(`Back before that message (${count} messages in context); it is in the input box.`);
-					if (this.state.editor.text.trim() === "") this.setInput(result.editorText);
+					// pi puts it in the editor; a draft typed meanwhile stays after it.
+					const draft = this.state.editor.text;
+					this.setInput(draft.trim() === "" ? result.editorText : `${result.editorText}\n${draft}`);
 				} else {
 					this.showSession(`Moved (${count} messages in context).`);
 				}
@@ -2304,6 +2364,9 @@ export class TuiController {
 		// write only the rows that changed, P38d), without clearing first.
 		else if (this.fullscreen && this.fullRepaint) this.fullRepaint();
 		else process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
+		// Inline: Ink's copy of the history goes with the screen, or Ink writes the old one back
+		// whenever a frame is as tall as the terminal (/clear, /resume, /tree, a redraw).
+		this.beforeRedraw?.();
 	}
 
 	/**
@@ -2318,7 +2381,6 @@ export class TuiController {
 		const sync = !this.deps.clearScreen;
 		if (sync) process.stdout.write("\x1b[?2026h");
 		this.clearScreen();
-		this.beforeRedraw?.();
 		this.dispatch({ type: "redraw" });
 		this.store.flush();
 		if (sync) process.stdout.write("\x1b[?2026l");
@@ -2861,8 +2923,22 @@ function customKey(message: CustomMessage): string {
 	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
 }
 
+/** Input waiting for the running task to end (P38c). */
+interface PendingInput {
+	kind: "command" | "prompt";
+	text: string;
+}
+
+function queuedInput(item: PendingInput): QueuedInput {
+	return { kind: item.kind === "command" ? "command" : "followUp", text: item.text };
+}
+
 /** Pure editor commands → the next editor state; undefined for everything else. */
-export function applyEditorCommand(current: ed.EditorState, command: KeyCommand): ed.EditorState | undefined {
+export function applyEditorCommand(
+	current: ed.EditorState,
+	command: KeyCommand,
+	atoms: readonly string[] = [],
+): ed.EditorState | undefined {
 	switch (command.type) {
 		case "newline":
 			return ed.newline(current);
@@ -2883,13 +2959,13 @@ export function applyEditorCommand(current: ed.EditorState, command: KeyCommand)
 		case "cursor-down":
 			return ed.down(current) ?? current;
 		case "word-left":
-			return ed.wordLeft(current);
+			return ed.wordLeft(current, atoms);
 		case "word-right":
-			return ed.wordRight(current);
+			return ed.wordRight(current, atoms);
 		case "delete-word-back":
-			return ed.deleteWordBack(current);
+			return ed.deleteWordBack(current, atoms);
 		case "delete-word-forward":
-			return ed.deleteWordForward(current);
+			return ed.deleteWordForward(current, atoms);
 		case "kill-line-end":
 			return ed.killToLineEnd(current);
 		case "delete-forward":

@@ -75,7 +75,18 @@ export class InputSplitter {
 	/** Complete tokens from this read; an unfinished sequence waits for the next (see pending, flush). */
 	feed(data: string): InputToken[] {
 		const tokens: InputToken[] = [];
-		this.buffer = this.win32.translate(this.buffer + data);
+		const text = this.win32.translate(this.buffer + data);
+		// A sequence cut off at the end waits whole for the rest, out of the splitter's sight: a
+		// key event inside a paste must not land in it raw (Windows Terminal can send a paste as
+		// events, a few reads long).
+		const cut = (this.win32.seen ? CUT_EVENT : CUT_SEQUENCE).exec(text);
+		this.buffer = cut ? text.slice(0, cut.index) : text;
+		this.split(tokens);
+		if (cut) this.buffer += cut[0];
+		return tokens;
+	}
+
+	private split(tokens: InputToken[]): void {
 		while (this.buffer !== "") {
 			if (this.paste !== undefined) {
 				const end = this.buffer.indexOf(PASTE_END);
@@ -84,7 +95,7 @@ export class InputSplitter {
 					const keep = partialSuffix(this.buffer, PASTE_END);
 					this.paste += this.buffer.slice(0, this.buffer.length - keep);
 					this.buffer = this.buffer.slice(this.buffer.length - keep);
-					return tokens;
+					return;
 				}
 				tokens.push({ kind: "paste", text: this.paste + this.buffer.slice(0, end) });
 				this.paste = undefined;
@@ -99,7 +110,7 @@ export class InputSplitter {
 			const first = this.buffer[0] as string;
 			if (first === ESC) {
 				const length = this.sequenceLength(this.buffer);
-				if (length === undefined) return tokens;
+				if (length === undefined) return;
 				tokens.push(this.token(this.buffer.slice(0, length)));
 				this.buffer = this.buffer.slice(length);
 				continue;
@@ -122,7 +133,6 @@ export class InputSplitter {
 			tokens.push({ kind: "text", text: this.buffer.slice(0, end) });
 			this.buffer = this.buffer.slice(end);
 		}
-		return tokens;
 	}
 
 	/** An escape sequence is cut off at the end of the input read so far. */
@@ -147,7 +157,9 @@ export class InputSplitter {
 			if (completeness(text.slice(0, length)) === "complete") return length;
 		}
 		// A lone Esc at the end of a read is the Esc key: terminals send Alt+key in one write.
-		if (text === ESC) return 1;
+		// In win32-input-mode the Esc key is ESC [ 27 u; a lone one is text spelled out by
+		// events and cut off (a paste's start marker), so it waits like any cut sequence.
+		if (text === ESC && !this.win32.seen) return 1;
 		return undefined;
 	}
 
@@ -158,6 +170,11 @@ export class InputSplitter {
 		return { kind: "key", ch: parsed.ch, key: parsed.key };
 	}
 }
+
+/** A CSI cut off at the end of the text: parameters so far, no final byte yet. */
+// In win32-input-mode a lone ESC at the end is the start of a cut event too (the Esc key is ESC [ 27 u).
+const CUT_SEQUENCE = /\x1b\[[\d;]{0,48}$/;
+const CUT_EVENT = /\x1b(?:\[[\d;]{0,48})?$/;
 
 /** How many characters at the end of `text` could begin `marker`. */
 function partialSuffix(text: string, marker: string): number {
@@ -356,12 +373,15 @@ const VK_TILDE: Record<number, number> = { 45: 2, 46: 3, 33: 5, 34: 6 };
  */
 export class Win32Translator {
 	private highSurrogate: number | undefined;
+	/** An event has arrived: the terminal is in win32-input-mode. */
+	seen = false;
 
 	translate(text: string): string {
 		if (!text.includes("_")) return text;
-		return text.replace(WIN32_EVENT, (_match, vk, _sc, uc, kd, cs, rc) =>
-			this.event(Number(vk || 0), Number(uc || 0), kd === "1", Number(cs || 0), Number(rc || 1)),
-		);
+		return text.replace(WIN32_EVENT, (_match, vk, _sc, uc, kd, cs, rc) => {
+			this.seen = true;
+			return this.event(Number(vk || 0), Number(uc || 0), kd === "1", Number(cs || 0), Number(rc || 1));
+		});
 	}
 
 	private event(vk: number, uc: number, down: boolean, state: number, repeat: number): string {

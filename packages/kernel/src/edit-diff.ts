@@ -66,15 +66,25 @@ function lineOf(content: string, offset: number): number {
 	return line;
 }
 
+/**
+ * Lines with their newlines, as the `diff` package's diffLines compares them: a final line
+ * without a newline differs from the same text with one, and there is no empty "line" after
+ * a final newline (pi drops each part's trailing "").
+ */
+function splitLines(text: string): string[] {
+	return text.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+}
+
 /** The parts of the whole-file diff: unchanged runs between blocks of the lines each edit touches. */
 function fileParts(content: string, edits: readonly LocatedEdit[]): Part[] {
-	const lines = content.split("\n");
+	const lines = splitLines(content);
 	const ordered = [...edits].sort((a, b) => a.at - b.at);
 	// Group edits that touch the same lines into one block.
 	const blocks: Array<{ start: number; end: number; edits: LocatedEdit[] }> = [];
 	for (const edit of ordered) {
 		const start = lineOf(content, edit.at);
-		const end = lineOf(content, edit.at + edit.oldText.length);
+		// The line of the last character replaced (a replaced newline belongs to its line).
+		const end = lineOf(content, edit.at + Math.max(1, edit.oldText.length) - 1);
 		const last = blocks.at(-1);
 		if (last && start <= last.end) {
 			last.end = Math.max(last.end, end);
@@ -96,18 +106,15 @@ function fileParts(content: string, edits: readonly LocatedEdit[]): Part[] {
 		const before = lines.slice(block.start, block.end + 1);
 		// The block's text with its edits applied, back to front so offsets hold.
 		const blockStart = block.start === 0 ? 0 : nthLineStart(content, block.start);
-		let after = before.join("\n");
+		let after = before.join("");
 		for (const edit of [...block.edits].reverse()) {
 			const from = edit.at - blockStart;
 			after = after.slice(0, from) + edit.newText + after.slice(from + edit.oldText.length);
 		}
-		for (const part of diffBlock(before, after.split("\n"))) append(part);
+		for (const part of diffBlock(before, splitLines(after))) append(part);
 		next = block.end + 1;
 	}
 	append({ kind: "same", lines: lines.slice(next) });
-	// The empty "line" after a final newline is not a line (pi drops each part's trailing "").
-	const last = parts.at(-1);
-	if (content.endsWith("\n") && last?.kind === "same" && last.lines.at(-1) === "") last.lines.pop();
 	return parts.filter((part) => part.lines.length > 0);
 }
 
@@ -124,11 +131,18 @@ export function editDiff(
 	contextLines = 4,
 ): { diff: string; firstChangedLine: number | undefined } {
 	const parts = fileParts(content, edits);
+	// pi's number width: split("\n") of the old and new file, a final newline counting as a line.
+	let after = content;
+	for (const edit of [...edits].sort((a, b) => b.at - a.at)) {
+		after = after.slice(0, edit.at) + edit.newText + after.slice(edit.at + edit.oldText.length);
+	}
 	const oldCount = content.split("\n").length;
-	const newCount = parts.reduce((count, part) => count + (part.kind === "del" ? 0 : part.lines.length), 0);
+	const newCount = after.split("\n").length;
 	const width = String(Math.max(oldCount, newCount)).length;
 	const number = (n: number): string => String(n).padStart(width, " ");
 	const skipped = ` ${"".padStart(width, " ")} ...`;
+	// One row per line, without its newline; CRLF files lose the \r too (pi diffs LF-normalised text).
+	const plain = (line: string): string => line.replace(/\r?\n$/, "");
 	const output: string[] = [];
 	let oldLine = 1;
 	let newLine = 1;
@@ -138,8 +152,8 @@ export function editDiff(
 		if (part.kind !== "same") {
 			firstChangedLine ??= newLine;
 			for (const line of part.lines) {
-				if (part.kind === "add") output.push(`+${number(newLine++)} ${line}`);
-				else output.push(`-${number(oldLine++)} ${line}`);
+				if (part.kind === "add") output.push(`+${number(newLine++)} ${plain(line)}`);
+				else output.push(`-${number(oldLine++)} ${plain(line)}`);
 			}
 			lastWasChange = true;
 			return;
@@ -148,7 +162,7 @@ export function editDiff(
 		const nextIsChange = index < parts.length - 1;
 		const context = (shown: string[]): void => {
 			for (const line of shown) {
-				output.push(` ${number(oldLine)} ${line}`);
+				output.push(` ${number(oldLine)} ${plain(line)}`);
 				oldLine++;
 				newLine++;
 			}

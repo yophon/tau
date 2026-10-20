@@ -5,7 +5,7 @@
  * state) are skipped; summaries show as one line.
  */
 import { type AgentMessage, userContentText } from "@yophon/tau-kernel";
-import { GROUPED_TOOLS, type ReplayBlock, resultDiff, type ToolBlock } from "./model.ts";
+import { GROUPED_TOOLS, type ReplayBlock, readableError, resultDiff, type ToolBlock } from "./model.ts";
 
 export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock[] {
 	const results = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
@@ -52,7 +52,8 @@ export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock
 					blocks.push({
 						kind: "notice",
 						tone: "error",
-						text: `Error: ${message.errorMessage ?? "unknown provider error"}`,
+						// Worded as the live view words it (P38b): the provider's message, not its JSON body.
+						text: `Error: ${readableError(message.errorMessage ?? "unknown provider error")}`,
 					});
 				}
 				break;

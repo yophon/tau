@@ -55,4 +55,15 @@ describe("P38b editDiff (pi generateDiffString)", () => {
 		assert.equal(diff, [" 1 a", "-2 x = 1; y = 2", "+2 x = 10; y = 20", "+3 z = 3", " 3 b"].join("\n"));
 		assert.equal(applyEdits(content, [{ oldText: "1", newText: "10" }], "f"), "a\nx = 10; y = 2\nb\n");
 	});
+
+	it("CRLF lines come without their carriage return; the final newline is no line of its own (pi)", () => {
+		const crlf = "line1\r\nline2\r\nline3\r\n";
+		assert.equal(
+			editDiff(crlf, [at(crlf, "line2", "LINE2")]).diff,
+			[" 1 line1", "-2 line2", "+2 LINE2", " 3 line3"].join("\n"),
+		);
+		// Removing the final newline, then adding lines after a last line without one.
+		assert.equal(editDiff("a\nb\n", [at("a\nb\n", "b\n", "c")]).diff, [" 1 a", "-2 b", "+2 c"].join("\n"));
+		assert.equal(editDiff("a\nb", [at("a\nb", "b", "b\nc\n")]).diff, [" 1 a", "-2 b", "+2 b", "+3 c"].join("\n"));
+	});
 });

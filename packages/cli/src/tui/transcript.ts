@@ -4,8 +4,7 @@
  * 1.2's TuiAltScreen selection), and styles laid over column ranges of a styled
  * row (search matches, the selection) without losing the row's own colors.
  */
-import { stripVTControlCharacters } from "node:util";
-import { cellWidth, graphemes } from "./input/width.ts";
+import { cellWidth, graphemes, stripEscapes } from "./input/width.ts";
 import type { Block } from "./model.ts";
 import { type RowMeta, rowMeta } from "./render/row-meta.ts";
 
@@ -86,7 +85,7 @@ export interface Cell {
 export function cells(row: string): Cell[] {
 	const out: Cell[] = [];
 	let col = 0;
-	for (const text of graphemes(stripVTControlCharacters(row))) {
+	for (const text of graphemes(stripEscapes(row))) {
 		const width = cellWidth(text);
 		out.push({ text, col, width });
 		col += width;

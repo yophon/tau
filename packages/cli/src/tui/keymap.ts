@@ -227,7 +227,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		if (key.meta) return ctx.running ? { type: "queue" } : { type: "newline" };
 		return { type: "submit" };
 	}
-	if (ch === "\n") return { type: "newline" };
+	// Ctrl+J: LF from legacy terminals, CSI-u under kitty keys (pi binds newLine to ctrl+j too).
+	if (ch === "\n" || (key.ctrl && !key.meta && ch === "j")) return { type: "newline" };
 	if (key.tab && plain) return ctx.running ? { type: "queue" } : { type: "complete-path" };
 
 	// pi's paste key is Alt+V on Windows (the terminal keeps Ctrl+V) and Ctrl+V elsewhere; both work everywhere here.

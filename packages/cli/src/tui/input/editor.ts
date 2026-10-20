@@ -85,34 +85,93 @@ export function right(state: EditorState): EditorState {
 	return { ...state, cursor: nextBoundary(state.text, state.cursor) };
 }
 
-const isSpace = (ch: string): boolean => /\s/.test(ch);
+const isSpace = (text: string): boolean => /\s/.test(text);
 
-/** Word left: skip whitespace, then the word (newlines count as whitespace). */
-export function wordLeft(state: EditorState): EditorState {
-	let i = state.cursor;
-	while (i > 0 && isSpace(state.text[i - 1] ?? "")) i--;
-	while (i > 0 && !isSpace(state.text[i - 1] ?? "")) i--;
+// pi's word navigation (word-navigation.ts): Intl.Segmenter words, so CJK
+// moves by word rather than by whole run, ASCII punctuation still stops the
+// cursor inside a word-like segment, and atoms (paste markers) move as one.
+const wordSegmenter = new Intl.Segmenter(undefined, { granularity: "word" });
+const PUNCTUATION = /[(){}[\]<>.,;:'"!?+\-=*/\\|&%^$#@~`]/;
+const PUNCTUATION_ALL = new RegExp(PUNCTUATION, "g");
+
+interface WordSegment {
+	text: string;
+	word: boolean;
+	atom: boolean;
+}
+
+function wordSegments(text: string, atoms: readonly string[]): WordSegment[] {
+	const out: WordSegment[] = [];
+	const plain = (piece: string): void => {
+		for (const s of wordSegmenter.segment(piece))
+			out.push({ text: s.segment, word: s.isWordLike === true, atom: false });
+	};
+	let from = 0;
+	while (atoms.length > 0) {
+		let at = -1;
+		let token = "";
+		for (const atom of atoms) {
+			const found = atom ? text.indexOf(atom, from) : -1;
+			if (found !== -1 && (at === -1 || found < at)) {
+				at = found;
+				token = atom;
+			}
+		}
+		if (at === -1) break;
+		plain(text.slice(from, at));
+		out.push({ text: token, word: false, atom: true });
+		from = at + token.length;
+	}
+	plain(text.slice(from));
+	return out;
+}
+
+/** Word left: skip whitespace (newlines too), then one word, punctuation run or atom. */
+export function wordLeft(state: EditorState, atoms: readonly string[] = []): EditorState {
+	const { text, cursor } = state;
+	if (cursor <= 0) return { ...state, cursor: 0 };
+	const segments = wordSegments(text.slice(0, cursor), atoms);
+	let i = cursor;
+	const last = (): WordSegment | undefined => segments[segments.length - 1];
+	for (let s = last(); s && !s.atom && isSpace(s.text); s = last()) i -= segments.pop()?.text.length ?? 0;
+	const segment = last();
+	if (!segment) return { ...state, cursor: i };
+	if (segment.atom) return { ...state, cursor: i - segment.text.length };
+	if (segment.word) {
+		const match = [...segment.text.matchAll(PUNCTUATION_ALL)].pop();
+		const tail = match ? segment.text.length - (match.index + match[0].length) : segment.text.length;
+		return { ...state, cursor: i - tail };
+	}
+	for (let s = last(); s && !s.atom && !s.word && !isSpace(s.text); s = last()) i -= segments.pop()?.text.length ?? 0;
 	return { ...state, cursor: i };
 }
 
-export function wordRight(state: EditorState): EditorState {
-	let i = state.cursor;
-	const n = state.text.length;
-	while (i < n && isSpace(state.text[i] ?? "")) i++;
-	while (i < n && !isSpace(state.text[i] ?? "")) i++;
+export function wordRight(state: EditorState, atoms: readonly string[] = []): EditorState {
+	const { text, cursor } = state;
+	if (cursor >= text.length) return { ...state, cursor: text.length };
+	const segments = wordSegments(text.slice(cursor), atoms);
+	let i = cursor;
+	let k = 0;
+	for (; k < segments.length && !segments[k]?.atom && isSpace(segments[k]?.text ?? ""); k++)
+		i += segments[k]?.text.length ?? 0;
+	const segment = segments[k];
+	if (!segment) return { ...state, cursor: i };
+	if (segment.atom) return { ...state, cursor: i + segment.text.length };
+	if (segment.word) return { ...state, cursor: i + (PUNCTUATION.exec(segment.text)?.index ?? segment.text.length) };
+	for (let s = segments[k]; s && !s.atom && !s.word && !isSpace(s.text); s = segments[++k]) i += s.text.length;
 	return { ...state, cursor: i };
 }
 
 /** Ctrl+W: delete the word before the cursor. */
-export function deleteWordBack(state: EditorState): EditorState {
-	const from = wordLeft(state).cursor;
+export function deleteWordBack(state: EditorState, atoms: readonly string[] = []): EditorState {
+	const from = wordLeft(state, atoms).cursor;
 	if (from === state.cursor) return state;
 	return { text: state.text.slice(0, from) + state.text.slice(state.cursor), cursor: from };
 }
 
 /** Alt+D (pi): delete the word after the cursor. */
-export function deleteWordForward(state: EditorState): EditorState {
-	const to = wordRight(state).cursor;
+export function deleteWordForward(state: EditorState, atoms: readonly string[] = []): EditorState {
+	const to = wordRight(state, atoms).cursor;
 	if (to === state.cursor) return state;
 	return { text: state.text.slice(0, state.cursor) + state.text.slice(to), cursor: state.cursor };
 }

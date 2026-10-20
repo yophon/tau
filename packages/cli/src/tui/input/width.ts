@@ -37,6 +37,18 @@ export function strWidth(text: string): number {
 // biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences are what this skips
 const ESCAPE = /^(?:\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\))/;
 
+// biome-ignore lint/suspicious/noControlCharactersInRegex: escape sequences are what this removes
+const ESCAPES = /\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+
+/**
+ * Text without its escapes: CSI colors, OSC 8 links whatever their URL, two-byte escapes.
+ * node:util's stripVTControlCharacters leaves an OSC 8 link whose URL has + , ' or CJK in it
+ * (P38 review: rows measured too wide lost their erase, copy picked up the URL).
+ */
+export function stripEscapes(text: string): string {
+	return text.includes("\x1b") ? text.replace(ESCAPES, "") : text;
+}
+
 /**
  * Cut text that may carry ANSI colors and OSC 8 links to `width` cells (P37c status
  * lines): escapes pass through without counting; a cut line ends in `…` and a reset.

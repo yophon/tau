@@ -4,6 +4,34 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Fixed (P38 review)
+- kernel: the edit diff drops CRLF files' carriage returns (full screen showed
+  their rows blank) and treats a final newline as diffLines does (no phantom
+  `-3 ` or `+4 ` line).
+- CLI TUI: text written before a streamed tool call shows once; reads in
+  separate responses join one group again; a reasoning run split into
+  paragraphs opens, shuts and is timed as one, and inline Ctrl+T rewrites the
+  history with it. The caret mark is an OSC 8 link (zero-width characters
+  took a cell each and pushed the input box's right border out); rows with a
+  link whose URL has `+ , '` or CJK in it measure right (our own escape
+  stripper), and a bare URL ends at CJK punctuation. Kitty key flags are pushed
+  after entering the alternate screen (one flag stack per screen), so
+  Shift+Enter works in full screen in kitty-protocol terminals; Ctrl+J under
+  kitty keys is a newline. A paste Windows Terminal sends as key events
+  survives being cut across reads. Word keys move by CJK word and over a paste
+  marker whole (pi's segmenter); sending clears the undo stack. Prompts take
+  the task slot before anything is awaited (a queued `/init` then `/follow`
+  ran two turns at once); a follow-up queued after a waiting command runs
+  after it; ↑ takes waiting commands back one at a time; extension commands
+  run at once as in pi (`/tasks` mid-turn); `/follow` waits during a
+  compaction; Tab in an open question answers it. Extensions' `ui.editor`
+  hands the terminal over as Ctrl+G does. Full-screen Ctrl+L and coming back
+  from an editor repaint even when the frame is unchanged; inline, clearing the
+  screen (`/clear`, `/resume`, `/tree`) empties Ink's copy of the old history.
+  `/tree` keeps a draft typed meanwhile after the message it puts back;
+  restored sessions word provider errors as the live view does; `/resume `
+  completions are fetched again after a send.
+
 ### Changed (P38d)
 - CLI TUI: grapheme widths are measured once (Ctrl+F over 7,500 Chinese rows:
   2.5 s → 0.14 s; input layout of 2,000 CJK characters 5.6 → 0.3 ms). Full

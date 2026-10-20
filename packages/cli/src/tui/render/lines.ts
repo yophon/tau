@@ -9,9 +9,8 @@
  * row Ink would print.
  */
 
-import { stripVTControlCharacters } from "node:util";
 import { fmtElapsed } from "../format.ts";
-import { strWidth } from "../input/width.ts";
+import { stripEscapes, strWidth } from "../input/width.ts";
 import type { Block, ToolBlock } from "../model.ts";
 import { type RenderOptions, TONE_COLOR } from "./blocks.ts";
 import { type MarkdownItem, markdownItems } from "./markdown.ts";
@@ -130,8 +129,8 @@ function wrapped(line: StyledLine, width: number, colors: boolean, outer: TextSt
 	const rows =
 		!text.includes("\n") && visibleWidth(text) <= width ? [text] : wrapText(text, Math.max(1, width)).split("\n");
 	const joins = softJoins(
-		stripVTControlCharacters(text),
-		rows.map((row) => stripVTControlCharacters(row)),
+		stripEscapes(text),
+		rows.map((row) => stripEscapes(row)),
 	);
 	return { rows, meta: joins.map((join) => (join === undefined ? { indent: 0 } : { indent: 0, join })) };
 }

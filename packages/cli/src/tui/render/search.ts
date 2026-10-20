@@ -5,8 +5,7 @@
  * wrapped row — searched case-insensitively for the literal query. A match is
  * kept as row/column segments; the corpus is reused while the rows are the same.
  */
-import { stripVTControlCharacters } from "node:util";
-import { cellWidth, graphemes } from "../input/width.ts";
+import { cellWidth, graphemes, stripEscapes } from "../input/width.ts";
 
 export interface SearchSegment {
 	row: number;
@@ -47,7 +46,7 @@ function buildCorpus(rows: readonly string[]): SearchCorpus {
 		pendingSeparator = false;
 	};
 	for (let row = 0; row < rows.length; row++) {
-		const line = stripVTControlCharacters(rows[row] ?? "");
+		const line = stripEscapes(rows[row] ?? "");
 		let column = 0;
 		if (PRINTABLE_ASCII.test(line)) {
 			// Whole non-space runs at once: transcripts are mostly ASCII.

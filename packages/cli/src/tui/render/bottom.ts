@@ -54,11 +54,14 @@ function ActivityLine(props: {
 }
 
 /**
- * Marks the caret in a full-screen frame (pi's CURSOR_MARKER): zero-width characters the
- * painter finds, strips, and puts the terminal's real cursor at, so an input method's
- * candidate window opens at the caret (Windows IMEs follow the real cursor).
+ * Marks the caret in a full-screen frame (pi's CURSOR_MARKER): the painter finds it, strips
+ * it and puts the terminal's real cursor there, so an input method's candidate window opens
+ * at the caret (Windows IMEs follow the real cursor). An OSC 8 link around the cursor cell:
+ * Ink gives escapes no cells, where zero-width characters each took one (P38 review).
  */
-export const CARET_MARK = "\u2060\u200b\u2060";
+export const CARET_MARK = "\x1b]8;;tau:caret\x07";
+/** Closes the caret's link, after the cursor cell. */
+export const CARET_END = "\x1b]8;;\x07";
 
 export function renderInputBox(
 	editor: ed.EditorState,
@@ -66,6 +69,7 @@ export function renderInputBox(
 	options: { active: boolean; placeholder?: string; caret?: boolean },
 ): React.ReactElement {
 	const mark = options.caret ? CARET_MARK : "";
+	const end = options.caret ? CARET_END : "";
 	// Text width = columns - border (2) - padding (2) - prefix (2).
 	const usable = ed.inputTextWidth(columns);
 	const all = ed.layout(editor, usable);
@@ -92,11 +96,12 @@ export function renderInputBox(
 				prefix,
 				mark,
 				h(Text, { key: "c", inverse: true }, " "),
+				end,
 				h(Text, { key: "ph", dimColor: true }, options.placeholder),
 			);
 		}
 		const { before, at, after } = ed.splitAtCursor(line.text, line.cursorUnits);
-		return h(Text, { key: `l${i}` }, prefix, before, mark, h(Text, { key: "c", inverse: true }, at), after);
+		return h(Text, { key: `l${i}` }, prefix, before, mark, h(Text, { key: "c", inverse: true }, at), end, after);
 	});
 	return h(
 		Box,

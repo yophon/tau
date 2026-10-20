@@ -7,11 +7,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { Box, Static, Text, useInput, useStdout } from "ink";
 import React, { useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
-import { strWidth } from "./input/width.ts";
+import { stripEscapes, strWidth } from "./input/width.ts";
 import type { Block } from "./model.ts";
 import { renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineOptions } from "./render/lines.ts";
@@ -160,7 +159,7 @@ export function takeOverResize(
 export function rewrappedRows(frame: string, width: number): number {
 	let rows = 0;
 	for (const line of frame.split("\n")) {
-		rows += Math.max(1, Math.ceil(strWidth(stripVTControlCharacters(line)) / Math.max(1, width)));
+		rows += Math.max(1, Math.ceil(strWidth(stripEscapes(line)) / Math.max(1, width)));
 	}
 	return rows;
 }
@@ -257,7 +256,9 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	const inputModesOff = (): void => {
 		process.stdout.write(`${keysOff}\x1b[?1004l\x1b[?2004l`);
 	};
-	inputModesOn();
+	// Full screen turns them on in the alternate screen: kitty keeps one flag stack per screen
+	// (pi pushes its flags after entering it).
+	if (options.screen === "inline") inputModesOn();
 	// However the process ends, the shell must not get focus or key reports, or our title.
 	const restoreTerminal = (): void => {
 		status.dispose();
@@ -277,7 +278,7 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	process.once("exit", restoreTerminal);
 	try {
 		if (options.screen === "inline") await runInline(controller, render);
-		else await runFullscreen(controller, render, screen);
+		else await runFullscreen(controller, render, screen, { on: inputModesOn, off: inputModesOff });
 	} finally {
 		process.off("exit", restoreTerminal);
 		restoreTerminal();
@@ -370,11 +371,13 @@ async function runFullscreen(
 	controller: TuiController,
 	render: InkRender,
 	screen: { leave: () => void; enter: () => void },
+	inputModes: { on: () => void; off: () => void },
 ): Promise<void> {
 	const fullscreen = await import("./fullscreen.ts");
 	const { LineCache } = await import("./render/lines.ts");
 	const cache = new LineCache();
 	process.stdout.write(fullscreen.ENTER_FULLSCREEN);
+	inputModes.on();
 	// However the process ends (an error, a signal), the terminal comes back.
 	const guard = fullscreen.restoreOnExit((data) => process.stdout.write(data));
 	const stdout = fullscreen.fullscreenStdout(process.stdout);
@@ -397,19 +400,23 @@ async function runFullscreen(
 		if (ink?.onRender) {
 			ink.lastOutput = "";
 			ink.onRender();
+			// Ink writes nothing when its frame is unchanged (log-update compares with what it
+			// wrote last) or throttles the write: paint the frame here, all of it after invalidate.
+			stdout.write(ink.lastOutput);
 		}
 	};
 	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, repaint);
 	controller.setFullRepaint(repaint);
 	// Handing the terminal over (Ctrl+G, Ctrl+Z): back to the main screen, then in again and repaint.
 	const { leave, enter } = screen;
+	// The key reports go off before leaving the alternate screen and on after entering it.
 	screen.leave = () => {
-		process.stdout.write(fullscreen.LEAVE_FULLSCREEN);
 		leave();
+		process.stdout.write(fullscreen.LEAVE_FULLSCREEN);
 	};
 	screen.enter = () => {
-		enter();
 		process.stdout.write(fullscreen.ENTER_FULLSCREEN);
+		enter();
 		repaint();
 	};
 	try {
@@ -429,6 +436,7 @@ async function runFullscreen(
 		const exited = instance.waitUntilExit().catch(() => undefined);
 		instance.unmount();
 		await exited;
+		inputModes.off();
 		guard.restore();
 		guard.dispose();
 		// The conversation stays in the terminal: written to the main screen at its width.

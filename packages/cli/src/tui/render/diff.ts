@@ -171,7 +171,9 @@ function intraLine(oldText: string, newText: string): { removed: StyledLine; add
  * in inverse.
  */
 export function renderNumberedDiff(diff: string): StyledLine[] {
-	const rows = diff.split("\n").map((line) => {
+	// A carriage return would send the row back to column 1 (diffs saved before the kernel dropped them).
+	const lines = diff.replace(/\r(?=\n|$)/g, "").split("\n");
+	const rows = lines.map((line) => {
 		const match = /^([+\- ])(\s*\d*) (.*)$/.exec(line);
 		return match
 			? { mark: match[1] as string, number: match[2] as string, text: (match[3] as string).replace(/\t/g, "   ") }
@@ -184,7 +186,7 @@ export function renderNumberedDiff(diff: string): StyledLine[] {
 	for (let i = 0; i < rows.length; i++) {
 		const row = rows[i];
 		if (!row) {
-			out.push(plainLine(diff.split("\n")[i] ?? "", { dim: true }));
+			out.push(plainLine(lines[i] ?? "", { dim: true }));
 			continue;
 		}
 		if (row.mark === "-") {

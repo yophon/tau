@@ -8,13 +8,12 @@
  * the main screen, where it stays in the scrollback.
  */
 
-import { stripVTControlCharacters } from "node:util";
 import { Box, type DOMElement, measureElement, Text, useInput, useStdout } from "ink";
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
-import { strWidth } from "./input/width.ts";
+import { stripEscapes, strWidth } from "./input/width.ts";
 import type { Block } from "./model.ts";
-import { CARET_MARK, renderBottom } from "./render/bottom.ts";
+import { CARET_END, CARET_MARK, renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineCache, type LineOptions } from "./render/lines.ts";
 import { listRows } from "./render/list.ts";
 import {
@@ -101,8 +100,11 @@ function frameRows(chunk: string): { rows: string[]; caret: string } | undefined
 		const before = frame.slice(0, at);
 		const lineStart = before.lastIndexOf("\n") + 1;
 		const row = before.split("\n").length;
-		const column = strWidth(stripVTControlCharacters(before.slice(lineStart))) + 1;
-		frame = before + frame.slice(at + CARET_MARK.length);
+		const column = strWidth(stripEscapes(before.slice(lineStart))) + 1;
+		let after = frame.slice(at + CARET_MARK.length);
+		const end = after.indexOf(CARET_END);
+		if (end !== -1) after = after.slice(0, end) + after.slice(end + CARET_END.length);
+		frame = before + after;
 		caret = `\x1b[${row};${column}H`;
 	}
 	const rows = frame.split("\n");
@@ -126,7 +128,7 @@ export function paintDiff(
 	if (!parsed) return { out: "", rows: previous ? [...previous] : undefined };
 	const { rows, caret } = parsed;
 	const paint = (row: string): string => {
-		const full = columns !== undefined && strWidth(stripVTControlCharacters(row)) >= columns;
+		const full = columns !== undefined && strWidth(stripEscapes(row)) >= columns;
 		return full ? row : `${row}\x1b[K`;
 	};
 	if (!previous) {
@@ -137,7 +139,9 @@ export function paintDiff(
 		if (row !== previous[i]) body += `\x1b[${i + 1};1H${paint(row)}`;
 	});
 	if (rows.length < previous.length) body += `\x1b[${rows.length + 1};1H\x1b[J`;
-	if (body === "" && caret === "") return { out: "", rows };
+	// Nothing changed: the cursor is still where the last frame put it (a caret that moved
+	// changed its row).
+	if (body === "") return { out: "", rows };
 	return { out: `${SYNC_BEGIN}${body}${caret}${SYNC_END}`, rows };
 }
 
@@ -188,7 +192,7 @@ export function withScrollbar(
 	return rows.map((row, i) => {
 		if (i >= height) return row;
 		const thumb = i >= start && i < start + size;
-		const width = strWidth(stripVTControlCharacters(row));
+		const width = strWidth(stripEscapes(row));
 		const pad = " ".repeat(Math.max(0, columns - 1 - width));
 		return width >= columns ? row : `${row}${pad}${thumb ? "\x1b[36m┃\x1b[39m" : " "}`;
 	});
@@ -331,7 +335,8 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	}
 	// A tool block clicked open or shut (P34d) overrides Ctrl+O; the cache keys on the result.
 	const optionsFor = (block: Block): LineOptions => {
-		const open = state.expanded[block.id];
+		// A continued reasoning paragraph opens and shuts with its run.
+		const open = state.expanded[(block.kind === "reasoning" && block.head) || block.id];
 		if (open === undefined) return options;
 		// A reasoning block clicked open shows its text; a tool block its details.
 		return block.kind === "reasoning" ? { ...options, showReasoning: open } : { ...options, verbose: open };

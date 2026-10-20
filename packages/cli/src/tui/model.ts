@@ -36,6 +36,8 @@ export type Block =
 			endedAt?: number;
 			/** A later paragraph of a reasoning run that was split while shown: no row of its own when collapsed. */
 			continued?: boolean;
+			/** A continued paragraph: the id of the first block of its run, which opens, shuts and times the run. */
+			head?: string;
 	  }
 	| ToolBlock
 	/**
@@ -185,6 +187,8 @@ export interface UiState {
 	pendingError?: string;
 	/** Tokens the model has written this task, estimated as they stream (P38b: the activity line counts them). */
 	streamedTokens: number;
+	/** The current response streamed text (a tool call may have closed its block before the message ends). */
+	streamedText?: boolean;
 	exitArmed: boolean;
 	status: StatusInfo;
 	/** P37c: the custom status line's output (Claude Code statusLine), shown above the status line. */
@@ -240,7 +244,7 @@ export type UiAction =
 	| { type: "assistant-rendered"; lines: StyledLine[] }
 	| { type: "tool-rendered"; callId: string; lines: StyledLine[] }
 	| { type: "queue-add"; input: QueuedInput }
-	| { type: "queue-remove"; text: string }
+	| { type: "queue-remove"; input: QueuedInput }
 	| { type: "queue-clear" }
 	| { type: "approval-open"; id: number; request: ApprovalPromptRequest }
 	| { type: "approval-move"; delta: 1 | -1 }
@@ -312,8 +316,10 @@ function commitReady(state: UiState): UiState {
 
 function pushLive(state: UiState, block: DistributiveOmit<Block, "id">): UiState {
 	const [id, next] = nextId(state);
-	// Anything but reasoning after a group of reads ends the group.
-	const live = block.kind === "reasoning" ? next.live : closeGroups(next.live);
+	// Anything but reasoning after a group of reads ends the group. A call still streaming
+	// leaves it open: the placeholder goes when the message ends, and it may be another read.
+	const keepsGroup = block.kind === "reasoning" || (block.kind === "tool" && block.status === "streaming");
+	const live = keepsGroup ? next.live : closeGroups(next.live);
 	return commitReady({ ...next, live: [...live, { id, ...block } as Block] });
 }
 
@@ -324,9 +330,12 @@ function closeGroups(live: readonly Block[]): Block[] {
 /** Close streaming text blocks (an assistant message ended, or a tool started after them). */
 function finishStreams(state: UiState, at?: number): UiState {
 	let changed = false;
+	// A run split into paragraphs ends in its last one; its first one says how long it took.
+	let endedHead: string | undefined;
 	const live = state.live.map((block) => {
 		if (block.kind === "reasoning" && !block.done) {
 			changed = true;
+			if (at !== undefined && block.head) endedHead = block.head;
 			return { ...block, done: true, ...(at !== undefined ? { endedAt: at } : {}) };
 		}
 		if (block.kind === "assistant" && !block.done) {
@@ -335,7 +344,16 @@ function finishStreams(state: UiState, at?: number): UiState {
 		}
 		return block;
 	});
-	return changed ? commitReady({ ...state, live }) : state;
+	if (!changed) return state;
+	if (endedHead === undefined || at === undefined) return commitReady({ ...state, live });
+	const stamp = (block: Block): Block =>
+		block.kind === "reasoning" && block.id === endedHead ? { ...block, endedAt: at } : block;
+	const inLive = live.some((block) => block.id === endedHead);
+	return commitReady({
+		...state,
+		live: inLive ? live.map(stamp) : live,
+		committed: inLive ? state.committed : state.committed.map(stamp),
+	});
 }
 
 /**
@@ -352,7 +370,14 @@ function appendStream(state: UiState, kind: "assistant" | "reasoning", delta: st
 		const [id, next] = nextId({ ...state, live: [...state.live.slice(0, -1), finished] });
 		const tail: Block =
 			kind === "reasoning"
-				? { kind, id, text: split.tail, done: false, continued: true }
+				? {
+						kind,
+						id,
+						text: split.tail,
+						done: false,
+						continued: true,
+						head: (last.kind === "reasoning" && last.head) || last.id,
+					}
 				: { kind, id, text: split.tail, done: false };
 		return commitReady({ ...next, live: [...next.live, tail] });
 	}
@@ -455,7 +480,14 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		case "agent-event":
 			return reduceEvent(state, action.event, action.at);
 		case "task-start":
-			return { ...state, task: action.task, activity: action.activity, taskStartedAt: action.at, streamedTokens: 0 };
+			return {
+				...state,
+				task: action.task,
+				activity: action.activity,
+				taskStartedAt: action.at,
+				streamedTokens: 0,
+				streamedText: false,
+			};
 		case "task-end": {
 			if (state.pendingError !== undefined) {
 				const failed = pushLive(
@@ -520,7 +552,9 @@ export function reduce(state: UiState, action: UiAction): UiState {
 		case "queue-clear":
 			return state.queued.length === 0 ? state : { ...state, queued: [] };
 		case "queue-remove": {
-			const index = state.queued.findIndex((queued) => queued.kind === "command" && queued.text === action.text);
+			const index = state.queued.findIndex(
+				(queued) => queued.kind === action.input.kind && queued.text === action.input.text,
+			);
 			return index === -1 ? state : { ...state, queued: state.queued.filter((_, i) => i !== index) };
 		}
 		case "approval-open": {
@@ -596,8 +630,13 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, search: action.search };
 		case "flash":
 			return state.flash === action.text ? state : { ...state, flash: action.text };
-		case "toggle-reasoning":
-			return { ...state, showReasoning: !state.showReasoning };
+		case "toggle-reasoning": {
+			// Ctrl+T sets every reasoning block again, as Ctrl+O does tool blocks.
+			const expanded = { ...state.expanded };
+			for (const block of [...state.committed, ...state.live])
+				if (block.kind === "reasoning") delete expanded[block.id];
+			return { ...state, showReasoning: !state.showReasoning, expanded };
+		}
 		case "armed":
 			return {
 				...state,
@@ -673,6 +712,7 @@ function reduceEvent(previous: UiState, event: AgentEvent, at?: number): UiState
 				? state
 				: {
 						...appendStream(state, "assistant", event.delta, at),
+						streamedText: true,
 						activity: state.task ? "Responding" : state.activity,
 					};
 		case "reasoning_delta":
@@ -680,11 +720,10 @@ function reduceEvent(previous: UiState, event: AgentEvent, at?: number): UiState
 				? state
 				: { ...appendStream(state, "reasoning", event.delta, at), activity: state.task ? "Thinking" : state.activity };
 		case "assistant_message": {
-			let next = { ...state, live: dropStreamingCalls(state.live) };
+			let next: UiState = { ...state, live: dropStreamingCalls(state.live), streamedText: false };
 			const message = event.message;
 			// A message that arrived without streaming (or with an empty stream) still shows its text.
-			const streamed = state.live.some((block) => block.kind === "assistant" && !block.done);
-			if (!streamed && message.stopReason !== "error" && message.stopReason !== "aborted") {
+			if (!state.streamedText && message.stopReason !== "error" && message.stopReason !== "aborted") {
 				const text = message.content
 					.filter((part) => part.type === "text")
 					.map((part) => (part as { text: string }).text)

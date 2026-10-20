@@ -147,9 +147,10 @@ export function inline(text: string): StyledLine {
 					? [span(m[1] ?? "", { underline: true, link: m[2] ?? "" })]
 					: [span(m[1] ?? "", { underline: true }), span(` (${m[2] ?? ""})`, { dim: true })],
 		},
-		// A bare URL is a link too (it stays one link when it wraps).
+		// A bare URL is a link too (it stays one link when it wraps). It ends at CJK punctuation
+		// and full-width forms (，。）), which Chinese text puts right after it without a space.
 		{
-			re: /\bhttps?:\/\/[^\s<>()`]+[^\s<>()`.,;:!?'"]/,
+			re: /\bhttps?:\/\/[^\s<>()`　-〿＀-￯]+[^\s<>()`.,;:!?'"　-〿＀-￯]/,
 			make: (m) => [span(m[0], hyperlinks ? { underline: true, link: m[0] } : { underline: true })],
 		},
 	];
