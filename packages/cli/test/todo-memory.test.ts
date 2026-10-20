@@ -8,7 +8,7 @@ import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpe
 import {
 	createMemoryExtension,
 	editMemory,
-	MEMORY_LIMITS,
+	loadLimitReminder,
 	type MemoryScope,
 	memorySection,
 	resolveMemoryFile,
@@ -124,13 +124,20 @@ describe("memory", () => {
 		assert.throws(() => writeMemory(file, "   "), /empty/);
 	});
 
-	it("refuses a write past the limit and says how full the file is", () => {
+	it("writes past the load limit and reminds the model to tidy up (P39a, Claude Code)", () => {
 		const file = join(mkdtempSync(join(tmpdir(), "tau-mem-")), "USER.md");
-		writeMemory(file, "x".repeat(50), 60);
-		assert.throws(
-			() => writeMemory(file, "another fact", 60),
-			/is full \(53\/60 characters\)\. Merge or remove entries with memory_edit/,
+		writeFileSync(file, Array.from({ length: 179 }, (_, i) => `- fact ${i}`).join("\n"));
+		assert.equal(loadLimitReminder(file, readFileSync(file, "utf8")), undefined);
+		writeMemory(file, "fact 179");
+		assert.match(loadLimitReminder(file, readFileSync(file, "utf8")) ?? "", /is near its read limit \(180 lines/);
+		for (let i = 180; i < 205; i++) writeMemory(file, `fact ${i}`);
+		assert.equal(readFileSync(file, "utf8").split("\n").filter(Boolean).length, 205, "every write lands");
+		assert.match(
+			loadLimitReminder(file, readFileSync(file, "utf8")) ?? "",
+			/is over its read limit \(205 lines, .*only the first 200 lines or 25 KB load at session start/,
 		);
+		// 25 KB comes first for long lines; Chinese counts in UTF-8 bytes.
+		assert.match(loadLimitReminder(file, `- ${"记".repeat(9000)}\n`) ?? "", /over its read limit \(1 line, 26\.4 KB/);
 	});
 
 	it("edits or removes exactly one occurrence", () => {
@@ -154,7 +161,8 @@ describe("memory", () => {
 		const scope = scopeIn(dir);
 		assert.equal(resolveMemoryFile(scope, "user").file, join(dir, "USER.md"));
 		assert.equal(resolveMemoryFile(scope, "project", "code-style").file, join(dir, "memory", "code-style.md"));
-		assert.equal(resolveMemoryFile(scope, "project", "code-style").limit, MEMORY_LIMITS.topic);
+		assert.equal(resolveMemoryFile(scope, "project", "code-style").loaded, false);
+		assert.equal(resolveMemoryFile(scope, "project").loaded, true);
 		assert.throws(() => resolveMemoryFile(scope, "project", "../x"), /topic must be lowercase/);
 		assert.throws(() => resolveMemoryFile(scope, "user", "deploy"), /topics belong to project memory/);
 		assert.throws(() => resolveMemoryFile(scope, "team"), /target must be/);
@@ -177,12 +185,13 @@ describe("memory", () => {
 		assert.match(section, /### This project \(.*MEMORY\.md\)\n- Tests run with node --test/);
 		assert.match(section, /Topics \(read with memory_read\): deploy$/);
 		assert.ok(!section.includes("release.mjs"), "topic contents stay out of the prompt");
-		// An old file past the limit keeps its last lines and a note.
+		// A file past the load limit gives its first 200 lines and a note (Claude Code).
 		writeFileSync(join(dir, "MEMORY.md"), Array.from({ length: 600 }, (_, i) => `- fact ${i}`).join("\n"));
 		const long = memorySection(scope) ?? "";
-		assert.match(long, /- fact 599/);
-		assert.ok(!long.includes("- fact 0\n"));
-		assert.match(long, /Only the last \d+ of 600 lines fit/);
+		assert.match(long, /- fact 0\n/);
+		assert.match(long, /- fact 199\n/);
+		assert.ok(!long.includes("- fact 200\n"));
+		assert.match(long, /Only the first 200 of 600 lines are loaded/);
 	});
 
 	it("in the TUI: #fact and #!fact save without a model turn; tools write, edit and read; the prompt is frozen per session", async () => {

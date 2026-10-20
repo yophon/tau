@@ -287,7 +287,7 @@ describe("P27 extension commands", () => {
 		await h.submit("#Tabs, not spaces");
 		await h.waitFor((f) => f.includes("Remembered: Tabs, not spaces"), "the fact");
 		await h.submit("/memory");
-		await h.waitFor((f) => f.includes("(18/4000)") && f.includes("- Tabs, not spaces"), "the memory");
+		await h.waitFor((f) => f.includes("(1 line, 19 B)") && f.includes("- Tabs, not spaces"), "the memory");
 		h.editorResult.value = "- Tabs, not spaces\r\n- Answer in Chinese\r\n";
 		await h.submit("/memory edit");
 		await h.waitFor((f) => f.includes("Memory saved"), "the edit");
