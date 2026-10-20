@@ -1246,6 +1246,7 @@ const KEYS: Array<[string, string]> = [
 	["Ctrl+C", "interrupt; clear the input; on an empty input press twice to exit"],
 	["Ctrl+D", "on an empty input: exit"],
 	["↑ / ↓", "move in the input, then history; ↑ on an empty input takes queued messages back"],
+	["Ctrl+B", "while a command runs: move it to the background (/tasks); otherwise cursor left (tmux: press twice)"],
 	["Ctrl+R", "search the prompt history"],
 	["?", "on an empty input: these shortcuts"],
 	["Ctrl+L", "draw the screen again"],

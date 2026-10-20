@@ -52,6 +52,8 @@ export interface KeyContext {
 	selectionActive?: boolean;
 	/** A turn, compaction, bash command or navigation is running. */
 	running: boolean;
+	/** A bash command the model runs is in the foreground (P39d): Ctrl+B moves it to the background. */
+	foregroundCommand?: boolean;
 	bufferEmpty: boolean;
 	/** The cursor is on the input's first (last) visual row, so ↑ (↓) leaves it for history (Claude Code). */
 	cursorAtFirstRow: boolean;
@@ -106,6 +108,8 @@ export type KeyCommand =
 	| { type: "picker-action"; key: string }
 	| { type: "menu-close" }
 	| { type: "interrupt" }
+	/** Ctrl+B while a bash command runs in the foreground (P39d, Claude Code): move it to the background. */
+	| { type: "background-command" }
 	| { type: "exit-request" }
 	/** Ctrl+D on an empty input (pi): exit at once. */
 	| { type: "exit" }
@@ -242,6 +246,8 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 		return ctx.bufferEmpty ? { type: "exit-request" } : { type: "clear-draft" };
 	}
 	if (key.escape) return ctx.running ? { type: "interrupt" } : { type: "clear-input" };
+	// Claude Code's Ctrl+B (task:background); otherwise it stays pi's cursor left.
+	if (key.ctrl && !key.meta && ch === "b" && ctx.foregroundCommand) return { type: "background-command" };
 
 	if (key.tab && key.shift) return { type: "cycle-mode" };
 

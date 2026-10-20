@@ -77,6 +77,7 @@ export interface GatewayHost {
 		askUser?: false | { freeAnswer?: boolean; unavailable?: () => string | undefined };
 		trustPrompt?: boolean;
 		permissionRules?: boolean;
+		backgroundOnTimeout?: boolean;
 		audit?: {
 			host?: AuditHost;
 			approvals?: "terminal" | "chat";
@@ -227,8 +228,10 @@ export async function openConversation(
 		onApproval: hooks.onApproval,
 		sessionDir: join(sessionsDir, segment(key.channel), segment(key.account), segment(key.peer)),
 		permissionMode: policy.permissionMode,
-		// The gateway is parked as it was (2026-10-19): P37 permission rules stay off here.
+		// The gateway is parked as it was (2026-10-19): P37 permission rules stay off here, and a
+		// command that reaches its timeout is stopped as before, not moved to the background (P39d).
 		permissionRules: false,
+		backgroundOnTimeout: false,
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
 		audit: {

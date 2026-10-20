@@ -62,6 +62,8 @@ export interface RunTuiOptions {
 	setPermissionMode?(mode: PermissionMode): void;
 	/** Save a trust decision for this project's resources (/trust); returns the resources it covers. */
 	saveTrust?(trusted: boolean): Promise<string[]>;
+	/** P39d: the workspace's background commands; Ctrl+B moves the running bash command there (Claude Code). */
+	background?: { readonly foregroundCount: number; moveToBackground(): number };
 	/** Install the TUI approval prompt into the host's approval loop (P15). */
 	setApprovalPrompt?(prompt: (request: ApprovalPromptRequest) => Promise<ApprovalAnswer>): void;
 	buildAgent(

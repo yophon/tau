@@ -12,6 +12,8 @@ import { gitDiffLines, summarizeDiff } from "../src/tui/render/git-diff.ts";
 import { lineText } from "../src/tui/render/spans.ts";
 import { DOWN, deferred, ESC, type Harness, type HarnessOptions, harness as start, textTool } from "./tui-harness.ts";
 
+const CTRL_B = "\x02";
+
 const open: Harness[] = [];
 async function harness(options: HarnessOptions): Promise<Harness> {
 	const h = await start(options);
@@ -159,5 +161,32 @@ describe("P39c /btw", () => {
 		await h.waitFor((f) => f.includes("line 59"), "the last rows");
 		await h.key(ESC);
 		await h.waitFor((f) => !f.includes("line 59") && f.includes("Enter to send"), "the input box back");
+	});
+});
+
+describe("P39d Ctrl+B", () => {
+	it("moves the running bash command to the background; otherwise it is pi's cursor left", async () => {
+		let foreground = 0;
+		let moved = 0;
+		const background = {
+			get foregroundCount() {
+				return foreground;
+			},
+			moveToBackground: () => {
+				moved++;
+				foreground = 0;
+				return 1;
+			},
+		};
+		const h = await harness({ responses: [], tui: { background } });
+		await h.type("ab");
+		await h.key(CTRL_B);
+		assert.equal(h.controller.state.editor.cursor, 1, "no command running: cursor left");
+		assert.equal(moved, 0);
+		foreground = 1;
+		await h.key(CTRL_B);
+		assert.equal(moved, 1);
+		assert.equal(h.controller.state.editor.cursor, 1, "the cursor stays");
+		await h.waitFor((f) => f.includes("Moved the command to the background (/tasks)"), "the flash");
 	});
 });

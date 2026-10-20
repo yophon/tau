@@ -26,6 +26,7 @@ export type {
 	FileInfo,
 	FileKind,
 	FileSystem,
+	ForegroundOutcome,
 	ImageProcessor,
 	ProcessedImage,
 	Shell,

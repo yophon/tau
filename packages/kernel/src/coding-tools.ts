@@ -4,7 +4,7 @@ import { editDiff, type LocatedEdit } from "./edit-diff.ts";
 import { ShellError } from "./errors.ts";
 import type { PermissionMode } from "./policy.ts";
 import { createFindTool, createGrepTool, createLsTool } from "./search-tools.ts";
-import { errorResult, optionalNumber, requireString, type Tool, textResult } from "./tools.ts";
+import { errorResult, optionalNumber, requireString, type Tool, type ToolResult, textResult } from "./tools.ts";
 import { utf8CodePointLength } from "./utf8.ts";
 
 const MAX_READ_LINES = 2000;
@@ -429,12 +429,28 @@ export function backgroundStartedText(id: string, outputPath: string): string {
 	return `Command running in background with ID: ${id}. Output is being written to: ${outputPath}`;
 }
 
+/** What bash returns for a foreground command moved to the background (P39d, Claude Code's wording). */
+export function backgroundMovedText(
+	reason: "user" | "timeout",
+	timeoutSeconds: number,
+	id: string,
+	outputPath: string,
+): string {
+	const why =
+		reason === "timeout"
+			? `Command did not complete within its ${timeoutSeconds}s timeout and was moved to the background`
+			: "The user moved this command to the background";
+	return `${why}. It keeps running with ID: ${id}. Output is being written to: ${outputPath}. You are notified when it exits; read the output file to see progress.`;
+}
+
 function createBashTool(shell: Shell, background?: BackgroundShell): Tool {
 	return {
 		name: "bash",
 		description:
 			"Run a shell command in the working directory and return its output. " +
-			`Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; pass timeoutSeconds for longer builds or tests.` +
+			(background?.run
+				? `Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; a command still running then moves to the background (a sleep is stopped); pass timeoutSeconds to wait longer.`
+				: `Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; pass timeoutSeconds for longer builds or tests.`) +
 			(background
 				? " Set run_in_background for commands that keep running (dev servers, watchers) or that you do not need to wait for: it returns at once with a task ID and an output file. Read the output file with read to see progress; you are notified when the command exits, so do not poll with sleep. Stop it with task_stop. Do not add '&' to the command. Background commands end when tau exits."
 				: ""),
@@ -479,19 +495,48 @@ function createBashTool(shell: Shell, background?: BackgroundShell): Tool {
 			// Kept so a command stopped by the timeout still reports what it printed.
 			const streamed: string[] = [];
 			let result: Awaited<ReturnType<Shell["exec"]>>;
+			const streams = {
+				onStdout: (chunk: string) => {
+					streamed.push(chunk);
+					onUpdate?.(chunk, "stdout");
+				},
+				onStderr: (chunk: string) => {
+					streamed.push(chunk);
+					onUpdate?.(chunk, "stderr");
+				},
+			};
 			try {
-				result = await shell.exec(command, {
-					timeoutSeconds,
-					signal,
-					onStdout: (chunk) => {
-						streamed.push(chunk);
-						onUpdate?.(chunk, "stdout");
-					},
-					onStderr: (chunk) => {
-						streamed.push(chunk);
-						onUpdate?.(chunk, "stderr");
-					},
-				});
+				if (background?.run) {
+					// P39d (Claude Code): Ctrl+B, or the timeout, moves the command to the background;
+					// a sleep that reaches its timeout is stopped as before.
+					const description = typeof args.description === "string" ? args.description.trim() : "";
+					const outcome = await background.run(command, {
+						timeoutSeconds,
+						onTimeout: /^\s*sleep\b/.test(command) ? "stop" : "background",
+						signal,
+						...streams,
+						...(description === "" ? {} : { description }),
+					});
+					if (outcome.kind === "backgrounded") {
+						const { id, outputPath } = outcome.task;
+						const text = backgroundMovedText(outcome.reason, timeoutSeconds, id, outputPath);
+						const printed = truncateTail(outcome.output);
+						const moved: ToolResult = {
+							...textResult(printed === "" ? text : `${printed}\n${text}`),
+							details: { background: { id, outputPath, movedBy: outcome.reason } },
+							structuredContent: {
+								output: text,
+								truncated: false,
+								exit_code: 0,
+								wall_time_seconds: Math.round((Date.now() - startedAt) / 100) / 10,
+							},
+						};
+						return moved;
+					}
+					result = outcome.result;
+				} else {
+					result = await shell.exec(command, { timeoutSeconds, signal, ...streams });
+				}
 			} catch (error) {
 				if (!(error instanceof ShellError) || error.code !== "timeout") throw error;
 				const printed = truncateTail(streamed.join(""));

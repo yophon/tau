@@ -1637,6 +1637,8 @@ async function main(): Promise<void> {
 		trustPrompt?: boolean;
 		/** P37a: permission rules and additional working directories (default true; off in the gateway, which stays as it was). */
 		permissionRules?: boolean;
+		/** P39d: false keeps a bash command that reaches its timeout stopped instead of moved to the background (the gateway). */
+		backgroundOnTimeout?: boolean;
 		/** P32c: the audit's host, trigger and approval kind for this workspace (the gateway's chats). */
 		audit?: {
 			host?: AuditHost;
@@ -1679,7 +1681,10 @@ async function main(): Promise<void> {
 					})
 				: undefined;
 		// P36a: background commands, one list per workspace (a gateway conversation has its own).
-		const background = new NodeBackgroundShell(cwd, { env: modelEnvironment() });
+		const background = new NodeBackgroundShell(cwd, {
+			env: modelEnvironment(),
+			...(spec.backgroundOnTimeout === false ? { moveOnTimeout: false } : {}),
+		});
 		const hostExtensions = [
 			...(askUser ? [askUser] : []),
 			createBackgroundExtension(background),
@@ -2150,6 +2155,8 @@ async function main(): Promise<void> {
 				permissionMode = nextMode;
 			},
 			saveTrust: (trusted) => saveProjectTrust(cwd, trusted),
+			// P39d: Ctrl+B moves the running bash command to the background.
+			background: workspace.background,
 			setApprovalPrompt: (prompt) => {
 				approvalPromptRef.current = prompt;
 			},

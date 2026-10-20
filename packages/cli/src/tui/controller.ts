@@ -1043,6 +1043,7 @@ export class TuiController {
 			searchOpen: state.search !== undefined && !state.approval && !state.picker,
 			selectionActive: state.selection !== undefined,
 			running: state.task !== undefined,
+			foregroundCommand: (this.options.background?.foregroundCount ?? 0) > 0,
 			bufferEmpty: state.editor.text === "",
 			...this.cursorRows(),
 			platform: this.deps.platform ?? process.platform,
@@ -1446,6 +1447,12 @@ export class TuiController {
 			case "suspend":
 				this.deps.suspend?.();
 				return;
+			case "background-command": {
+				const moved = this.options.background?.moveToBackground() ?? 0;
+				if (moved > 0)
+					this.flash(`Moved ${moved === 1 ? "the command" : `${moved} commands`} to the background (/tasks)`);
+				return;
+			}
 			case "aside-close":
 				this.dispatch({ type: "aside-close" });
 				return;

@@ -65,6 +65,12 @@ export interface BackgroundTaskInfo {
 	endedAt?: number;
 }
 
+/** How a foreground command started with BackgroundShell.run ended (P39d). */
+export type ForegroundOutcome =
+	| { kind: "exited"; result: ShellExecResult }
+	/** Moved to the background (Ctrl+B, or its timeout): a running task now; `output` is what it printed before. */
+	| { kind: "backgrounded"; reason: "user" | "timeout"; task: BackgroundTaskInfo; output: string };
+
 /**
  * Background command capability (P36a). The host starts the process, writes its
  * output to a file and stops it on request; hosts without one offer no
@@ -76,6 +82,25 @@ export interface BackgroundShell {
 	/** Stop a running task and its child processes. Rejects for unknown or finished ids. */
 	stop(id: string): Promise<BackgroundTaskInfo>;
 	list(): BackgroundTaskInfo[];
+	/**
+	 * Run a command in the foreground that can move to the background (P39d, Claude Code):
+	 * moveToBackground() moves it, and so does reaching `timeoutSeconds` when `onTimeout` is
+	 * "background" (and the host allows it); otherwise the timeout stops it with
+	 * ShellError("timeout"), as Shell.exec does. Optional: without it bash uses Shell.exec.
+	 */
+	run?(
+		command: string,
+		options?: {
+			timeoutSeconds?: number;
+			onTimeout?: "background" | "stop";
+			signal?: TauAbortSignal;
+			onStdout?: (chunk: string) => void;
+			onStderr?: (chunk: string) => void;
+			description?: string;
+		},
+	): Promise<ForegroundOutcome>;
+	/** Move every command running through run() to the background (Ctrl+B); returns how many moved. */
+	moveToBackground?(): number;
 }
 
 /** pi ProcessImageResult: an image ready to send (base64), or why it cannot be. */
