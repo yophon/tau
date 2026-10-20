@@ -8,7 +8,6 @@ import { NodeFileSystem } from "@yophon/tau-host-node";
 import {
 	Agent,
 	type AgentMessage,
-	type ApprovalRequest,
 	defaultPlatform,
 	type Extension,
 	ExtensionRegistry,
@@ -27,6 +26,7 @@ import { suggestRules } from "../src/permissions.ts";
 import { App } from "../src/tui/app.ts";
 import { TuiController } from "../src/tui/controller.ts";
 import { FullscreenApp } from "../src/tui/fullscreen.ts";
+import type { ApprovalPromptRequest } from "../src/tui/model.ts";
 import { LineCache } from "../src/tui/render/lines.ts";
 import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "../src/tui/types.ts";
 
@@ -82,7 +82,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	const platform = fakePlatform(options.responses, requests);
 	const permissionMode = options.permissionMode ?? "autonomous";
 	const extensions = await ExtensionRegistry.load(options.extensions ?? []);
-	let approvalPrompt: ((request: ApprovalRequest) => Promise<ApprovalAnswer>) | undefined;
+	let approvalPrompt: ((request: ApprovalPromptRequest) => Promise<ApprovalAnswer>) | undefined;
 	const cwd = mkdtempSync(join(tmpdir(), "tau-tui-"));
 
 	let repo: JsonlSessionRepo | undefined;
