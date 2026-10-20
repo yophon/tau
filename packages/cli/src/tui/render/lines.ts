@@ -15,6 +15,7 @@ import { strWidth } from "../input/width.ts";
 import type { Block, ToolBlock } from "../model.ts";
 import { type RenderOptions, TONE_COLOR } from "./blocks.ts";
 import { type MarkdownItem, markdownItems } from "./markdown.ts";
+import { type RowMeta, setRowMeta } from "./row-meta.ts";
 import type { Span, StyledLine } from "./spans.ts";
 import { toolView } from "./tool-views.ts";
 import { visibleWidth, wrapText } from "./wrap.ts";
@@ -92,27 +93,10 @@ export function wrapLine(line: StyledLine, width: number, colors = true, outer: 
 	return wrapped(line, width, colors, outer).rows;
 }
 
-/**
- * How a row copies (P38b, Codex): the cells of decoration it starts with (a bar, a bullet, a
- * tool's gutter), and how it joins the row above — a newline (`join` undefined), or for a row
- * a soft wrap made, the text the wrap took out (usually nothing or a space).
- */
-export interface RowMeta {
-	indent: number;
-	join?: string;
-}
-
 /** Rows with their copy metadata. */
 interface Out {
 	rows: string[];
 	meta: RowMeta[];
-}
-
-const ROW_META = new WeakMap<readonly string[], RowMeta[]>();
-
-/** The copy metadata of rows blockLines made (undefined for other rows). */
-export function rowMeta(rows: readonly string[]): readonly RowMeta[] | undefined {
-	return ROW_META.get(rows);
 }
 
 /** Where a wrapped row continues the one above: the source text between them, or undefined for a newline. */
@@ -229,7 +213,7 @@ export function blockLines(block: Block, options: LineOptions): string[] {
 	const out = blockOut(block, options);
 	// The blank row above a block, then its rows; the copy metadata rides along (rowMeta).
 	const rows = out.rows.length === 0 ? [] : ["", ...out.rows];
-	ROW_META.set(rows, out.rows.length === 0 ? [] : [{ indent: 0 }, ...out.meta]);
+	setRowMeta(rows, out.rows.length === 0 ? [] : [{ indent: 0 }, ...out.meta]);
 	return rows;
 }
 

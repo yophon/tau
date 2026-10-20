@@ -400,6 +400,32 @@ describe("P38b tool calls", () => {
 	});
 });
 
+describe("P38b Ink loads after loadInk()", () => {
+	it("main.ts reaches no Ink or React through its static imports (CI set would blank the TUI)", async () => {
+		const { readFileSync, existsSync } = await import("node:fs");
+		const { dirname, resolve } = await import("node:path");
+		const { fileURLToPath } = await import("node:url");
+		const start = fileURLToPath(new URL("../src/main.ts", import.meta.url));
+		const seen = new Set<string>();
+		const hits: string[] = [];
+		const visit = (file: string, chain: string[]): void => {
+			if (seen.has(file)) return;
+			seen.add(file);
+			const source = readFileSync(file, "utf8");
+			for (const match of source.matchAll(/^import\s+(?!type\s)(?:[^"']*?from\s+)?["']([^"']+)["'];?/gm)) {
+				const spec = match[1] as string;
+				if (spec === "ink" || spec === "react") hits.push([...chain, file, spec].join(" -> "));
+				else if (spec.startsWith(".")) {
+					const target = resolve(dirname(file), spec);
+					if (existsSync(target)) visit(target, [...chain, file]);
+				}
+			}
+		};
+		visit(start, []);
+		assert.deepEqual(hits, []);
+	});
+});
+
 describe("P38b copying and links", () => {
 	const rowsOf = (blocks: Block[], width = 40) =>
 		buildTranscript(blocks, (block) =>

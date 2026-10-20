@@ -7,7 +7,7 @@
 import { stripVTControlCharacters } from "node:util";
 import { cellWidth, graphemes } from "./input/width.ts";
 import type { Block } from "./model.ts";
-import { type RowMeta, rowMeta } from "./render/lines.ts";
+import { type RowMeta, rowMeta } from "./render/row-meta.ts";
 
 export interface TranscriptRows {
 	rows: string[];
