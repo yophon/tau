@@ -19,7 +19,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { excludeFromGit } from "./permissions.ts";
 
 export interface WorktreeSettings {
@@ -42,6 +42,8 @@ export interface WorktreeSession {
 	named: boolean;
 	/** Links made from worktree.symlinkDirectories (removed before the worktree, never their targets). */
 	links: string[];
+	/** Made by this run (not an existing worktree opened again). */
+	created: boolean;
 }
 
 /** Valid names: a letter or digit first, then letters, digits, dots, dashes, underscores; never "..". */
@@ -155,17 +157,25 @@ export function openWorktree(options: {
 }): WorktreeSession {
 	const top = tryGit(options.cwd, ["rev-parse", "--show-toplevel"]);
 	if (!top) throw new Error("--worktree needs a git repository");
-	const common = resolve(top, git(top, ["rev-parse", "--git-common-dir"]));
-	// From inside a worktree, new ones still go under the main checkout.
-	const mainRoot = common.endsWith(".git") ? dirname(common) : top;
+	// From inside a worktree, new ones still go under the main checkout: the first entry of
+	// git's list. A bare repository has no checkout of its own, so this one hosts them.
+	const list = tryGit(top, ["worktree", "list", "--porcelain"]) ?? "";
+	const first = /^worktree (.+)$/m.exec(list);
+	const firstBlock = list.split(/\n\n/)[0] ?? "";
+	// The entry must be a checkout (it has a .git): with --separate-git-dir git lists the git dir itself.
+	const listed = first && !/^bare$/m.test(firstBlock) ? resolve(first[1]) : undefined;
+	const mainRoot = listed && existsSync(join(listed, ".git")) ? listed : resolve(top);
 	const tauDir = join(mainRoot, ".tau");
 	const worktreesDir = join(tauDir, "worktrees");
 	for (const dir of [tauDir, worktreesDir]) {
 		if (isSymlink(dir)) throw new Error(`${dir} is a symlink; refusing to create a worktree through it`);
 	}
 	const named = options.name !== undefined;
-	const name =
-		options.name ?? generateWorktreeName((candidate) => existsSync(join(worktreesDir, candidate)), options.random);
+	// A name is taken while its directory or its branch exists (an old branch may hold kept work).
+	const taken = (candidate: string) =>
+		existsSync(join(worktreesDir, candidate)) ||
+		tryGit(mainRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/worktree-${candidate}`]) !== undefined;
+	const name = options.name ?? generateWorktreeName(taken, options.random);
 	if (!isWorktreeName(name)) throw new Error(`Not a valid worktree name: ${name}`);
 	const path = join(worktreesDir, name);
 	if (isSymlink(path)) throw new Error(`${path} is a symlink; refusing to use it`);
@@ -186,9 +196,10 @@ export function openWorktree(options: {
 		branch,
 		mainRoot,
 		...(originalBranch ? { originalBranch } : {}),
-		base: branchExists ? (tryGit(path, ["rev-parse", "HEAD"]) ?? base) : base,
+		base,
 		named,
 		links,
+		created: true,
 	};
 	writeFileSync(metaPath(mainRoot, name), `${JSON.stringify(session, null, "\t")}\n`);
 	return session;
@@ -210,22 +221,24 @@ function reopen(
 	} catch {
 		// Made by hand or by an older run: what git says is enough.
 	}
-	let base = stored.base ?? tryGit(path, ["rev-parse", "HEAD"]) ?? "";
-	// Claude Code: with the fresh base, a clean worktree still on its branch with no commits of its
-	// own moves to the latest default branch instead of staying at its old tip.
-	if (baseRef === "fresh") {
-		const clean = tryGit(path, ["status", "--porcelain"]) === "";
-		const onBranch = tryGit(path, ["symbolic-ref", "--short", "-q", "HEAD"]) === branch;
-		const ahead = base ? Number(tryGit(path, ["rev-list", "--count", `${base}..HEAD`]) ?? "1") : 1;
-		if (clean && onBranch && ahead === 0) {
-			const fresh = resolveBase(mainRoot, "fresh");
-			if (fresh !== base && tryGit(path, ["reset", "--hard", "--quiet", fresh]) !== undefined) base = fresh;
-		}
-	}
+	let base = stored.base ?? "";
 	const links = [
 		...(stored.links ?? []),
 		...linkDirectories(mainRoot, path, settings?.symlinkDirectories ?? []),
 	].filter((link, index, all) => all.indexOf(link) === index);
+	// Claude Code: with the fresh base, a clean worktree still on its branch with no commits of its
+	// own moves to the latest default branch. Only when its HEAD is an ancestor of that commit, so a
+	// reset can never drop a commit.
+	if (baseRef === "fresh") {
+		const clean = changedFiles(path, links) === 0;
+		const onBranch = tryGit(path, ["symbolic-ref", "--short", "-q", "HEAD"]) === branch;
+		if (clean && onBranch) {
+			const fresh = resolveBase(mainRoot, "fresh");
+			const behind = tryGit(path, ["merge-base", "--is-ancestor", "HEAD", fresh]) !== undefined;
+			const head = tryGit(path, ["rev-parse", "HEAD"]);
+			if (behind && fresh !== head && tryGit(path, ["reset", "--hard", "--quiet", fresh]) !== undefined) base = fresh;
+		}
+	}
 	const session: WorktreeSession = {
 		name,
 		path,
@@ -235,6 +248,7 @@ function reopen(
 		base,
 		named: named || stored.named === true,
 		links,
+		created: false,
 	};
 	writeFileSync(metaPath(mainRoot, name), `${JSON.stringify(session, null, "\t")}\n`);
 	return session;
@@ -288,16 +302,49 @@ export interface WorktreeState {
 	unknown?: string;
 }
 
-/** Changed or untracked files (submodules included) and commits since the base. */
+/** Changed or untracked files (submodules included), leaving out the session's own directory links. */
+function changedFiles(path: string, links: readonly string[]): number | undefined {
+	const status = tryGit(path, ["status", "--porcelain"]);
+	if (status === undefined) return undefined;
+	const own = new Set(links.map((link) => relative(path, link).replaceAll("\\", "/")));
+	return status
+		.split("\n")
+		.filter((line) => line.trim() !== "")
+		.filter((line) => !own.has(line.slice(3).replace(/\/$/, ""))).length;
+}
+
+/**
+ * Commits only this worktree holds: reachable from its HEAD or its branch and from no
+ * other branch, remote branch or tag. Independent of where it started, so a reused
+ * branch or a detached HEAD cannot hide work.
+ */
+function unreachableCommits(session: WorktreeSession): number | undefined {
+	const branchRef = `refs/heads/${session.branch}`;
+	const hasBranch = tryGit(session.path, ["rev-parse", "--verify", "--quiet", branchRef]) !== undefined;
+	const count = tryGit(session.path, [
+		"rev-list",
+		"--count",
+		"HEAD",
+		...(hasBranch ? [branchRef] : []),
+		"--not",
+		`--exclude=${session.branch}`,
+		"--branches",
+		"--remotes",
+		"--tags",
+	]);
+	return count === undefined ? undefined : Number(count) || 0;
+}
+
+/** What leaving would discard: changed files and commits nothing else holds. */
 export function worktreeState(session: WorktreeSession): WorktreeState {
-	const status = tryGit(session.path, ["status", "--porcelain"]);
-	const ahead = tryGit(session.path, ["rev-list", "--count", `${session.base}..HEAD`]);
+	const changed = changedFiles(session.path, session.links);
+	const commits = unreachableCommits(session);
 	return {
-		changedFiles: status === undefined ? 0 : status.split("\n").filter((line) => line.trim() !== "").length,
-		newCommits: ahead === undefined ? 0 : Number(ahead) || 0,
-		...(status === undefined
+		changedFiles: changed ?? 0,
+		newCommits: commits ?? 0,
+		...(changed === undefined
 			? { unknown: "uncommitted changes" }
-			: ahead === undefined
+			: commits === undefined
 				? { unknown: "new commits" }
 				: {}),
 	};

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -49,6 +50,11 @@ async function main() {
 		await run("ask-user", runAskUserSmoke);
 		await run("hooks", runHooksSmoke);
 		await run("background", runBackgroundSmoke);
+		await run("permissions", runPermissionsSmoke);
+		await run("handoff", runHandoffSmoke);
+		await run("double-esc", runDoubleEscSmoke);
+		await run("statusline", runStatusLineSmoke);
+		await run("worktree", runWorktreeSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -298,7 +304,9 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 		shellQuote(cliPath),
 		...args.map(shellQuote),
 	].join(" ");
-	await tmux(["new-session", "-d", "-x", "120", "-y", "38", "-s", name, "-c", dirs.cwd, command]);
+	// SMOKE_KEEP=1 keeps the pane after tau exits (debugging a scenario that dies early).
+	const kept = process.env.SMOKE_KEEP ? `${command} 2>&1; echo EXITED=$?; sleep 60` : command;
+	await tmux(["new-session", "-d", "-x", "120", "-y", "38", "-s", name, "-c", dirs.cwd, kept]);
 	return new TmuxSession(name);
 }
 
@@ -822,6 +830,158 @@ async function runBackgroundSmoke(root, baseUrl) {
 	}
 }
 
+// P37a: a deny rule from settings stops the call; /permissions lists it and adds one.
+async function runPermissionsSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "permissions", false);
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	await writeFile(
+		join(dirs.home, ".tau", "settings.json"),
+		`${JSON.stringify({ permissions: { deny: ["Edit(.env*)"] } })}\n`,
+	);
+	const session = await startTui("permissions", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("rules smoke", "Enter");
+		await session.waitFor("SMOKE_RULE_DENIED", 10_000);
+		await session.send("/permissions", "Enter");
+		await session.waitFor("Deny (1)", 10_000);
+		for (const key of ["Down", "Down", "Enter"]) {
+			await session.send(key);
+			await sleep(150);
+		}
+		await session.waitFor("Edit(.env*)", 10_000);
+		await session.waitFor("[user]", 10_000);
+		await session.send("Enter");
+		await session.waitFor("New deny rule", 10_000);
+		await session.send("-l", "Bash(curl *)");
+		await session.send("Enter");
+		await session.waitFor("All projects", 10_000);
+		for (const key of ["Down", "Down", "Enter"]) {
+			await session.send(key);
+			await sleep(150);
+		}
+		await session.waitFor("Added deny rule Bash(curl *)", 10_000);
+		await session.send("Escape");
+		await sleep(200);
+		await session.send("Escape");
+		await sleep(300);
+		const settings = await readFile(join(dirs.home, ".tau", "settings.json"), "utf8");
+		if (!settings.includes("Bash(curl *)")) throw new Error(`the rule was not saved:\n${settings}`);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok permissions");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P37b: /handoff opens a new session with the generated prompt in the input box.
+async function runHandoffSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "handoff", false);
+	const session = await startTui("handoff", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await session.send("/handoff carry on", "Enter");
+		await session.waitFor("Handoff ready.", 15_000);
+		await session.waitFor("SMOKE_HANDOFF_TASK", 10_000);
+		// Esc clears the whole draft (P37b), keeping it in history.
+		await session.send("Escape");
+		await sleep(200);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok handoff");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P37b: Esc twice on an empty input opens the session tree, through a real terminal.
+async function runDoubleEscSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "double-esc", false);
+	const session = await startTui("double-esc", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await sleep(300);
+		await session.send("Escape", "Escape");
+		await session.waitFor("Jump to a user message", 10_000);
+		await session.send("Escape");
+		await sleep(200);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok double esc");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P37c: a statusLine command's colored rows show above the status line.
+async function runStatusLineSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "statusline", false);
+	const script = join(dirs.home, "statusline.mjs");
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	await writeFile(
+		script,
+		`let d = ""; process.stdin.on("data", (c) => (d += c)).on("end", () => { const j = JSON.parse(d); console.log("\\x1b[35mSMOKE_STATUS " + j.model.display_name + " " + j.permission_mode + "\\x1b[0m"); });\n`,
+	);
+	await writeFile(
+		join(dirs.home, ".tau", "settings.json"),
+		`${JSON.stringify({ statusLine: { type: "command", command: `${shellQuote(process.execPath)} ${shellQuote(script)}` } })}\n`,
+	);
+	const session = await startTui("statusline", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("SMOKE_STATUS mock-model autonomous", 15_000);
+		await session.send("BTab");
+		await session.waitFor("SMOKE_STATUS mock-model read-only", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok statusline");
+	} finally {
+		await session.kill();
+	}
+}
+
+// P37d: --worktree runs in a new worktree; a clean, named one asks before it goes.
+async function runWorktreeSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "worktree", false);
+	const gitEnv = [
+		"GIT_AUTHOR_NAME=t",
+		"GIT_AUTHOR_EMAIL=t@example.com",
+		"GIT_COMMITTER_NAME=t",
+		"GIT_COMMITTER_EMAIL=t@example.com",
+	];
+	const git = (...args) =>
+		new Promise((resolve, reject) =>
+			execFile(
+				"git",
+				args,
+				{ cwd: dirs.cwd, env: { ...process.env, ...Object.fromEntries(gitEnv.map((kv) => kv.split("="))) } },
+				(error) => (error ? reject(error) : resolve()),
+			),
+		);
+	await git("init", "-q", "-b", "main");
+	await writeFile(join(dirs.cwd, "a.txt"), "one\n");
+	await git("add", ".");
+	await git("commit", "-q", "-m", "first");
+	const session = await startTui("worktree", dirs, baseUrl, ["--no-session", "--worktree", "smoke"]);
+	try {
+		await session.waitFor(".tau/worktrees/smoke", 15_000);
+		await session.waitFor("worktree-smoke", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitFor("has no changes. Remove it and its branch?", 15_000);
+		await session.send("y", "Enter");
+		// tau exits right after removing it; the pane goes with it.
+		await session.waitForExit(15_000);
+		if (existsSync(join(dirs.cwd, ".tau", "worktrees", "smoke"))) throw new Error("the worktree is still there");
+		console.log("ok worktree");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P34e: with the window in the background, a finished run sends a notification; the title spins.
 async function runNotifySmoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "notify", false);
@@ -1136,15 +1296,20 @@ function responseFor(request) {
 		if (content.includes("READ_SMOKE_LINE_5")) return textTurn("SMOKE_READ_DONE");
 		if (content.includes("SMOKE_TOOL_OUTPUT")) return textTurn("SMOKE_CUSTOM_TOOL_DONE");
 		if (content.includes("APPROVAL_RAN_42")) return textTurn(`SMOKE_APPROVAL_DONE_${++approvalDoneCount}`);
+		if (content.includes("(deny rule in ")) return textTurn("SMOKE_RULE_DENIED");
 		if (content.includes("Denied by policy")) return textTurn(`SMOKE_APPROVAL_DENIED_${++approvalDenyCount}`);
 		if (content.includes("Question q1 sent")) return textTurn("SMOKE_ASK_CONTINUED");
 		if (content.includes("Command running in background with ID: b1")) return textTurn("SMOKE_BG_STARTED");
 		if (content.includes("Command running in background with ID: b2")) return textTurn("SMOKE_BG_SECOND");
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
 	}
+	if (String(messages[0]?.content ?? "").includes("You are a context transfer assistant")) {
+		return textTurn("## Context\nSmoke context.\n\n## Task\nSMOKE_HANDOFF_TASK");
+	}
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("which model")) return textTurn(`MODEL_IS_${request.model}`);
+	if (content.includes("rules smoke")) return toolCallTurn("write", { path: ".env", content: "X=1" });
 	if (content.includes("[Answer q1]") && content.includes("user selected 2. SMOKE_OPT_B"))
 		return textTurn("SMOKE_ANSWER_GOT_B");
 	if (content.includes("ask smoke")) {

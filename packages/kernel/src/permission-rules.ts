@@ -158,9 +158,21 @@ function paramRule(specifier: string, toolName: string): { key: string; value: s
 	return { key: match[1], value: match[2] };
 }
 
-/** Whether a rule's tool list covers a tool name (case-insensitive; globs with "*"). */
+/**
+ * Whether a rule's tool list covers a tool name (case-insensitive; globs with "*"). A
+ * Read path deny also covers edit and write (Claude Code: "a Read(...) deny also blocks
+ * Edit and Write there").
+ */
 function coversTool(rule: PermissionRule, toolName: string): boolean {
 	const name = toolName.toLowerCase();
+	if (
+		rule.kind === "deny" &&
+		rule.specifier !== undefined &&
+		EDIT_PATH_TOOLS.has(name) &&
+		rule.tools.includes("read")
+	) {
+		return true;
+	}
 	return rule.tools.some((tool) => (tool.includes("*") ? globToRegExp(tool, false).test(name) : tool === name));
 }
 
@@ -302,7 +314,10 @@ function bashFileTargetMatch(
 // --- Bash patterns ---------------------------------------------------------------
 
 /** `*` matches any text (spaces too); a trailing ` *` that is the only wildcard also matches the bare command; `:*` is the legacy trailing form. */
-export function bashPatternMatches(pattern: string, command: string): boolean {
+export function bashPatternMatches(pattern: string, input: string): boolean {
+	// Runs of whitespace count as one space on both sides, so a saved exact rule for a
+	// command with "a  b" or a line break in quotes still matches it.
+	const command = input.replace(/\s+/g, " ").trim();
 	let spec = pattern.replace(/\s+/g, " ").trim();
 	if (spec.endsWith(":*")) spec = `${spec.slice(0, -2)} *`;
 	if (spec === "*" || spec === "") return true;
@@ -392,6 +407,8 @@ function collect(command: string, result: ParsedCommand, depth: number): void {
 			index++;
 			const target = next.word.value;
 			if (/^&?\d*$/.test(target) && token.op.endsWith("&")) continue; // fd duplication (2>&1)
+			// The null device and the standard streams are not files anyone edits (Claude Code).
+			if (/^(?:\/dev\/(?:null|stdout|stderr|tty)|nul)$/i.test(target)) continue;
 			if (token.op.startsWith("<")) {
 				if (token.op === "<") result.reads.push(target);
 			} else {
@@ -485,9 +502,109 @@ function basename(path: string): string {
 	return (slash === -1 ? path : path.slice(slash + 1)).toLowerCase();
 }
 
+interface Heredoc {
+	delimiter: string;
+	/** <<- strips leading tabs from the body and the delimiter line. */
+	strip: boolean;
+	/** A quoted delimiter ('EOF', "EOF", \EOF): the body is not expanded. */
+	quoted: boolean;
+}
+
+/** A here-document operator at `i` (<< or <<-, not <<<) and its delimiter word; `end` is just past the word. */
+function readHeredocStart(text: string, i: number): { heredoc: Heredoc; end: number } | undefined {
+	if (text[i] !== "<" || text[i + 1] !== "<" || text[i + 2] === "<") return undefined;
+	let j = i + 2;
+	let strip = false;
+	if (text[j] === "-") {
+		strip = true;
+		j++;
+	}
+	while (text[j] === " " || text[j] === "\t") j++;
+	let delimiter = "";
+	let quoted = false;
+	while (j < text.length && !/[\s;&|<>()]/.test(text[j])) {
+		const c = text[j];
+		if (c === "'" || c === '"') {
+			const close = text.indexOf(c, j + 1);
+			if (close === -1) return undefined;
+			delimiter += text.slice(j + 1, close);
+			quoted = true;
+			j = close + 1;
+			continue;
+		}
+		if (c === "\\") {
+			quoted = true;
+			delimiter += text[j + 1] ?? "";
+			j += 2;
+			continue;
+		}
+		delimiter += c;
+		j++;
+	}
+	return delimiter === "" ? undefined : { heredoc: { delimiter, strip, quoted }, end: j };
+}
+
+/**
+ * Skip the bodies of the pending here-documents, starting just after a newline: the
+ * body is data, not commands (bash). An unquoted body still runs its `$(…)` and
+ * backtick substitutions, so those go to `nested`. Returns the index after the last body.
+ */
+function skipHeredocBodies(text: string, start: number, pending: Heredoc[], nested: string[] | undefined): number {
+	let pos = start;
+	for (const doc of pending) {
+		while (pos < text.length) {
+			const newline = text.indexOf("\n", pos);
+			const lineEnd = newline === -1 ? text.length : newline;
+			const line = text.slice(pos, lineEnd).replace(/\r$/, "");
+			pos = newline === -1 ? text.length : newline + 1;
+			if ((doc.strip ? line.replace(/^\t+/, "") : line) === doc.delimiter) break;
+			if (!doc.quoted && nested) collectSubstitutions(line, nested);
+		}
+	}
+	pending.length = 0;
+	return pos;
+}
+
+/** `$(…)` and backtick substitutions in text that is not itself a command (arithmetic, here-document bodies). */
+function collectSubstitutions(text: string, nested: string[]): void {
+	for (let k = 0; k < text.length; k++) {
+		if (text[k] === "\\") {
+			k++;
+			continue;
+		}
+		if (text[k] === "$" && text[k + 1] === "(") {
+			const end = matchParen(text, k + 1);
+			if (end === -1) return;
+			if (text[k + 2] === "(" && text[end - 1] === ")") collectSubstitutions(text.slice(k + 3, end - 1), nested);
+			else nested.push(text.slice(k + 2, end));
+			k = end;
+			continue;
+		}
+		if (text[k] === "`") {
+			const end = text.indexOf("`", k + 1);
+			if (end === -1) return;
+			nested.push(text.slice(k + 1, end));
+			k = end;
+		}
+	}
+}
+
+/**
+ * `$(…)` at `start` (pointing at "$"): a command substitution goes to `nested`; for
+ * arithmetic `$((…))` only the substitutions inside it do. Returns the closing index.
+ */
+function substitution(text: string, start: number, nested: string[]): number {
+	const end = matchParen(text, start + 1);
+	if (end === -1) return -1;
+	if (text[start + 2] === "(" && text[end - 1] === ")") collectSubstitutions(text.slice(start + 3, end - 1), nested);
+	else nested.push(text.slice(start + 2, end));
+	return end;
+}
+
 /** Tokens of a command line; substitutions' inner text goes to `nested`. Undefined when quotes or parentheses do not balance. */
 function tokenize(command: string, nested: string[]): Token[] | undefined {
 	const tokens: Token[] = [];
+	const heredocs: Heredoc[] = [];
 	let raw = "";
 	let value = "";
 	let inWord = false;
@@ -531,9 +648,8 @@ function tokenize(command: string, nested: string[]): Token[] | undefined {
 					continue;
 				}
 				if (command[j] === "$" && command[j + 1] === "(") {
-					const end = matchParen(command, j + 1);
+					const end = substitution(command, j, nested);
 					if (end === -1) return undefined;
-					if (command[j + 2] !== "(" || command[end - 1] !== ")") nested.push(command.slice(j + 2, end));
 					inner += command.slice(j, end + 1);
 					j = end + 1;
 					continue;
@@ -557,10 +673,9 @@ function tokenize(command: string, nested: string[]): Token[] | undefined {
 			continue;
 		}
 		if (c === "$" && command[i + 1] === "(") {
-			const end = matchParen(command, i + 1);
+			// $(( … )) is arithmetic: only the substitutions inside it run.
+			const end = substitution(command, i, nested);
 			if (end === -1) return undefined;
-			// $(( … )) is arithmetic, not a command.
-			if (command[i + 2] !== "(" || command[end - 1] !== ")") nested.push(command.slice(i + 2, end));
 			raw += command.slice(i, end + 1);
 			value += command.slice(i, end + 1);
 			inWord = true;
@@ -601,6 +716,8 @@ function tokenize(command: string, nested: string[]): Token[] | undefined {
 			endWord();
 			tokens.push({ type: "op", op: c });
 			i++;
+			// Here-document bodies follow the line that opened them.
+			if (c === "\n" && heredocs.length > 0) i = skipHeredocBodies(command, i, heredocs, nested);
 			continue;
 		}
 		if (c === "&" || c === "|") {
@@ -620,6 +737,22 @@ function tokenize(command: string, nested: string[]): Token[] | undefined {
 				tokens.push({ type: "op", op: c });
 				i++;
 			}
+			continue;
+		}
+		const heredoc = c === "<" ? readHeredocStart(command, i) : undefined;
+		if (heredoc) {
+			// <<EOF / <<-'EOF': the delimiter is the redirect's target; the body is skipped at the newline.
+			if (inWord && /^\d+$/.test(raw)) {
+				raw = "";
+				value = "";
+				inWord = false;
+			} else {
+				endWord();
+			}
+			tokens.push({ type: "redirect", op: "<<" });
+			tokens.push({ type: "word", word: { raw: heredoc.heredoc.delimiter, value: heredoc.heredoc.delimiter } });
+			heredocs.push(heredoc.heredoc);
+			i = heredoc.end;
 			continue;
 		}
 		if (c === ">" || c === "<") {
@@ -649,13 +782,26 @@ function tokenize(command: string, nested: string[]): Token[] | undefined {
 	return tokens;
 }
 
-/** Index of the ")" closing the "(" at `open`, honoring quotes; -1 when unbalanced. */
+/** Index of the ")" closing the "(" at `open`, honoring quotes and here-document bodies; -1 when unbalanced. */
 function matchParen(text: string, open: number): number {
 	let depth = 0;
+	const heredocs: Heredoc[] = [];
 	for (let i = open; i < text.length; i++) {
 		const c = text[i];
 		if (c === "\\") {
 			i++;
+			continue;
+		}
+		if (c === "<") {
+			const heredoc = readHeredocStart(text, i);
+			if (heredoc) {
+				heredocs.push(heredoc.heredoc);
+				i = heredoc.end - 1;
+				continue;
+			}
+		}
+		if (c === "\n" && heredocs.length > 0) {
+			i = skipHeredocBodies(text, i + 1, heredocs, undefined) - 1;
 			continue;
 		}
 		if (c === "'") {
@@ -801,9 +947,28 @@ function escapeRegExp(text: string): string {
 
 // --- Domains -----------------------------------------------------------------------
 
-function hostOf(url: string): string | undefined {
-	const match = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?(\[[^\]]*\]|[^:/?#]*)/i.exec(url.trim());
-	return match ? match[1].toLowerCase().replace(/\.$/, "") : undefined;
+/**
+ * The host a fetch of `url` goes to. The WHATWG URL parser where the engine has it (the
+ * same one fetch uses: `\` as `/`, percent-decoding, numeric IPv4); a regex in bare
+ * engines without URL.
+ */
+export function hostOf(url: string): string | undefined {
+	const UrlClass = (globalThis as { URL?: new (input: string) => { hostname: string } }).URL;
+	if (UrlClass) {
+		try {
+			const host = new UrlClass(url.trim()).hostname.toLowerCase().replace(/\.$/, "");
+			return host === "" ? undefined : host.replace(/^\[(.*)\]$/, "$1");
+		} catch {
+			return undefined;
+		}
+	}
+	const match = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#\\]*@)?(\[[^\]]*\]|[^:/?#\\]*)/i.exec(url.trim());
+	return match
+		? match[1]
+				.toLowerCase()
+				.replace(/\.$/, "")
+				.replace(/^\[(.*)\]$/, "$1")
+		: undefined;
 }
 
 /** `example.com` exactly; `*.example.com` any subdomain but not the apex; `*` any host; a mid `*` stays in one label. */

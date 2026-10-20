@@ -181,3 +181,61 @@ describe("P37d worktrees", { skip: !hasGit() }, () => {
 		assert.throws(() => openWorktree({ cwd: plain, name: "x" }), /no commits yet/);
 	});
 });
+
+describe("P37d review fixes", { skip: !hasGit() }, () => {
+	it("an old branch with kept work is never taken over or deleted", async () => {
+		const repo = repository();
+		const first = openWorktree({ cwd: repo, settings: { baseRef: "head" }, random: () => 0 });
+		writeFileSync(join(first.path, "kept.txt"), "work\n");
+		git(first.path, "add", "kept.txt");
+		git(first.path, "commit", "-q", "-m", "kept work");
+		const kept = git(first.path, "rev-parse", "HEAD");
+		// The user removes the directory but keeps the branch to merge later.
+		git(repo, "worktree", "remove", "--force", first.path);
+		const second = openWorktree({ cwd: repo, settings: { baseRef: "head" }, random: () => 0 });
+		assert.notEqual(second.name, first.name, "the name with a live branch is taken");
+		await finishWorktreeSession(second, { ...quiet, ask: async () => assert.fail("clean: no question") });
+		assert.equal(git(repo, "rev-parse", `refs/heads/${first.branch}`), kept);
+		// Reopening the old name on purpose: its commit counts as work, so leaving asks.
+		const again = openWorktree({ cwd: repo, name: first.name, settings: { baseRef: "fresh" } });
+		assert.equal(git(again.path, "rev-parse", "HEAD"), kept, "fresh does not reset a branch with its own commit");
+		assert.equal(worktreeState(again).newCommits, 1);
+		const questions: string[] = [];
+		await finishWorktreeSession(again, {
+			...quiet,
+			ask: async (question) => {
+				questions.push(question);
+				return "k";
+			},
+		});
+		assert.match(questions[0] ?? "", /1 new commit/);
+	});
+
+	it("commits on the branch count even when HEAD is detached elsewhere", () => {
+		const repo = repository();
+		const session = openWorktree({ cwd: repo, settings: { baseRef: "head" }, random: () => 0.5 });
+		writeFileSync(join(session.path, "w.txt"), "w\n");
+		git(session.path, "add", "w.txt");
+		git(session.path, "commit", "-q", "-m", "w");
+		git(session.path, "checkout", "-q", "--detach", "HEAD~1");
+		assert.equal(worktreeState(session).newCommits, 1);
+	});
+
+	it("the session's own links do not make it dirty; a separate git dir finds the right main checkout", () => {
+		const repo = repository();
+		const session = openWorktree({ cwd: repo, settings: { baseRef: "head" } });
+		writeFileSync(join(session.path, "linked"), "stand-in for a symlink git lists as untracked\n");
+		assert.equal(worktreeState({ ...session, links: [join(session.path, "linked")] }).changedFiles, 0);
+		assert.equal(worktreeState(session).changedFiles, 1);
+		const outer = realpathSync(mkdtempSync(join(tmpdir(), "tau-wt-sep-")));
+		mkdirSync(join(outer, "store"));
+		git(outer, "init", "-q", "--separate-git-dir", join(outer, "store", "proj.git"), "work");
+		const work = join(outer, "work");
+		writeFileSync(join(work, "a.txt"), "a\n");
+		git(work, "add", ".");
+		git(work, "commit", "-q", "-m", "a");
+		const separate = openWorktree({ cwd: work, name: "s", settings: { baseRef: "head" } });
+		assert.equal(separate.mainRoot, work);
+		assert.ok(existsSync(join(work, ".tau", "worktrees", "s", "a.txt")));
+	});
+});

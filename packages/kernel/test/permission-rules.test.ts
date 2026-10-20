@@ -84,6 +84,59 @@ test("compound commands: allow needs every subcommand, deny and ask fire on any 
 	assert.equal(decide(set, "bash", { command: 'npm run test "$(rm -rf x)"' }), "deny", "$( ) in quotes runs");
 });
 
+test("review fixes: arithmetic substitutions, here-documents, /dev/null, whitespace", () => {
+	const set = rules({
+		allow: ["Bash(echo *)", "Bash(git commit *)", "Bash(cat *)"],
+		deny: ["Bash(rm *)", "Bash(git push *)"],
+	});
+	assert.equal(decide(set, "bash", { command: "echo $(( $(rm -rf ~) + 1 ))" }), "deny", "substitution inside $(( ))");
+	assert.equal(decide(rules({ allow: ["Bash(echo *)"] }), "bash", { command: 'echo "$(( `whoami` ))"' }), undefined);
+	const commit = "git commit -m \"$(cat <<'EOF'\nFix it.\n\nIt doesn't crash any more.\nEOF\n)\"";
+	assert.equal(parseShellCommand(commit).ok, true, "an apostrophe in a quoted here-document body");
+	assert.equal(decide(set, "bash", { command: commit }), "allow");
+	assert.equal(
+		decide(set, "bash", { command: "cat <<EOF\ndon't\nEOF\ngit push --force" }),
+		"deny",
+		"the command after the body",
+	);
+	assert.equal(
+		decide(set, "bash", { command: "cat > notes.md <<'EOF'\nrm the old files\nEOF" }),
+		"allow",
+		"the body is data",
+	);
+	assert.equal(
+		decide(set, "bash", { command: "cat <<EOF\n$(rm -rf x)\nEOF" }),
+		"deny",
+		"an unquoted body still substitutes",
+	);
+	assert.deepEqual(parseShellCommand("cat <<-END\n\tline\n\tEND\necho ok").segments, ["cat", "echo ok"]);
+	const noEdits = rules({ deny: ["Edit"] });
+	assert.equal(decide(noEdits, "bash", { command: "ls missing 2>/dev/null" }), undefined, "/dev/null is not edited");
+	assert.equal(decide(noEdits, "bash", { command: "ls > out.txt" }), "deny");
+	assert.equal(decide(rules({ allow: ['Bash(echo "a  b")'] }), "bash", { command: 'echo "a  b"' }), "allow");
+	assert.equal(
+		decide(rules({ allow: ['Bash(python3 -c "print(1)\nprint(2)")'] }), "bash", {
+			command: 'python3 -c "print(1)\nprint(2)"',
+		}),
+		"allow",
+	);
+});
+
+test("review fixes: hosts as fetch sees them; a Read deny also blocks edits", () => {
+	const set = rules({
+		allow: ["WebFetch(domain:good.com)", "WebFetch(domain:*.good.com)"],
+		deny: ["WebFetch(domain:127.0.0.1)"],
+	});
+	assert.equal(decide(set, "web_fetch", { url: "https://evil.com\\@good.com/" }), undefined);
+	assert.equal(decide(set, "web_fetch", { url: "https://evil.com\\.good.com/x" }), undefined);
+	assert.equal(decide(set, "web_fetch", { url: "http://2130706433/" }), "deny", "numeric IPv4");
+	assert.equal(decide(set, "web_fetch", { url: "https://api.good.com/x" }), "allow");
+	const secrets = rules({ deny: ["Read(secrets/**)", "Read(.env)"] });
+	assert.equal(decide(secrets, "edit", { path: "secrets/a.txt" }), "deny");
+	assert.equal(decide(secrets, "write", { path: ".env" }), "deny");
+	assert.equal(decide(rules({ ask: ["Read(.env)"] }), "write", { path: ".env" }), undefined, "only deny carries over");
+});
+
 test("shell parsing collects segments, redirections and file commands", () => {
 	const parsed = parseShellCommand('cat .env | tee out.txt > "log file.txt" 2>&1 && sed -n 1p src/a.ts < in.txt');
 	assert.equal(parsed.ok, true);
@@ -230,6 +283,12 @@ test("accept-edits: .. cannot escape the working directory; additional directori
 	assert.equal(action("/work/shared/notes.md"), "allow", "additional working directory");
 	assert.equal(action("../shared/notes.md"), "allow");
 	assert.equal(action("/work/sharedother/x"), "ask");
+	assert.equal(action(".tau/x/../settings.local.json"), "ask", "protected entry behind a .. (review fix)");
+	assert.equal(
+		policy.assess({ toolName: "write", args: { path: ".tau/x/../settings.json" }, cwd: CWD }, "accept-edits")
+			.protectedPath,
+		".tau/settings.json",
+	);
 	assert.equal(isInsideCwd("D:\\Proj\\sub\\..\\x.ts", "d:\\proj"), true);
 });
 

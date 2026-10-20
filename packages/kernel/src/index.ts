@@ -257,6 +257,7 @@ export {
 	canonicalPath,
 	deniesWholeTool,
 	EMPTY_PERMISSION_RULES,
+	hostOf,
 	matchPermissionRules,
 	mergePermissionRules,
 	type ParsedCommand,

@@ -12,10 +12,11 @@
  * symlink, in which case it counts as a project file.
  */
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, readFileSync, renameSync, statSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type ApprovalRequest,
+	hostOf,
 	matchPermissionRules,
 	type PermissionMode,
 	type PermissionRule,
@@ -24,7 +25,7 @@ import {
 	parsePermissionRule,
 	parseShellCommand,
 } from "@yophon/tau-kernel";
-import { readSettingsKey, writeSettings } from "./settings.ts";
+import { readSettingsKey, settingsParseError, writeSettings } from "./settings.ts";
 
 export type RuleSource = "user" | "project" | "local" | "flag";
 export type RuleDestination = "local" | "project" | "user";
@@ -105,6 +106,8 @@ export interface WorkspacePermissionsOptions {
 	addDirs?: readonly string[];
 	/** Switch this session to accept-edits ("Allow all edits this session"). */
 	acceptEdits?: () => void;
+	/** The session's permission mode now (the edits option only helps in supervised). */
+	mode?: () => PermissionMode;
 	/** tau wrote the project's settings.json: refresh the trust digest so its own change does not ask again. */
 	onProjectFileWritten?: () => void;
 }
@@ -236,22 +239,20 @@ export class WorkspacePermissions {
 			if ("error" in parsed) return { error: parsed.error };
 		}
 		const file = this.fileFor(destination);
-		this.updatePermissions(file, (permissions) => {
+		return this.updatePermissions(file, (permissions) => {
 			const list = Array.isArray(permissions[kind]) ? (permissions[kind] as unknown[]) : [];
 			for (const text of texts) if (!list.includes(text)) list.push(text);
 			permissions[kind] = list;
 		});
-		return {};
 	}
 
 	removeRule(rule: ListedRule): { error?: string } {
 		if (rule.source === "flag") return { error: "Rules from the command line last for this run only." };
 		const file = this.fileFor(rule.source);
-		this.updatePermissions(file, (permissions) => {
+		return this.updatePermissions(file, (permissions) => {
 			const list = Array.isArray(permissions[rule.kind]) ? (permissions[rule.kind] as unknown[]) : [];
 			permissions[rule.kind] = list.filter((entry) => entry !== rule.text);
 		});
-		return {};
 	}
 
 	/** /add-dir and --add-dir: a directory that must exist; remembered in the local file or for this session. */
@@ -263,13 +264,14 @@ export class WorkspacePermissions {
 			return { error: `${path} does not exist` };
 		}
 		if (remember) {
-			this.updatePermissions(this.fileFor("local"), (permissions) => {
+			const saved = this.updatePermissions(this.fileFor("local"), (permissions) => {
 				const list = Array.isArray(permissions.additionalDirectories)
 					? (permissions.additionalDirectories as unknown[])
 					: [];
 				if (!list.includes(path)) list.push(path);
 				permissions.additionalDirectories = list;
 			});
+			if (saved.error) return saved;
 		} else if (!this.sessionDirectories.includes(path)) {
 			this.sessionDirectories.push(path);
 		}
@@ -279,17 +281,24 @@ export class WorkspacePermissions {
 	/** What "always allow" offers for this approval (Claude Code), or undefined when only "once" fits. */
 	alwaysOption(request: ApprovalRequest): AlwaysOption | undefined {
 		if (request.protectedPath) return undefined;
+		// An ask rule asks before any allow is looked at: a saved allow could never take effect.
+		if (request.rule?.kind === "ask") return undefined;
 		if (EDIT_TOOLS.has(request.toolName)) {
 			// A subagent's mode is fixed when it starts: switching the session's would not reach it.
 			if (request.subagent || !this.options.acceptEdits) return undefined;
+			// Only supervised gains from accept-edits; never lower autonomous or bypass to it.
+			if (this.options.mode && this.options.mode() !== "supervised") return undefined;
 			const acceptEdits = this.options.acceptEdits;
 			return { kind: "edits", label: "Allow all edits this session", rules: [], apply: acceptEdits };
 		}
+		// A local file tau cannot read is not overwritten: only "once" then.
+		if (settingsParseError(this.fileFor("local").path)) return undefined;
 		const rules = suggestRules(request, this.rules());
 		if (rules.length === 0) return undefined;
+		const shown = rules.join(", ").replace(/\s+/g, " ");
 		return {
 			kind: "rules",
-			label: `Always allow in this project: ${rules.join(", ")}`,
+			label: `Always allow in this project: ${shown.length > 100 ? `${shown.slice(0, 99)}…` : shown}`,
 			rules,
 			apply: () => {
 				this.addRules("allow", rules, "local");
@@ -303,7 +312,13 @@ export class WorkspacePermissions {
 		return file;
 	}
 
-	private updatePermissions(file: SettingsFile, update: (permissions: Record<string, unknown>) => void): void {
+	/** Change a file's permissions block, keeping its other keys; a file that is not valid JSON is left alone. */
+	private updatePermissions(
+		file: SettingsFile,
+		update: (permissions: Record<string, unknown>) => void,
+	): { error?: string } {
+		const broken = settingsParseError(file.path);
+		if (broken) return { error: `${file.path} is not valid JSON (${broken}); fix it first` };
 		const firstLocal = file.source === "local" && !existsSync(file.path);
 		const raw = readSettingsKey(file.path, "permissions");
 		const permissions: Record<string, unknown> =
@@ -313,6 +328,7 @@ export class WorkspacePermissions {
 		this.cache.delete(file.path);
 		if (firstLocal) excludeFromGit(this.localRoot, LOCAL_EXCLUDE, file.path);
 		if (file.source === "project") this.options.onProjectFileWritten?.();
+		return {};
 	}
 
 	private allowsTrustedKeys(file: SettingsFile): boolean {
@@ -346,7 +362,9 @@ export class WorkspacePermissions {
 		const cached = this.cache.get(file.path);
 		if (cached && cached.mtimeMs === mtimeMs) return cached;
 		const state: FileState = { mtimeMs, rules: { allow: [], ask: [], deny: [] }, directories: [], diagnostics: [] };
-		if (mtimeMs >= 0) {
+		const broken = mtimeMs >= 0 ? settingsParseError(file.path) : undefined;
+		if (broken) state.diagnostics.push(`${file.path}: not valid JSON (${broken}); none of its rules are in force`);
+		if (mtimeMs >= 0 && !broken) {
 			const raw = readSettingsKey(file.path, "permissions");
 			if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw))) {
 				state.diagnostics.push(`${file.path}: "permissions" must be an object`);
@@ -426,6 +444,8 @@ export function excludeFromGit(root: string, pattern: string, file: string): voi
 	if (git(root, ["check-ignore", "-q", "--", file]) !== undefined) return;
 	const target = isAbsolute(excludePath) ? excludePath : join(root, excludePath);
 	try {
+		// A repository made without templates has no info/ directory yet.
+		mkdirSync(dirname(target), { recursive: true });
 		const current = existsSync(target) ? readFileSync(target, "utf8") : "";
 		if (current.split(/\r?\n/).includes(pattern)) return;
 		appendFileSync(target, `${current === "" || current.endsWith("\n") ? "" : "\n"}${pattern}\n`);
@@ -453,7 +473,7 @@ export function suggestRules(request: ApprovalRequest, current: PermissionRules)
 	}
 	if (name === "web_fetch") {
 		const url = typeof request.args.url === "string" ? request.args.url : "";
-		const host = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?([^:/?#]+)/i.exec(url)?.[1]?.toLowerCase();
+		const host = hostOf(url);
 		return host ? [`WebFetch(domain:${host})`] : [];
 	}
 	if (name === "web_search") return ["WebSearch"];
@@ -525,6 +545,11 @@ export function migrateLegacyPermissions(home: string): string | undefined {
 		if (!rules.includes(rule)) rules.push(rule);
 	}
 	const settings = join(home, ".tau", "settings.json");
+	// A settings file tau cannot read is never rewritten: the old store stays until it is fixed.
+	const broken = settingsParseError(settings);
+	if (broken) {
+		return `~/.tau/permissions.json was not migrated: ~/.tau/settings.json is not valid JSON (${broken}).`;
+	}
 	if (rules.length > 0) {
 		const raw = readSettingsKey(settings, "permissions");
 		const permissions: Record<string, unknown> =

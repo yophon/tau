@@ -587,6 +587,12 @@ export class TuiController {
 			else this.handlePointer(event);
 		}
 		if (taken.rest !== "" && this.handleRawKey(taken.rest)) return "";
+		// Esc pressed twice quickly reaches us as one "\x1b\x1b" chunk, which Ink would read as
+		// a single (meta) key: hand each Esc over on its own (P37b double Esc, Esc twice to deny).
+		if (taken.rest.length >= 2 && [...taken.rest].every((ch) => ch === "\x1b")) {
+			for (let i = 0; i < taken.rest.length; i++) this.handleKey("", { escape: true });
+			return "";
+		}
 		return taken.rest;
 	}
 
@@ -968,9 +974,12 @@ export class TuiController {
 	 */
 	private escape(): void {
 		const text = this.state.editor.text;
-		if (text.trim() !== "") {
-			this.history.push(text);
-			this.historyIndex = this.history.list().length;
+		if (text !== "") {
+			// A draft goes into history; blank lines just go.
+			if (text.trim() !== "") {
+				this.history.push(text);
+				this.historyIndex = this.history.list().length;
+			}
 			this.setEditor(ed.EMPTY);
 			this.lastEscapeAt = 0;
 			return;
@@ -1030,6 +1039,7 @@ export class TuiController {
 		await this.runTask("handoff", "Generating handoff prompt", async (signal) => {
 			try {
 				prompt = await generateHandoffPrompt(this.agent, this.agent.messages, goal, signal);
+				if (prompt === "") this.notice("error", "Handoff failed: the model returned an empty prompt.");
 			} catch (error) {
 				this.notice(
 					isAbortError(error) ? "dim" : "error",

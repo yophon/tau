@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 
 /**
@@ -116,7 +116,14 @@ import { autoTitle, autoTitleOn } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
 import { createStatusLineExtension, StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/controller.ts";
-import { finishWorktreeSession, isWorktreeName, openWorktree, type WorktreeSession } from "./worktree.ts";
+import {
+	finishWorktreeSession,
+	isWorktreeName,
+	openWorktree,
+	removeWorktree,
+	type WorktreeSession,
+	worktreeState,
+} from "./worktree.ts";
 
 /** The CLI package version (src/ and dist/ both sit one level below package.json). */
 const CLI_VERSION = (
@@ -1173,13 +1180,19 @@ async function main(): Promise<void> {
 		const moved = migrateLegacyPermissions(home);
 		if (moved) console.error(dim(moved));
 	}
-	for (const dir of options.addDirs ?? []) {
-		const path = resolve(dir.startsWith("~/") ? join(home, dir.slice(2)) : dir);
+	// Relative paths on the command line mean the directory tau was started in, even when
+	// --worktree moves into the worktree below.
+	options.addDirs = (options.addDirs ?? []).map((dir) =>
+		resolve(dir === "~" ? home : dir.startsWith("~/") ? join(home, dir.slice(2)) : dir),
+	);
+	for (const path of options.addDirs) {
 		if (!existsSync(path) || !statSync(path).isDirectory()) {
 			console.error(`--add-dir: ${path} is not a directory`);
 			process.exit(1);
 		}
 	}
+	options.files = options.files.map((file) => resolve(file));
+	if (options.sessionPath) options.sessionPath = resolve(options.sessionPath);
 	const userSettings = readSettings(userSettingsPath);
 	const valueResolver: ValueResolver = { env: process.env };
 	const configuredModels = availableModels(modelsConfig, valueResolver);
@@ -1405,6 +1418,8 @@ async function main(): Promise<void> {
 	};
 	// P37d: --worktree makes the worktree the working directory for everything below.
 	let worktreeSession: WorktreeSession | undefined;
+	/** The session reached its first prompt (from here on an exit keeps the worktree, as -p does). */
+	let worktreeStarted = false;
 	if (options.worktree) {
 		if (options.mode === "rpc" || options.mode === "acp" || options.gateway) {
 			console.error("--worktree works with the TUI, the REPL, -p and --mode json.");
@@ -1421,13 +1436,30 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 		const store = readTrustStore();
-		const main = store.trusted[worktreeSession.mainRoot];
+		const mainKey = samePath(worktreeSession.mainRoot);
+		const main = Object.entries(store.trusted).find(([key]) => samePath(key) === mainKey)?.[1];
 		const mainTrusted = main === true || (typeof main === "object" && main !== null && main.trusted);
 		process.chdir(worktreeSession.path);
 		// Trust follows the main checkout (Claude Code).
 		if (mainTrusted && store.trusted[resolve(process.cwd())] === undefined)
 			await saveProjectTrust(resolve(process.cwd()), true);
 		console.error(dim(`Worktree ${worktreeSession.name} on branch ${worktreeSession.branch}: ${worktreeSession.path}`));
+		// A worktree made just now that never got a session (tau exited on a bad argument) goes again.
+		if (worktreeSession.created && !worktreeSession.named) {
+			const made = worktreeSession;
+			process.on("exit", () => {
+				if (worktreeStarted) return;
+				try {
+					const state = worktreeState(made);
+					if (state.unknown === undefined && state.changedFiles === 0 && state.newCommits === 0) {
+						process.chdir(made.mainRoot);
+						removeWorktree(made);
+					}
+				} catch {
+					// Left in place: git worktree remove can clean it up.
+				}
+			});
+		}
 	}
 	const cwd = resolve(process.cwd());
 	const terminal = Boolean(process.stdin.isTTY && process.stdout.isTTY);
@@ -1682,11 +1714,9 @@ async function main(): Promise<void> {
 						allowedTools: options.allowedTools ?? [],
 						disallowedTools: options.disallowedTools ?? [],
 						addDirs: options.addDirs ?? [],
-						acceptEdits: () => {
-							currentAgent?.setPermissionMode("accept-edits");
-							if (workspaceMode !== undefined) workspaceMode = "accept-edits";
-							else permissionMode = "accept-edits";
-						},
+						// This session only: other sessions and later ones keep their own mode (Claude Code).
+						acceptEdits: () => currentAgent?.setPermissionMode("accept-edits"),
+						mode: () => currentAgent?.getPermissionMode() ?? workspaceMode ?? permissionMode ?? "supervised",
 						onProjectFileWritten: () => {
 							if (projectTrusted) void saveProjectTrust(cwd, true);
 						},
@@ -1847,6 +1877,8 @@ async function main(): Promise<void> {
 			background,
 			/** P37a: this workspace's permission rules (undefined in the gateway). */
 			permissions,
+			/** P37a: settings' permissions.defaultMode, unless --permission-mode or the env chose (ACP applies it per session). */
+			defaultMode: (): PermissionMode | undefined => (explicitMode ? undefined : permissions?.defaultMode().mode),
 			isProjectTrusted: () => projectTrusted,
 			/** Agents built later (session switches) use this mode; only for a workspace opened with one. */
 			setPermissionMode: (next: PermissionMode) => {
@@ -1991,6 +2023,7 @@ async function main(): Promise<void> {
 	const titled = new Set<string>();
 
 	let agent = buildAgent(initialMessages, recorder);
+	worktreeStarted = true;
 
 	if (options.mode === "json") {
 		const typed = options.print ?? (process.stdin.isTTY ? "" : (await readAllStdin()).trim());
@@ -2369,8 +2402,22 @@ async function main(): Promise<void> {
 	if (worktreeSession && process.stdin.isTTY) await finishWorktree(worktreeSession, workspace.background);
 }
 
+/** One spelling for comparing paths: the real path, case-folded on Windows. */
+function samePath(path: string): string {
+	let real = resolve(path);
+	try {
+		real = realpathSync.native(path);
+	} catch {
+		// A path that no longer exists compares as written.
+	}
+	return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
 /** A question on the terminal after the TUI or REPL ended. */
 async function askLine(question: string): Promise<string> {
+	// Ink unrefs stdin when the TUI unmounts; without this Node exits before the answer.
+	if (process.stdin.isTTY) process.stdin.setRawMode(false);
+	process.stdin.ref();
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	try {
 		return await rl.question(question);

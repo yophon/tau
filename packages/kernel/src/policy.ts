@@ -208,12 +208,20 @@ function isInsideWorkingDirectories(path: string, cwd: string | undefined, extra
 }
 const BASH_TOOLS = new Set(["bash"]);
 
+/** Lower-cased segments with `.` and `..` folded (P37a: `.tau/x/../settings.json` is the protected file it writes). */
 function pathSegments(path: string): string[] {
-	return path
-		.replace(/\\/g, "/")
-		.toLowerCase()
-		.split("/")
-		.filter((segment) => segment !== "" && segment !== "." && segment !== "~");
+	const out: string[] = [];
+	for (const segment of path.replace(/\\/g, "/").toLowerCase().split("/")) {
+		if (segment === "" || segment === "." || segment === "~") continue;
+		if (segment === "..") {
+			// Above the start of a relative path: keep it, so an escape is not mistaken for a protected entry.
+			if (out.length > 0 && out[out.length - 1] !== "..") out.pop();
+			else out.push(segment);
+			continue;
+		}
+		out.push(segment);
+	}
+	return out;
 }
 
 function segmentMatches(pattern: string, segment: string): boolean {

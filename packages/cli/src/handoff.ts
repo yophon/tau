@@ -4,7 +4,12 @@
  * next task into a prompt that stands on its own, and start a new session with it
  * in the input box. The system prompt and the request are pi's, word for word.
  */
-import { type AgentMessage, DEFAULT_COMPACTION_SETTINGS, serializeConversation } from "@yophon/tau-kernel";
+import {
+	type AgentMessage,
+	compactionSettingsForWindow,
+	DEFAULT_COMPACTION_SETTINGS,
+	serializeConversation,
+} from "@yophon/tau-kernel";
 
 export const HANDOFF_SYSTEM_PROMPT = `You are a context transfer assistant. Given a conversation history and the user's goal for a new thread, generate a focused prompt that:
 
@@ -28,8 +33,10 @@ Files involved:
 ## Task
 [Clear description of what to do next based on user's goal]`;
 
-/** The same output cap as a compaction summary (0.8 × reserveTokens). */
-export const HANDOFF_MAX_TOKENS = Math.floor(0.8 * DEFAULT_COMPACTION_SETTINGS.reserveTokens);
+/** The same output cap as a compaction summary: 0.8 × the reserve, which a small context window scales down. */
+export function handoffMaxTokens(contextWindow: number | undefined): number {
+	return Math.floor(0.8 * compactionSettingsForWindow(DEFAULT_COMPACTION_SETTINGS, contextWindow).reserveTokens);
+}
 
 /**
  * pi's request: the conversation (already compaction-aware: the latest summary plus
@@ -46,13 +53,14 @@ export async function generateHandoffPrompt(
 			prompt: string,
 			options?: { maxTokens?: number; signal?: AbortSignal },
 		): Promise<string>;
+		getContextUsage(): { contextWindow?: number };
 	},
 	messages: readonly AgentMessage[],
 	goal: string,
 	signal?: AbortSignal,
 ): Promise<string> {
 	const text = await agent.completeText(HANDOFF_SYSTEM_PROMPT, handoffRequest(messages, goal), {
-		maxTokens: HANDOFF_MAX_TOKENS,
+		maxTokens: handoffMaxTokens(agent.getContextUsage().contextWindow),
 		...(signal ? { signal } : {}),
 	});
 	return text.trim();

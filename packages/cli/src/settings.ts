@@ -137,6 +137,17 @@ export function readSettings(path: string): TauSettings {
 	return settings;
 }
 
+/** Why a settings file that exists cannot be read as a JSON object; undefined when it can (or is missing). */
+export function settingsParseError(path: string): string | undefined {
+	if (!existsSync(path)) return undefined;
+	try {
+		const parsed: unknown = JSON.parse(readFileSync(path, "utf8").replace(/^\uFEFF/, ""));
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed) ? undefined : "not a JSON object";
+	} catch (error) {
+		return error instanceof Error ? error.message : String(error);
+	}
+}
+
 /** One top-level key of a settings file as written (P35: the hooks block, parsed by hooks.ts). */
 export function readSettingsKey(path: string, key: string): unknown {
 	return readJson(path)[key];

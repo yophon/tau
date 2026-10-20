@@ -99,6 +99,15 @@ describe("P37b Esc", () => {
 		h.cleanup();
 	});
 
+	it("two Escs arriving as one chunk count as two (a real terminal sends them together)", async () => {
+		const h = await harness({ responses: [makeSseResponse(textTurn("FIRST"))], sessions: true });
+		await h.submit("first message");
+		await h.waitFor((f) => f.includes("FIRST") && /· \d/.test(f), "the answer");
+		await h.key("\x1b\x1b");
+		await h.waitFor((f) => f.includes("Jump to a user message"), "the tree picker");
+		h.cleanup();
+	});
+
 	it("clears a draft into history without opening anything, and ↑ brings it back", async () => {
 		const clock = { now: 10_000 };
 		const h = await harness({ responses: [], sessions: true, deps: { now: () => clock.now } });
@@ -133,5 +142,35 @@ describe("P37b Esc", () => {
 		await none.key(ESC);
 		assert.equal(none.controller.state.picker, undefined);
 		none.cleanup();
+	});
+});
+
+describe("P37b review fixes", () => {
+	it("Esc clears a blank input without keeping it, and that press does not count toward Esc twice", async () => {
+		const clock = { now: 10_000 };
+		const h = await harness({ responses: [], sessions: true, deps: { now: () => clock.now } });
+		await h.type("   ");
+		await h.key(ESC);
+		assert.equal(h.controller.state.editor.text, "");
+		await h.key(ESC);
+		assert.equal(h.controller.state.picker, undefined);
+		await h.key(UP);
+		assert.equal(h.controller.state.editor.text, "", "nothing blank went into history");
+		h.cleanup();
+	});
+
+	it("an empty handoff result says so; the cap follows a small context window", async () => {
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("ANSWER")), makeSseResponse(textTurn("   "))],
+			sessions: true,
+		});
+		await h.submit("hello");
+		await h.waitFor((f) => f.includes("ANSWER") && /· \d/.test(f), "the answer");
+		await h.submit("/handoff next");
+		await h.waitFor((f) => f.includes("Handoff failed: the model returned an empty prompt."), "the notice");
+		h.cleanup();
+		const { handoffMaxTokens } = await import("../src/handoff.ts");
+		assert.equal(handoffMaxTokens(undefined), Math.floor(0.8 * 16384));
+		assert.equal(handoffMaxTokens(32_000), 6400);
 	});
 });

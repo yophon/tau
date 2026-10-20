@@ -327,3 +327,41 @@ describe("P37a: /permissions and /add-dir", () => {
 		]);
 	});
 });
+
+describe("P37a review fixes", () => {
+	it("a settings file that is not valid JSON is reported and never rewritten", () => {
+		const { home, cwd } = sandbox();
+		const local = join(cwd, ".tau", "settings.local.json");
+		const broken = '{"permissions": {"deny": ["Edit(.env)"], }, "note": "mine"}';
+		writeFileSync(local, broken);
+		const permissions = new WorkspacePermissions({ home, cwd, projectTrusted: () => false });
+		assert.match(permissions.diagnostics().join("\n"), /not valid JSON/);
+		assert.match(permissions.addRules("allow", ["Bash(ls *)"], "local").error ?? "", /not valid JSON/);
+		assert.equal(permissions.alwaysOption(request("bash", { command: "ls" })), undefined, "only once");
+		assert.equal(readFileSync(local, "utf8"), broken, "untouched");
+		writeFileSync(join(home, ".tau", "settings.json"), "{ nope");
+		writeJson(join(home, ".tau", "permissions.json"), {
+			rules: [{ tool: "bash", fingerprint: "risk:medium", action: "allow" }],
+		});
+		assert.match(migrateLegacyPermissions(home) ?? "", /was not migrated/);
+		assert.equal(readFileSync(join(home, ".tau", "settings.json"), "utf8"), "{ nope");
+		assert.ok(existsSync(join(home, ".tau", "permissions.json")), "kept until the settings are fixed");
+	});
+
+	it("no always option when an ask rule asked; edits only help in supervised", () => {
+		const { home, cwd } = sandbox();
+		let mode: "supervised" | "autonomous" = "supervised";
+		const permissions = new WorkspacePermissions({
+			home,
+			cwd,
+			projectTrusted: () => false,
+			acceptEdits: () => undefined,
+			mode: () => mode,
+		});
+		const asked = request("bash", { command: "git push" }, { rule: { kind: "ask", text: "Bash(git push *)" } });
+		assert.equal(permissions.alwaysOption(asked), undefined);
+		assert.equal(permissions.alwaysOption(request("edit", { path: "a.ts" }))?.kind, "edits");
+		mode = "autonomous";
+		assert.equal(permissions.alwaysOption(request("edit", { path: "a.ts" })), undefined, "never lowers autonomous");
+	});
+});

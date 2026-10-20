@@ -232,7 +232,7 @@ export interface AcpHost {
 		fs?: FileSystem;
 		mcp?: boolean;
 		askUser?: false | { freeAnswer?: boolean };
-	}): Promise<HeadlessWorkspace & { isProjectTrusted(): boolean }>;
+	}): Promise<HeadlessWorkspace & { isProjectTrusted(): boolean; defaultMode?(): PermissionMode | undefined }>;
 	/** P32b: the ~/.tau/mcp.json servers (and the project's when trusted); the editor's win on a name clash. */
 	configuredMcpServers?(cwd: string, projectTrusted: boolean): McpServerConfig[];
 	modelDisplay(): string;
@@ -332,7 +332,7 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 	const openSession = async (
 		cwd: string,
 		mcpServers: unknown,
-	): Promise<{ session: AcpSession; ws: HeadlessWorkspace }> => {
+	): Promise<{ session: AcpSession; ws: HeadlessWorkspace & { defaultMode?(): PermissionMode | undefined } }> => {
 		const local = new NodeFileSystem(cwd);
 		const fs = clientFs.read || clientFs.write ? new ClientFileSystem(local, connection, clientFs) : undefined;
 		// The session id exists once the store does; the approval and UI callbacks read it late.
@@ -448,6 +448,9 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 					const restored = method === "session/load" ? await restoreSession(store) : undefined;
 					const recorder = await SessionRecorder.open(store);
 					const agent = ws.buildAgent(restored?.messages, recorder, ws.extensions);
+					// settings' permissions.defaultMode (P37a), per session.
+					const startMode = ws.defaultMode?.();
+					if (startMode) agent.setPermissionMode(startMode);
 					session.headless = new HeadlessSession(
 						{
 							workspace: ws,
