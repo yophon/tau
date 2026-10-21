@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-21（P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P42**）
+> 最后更新：2026-10-21（P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = 待定，下一阶段待讨论**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -351,9 +351,15 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 技能加载规则对齐 pi 1.2；重名改成保留先找到的，CHANGELOG 已写明。
 - 决策记为 D44，偏差见规格书「实施记录」。真机验收待用户执行。
 
-## Phase 42 🚧 长会话性能
+## Phase 42 ✅ 长会话性能（2026-10-21）
 
 规格书（2026-10-21 确认；用户：「都可以做，按你想法来」）：[specs/phase-42-long-session-performance.md](specs/phase-42-long-session-performance.md)。42a 基准脚本；42b 内核（每次请求的一致性检查改增量、写入改增量，还技术债 #17）；42c 会话列表逐行读元数据、并发读；42d TUI（全屏后台预渲染、搜索语料按块缓存、单块渲染提速、`/tree` 缓存展开列表）。
+
+**完成记录**：
+- 30,000 条：每次请求的检查 210 → 约 8 ms，一轮 10 个工具调用 831 → 37 ms，`/resume` 列表每个文件 131 → 37 ms，全屏全部行 2.1 → 0.99 s，预渲染后往上滚到顶与第一次 Ctrl+F 约 40 ms，`/tree` 打一个字约 30 → 11 ms；冷加载不变。目标全部达到。
+- 测试：全量 1152 个，1147 通过、5 跳过；check、pack smoke 通过；smoke-tui 33 个场景在全屏与 inline 下各跑一遍都通过。
+- 还清技术债 #17。全屏没有做「只渲染屏幕附近的块」，改成空闲时预渲染，理由见 D45。
+- 偏差见规格书「实施记录」。真机验收待用户执行。
 
 ## 产品层后续 ⬜ 待定
 
@@ -408,9 +414,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
 | 13 | ext-feishu、gateway、channel-weixin、channel-feishu 尚未首发 npm | 只能在仓库里用；飞书插件装不进网关目录 | 随 0.4.0 首发 |
-| 17 | 每次写入都遍历活动路径、取全部条目重建投影与用量；verifyTranscript 每次请求多一次 JSON 往返（P22） | 超长会话（上万条目）写入与请求前开销线性增长 | 出现实测瓶颈时改为增量投影；目前相对 LLM 调用可忽略 |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 | 19 | 网关每个对话各加载一份扩展（P30） | MCP 服务器按对话各起一套 stdio 进程，对话多时进程数随之增长 | 现由驻留上限（缺省 16）与空闲卸载控制；出现实测瓶颈再做共享连接池 |
 | 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
 
-（#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
+（#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

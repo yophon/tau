@@ -4,6 +4,20 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P42)
+- kernel: long sessions stay fast. A write that extends the current branch
+  extends the projection, path and usage in place instead of rebuilding them;
+  the per-request transcript check compares messages by identity instead of
+  serializing the whole log (30,000 entries: a ten-tool turn 831 → 37 ms).
+- kernel: `JsonlSessionRepo.list()` reads each file line by line for its list
+  entry, ten files at a time (pi), instead of loading every session (30,000
+  entries: 131 → 37 ms a file). The entries are the same.
+- CLI: the full-screen view renders the conversation and builds the search
+  corpus in short slices while idle, so scrolling to the top and the first
+  Ctrl+F of a resumed 30,000-entry session take about 40 ms (2.1 s and 1.5 s
+  before). Wrapping is faster (same rows as wrap-ansi), and `/tree` caches its
+  rows and filters (a keystroke in its search: about 30 → 11 ms).
+
 ### Added (P41)
 - CLI: skills and prompt templates are built in (pi): `~/.tau/skills`,
   `~/.agents/skills` and `~/.tau/prompts` work without an import file; a
