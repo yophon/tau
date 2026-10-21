@@ -774,6 +774,8 @@ export interface RegisteredCommand {
 	 */
 	invocationName?: string;
 	description: string;
+	/** P41: left out of command lists (menus, /help) but still run when typed (pi enableSkillCommands: false). */
+	hidden?: boolean;
 	handler: (args: string, ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
 	/** Completions for the text typed after "/name " (pi); null or [] = none. */
 	getArgumentCompletions?: (argumentPrefix: string) => CommandCompletion[] | null | Promise<CommandCompletion[] | null>;

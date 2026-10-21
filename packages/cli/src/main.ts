@@ -13,7 +13,7 @@ function userHome(): string {
 	return home ? home : homedir();
 }
 
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
 	ANTHROPIC_DEFAULT_BASE_URL,
@@ -79,7 +79,7 @@ import {
 	createAuditExtension,
 } from "./audit.ts";
 import { createBackgroundExtension } from "./background.ts";
-import { attachPromptAgent, builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
+import { attachPromptAgent, builtinExtensions, configureBuiltins, setResourceFlags, toolLine } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
@@ -172,7 +172,10 @@ Options:
                          Messages API: native thinking, prompt caching, images
                          in tool results.
       --models <list>    Comma-separated TUI model selector candidates (env: TAU_MODELS)
-  -s, --system <text>    Override the system prompt
+  -s, --system-prompt <text|file>  Replace the system prompt (also --system; default:
+                         .tau/SYSTEM.md of a trusted project, else ~/.tau/SYSTEM.md, else tau's)
+      --append-system-prompt <text|file>  Append to the system prompt (repeatable; default:
+                         .tau/APPEND_SYSTEM.md of a trusted project, else ~/.tau/APPEND_SYSTEM.md)
   -p, --print <prompt>   One-shot mode: run a single prompt and exit
       --mode <mode>      json: -p (or stdin) as a JSONL event stream on stdout;
                          rpc: JSONL commands on stdin (pi's RPC protocol);
@@ -219,6 +222,15 @@ Options:
       --session-dir <dir>  Keep sessions in this directory (settings.json sessionDir)
       --no-session       Do not persist this conversation
   -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
+  -e,  --extension <path>  Load an extension file or directory for this run (repeatable)
+  -ne, --no-extensions   No extensions from ~/.tau/extensions, .tau/extensions or settings
+                         (-e paths still load)
+      --no-mcp           No MCP servers for this run
+      --skill <path>     Load a skill file or directory (repeatable)
+  -ns, --no-skills       Only the --skill paths: no skills from the usual directories or settings
+      --prompt-template <path>  Load a prompt template file or directory (repeatable)
+  -np, --no-prompt-templates  Only the --prompt-template paths
+  -v,  --version         Print the version and exit
   -t,  --tools <list>    Active tools, comma-separated: names pick built-ins ("*" = all),
                          +name adds, -name removes; extension tools stay unless removed
       --no-tools         Start with no active tools
@@ -268,6 +280,22 @@ interface CliOptions {
 	sessionDir?: string;
 	noSession: boolean;
 	noContextFiles?: boolean;
+	/** P41b (pi -e/--extension): extension files or directories for this run, resolved against the cwd. */
+	extensionPaths?: string[];
+	/** P41b (pi -ne): no discovered or configured extensions (explicit -e paths still load). */
+	noExtensions?: boolean;
+	/** P41b (pi --no-mcp): no MCP servers for this run. */
+	noMcp?: boolean;
+	/** P41b (pi --skill / --prompt-template): explicit resource paths, resolved against the cwd. */
+	skillPaths?: string[];
+	promptPaths?: string[];
+	/** P41b (pi -ns / -np): only the explicit skill / prompt template paths load. */
+	noSkills?: boolean;
+	noPrompts?: boolean;
+	/** P41b (pi --append-system-prompt): text or files appended to the system prompt, in order. */
+	appendSystemPrompt?: string[];
+	/** P41b (pi -v): print the version and exit. */
+	version?: boolean;
 	listModels?: boolean;
 	/** P29: json | rpc | acp. */
 	mode?: "json" | "rpc" | "acp";
@@ -336,7 +364,13 @@ function parseArgs(argv: string[]): CliOptions {
 		const next = (): string => {
 			const value = argv[++i];
 			// A following flag is not a value (`--model --tui`); prompts and system text may start with "--".
-			const freeText = arg === "-p" || arg === "--print" || arg === "-s" || arg === "--system";
+			const freeText =
+				arg === "-p" ||
+				arg === "--print" ||
+				arg === "-s" ||
+				arg === "--system" ||
+				arg === "--system-prompt" ||
+				arg === "--append-system-prompt";
 			if (value === undefined || (!freeText && value.startsWith("--"))) {
 				console.error(`Missing value for ${arg}`);
 				process.exit(1);
@@ -370,6 +404,7 @@ function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "-s":
 			case "--system":
+			case "--system-prompt":
 				options.system = next();
 				break;
 			case "-p":
@@ -459,6 +494,39 @@ function parseArgs(argv: string[]): CliOptions {
 			case "-nc":
 			case "--no-context-files":
 				options.noContextFiles = true;
+				break;
+			// P41b: pi's resource flags.
+			case "-e":
+			case "--extension":
+				options.extensionPaths = [...(options.extensionPaths ?? []), next()];
+				break;
+			case "-ne":
+			case "--no-extensions":
+				options.noExtensions = true;
+				break;
+			case "--no-mcp":
+				options.noMcp = true;
+				break;
+			case "--skill":
+				options.skillPaths = [...(options.skillPaths ?? []), next()];
+				break;
+			case "-ns":
+			case "--no-skills":
+				options.noSkills = true;
+				break;
+			case "--prompt-template":
+				options.promptPaths = [...(options.promptPaths ?? []), next()];
+				break;
+			case "-np":
+			case "--no-prompt-templates":
+				options.noPrompts = true;
+				break;
+			case "--append-system-prompt":
+				options.appendSystemPrompt = [...(options.appendSystemPrompt ?? []), next()];
+				break;
+			case "-v":
+			case "--version":
+				options.version = true;
 				break;
 			case "--tui":
 				options.tui = true;
@@ -769,10 +837,24 @@ const GATED_PROJECT_RESOURCES = [
 	".pi/settings.json",
 	".pi/skills",
 	".pi/prompts",
+	// P41 (pi): the Agent Skills directory and the system prompt files.
+	".agents/skills",
+	".tau/SYSTEM.md",
+	".tau/APPEND_SYSTEM.md",
 ] as const;
 
 function presentGatedResources(cwd: string): string[] {
 	const present: string[] = GATED_PROJECT_RESOURCES.filter((relative) => existsSync(join(cwd, relative)));
+	// P41a (pi hasTrustRequiringProjectResources): .agents/skills in a parent directory counts too,
+	// except the user's own ~/.agents/skills ($HOME's, and the system's home when HOME points elsewhere).
+	const userAgentsSkills = new Set([resolve(userHome(), ".agents", "skills"), resolve(homedir(), ".agents", "skills")]);
+	for (let dir = resolve(cwd); dirname(dir) !== dir; ) {
+		dir = dirname(dir);
+		const skills = join(dir, ".agents", "skills");
+		if (!userAgentsSkills.has(resolve(skills)) && existsSync(skills)) {
+			present.push(relative(cwd, skills).replaceAll("\\", "/"));
+		}
+	}
 	// The local permissions file counts when the repository supplies it (git tracks it, P37a).
 	if (localSettingsIsRepoFile(cwd)) present.push(".tau/settings.local.json");
 	return present;
@@ -859,6 +941,47 @@ interface LoadedExtensions {
 	projectTrusted: boolean;
 }
 
+/** P41b (pi -e, -ne): extensions named on the command line, and whether the discovered and configured ones stay out. */
+const extensionFlags: { paths: string[]; none: boolean } = { paths: [], none: false };
+
+/** pi resolvePromptInput: the text of an existing file, else the value itself. */
+function promptInput(value: string): string {
+	try {
+		if (existsSync(value) && statSync(value).isFile()) return readFileSync(value, "utf8").replace(/^\uFEFF/, "");
+	} catch {
+		// Not a readable file: the value is the text.
+	}
+	return value;
+}
+
+/**
+ * The system prompt's replacement and additions (P41b, pi): --system-prompt, else SYSTEM.md
+ * (a trusted project's .tau/, else ~/.tau/); --append-system-prompt, else APPEND_SYSTEM.md the
+ * same way. A trusted project's file wins over the user's; the two are not combined.
+ */
+function systemPromptSources(
+	cwd: string,
+	home: string,
+	projectTrusted: boolean,
+	flags: { system?: string; append?: string[] },
+): { system?: string; append: string[] } {
+	const file = (name: string): string | undefined => {
+		const project = join(cwd, ".tau", name);
+		if (projectTrusted && existsSync(project)) return project;
+		const user = join(home, ".tau", name);
+		return existsSync(user) ? user : undefined;
+	};
+	const systemSource = flags.system ?? file("SYSTEM.md");
+	const appendSources = flags.append && flags.append.length > 0 ? flags.append : [file("APPEND_SYSTEM.md")];
+	return {
+		...(systemSource !== undefined ? { system: promptInput(systemSource) } : {}),
+		append: appendSources
+			.filter((source): source is string => source !== undefined)
+			.map(promptInput)
+			.filter((text) => text.trim() !== ""),
+	};
+}
+
 /** settings.json extensions (P40c, pi): extension files and directories; a missing one is reported and skipped. */
 async function loadSettingsExtensions(paths: readonly string[]): Promise<InlineExtension[]> {
 	const loaded: InlineExtension[] = [];
@@ -888,16 +1011,18 @@ async function loadExtensionRegistry(
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
 	configureBuiltins({ cwd, projectTrusted: false, home: userHome(), extendedSettings });
-	const userSettingsExtensions = extendedSettings
-		? (readSettings(join(userHome(), ".tau", "settings.json")).extensions ?? [])
-		: [];
+	// P41b (pi): -ne keeps out the discovered and configured extensions; -e paths load either way.
+	const discovered = !(extendedSettings && extensionFlags.none);
+	const userSettingsExtensions =
+		extendedSettings && discovered ? (readSettings(join(userHome(), ".tau", "settings.json")).extensions ?? []) : [];
 	const registry = await ExtensionRegistry.load([
 		// P32c: the audit first, so it sees every call, including ones the guard blocks.
 		...(audit ? [audit] : []),
 		...builtinExtensions(memory !== undefined ? { memory } : {}),
 		...hostExtensions,
-		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
+		...(discovered ? await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")) : []),
 		...(await loadSettingsExtensions(userSettingsExtensions)),
+		...(extendedSettings ? await loadSettingsExtensions(extensionFlags.paths) : []),
 	]);
 	// A failing notification handler (an unreachable MCP server in session_start, a
 	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
@@ -907,7 +1032,7 @@ async function loadExtensionRegistry(
 	const extensionsDir = join(cwd, ".tau", "extensions");
 	// List first, decide trust, and only then import: importing runs the modules' top-level
 	// code, so an untrusted directory must never get that far (cd into a repo ≠ run its code).
-	const projectFiles = await listExtensionFiles(extensionsDir);
+	const projectFiles = discovered ? await listExtensionFiles(extensionsDir) : [];
 	// Any gated resource asks for the decision, not only extensions (P23c): project
 	// settings, skills and prompts are read only from a trusted directory.
 	const present = presentGatedResources(cwd).filter(
@@ -919,7 +1044,8 @@ async function loadExtensionRegistry(
 		if (projectTrusted) {
 			if (projectFiles.length > 0) await registry.add(await importExtensionFiles(projectFiles));
 			// P40c: the project's settings.json extensions, resolved against its .tau directory.
-			const listed = extendedSettings ? (readSettings(join(cwd, ".tau", "settings.json")).extensions ?? []) : [];
+			const listed =
+				extendedSettings && discovered ? (readSettings(join(cwd, ".tau", "settings.json")).extensions ?? []) : [];
 			if (listed.length > 0) await registry.add(await loadSettingsExtensions(listed));
 		} else {
 			if (projectFiles.length > 0) {
@@ -1161,7 +1287,7 @@ async function runCommand(
 	const name = (spaceIndex === -1 ? input : input.slice(0, spaceIndex)).slice(1);
 	const args = spaceIndex === -1 ? "" : input.slice(spaceIndex + 1).trim();
 	if (name === "help") {
-		const commands = [...extensions.commands.values()];
+		const commands = [...extensions.commands.values()].filter((command) => !command.hidden);
 		if (commands.length === 0) console.log(dim("No extension commands registered."));
 		for (const command of commands) console.log(`/${command.name} — ${command.description}`);
 		return;
@@ -1227,6 +1353,11 @@ async function main(): Promise<void> {
 		console.log(USAGE);
 		return;
 	}
+	// P41b (pi -v): the version alone.
+	if (options.version) {
+		console.log(CLI_VERSION);
+		return;
+	}
 	// `tau gateway status/allow/login/…` need no model (P30); `run` sets the agent up first.
 	if (options.gateway && options.gateway.command !== "run") {
 		const { runGatewayCommand } = await import("./gateway.ts");
@@ -1257,6 +1388,16 @@ async function main(): Promise<void> {
 		}
 	}
 	options.files = options.files.map((file) => resolve(file));
+	// P41b (pi): resource paths on the command line mean the directory tau was started in.
+	options.extensionPaths = (options.extensionPaths ?? []).map((path) => resolve(path));
+	extensionFlags.paths = options.extensionPaths;
+	extensionFlags.none = options.noExtensions === true;
+	setResourceFlags({
+		skillPaths: (options.skillPaths ?? []).map((path) => resolve(path)),
+		promptPaths: (options.promptPaths ?? []).map((path) => resolve(path)),
+		noSkills: options.noSkills === true,
+		noPrompts: options.noPrompts === true,
+	});
 	if (options.sessionPath) options.sessionPath = resolve(options.sessionPath);
 	if (options.sessionDir) options.sessionDir = resolve(options.sessionDir);
 	const userSettings = readSettings(userSettingsPath);
@@ -1767,7 +1908,7 @@ async function main(): Promise<void> {
 			trustUi,
 			hostExtensions,
 			spec.memory,
-			spec.mcp ?? true,
+			(spec.mcp ?? true) && options.noMcp !== true,
 			auditExtension,
 			hookRunner,
 			spec.extendedSettings !== false,
@@ -1782,6 +1923,15 @@ async function main(): Promise<void> {
 				? withoutP40Keys(readSettings(join(userHome(), ".tau", "settings.json")))
 				: loadSettings({ home: userHome(), cwd, projectTrusted });
 		workspaceSettings = readWorkspaceSettings();
+		// P41b (pi): what replaces and extends the system prompt; the gateway keeps -s only, as before.
+		const readPromptSources = (): { system?: string; append: string[] } =>
+			spec.extendedSettings === false
+				? { ...(options.system !== undefined ? { system: options.system } : {}), append: [] }
+				: systemPromptSources(cwd, userHome(), projectTrusted, {
+						...(options.system !== undefined ? { system: options.system } : {}),
+						...(options.appendSystemPrompt ? { append: options.appendSystemPrompt } : {}),
+					});
+		let promptSources = readPromptSources();
 		// Permission rules (P37a): settings files, flags, /permissions; "always allow" saves rules.
 		let currentAgent: Agent | undefined;
 		const permissions =
@@ -1848,13 +1998,14 @@ async function main(): Promise<void> {
 				spec.trustPrompt === false ? undefined : reloadUi,
 				hostExtensions,
 				spec.memory,
-				spec.mcp ?? true,
+				(spec.mcp ?? true) && options.noMcp !== true,
 				auditExtension,
 				hookRunner,
 				spec.extendedSettings !== false,
 			);
 			projectTrusted = next.projectTrusted;
 			workspaceSettings = readWorkspaceSettings();
+			promptSources = readPromptSources();
 			applyShellSettings();
 			if (permissions) {
 				await next.registry.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
@@ -1950,12 +2101,14 @@ async function main(): Promise<void> {
 				transport,
 				platform,
 				systemPrompt: [
-					options.system ??
+					promptSources.system ??
 						defaultSystemPrompt(
 							cwd,
 							codingTools.map((tool) => tool.name),
 							permissions?.workingDirectories() ?? [],
 						),
+					// pi: what is appended goes before the project context.
+					...promptSources.append,
 					projectContext,
 					spec.promptNote ?? "",
 				]
@@ -1995,7 +2148,7 @@ async function main(): Promise<void> {
 				options.noTools === true,
 			);
 			if (active) built.setActiveTools(active);
-			attachPromptAgent(built, options.system === undefined);
+			attachPromptAgent(built, promptSources.system === undefined);
 			currentAgent = built;
 			return built;
 		};
@@ -2071,6 +2224,8 @@ async function main(): Promise<void> {
 			out,
 			host: {
 				openWorkspace,
+				// P41b (pi --no-mcp): no servers at all, the editor's included.
+				...(options.noMcp === true ? { noMcp: true } : {}),
 				configuredMcpServers: (serverCwd, projectTrusted) => {
 					const loaded = loadMcpConfig({
 						home: userHome(),

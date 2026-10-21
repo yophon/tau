@@ -30,6 +30,7 @@
 		"@yophon/tau-ext-codemode": "^0.2.0",
 		"@yophon/tau-ext-mcp": "^0.2.0",
 		"@yophon/tau-ext-provider-anthropic": "^0.2.0",
+		"@yophon/tau-ext-resources": "^0.2.0",
 		"@yophon/tau-ext-subagents": "^0.2.0",
 		"@yophon/tau-ext-tool-search": "^0.2.0",
 		"@yophon/tau-ext-web": "^0.2.0",

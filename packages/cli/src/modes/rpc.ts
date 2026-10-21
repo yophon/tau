@@ -419,11 +419,13 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 				}
 				case "get_commands":
 					respond(id, type, {
-						commands: [...session.extensions.commands].map(([name, entry]) => ({
-							name,
-							description: entry.description ?? "",
-							source: name.startsWith("skill:") ? "skill" : "extension",
-						})),
+						commands: [...session.extensions.commands]
+							.filter(([, entry]) => !entry.hidden)
+							.map(([name, entry]) => ({
+								name,
+								description: entry.description ?? "",
+								source: name.startsWith("skill:") ? "skill" : "extension",
+							})),
 					});
 					return;
 				default:

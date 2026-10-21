@@ -872,7 +872,8 @@ export function commandList(extensions: ExtensionRegistry, tui?: TuiController):
 		};
 	});
 	for (const [invocation, command] of extensions.commands) {
-		if (findBuiltin(invocation)) continue;
+		// P41a (pi enableSkillCommands): hidden commands still run when typed, but are not offered.
+		if (findBuiltin(invocation) || command.hidden) continue;
 		const complete = command.getArgumentCompletions;
 		list.push({
 			name: `/${invocation}`,
@@ -1317,7 +1318,9 @@ function helpLines(extensions: ExtensionRegistry): StyledLine[] {
 	const lines: StyledLine[] = [plainLine("Commands", { bold: true })];
 	for (const command of BUILTINS)
 		lines.push(row(`/${command.name}${command.args ? ` ${command.args}` : ""}`, command.description));
-	const extensionCommands = [...extensions.commands].filter(([invocation]) => !findBuiltin(invocation));
+	const extensionCommands = [...extensions.commands].filter(
+		([invocation, command]) => !findBuiltin(invocation) && !command.hidden,
+	);
 	if (extensionCommands.length > 0) {
 		lines.push(plainLine("Extension commands", { bold: true }));
 		for (const [invocation, command] of extensionCommands) lines.push(row(`/${invocation}`, command.description ?? ""));

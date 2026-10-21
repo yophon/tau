@@ -5,8 +5,9 @@
 // (P26b) the subagent tool, and (P28) web_fetch / web_search.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
+import { createResourcesExtension } from "@yophon/tau-ext-resources";
 import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
@@ -38,9 +39,18 @@ const state: {
 	home: string;
 	/** settings.json shell.envAllow (P32b). */
 	envAllow: string[];
-	/** P40c (pi): settings.json skills and prompts, offered through resources_discover. */
+	/** P41a: the skills and prompt templates package is built in (not in the gateway, which stays as it was). */
+	resources: boolean;
+	/** P41a (pi): the conventional skill and prompt directories, in the order they are searched. */
+	defaultSkillPaths: string[];
+	defaultPromptPaths: string[];
+	/** P40c (pi): settings.json skills and prompts. */
 	skillPaths: string[];
 	promptPaths: string[];
+	/** P41a (pi): settings.json enableSkillCommands. */
+	skillCommands: boolean;
+	/** P41b (pi): --skill, --prompt-template, -ns, -np, for the whole process. */
+	cli: { skillPaths: string[]; promptPaths: string[]; noSkills: boolean; noPrompts: boolean };
 	/** P40c (pi): images.blockImages, no image reaches the model. */
 	blockImages: boolean;
 } = {
@@ -51,10 +61,63 @@ const state: {
 	webSearch: undefined,
 	home: homedir(),
 	envAllow: [],
+	resources: false,
+	defaultSkillPaths: [],
+	defaultPromptPaths: [],
 	skillPaths: [],
 	promptPaths: [],
+	skillCommands: true,
+	cli: { skillPaths: [], promptPaths: [], noSkills: false, noPrompts: false },
 	blockImages: false,
 };
+
+/** P41b: pi's --skill, --prompt-template, -ns and -np (paths already resolved against the cwd). */
+export function setResourceFlags(flags: {
+	skillPaths?: string[];
+	promptPaths?: string[];
+	noSkills?: boolean;
+	noPrompts?: boolean;
+}): void {
+	state.cli = {
+		skillPaths: [...(flags.skillPaths ?? [])],
+		promptPaths: [...(flags.promptPaths ?? [])],
+		noSkills: flags.noSkills === true,
+		noPrompts: flags.noPrompts === true,
+	};
+}
+
+/** The repository root above `start` (a directory holding .git), if any. */
+function gitRoot(start: string): string | undefined {
+	let dir = resolve(start);
+	while (true) {
+		if (existsSync(join(dir, ".git"))) return dir;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/**
+ * The project's Agent Skills directories (P41a, pi collectAncestorAgentsSkillDirs): .agents/skills
+ * in the working directory and each parent up to the repository root (or the filesystem root),
+ * nearest first, leaving out ~/.agents/skills (the user's own).
+ */
+export function projectAgentsSkillDirs(cwd: string, home: string): string[] {
+	// $HOME's, and the system's home when HOME points elsewhere.
+	const userDirs = new Set([resolve(home, ".agents", "skills"), resolve(homedir(), ".agents", "skills")]);
+	const root = gitRoot(cwd);
+	const dirs: string[] = [];
+	let dir = resolve(cwd);
+	while (true) {
+		const candidate = join(dir, ".agents", "skills");
+		if (!userDirs.has(resolve(candidate))) dirs.push(candidate);
+		if (root !== undefined && dir === root) break;
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return dirs;
+}
 
 /** Environment keys that pick a search provider when settings name none (P28), in this order. */
 const SEARCH_ENV: ReadonlyArray<[WebSearchConfig["provider"], string]> = [
@@ -141,6 +204,24 @@ export function configureBuiltins(options: {
 			: loadSettings({ home, cwd: options.cwd, projectTrusted: options.projectTrusted });
 	state.skillPaths = layered.skills ?? [];
 	state.promptPaths = layered.prompts ?? [];
+	state.skillCommands = layered.enableSkillCommands !== false;
+	// P41a (pi): the user's directories, then a trusted project's.
+	state.resources = options.extendedSettings !== false;
+	state.defaultSkillPaths = [
+		join(home, ".tau", "skills"),
+		join(home, ".agents", "skills"),
+		...(options.projectTrusted
+			? [
+					join(options.cwd, ".tau", "skills"),
+					join(options.cwd, ".pi", "skills"),
+					...projectAgentsSkillDirs(options.cwd, home),
+				]
+			: []),
+	];
+	state.defaultPromptPaths = [
+		join(home, ".tau", "prompts"),
+		...(options.projectTrusted ? [join(options.cwd, ".tau", "prompts"), join(options.cwd, ".pi", "prompts")] : []),
+	];
 	state.blockImages = layered.images?.blockImages === true;
 	// P40c: sessions kept in settings' sessionDir are searched too.
 	if (layered.sessionDir !== undefined) {
@@ -219,16 +300,8 @@ function withoutImages(content: unknown): unknown {
 	return out;
 }
 
-/**
- * settings.json skills/prompts (pi) as extra resource paths, for the skills and prompt
- * templates package; images.blockImages (pi) keeps every image from the model (P40c).
- */
+/** images.blockImages (pi) keeps every image from the model (P40c). */
 const settingsResources: Extension = (api) => {
-	api.on("resources_discover", () =>
-		state.skillPaths.length > 0 || state.promptPaths.length > 0
-			? { skillPaths: [...state.skillPaths], promptPaths: [...state.promptPaths] }
-			: undefined,
-	);
 	api.on("context", (event) => {
 		if (!state.blockImages) return undefined;
 		const messages = event.messages.map((message) => {
@@ -250,6 +323,22 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		createSecretGuard({ home: state.home, envAllow: state.envAllow }),
 		toolPrompt,
 		settingsResources,
+		// P41a (pi): skills and prompt templates, built in; the directories and flags come from here.
+		...(state.resources
+			? [
+					createResourcesExtension({
+						defaultSkillPaths: () => state.defaultSkillPaths,
+						defaultPromptPaths: () => state.defaultPromptPaths,
+						configuredSkillPaths: () => state.skillPaths,
+						configuredPromptPaths: () => state.promptPaths,
+						skillPaths: () => state.cli.skillPaths,
+						promptPaths: () => state.cli.promptPaths,
+						noSkills: () => state.cli.noSkills,
+						noPrompts: () => state.cli.noPrompts,
+						skillCommands: () => state.skillCommands,
+					}),
+				]
+			: []),
 		createToolSearchExtension(),
 		createNodeCodemodeExtension({
 			getMode: () => state.codemode.mode,

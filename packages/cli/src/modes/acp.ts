@@ -236,6 +236,8 @@ export interface AcpHost {
 	}): Promise<HeadlessWorkspace & { isProjectTrusted(): boolean; defaultMode?(): PermissionMode | undefined }>;
 	/** P32b: the ~/.tau/mcp.json servers (and the project's when trusted); the editor's win on a name clash. */
 	configuredMcpServers?(cwd: string, projectTrusted: boolean): McpServerConfig[];
+	/** P41b (pi --no-mcp): no MCP servers, neither the editor's nor the configured ones. */
+	noMcp?: boolean;
 	modelDisplay(): string;
 	modelChoices: readonly string[];
 	resolveModelSwitch?: (requested: string) => ModelSwitch;
@@ -278,10 +280,12 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 		{ name: "model", description: "Show or switch the model", input: { hint: "provider/model" } },
 		{ name: "thinking", description: "Show or set the reasoning effort", input: { hint: "level" } },
 		{ name: "name", description: "Name this session", input: { hint: "name" } },
-		...[...session.headless.extensions.commands].map(([name, command]) => ({
-			name,
-			description: command.description ?? "",
-		})),
+		...[...session.headless.extensions.commands]
+			.filter(([, command]) => !command.hidden)
+			.map(([name, command]) => ({
+				name,
+				description: command.description ?? "",
+			})),
 	];
 
 	/** Tool events of a run as ACP updates. */
@@ -389,7 +393,7 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 		const configured = (host.configuredMcpServers?.(cwd, ws.isProjectTrusted()) ?? []).filter(
 			(server) => !names.has(server.name),
 		);
-		const servers = [...editor, ...configured];
+		const servers = host.noMcp === true ? [] : [...editor, ...configured];
 		if (servers.length > 0) await ws.extensions.add([createMcpExtension({ servers })]);
 		const session = {
 			id: "",

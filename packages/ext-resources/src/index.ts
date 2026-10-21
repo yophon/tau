@@ -18,15 +18,49 @@ export interface PromptTemplate {
 
 export interface ResourceDiagnostic {
 	type: "warning";
-	code: "list_failed" | "read_failed" | "invalid_metadata" | "invalid_frontmatter" | "collision";
+	code: "list_failed" | "read_failed" | "invalid_metadata" | "invalid_frontmatter" | "collision" | "missing_path";
 	message: string;
 	path: string;
 }
 
+/** A list given as is, or read when the resources load (P41: hosts whose settings change on /reload). */
+type PathList = string[] | (() => string[]);
+
 export interface ResourcesExtensionOptions {
-	skillPaths?: string[];
-	promptPaths?: string[];
+	/** Explicit skill paths (pi --skill): always loaded, last; a file or a directory. */
+	skillPaths?: PathList;
+	/** Explicit prompt template paths (pi --prompt-template): always loaded, last. */
+	promptPaths?: PathList;
+	/** false = no conventional directories (the package's own or the host's). */
 	includeDefaults?: boolean;
+	/** P41: the host's conventional skill directories, in order, instead of the package's (.tau/.pi under the paths). */
+	defaultSkillPaths?: () => string[];
+	/** P41: the host's conventional prompt directories, in order, instead of the package's. */
+	defaultPromptPaths?: () => string[];
+	/** P41: configured skill paths (pi settings `skills`), after the conventional ones. */
+	configuredSkillPaths?: () => string[];
+	/** P41: configured prompt paths (pi settings `prompts`). */
+	configuredPromptPaths?: () => string[];
+	/** P41 (pi -ns): only the explicit skill paths load. */
+	noSkills?: () => boolean;
+	/** P41 (pi -np): only the explicit prompt paths load. */
+	noPrompts?: () => boolean;
+	/** P41 (pi enableSkillCommands): false keeps /skill:name out of command lists; typing it still works. */
+	skillCommands?: () => boolean;
+}
+
+const readList = (list: PathList | undefined): string[] => (typeof list === "function" ? list() : (list ?? []));
+
+/**
+ * The registries a skills package already serves (P41): the CLI has it built in, and a user's
+ * own import file adds a second copy, possibly another installed copy of this module. One per
+ * registry, keyed by its event bus (one object per registry), shared across copies.
+ */
+const SERVED_KEY = Symbol.for("tau.ext-resources.served");
+function servedRegistries(): WeakSet<object> {
+	const holder = globalThis as unknown as Record<symbol, WeakSet<object> | undefined>;
+	holder[SERVED_KEY] ??= new WeakSet<object>();
+	return holder[SERVED_KEY];
 }
 
 interface LoadedResources {
@@ -171,7 +205,17 @@ async function loadSkillFromFile(
 	};
 }
 
-async function scanSkillDir(fs: FileSystem, dir: string, diagnostics: ResourceDiagnostic[]): Promise<Skill[]> {
+/**
+ * pi 1.2 loadSkillsFromDirInternal: a directory with SKILL.md is one skill and the scan stops
+ * there; otherwise subdirectories are scanned (not dot directories or node_modules), and
+ * standalone .md skills count only at the top of the directory.
+ */
+async function scanSkillDir(
+	fs: FileSystem,
+	dir: string,
+	diagnostics: ResourceDiagnostic[],
+	root = true,
+): Promise<Skill[]> {
 	const entries = await safeListDir(fs, dir, diagnostics);
 	const skillFile = entries.find((entry) => entry.kind === "file" && entry.name === "SKILL.md");
 	if (skillFile) {
@@ -180,34 +224,85 @@ async function scanSkillDir(fs: FileSystem, dir: string, diagnostics: ResourceDi
 	}
 	const skills: Skill[] = [];
 	for (const entry of entries) {
-		if (entry.kind === "file" && /\.md$/i.test(entry.name)) {
+		if (root && entry.kind === "file" && /\.md$/i.test(entry.name)) {
 			const skill = await loadSkillFromFile(fs, entry.path, withoutMd(entry.name), diagnostics);
 			if (skill) skills.push(skill);
 		}
 	}
 	for (const entry of entries) {
-		if (entry.kind === "directory") skills.push(...(await scanSkillDir(fs, entry.path, diagnostics)));
+		if (entry.kind !== "directory" || entry.name.startsWith(".") || entry.name === "node_modules") continue;
+		skills.push(...(await scanSkillDir(fs, entry.path, diagnostics, false)));
 	}
 	return skills;
 }
 
+/** A path given explicitly (settings, --skill): its kind, or undefined with a warning when it does not exist. */
+async function explicitKind(
+	fs: FileSystem,
+	path: string,
+	what: string,
+	diagnostics: ResourceDiagnostic[],
+): Promise<"file" | "directory" | undefined> {
+	try {
+		const info = await fs.stat(path);
+		if (info.kind === "directory") return "directory";
+		if (info.kind === "file") return "file";
+	} catch {
+		// Reported below.
+	}
+	diagnostics.push({ type: "warning", code: "missing_path", message: `${what} path does not exist`, path });
+	return undefined;
+}
+
+/** One spelling per file, so the same file reached twice loads once (pi compares real paths). */
+const fileKey = (path: string): string => path.replace(/\\/g, "/").replace(/\/+/g, "/").toLowerCase();
+
+/**
+ * Skills from conventional directories (`dirs`, missing ones are fine) and explicit paths
+ * (a directory or a .md file; missing ones are reported), in order. A name already taken
+ * keeps the first skill (pi 1.2) and the later one is reported.
+ */
 export async function loadSkills(
 	fs: FileSystem,
 	dirs: string[],
+	explicitPaths: string[] = [],
 ): Promise<{ skills: Skill[]; diagnostics: ResourceDiagnostic[] }> {
 	const diagnostics: ResourceDiagnostic[] = [];
 	const byName = new Map<string, Skill>();
-	for (const dir of dirs) {
-		for (const skill of await scanSkillDir(fs, dir, diagnostics)) {
-			if (byName.has(skill.name)) {
+	const files = new Set<string>();
+	const add = (skill: Skill): void => {
+		const key = fileKey(skill.filePath);
+		if (files.has(key)) return;
+		const existing = byName.get(skill.name);
+		if (existing) {
+			diagnostics.push({
+				type: "warning",
+				code: "collision",
+				message: `Skill ${skill.name} is already loaded from ${existing.filePath}; ${skill.filePath} is skipped`,
+				path: skill.filePath,
+			});
+			return;
+		}
+		byName.set(skill.name, skill);
+		files.add(key);
+	};
+	for (const dir of dirs) for (const skill of await scanSkillDir(fs, dir, diagnostics)) add(skill);
+	for (const path of explicitPaths) {
+		const kind = await explicitKind(fs, path, "skill", diagnostics);
+		if (kind === "directory") {
+			for (const skill of await scanSkillDir(fs, path, diagnostics)) add(skill);
+		} else if (kind === "file") {
+			if (!/\.md$/i.test(path)) {
 				diagnostics.push({
 					type: "warning",
-					code: "collision",
-					message: `Skill ${skill.name} was overwritten by ${skill.filePath}`,
-					path: skill.filePath,
+					code: "invalid_metadata",
+					message: "skill path is not a markdown file",
+					path,
 				});
+				continue;
 			}
-			byName.set(skill.name, skill);
+			const skill = await loadSkillFromFile(fs, path, withoutMd(basename(path)), diagnostics);
+			if (skill) add(skill);
 		}
 	}
 	return { skills: [...byName.values()], diagnostics };
@@ -261,28 +356,47 @@ async function loadPromptTemplateFromFile(
 	};
 }
 
+/**
+ * Prompt templates: the .md files directly in each conventional directory (pi), then explicit
+ * paths (a .md file or a directory's .md files; missing ones are reported). A name already
+ * taken keeps the first template, as skills do.
+ */
 export async function loadPromptTemplates(
 	fs: FileSystem,
 	paths: string[],
+	explicitPaths: string[] = [],
 ): Promise<{ promptTemplates: PromptTemplate[]; diagnostics: ResourceDiagnostic[] }> {
 	const diagnostics: ResourceDiagnostic[] = [];
 	const byName = new Map<string, PromptTemplate>();
-	for (const path of paths) {
-		const entries = await safeListDir(fs, path, diagnostics);
-		for (const entry of entries) {
-			if (entry.kind !== "file" || !/\.md$/i.test(entry.name)) continue;
-			const template = await loadPromptTemplateFromFile(fs, entry.path, diagnostics);
-			if (!template) continue;
-			if (byName.has(template.name)) {
-				diagnostics.push({
-					type: "warning",
-					code: "collision",
-					message: `Prompt template ${template.name} was overwritten by ${template.filePath}`,
-					path: template.filePath,
-				});
-			}
-			byName.set(template.name, template);
+	const files = new Set<string>();
+	const addFile = async (filePath: string): Promise<void> => {
+		const key = fileKey(filePath);
+		if (files.has(key)) return;
+		const template = await loadPromptTemplateFromFile(fs, filePath, diagnostics);
+		if (!template) return;
+		const existing = byName.get(template.name);
+		if (existing) {
+			diagnostics.push({
+				type: "warning",
+				code: "collision",
+				message: `Prompt template ${template.name} is already loaded from ${existing.filePath}; ${template.filePath} is skipped`,
+				path: template.filePath,
+			});
+			return;
 		}
+		byName.set(template.name, template);
+		files.add(key);
+	};
+	const addDir = async (dir: string): Promise<void> => {
+		for (const entry of await safeListDir(fs, dir, diagnostics)) {
+			if (entry.kind === "file" && /\.md$/i.test(entry.name)) await addFile(entry.path);
+		}
+	};
+	for (const path of paths) await addDir(path);
+	for (const path of explicitPaths) {
+		const kind = await explicitKind(fs, path, "prompt template", diagnostics);
+		if (kind === "directory") await addDir(path);
+		else if (kind === "file") await addFile(path);
 	}
 	return { promptTemplates: [...byName.values()], diagnostics };
 }
@@ -397,6 +511,10 @@ function unique(values: string[]): string[] {
 
 export function createResourcesExtension(options: ResourcesExtensionOptions = {}): Extension {
 	return (api) => {
+		// A second copy in the same registry (the CLI's built-in plus a user's import file) does nothing.
+		const served = servedRegistries();
+		if (served.has(api.events)) return;
+		served.add(api.events);
 		let loaded: Promise<LoadedResources> | undefined;
 
 		api.on("session_start", async (event, ctx) => {
@@ -455,22 +573,37 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 				const projectTauDir = projectTrusted ? paths?.projectTauDir : undefined;
 				const projectPiDir = projectTrusted ? paths?.projectPiDir : undefined;
 				const discovered = await ctx.discoverResources?.(reason);
-				const skillPaths = unique([
-					...(defaultsEnabled && paths?.userTauDir ? [joinPath(paths.userTauDir, "skills")] : []),
-					...(defaultsEnabled && projectTauDir ? [joinPath(projectTauDir, "skills")] : []),
-					...(defaultsEnabled && projectPiDir ? [joinPath(projectPiDir, "skills")] : []),
-					...(discovered?.skillPaths ?? []),
-					...(options.skillPaths ?? []),
+				const noSkills = options.noSkills?.() === true;
+				const noPrompts = options.noPrompts?.() === true;
+				// Conventional directories (the host's when it names them), configured, discovered; then explicit.
+				const defaultSkills = options.defaultSkillPaths
+					? options.defaultSkillPaths()
+					: [
+							...(paths?.userTauDir ? [joinPath(paths.userTauDir, "skills")] : []),
+							...(projectTauDir ? [joinPath(projectTauDir, "skills")] : []),
+							...(projectPiDir ? [joinPath(projectPiDir, "skills")] : []),
+						];
+				const defaultPrompts = options.defaultPromptPaths
+					? options.defaultPromptPaths()
+					: [
+							...(paths?.userTauDir ? [joinPath(paths.userTauDir, "prompts")] : []),
+							...(projectTauDir ? [joinPath(projectTauDir, "prompts")] : []),
+							...(projectPiDir ? [joinPath(projectPiDir, "prompts")] : []),
+						];
+				const skillDirs = noSkills || !defaultsEnabled ? [] : unique(defaultSkills);
+				const skillExplicit = unique([
+					...(noSkills ? [] : [...(options.configuredSkillPaths?.() ?? []), ...(discovered?.skillPaths ?? [])]),
+					...readList(options.skillPaths),
 				]);
-				const promptPaths = unique([
-					...(defaultsEnabled && paths?.userTauDir ? [joinPath(paths.userTauDir, "prompts")] : []),
-					...(defaultsEnabled && projectTauDir ? [joinPath(projectTauDir, "prompts")] : []),
-					...(defaultsEnabled && projectPiDir ? [joinPath(projectPiDir, "prompts")] : []),
-					...(discovered?.promptPaths ?? []),
-					...(options.promptPaths ?? []),
+				const promptDirs = noPrompts || !defaultsEnabled ? [] : unique(defaultPrompts);
+				const promptExplicit = unique([
+					...(noPrompts ? [] : [...(options.configuredPromptPaths?.() ?? []), ...(discovered?.promptPaths ?? [])]),
+					...readList(options.promptPaths),
 				]);
-				const skills = await loadSkills(fs, skillPaths);
-				const prompts = await loadPromptTemplates(fs, promptPaths);
+				const skillPaths = [...skillDirs, ...skillExplicit];
+				const promptPaths = [...promptDirs, ...promptExplicit];
+				const skills = await loadSkills(fs, skillDirs, skillExplicit);
+				const prompts = await loadPromptTemplates(fs, promptDirs, promptExplicit);
 				const resources = {
 					skills: skills.skills,
 					promptTemplates: prompts.promptTemplates,
@@ -488,10 +621,13 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 						}),
 					});
 				}
-				// `/skill:<name> [args]` sends the skill to the model (pi _expandSkillCommand).
+				// `/skill:<name> [args]` sends the skill to the model (pi _expandSkillCommand); with
+				// enableSkillCommands off (pi) the command stays out of command lists but still works.
+				const listed = options.skillCommands?.() !== false;
 				for (const skill of resources.skills) {
 					api.registerCommand(`skill:${skill.name}`, {
 						description: skill.description,
+						...(listed ? {} : { hidden: true }),
 						handler: (args) => ({ action: "prompt", text: formatSkillInvocation(skill, args) }),
 					});
 				}
