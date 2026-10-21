@@ -201,7 +201,7 @@ export function summarizeToolArgs(name: string, args: Record<string, unknown>, m
 		return undefined;
 	};
 	const specific =
-		name === "bash"
+		name === "bash" || name === "powershell"
 			? pick("command")
 			: name === "web_fetch"
 				? pick("url")
@@ -221,7 +221,7 @@ export function classifyRefusal(text: string): DecisionSource {
 }
 
 const policy = createDefaultPolicy();
-const BUILTIN = new Set(["read", "grep", "find", "ls", "write", "edit", "bash"]);
+const BUILTIN = new Set(["read", "grep", "find", "ls", "write", "edit", "bash", "powershell"]);
 const isExternal = (name: string) => name.startsWith("mcp__") || name === "web_fetch" || name === "web_search";
 
 export interface AuditContext {

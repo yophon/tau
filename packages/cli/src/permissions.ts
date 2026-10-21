@@ -23,6 +23,7 @@ import {
 	type PermissionRuleKind,
 	type PermissionRules,
 	parsePermissionRule,
+	parsePowerShellCommand,
 	parseShellCommand,
 } from "@yophon/tau-kernel";
 import { readSettingsKey, settingsParseError, writeSettings } from "./settings.ts";
@@ -454,6 +455,16 @@ export function excludeFromGit(root: string, pattern: string, file: string): voi
 	}
 }
 
+/**
+ * Whether the PowerShell tool is on under these rules (P40b, Claude Code): a Bash deny rule,
+ * whole-tool or scoped, turns it off for the session, unless some rule names PowerShell.
+ */
+export function powershellAllowedBy(rules: PermissionRules): boolean {
+	const all = [...rules.allow, ...rules.ask, ...rules.deny];
+	if (all.some((rule) => rule.tools.includes("powershell"))) return true;
+	return !rules.deny.some((rule) => rule.tools.includes("bash"));
+}
+
 /** The rules "always allow" saves for a call, leaving out what the current rules already allow. */
 export function suggestRules(request: ApprovalRequest, current: PermissionRules): string[] {
 	const name = request.toolName;
@@ -467,6 +478,21 @@ export function suggestRules(request: ApprovalRequest, current: PermissionRules)
 		for (const segment of parsed.segments) {
 			if (matchPermissionRules(allowOnly, { toolName: "bash", args: { command: segment } })) continue;
 			const rule = `Bash(${bashRulePattern(segment)})`;
+			if (!out.includes(rule)) out.push(rule);
+		}
+		return out;
+	}
+	// P40b: PowerShell rules have bash's shape (Claude Code); a segment is already the cmdlet name.
+	if (name === "powershell") {
+		const command = typeof request.args.command === "string" ? request.args.command : undefined;
+		if (command === undefined) return [];
+		const parsed = parsePowerShellCommand(command);
+		if (!parsed.ok) return [];
+		const allowOnly: PermissionRules = { allow: current.allow, ask: [], deny: [] };
+		const out: string[] = [];
+		for (const segment of parsed.segments) {
+			if (matchPermissionRules(allowOnly, { toolName: "powershell", args: { command: segment } })) continue;
+			const rule = `PowerShell(${bashRulePattern(segment)})`;
 			if (!out.includes(rule)) out.push(rule);
 		}
 		return out;

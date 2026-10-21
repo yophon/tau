@@ -271,6 +271,7 @@ export {
 	type PermissionRules,
 	parsePermissionRule,
 	parseShellCommand,
+	powerShellPatternMatches,
 } from "./permission-rules.ts";
 export {
 	defaultPlatform,
@@ -298,6 +299,11 @@ export {
 	type ToolPolicy,
 	type ToolPolicyCall,
 } from "./policy.ts";
+export {
+	canonicalPowerShellCommand,
+	type ParsedPowerShellCommand,
+	parsePowerShellCommand,
+} from "./powershell-command.ts";
 export {
 	buildContextEntries,
 	buildSessionProjection,

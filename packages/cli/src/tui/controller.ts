@@ -1951,7 +1951,9 @@ export class TuiController {
 	}
 
 	private writeToolsLoaded(): boolean {
-		return this.agent.getAllTools().some((tool) => tool.name === "write" || tool.name === "bash");
+		return this.agent
+			.getAllTools()
+			.some((tool) => tool.name === "write" || tool.name === "bash" || tool.name === "powershell");
 	}
 
 	/**

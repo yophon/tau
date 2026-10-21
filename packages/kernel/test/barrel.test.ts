@@ -20,6 +20,8 @@ const INTERNAL = new Set([
 	// The agent drives nested calls; tools reach them through ctx.executeTool (P24c).
 	"nested-calls.ts:NestedToolCallHost",
 	"nested-calls.ts:NestedToolCallRunner",
+	// Rule matching's helper; callers match with matchPermissionRules / powerShellPatternMatches (P40b).
+	"powershell-command.ts:canonicalPowerShellPattern",
 ]);
 
 function exportedNames(source: string): string[] {

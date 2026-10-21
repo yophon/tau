@@ -15,7 +15,7 @@ import {
 	type TauAbortSignal,
 	toError,
 } from "@yophon/tau-kernel";
-import { findShell, killProcessTree, unwrapCmdWrapper } from "./shell.ts";
+import { killProcessTree, type ShellOptions, shellInvocation } from "./shell.ts";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
@@ -38,6 +38,8 @@ export class NodeBackgroundShell implements BackgroundShell {
 	/** Where output files go: `<dir>/<id>.output`. */
 	readonly dir: string;
 	private readonly env: Record<string, string> | undefined;
+	/** P40b: the bash path and the prefix for bash commands (PowerShell commands come through forPowerShell()). */
+	private shellOptions: Omit<ShellOptions, "interpreter">;
 	private readonly tasks = new Map<string, BackgroundTaskInfo>();
 	private readonly listeners = new Set<(task: BackgroundTaskInfo) => void>();
 	/** Ids stopped through stop()/stopAll(): their end is not a completion. */
@@ -50,10 +52,20 @@ export class NodeBackgroundShell implements BackgroundShell {
 
 	constructor(
 		cwd: string = process.cwd(),
-		options: { env?: Record<string, string>; dir?: string; moveOnTimeout?: boolean } = {},
+		options: {
+			env?: Record<string, string>;
+			dir?: string;
+			moveOnTimeout?: boolean;
+			shellPath?: string;
+			commandPrefix?: string;
+		} = {},
 	) {
 		this.cwd = resolve(cwd);
 		this.env = options.env;
+		this.shellOptions = {
+			...(options.shellPath !== undefined ? { shellPath: options.shellPath } : {}),
+			...(options.commandPrefix !== undefined ? { commandPrefix: options.commandPrefix } : {}),
+		};
 		this.dir = options.dir ?? join(tmpdir(), "tau", `${process.pid}-${++instances}`, "tasks");
 		this.moveOnTimeout = options.moveOnTimeout !== false;
 	}
@@ -61,6 +73,25 @@ export class NodeBackgroundShell implements BackgroundShell {
 	/** Commands running in the foreground through run() (Ctrl+B has something to move). */
 	get foregroundCount(): number {
 		return this.foreground.size;
+	}
+
+	/** Change the bash path and prefix for commands started from now on (P40b: settings read again on /reload). */
+	setShellOptions(options: Omit<ShellOptions, "interpreter">): void {
+		this.shellOptions = { ...options };
+	}
+
+	/**
+	 * The same tasks, run with PowerShell (P40b): the powershell tool's background. Task ids,
+	 * /tasks, Ctrl+B and the exit hook are shared with the bash commands.
+	 */
+	forPowerShell(): BackgroundShell {
+		return {
+			start: (command, options) => this.start(command, { ...options, interpreter: "powershell" }),
+			run: (command, options) => this.run(command, { ...options, interpreter: "powershell" }),
+			stop: (id) => this.stop(id),
+			list: () => this.list(),
+			moveToBackground: () => this.moveToBackground(),
+		};
 	}
 
 	/** Move every foreground command to the background (Ctrl+B); returns how many moved. */
@@ -85,6 +116,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 			onStdout?: (chunk: string) => void;
 			onStderr?: (chunk: string) => void;
 			description?: string;
+			interpreter?: "bash" | "powershell";
 		} = {},
 	): Promise<ForegroundOutcome> {
 		if (options.signal?.aborted) return Promise.reject(new ShellError("aborted", "aborted"));
@@ -92,8 +124,13 @@ export class NodeBackgroundShell implements BackgroundShell {
 		if (timeoutSeconds !== undefined && (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0)) {
 			return Promise.reject(new ShellError("spawn_error", "timeoutSeconds must be a positive finite number"));
 		}
-		const shellCommand = process.platform === "win32" ? unwrapCmdWrapper(command) : command;
-		const { shell, args, verbatim } = findShell(shellCommand);
+		let invocation: ReturnType<typeof shellInvocation>;
+		try {
+			invocation = shellInvocation(command, { ...this.shellOptions, interpreter: options.interpreter ?? "bash" });
+		} catch (error) {
+			return Promise.reject(error);
+		}
+		const { file, args, verbatim } = invocation;
 		return new Promise<ForegroundOutcome>((resolvePromise, rejectPromise) => {
 			let stdout = "";
 			let stderr = "";
@@ -103,7 +140,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 			let timedOut = false;
 			let task: BackgroundTaskInfo | undefined;
 			let timer: ReturnType<typeof setTimeout> | undefined;
-			const child = spawn(shell, [...args, verbatim ? `"${shellCommand}"` : shellCommand], {
+			const child = spawn(file, args, {
 				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd: this.cwd,
 				...(this.env ? { env: this.env } : {}),
@@ -245,17 +282,24 @@ export class NodeBackgroundShell implements BackgroundShell {
 		return count;
 	}
 
-	async start(command: string, options: { cwd?: string; description?: string } = {}): Promise<BackgroundTaskInfo> {
+	async start(
+		command: string,
+		options: { cwd?: string; description?: string; interpreter?: "bash" | "powershell" } = {},
+	): Promise<BackgroundTaskInfo> {
 		const id = `b${this.next++}`;
 		mkdirSync(this.dir, { recursive: true });
 		const outputPath = join(this.dir, `${id}.output`);
 		const cwd = options.cwd ? (isAbsolute(options.cwd) ? options.cwd : resolve(this.cwd, options.cwd)) : this.cwd;
-		const shellCommand = process.platform === "win32" ? unwrapCmdWrapper(command) : command;
-		const { shell, args, verbatim } = findShell(shellCommand);
-		const fd = openSync(outputPath, "a");
+		const { file, args, verbatim } = shellInvocation(command, {
+			...this.shellOptions,
+			interpreter: options.interpreter ?? "bash",
+		});
+		// "w", not "a": on Windows, Git Bash builtins and MSYS programs (echo, ls, grep) cannot write
+		// to a handle opened for appending only, and exit 1 with no output. Every task has a new file.
+		const fd = openSync(outputPath, "w");
 		let child: ReturnType<typeof spawn>;
 		try {
-			child = spawn(shell, [...args, verbatim ? `"${shellCommand}"` : shellCommand], {
+			child = spawn(file, args, {
 				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd,
 				...(this.env ? { env: this.env } : {}),

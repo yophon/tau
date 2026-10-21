@@ -78,6 +78,7 @@ export interface GatewayHost {
 		trustPrompt?: boolean;
 		permissionRules?: boolean;
 		backgroundOnTimeout?: boolean;
+		extendedSettings?: boolean;
 		audit?: {
 			host?: AuditHost;
 			approvals?: "terminal" | "chat";
@@ -232,6 +233,8 @@ export async function openConversation(
 		// command that reaches its timeout is stopped as before, not moved to the background (P39d).
 		permissionRules: false,
 		backgroundOnTimeout: false,
+		// P40: no PowerShell tool, and settings.json keeps the keys it had before.
+		extendedSettings: false,
 		promptNote: promptNote(key, policy),
 		...(hooks.extensions ? { extensions: hooks.extensions } : {}),
 		audit: {

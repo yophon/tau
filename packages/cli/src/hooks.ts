@@ -273,7 +273,7 @@ export class HookRunner {
 	config: HookConfig = {};
 	diagnostics: string[] = [];
 	readonly options: HookRunnerOptions;
-	private readonly shell: NodeShell;
+	private shell: NodeShell;
 	/** The session the last event came from (Notification has no context of its own). */
 	private session: { id?: string; file?: string } = {};
 
@@ -287,6 +287,11 @@ export class HookRunner {
 				CLAUDE_PROJECT_DIR: options.cwd,
 			},
 		});
+	}
+
+	/** P40b (pi's shellPath): the bash hook commands run with. */
+	setShellPath(shellPath: string | undefined): void {
+		this.shell.options = shellPath ? { shellPath } : {};
 	}
 
 	configure(loaded: { config: HookConfig; diagnostics: string[] }): void {

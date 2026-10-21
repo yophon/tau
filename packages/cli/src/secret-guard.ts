@@ -74,7 +74,8 @@ export function createSecretGuard(options: {
 				const hit = touches(value, ctx, event.toolName === "grep");
 				return hit ? { block: true, reason: reason(hit) } : undefined;
 			}
-			if (event.toolName === "bash" && typeof event.input.command === "string") {
+			// P40b: PowerShell commands are checked like bash ones.
+			if ((event.toolName === "bash" || event.toolName === "powershell") && typeof event.input.command === "string") {
 				const command = event.input.command.replaceAll("\\", "/").toLowerCase();
 				const marker = COMMAND_MARKERS.find((candidate) => command.includes(candidate));
 				return marker ? { block: true, reason: reason(marker) } : undefined;
@@ -92,10 +93,14 @@ export function createSecretGuard(options: {
 				return { ...block, text: masked };
 			});
 			// A command that used a variable tau removed gets a hint instead of a puzzling failure.
-			if (event.toolName === "bash" && typeof event.input.command === "string") {
+			if ((event.toolName === "bash" || event.toolName === "powershell") && typeof event.input.command === "string") {
 				const command = event.input.command;
 				const missing = scrubbedNames(env, options.envAllow).filter(
-					(name) => command.includes(`$${name}`) || command.includes(`\${${name}}`) || command.includes(`%${name}%`),
+					(name) =>
+						command.includes(`$${name}`) ||
+						command.includes(`\${${name}}`) ||
+						command.includes(`%${name}%`) ||
+						command.toLowerCase().includes(`$env:${name.toLowerCase()}`),
 				);
 				if (missing.length > 0) {
 					changed = true;

@@ -9,7 +9,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import { findPowerShell } from "@yophon/tau-host-node";
+import {
+	Agent,
+	type ApprovalRequest,
+	createCodingTools,
+	EMPTY_PERMISSION_RULES,
+	ExtensionRegistry,
+	type PermissionRule,
+	type PermissionRules,
+	parsePermissionRule,
+	type Shell,
+	toolResultText,
+} from "@yophon/tau-kernel";
 import { mockTextTurn, mockToolCallTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
+import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
+import { summarizeToolArgs } from "../src/audit.ts";
+import { powershellAllowedBy, suggestRules } from "../src/permissions.ts";
+import { createSecretGuard } from "../src/secret-guard.ts";
+import { toolView } from "../src/tui/render/tool-views.ts";
 
 const CLI_PATH = fileURLToPath(new URL("../src/main.ts", import.meta.url));
 const children: ChildProcess[] = [];
@@ -22,7 +40,7 @@ const PROXY_VARIABLES = ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", 
 /** Run `tau -p <prompt>` to its end; every proxy variable is cleared unless `env` sets it. */
 function runPrint(
 	prompt: string,
-	options: { home: string; baseUrl: string; env?: Record<string, string> },
+	options: { home: string; baseUrl: string; env?: Record<string, string>; args?: string[]; cwd?: string },
 ): Promise<{ code: number | null; output: string }> {
 	const env: Record<string, string | undefined> = {
 		...process.env,
@@ -37,11 +55,15 @@ function runPrint(
 	};
 	for (const name of PROXY_VARIABLES) delete env[name];
 	Object.assign(env, options.env);
-	const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", CLI_PATH, "-p", prompt], {
-		cwd: options.home,
-		env,
-		stdio: ["ignore", "pipe", "pipe"],
-	});
+	const child = spawn(
+		process.execPath,
+		["--disable-warning=ExperimentalWarning", CLI_PATH, ...(options.args ?? []), "-p", prompt],
+		{
+			cwd: options.cwd ?? options.home,
+			env,
+			stdio: ["ignore", "pipe", "pipe"],
+		},
+	);
 	children.push(child);
 	let output = "";
 	child.stdout?.setEncoding("utf8").on("data", (chunk: string) => {
@@ -189,6 +211,163 @@ describe("P40a: proxy and HTTP idle timeout", () => {
 		} finally {
 			server.closeAllConnections();
 			server.close();
+		}
+	});
+});
+
+function rule(text: string, kind: PermissionRule["kind"]): PermissionRule {
+	const parsed = parsePermissionRule(text, kind);
+	if ("error" in parsed) throw new Error(parsed.error);
+	return parsed.rule;
+}
+
+function rules(spec: { allow?: string[]; ask?: string[]; deny?: string[] }): PermissionRules {
+	return {
+		allow: (spec.allow ?? []).map((text) => rule(text, "allow")),
+		ask: (spec.ask ?? []).map((text) => rule(text, "ask")),
+		deny: (spec.deny ?? []).map((text) => rule(text, "deny")),
+	};
+}
+
+/** The tool names the first request declared. */
+function declaredTools(request: Record<string, unknown> | undefined): string[] {
+	const tools = (request?.tools ?? []) as Array<{ function?: { name?: string } }>;
+	return tools.map((tool) => tool.function?.name ?? "");
+}
+
+describe("P40b: PowerShell and shell settings in the CLI", () => {
+	it("a Bash deny rule turns PowerShell off unless some rule names PowerShell (Claude Code)", () => {
+		assert.equal(powershellAllowedBy(EMPTY_PERMISSION_RULES), true);
+		assert.equal(powershellAllowedBy(rules({ allow: ["Bash"] })), true);
+		assert.equal(powershellAllowedBy(rules({ deny: ["Bash"] })), false);
+		assert.equal(powershellAllowedBy(rules({ deny: ["Bash(git push *)"] })), false);
+		assert.equal(powershellAllowedBy(rules({ deny: ["Bash(git push *)", "PowerShell(git push *)"] })), true);
+		assert.equal(powershellAllowedBy(rules({ deny: ["Bash"], allow: ["PowerShell(Get-ChildItem *)"] })), true);
+	});
+
+	it("always allow saves PowerShell rules with the cmdlet's name, one per new command", () => {
+		const request = (command: string): ApprovalRequest => ({
+			toolCallId: "c1",
+			toolName: "powershell",
+			args: { command },
+			risk: "medium",
+		});
+		assert.deepEqual(suggestRules(request("gci src; git status -s"), EMPTY_PERMISSION_RULES), [
+			"PowerShell(Get-ChildItem src *)",
+			"PowerShell(git status *)",
+		]);
+		assert.deepEqual(suggestRules(request("gci src; git status"), rules({ allow: ["PowerShell(git *)"] })), [
+			"PowerShell(Get-ChildItem src *)",
+		]);
+		assert.deepEqual(suggestRules(request("Write-Output $(Get-Date)"), EMPTY_PERMISSION_RULES), []);
+	});
+
+	it("the secret guard checks PowerShell commands like bash ones", async () => {
+		const home = tempHome();
+		const seen: string[] = [];
+		const shell: Shell = {
+			exec: async (command) => {
+				seen.push(command);
+				return { stdout: "", stderr: "", exitCode: 0 };
+			},
+		};
+		const agent = new Agent({
+			config: { baseUrl: "https://fake.test/v1", model: "fake" },
+			platform: fakePlatform([
+				makeSseResponse(toolCallTurn("powershell", { command: "Get-Content ~/.tau/credentials.json" })),
+				makeSseResponse(textTurn("ok")),
+			]),
+			tools: createCodingTools({ shell, powershell: { shell } }),
+			extensions: await ExtensionRegistry.load([createSecretGuard({ home })]),
+			permissionMode: "autonomous",
+		});
+		let result = "";
+		for await (const event of agent.prompt("read it")) {
+			if (event.type === "tool_result") result = toolResultText(event.result);
+		}
+		assert.match(result, /holds tau's credentials/);
+		assert.deepEqual(seen, []);
+	});
+
+	it("the TUI draws powershell like bash; the audit line is its command", () => {
+		const view = toolView(
+			{
+				kind: "tool",
+				id: "t1",
+				callId: "c1",
+				name: "powershell",
+				args: { command: "Get-ChildItem" },
+				status: "ok",
+				output: "a\nb",
+				exitCode: 1,
+			},
+			false,
+		);
+		assert.equal(view.head, "powershell(Get-ChildItem)");
+		assert.ok(view.body.some((line) => JSON.stringify(line).includes("exit 1")));
+		assert.equal(summarizeToolArgs("powershell", { command: "Get-Date  -Format o" }), "Get-Date -Format o");
+	});
+
+	it(
+		"on Windows the tool is on by default; --tools -powershell or a Bash deny rule takes it away",
+		{
+			skip: findPowerShell() === undefined,
+		},
+		async () => {
+			const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+			try {
+				const plain = await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl });
+				assert.equal(plain.code, 0, plain.output);
+				assert.ok(declaredTools(mock.requests[0]).includes("powershell"));
+				await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl, args: ["--tools", "-powershell"] });
+				assert.ok(!declaredTools(mock.requests[1]).includes("powershell"));
+				await runPrint("hi", { home: tempHome({ permissions: { deny: ["Bash(rm *)"] } }), baseUrl: mock.baseUrl });
+				assert.ok(!declaredTools(mock.requests[2]).includes("powershell"));
+				await runPrint("hi", {
+					home: tempHome({ permissions: { deny: ["Bash(rm *)", "PowerShell(Remove-Item *)"] } }),
+					baseUrl: mock.baseUrl,
+				});
+				assert.ok(declaredTools(mock.requests[3]).includes("powershell"));
+			} finally {
+				await mock.close();
+			}
+		},
+	);
+
+	it(
+		"there is no powershell tool where PowerShell is not installed",
+		{ skip: findPowerShell() !== undefined },
+		async () => {
+			const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+			try {
+				await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl });
+				assert.ok(!declaredTools(mock.requests[0]).includes("powershell"));
+			} finally {
+				await mock.close();
+			}
+		},
+	);
+
+	it("shellCommandPrefix reaches the bash tool; a missing shellPath stops tau with pi's message", async () => {
+		const mock = await startMockOpenAI([
+			() => mockToolCallTurn("bash", { command: "greet there" }),
+			() => mockTextTurn("done"),
+		]);
+		try {
+			const result = await runPrint("go", {
+				home: tempHome({ shellCommandPrefix: "greet() { echo hi-$1; }" }),
+				baseUrl: mock.baseUrl,
+			});
+			assert.equal(result.code, 0, result.output);
+			assert.match(JSON.stringify(mock.requests[1]), /hi-there/);
+			const missing = await runPrint("go", {
+				home: tempHome({ shellPath: join(tmpdir(), "no-such-bash") }),
+				baseUrl: mock.baseUrl,
+			});
+			assert.notEqual(missing.code, 0);
+			assert.match(missing.output, /Custom shell path not found: /);
+		} finally {
+			await mock.close();
 		}
 	});
 });

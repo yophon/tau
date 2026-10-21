@@ -4,4 +4,4 @@ export { importExtensionFiles, listExtensionFiles, loadExtensionsFromDir } from 
 export { NodeFileSystem } from "./fs.ts";
 export { NodeImageProcessor } from "./image/processor.ts";
 export { convertToPngInProcess as convertImageToPng } from "./image/resize.ts";
-export { NodeShell } from "./shell.ts";
+export { findPowerShell, NodeShell, type ShellOptions, shellInvocation } from "./shell.ts";

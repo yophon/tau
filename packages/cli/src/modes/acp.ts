@@ -153,7 +153,7 @@ export function toolKind(name: string): string {
 	if (name === "read" || name === "ls") return "read";
 	if (name === "grep" || name === "find" || name === "tool_search") return "search";
 	if (name === "edit" || name === "write") return "edit";
-	if (name === "bash") return "execute";
+	if (name === "bash" || name === "powershell") return "execute";
 	if (name === "web_fetch" || name === "web_search") return "fetch";
 	if (name === "todo_write" || name === "subagent") return "think";
 	return "other";
@@ -169,7 +169,8 @@ export function toolTitle(name: string, args: Record<string, unknown>): string {
 		case "ls":
 			return `ls ${str("path") || "."}`;
 		case "bash":
-			return str("command").split("\n")[0] ?? "bash";
+		case "powershell":
+			return str("command").split("\n")[0] ?? name;
 		case "grep":
 			return `grep "${str("pattern")}"`;
 		case "find":

@@ -126,6 +126,18 @@ function resultLines(tool: ToolBlock): string[] {
 	return lines;
 }
 
+/** bash and powershell (P40b): the output's last lines, a red exit code. */
+function shellView(name: string, tool: ToolBlock, verbose: boolean): ToolView {
+	// The "Exit code N" line the result ends with shows as the red "exit N" below.
+	const body = tailText(outputText(tool).replace(/(^|\n)Exit code -?\d+$/, ""), verbose ? FULL : 5);
+	if (tool.exitCode !== undefined && tool.exitCode !== 0) {
+		body.push(plainLine(`exit ${tool.exitCode}`, { color: "red" }));
+	} else if (tool.status === "error" && tool.exitCode === undefined && body.length === 0) {
+		body.push(...errorBody(tool, verbose));
+	}
+	return { head: `${name}(${firstLine(str(tool.args, "command"), 80)})`, body };
+}
+
 const RENDERERS: Record<string, Renderer> = {
 	read: (tool, verbose) => {
 		const range =
@@ -213,16 +225,9 @@ const RENDERERS: Record<string, Renderer> = {
 		return { head: view, body };
 	},
 
-	bash: (tool, verbose) => {
-		// The "Exit code N" line the result ends with shows as the red "exit N" below.
-		const body = tailText(outputText(tool).replace(/(^|\n)Exit code -?\d+$/, ""), verbose ? FULL : 5);
-		if (tool.exitCode !== undefined && tool.exitCode !== 0) {
-			body.push(plainLine(`exit ${tool.exitCode}`, { color: "red" }));
-		} else if (tool.status === "error" && tool.exitCode === undefined && body.length === 0) {
-			body.push(...errorBody(tool, verbose));
-		}
-		return { head: `bash(${firstLine(str(tool.args, "command"), 80)})`, body };
-	},
+	bash: (tool, verbose) => shellView("bash", tool, verbose),
+	// P40b: pi's powershell tool, drawn like bash.
+	powershell: (tool, verbose) => shellView("powershell", tool, verbose),
 
 	codemode: (tool, verbose) => {
 		const code = str(tool.args, "code");

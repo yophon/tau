@@ -103,17 +103,85 @@ function findGitBash(): string | undefined {
 	return candidates.find((candidate) => existsSync(candidate));
 }
 
-export function findShell(command: string): ShellSpec {
+/**
+ * The shell for one command. `shellPath` (P40b, pi's setting) replaces the bash tau would
+ * look for; Windows-native commands still go to cmd.exe.
+ */
+export function findShell(command: string, shellPath?: string): ShellSpec {
+	if (shellPath !== undefined && !existsSync(shellPath)) {
+		throw new ShellError("spawn_error", `Custom shell path not found: ${shellPath}`);
+	}
 	if (process.platform !== "win32") {
+		if (shellPath !== undefined) return { shell: shellPath, args: ["-c"] };
 		if (existsSync("/bin/bash")) return { shell: "/bin/bash", args: ["-c"] };
 		return { shell: "sh", args: ["-c"] };
 	}
 
 	const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? "cmd.exe";
 	if (isWindowsStyleCommand(command)) return { shell: comspec, args: ["/d", "/s", "/c"], verbatim: true };
+	if (shellPath !== undefined) return { shell: shellPath, args: ["-c"] };
 	const gitBash = findGitBash();
 	if (gitBash) return { shell: gitBash, args: ["--noprofile", "--norc", "-c"] };
 	return { shell: comspec, args: ["/d", "/s", "/c"], verbatim: true };
+}
+
+/** pi's PowerShell arguments: no profile, no prompts, scripts allowed for this process only. */
+export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
+const UTF8_OUTPUT_PREFIX = "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n";
+
+let powerShellPath: string | null | undefined;
+
+/** `where` the first match that exists (pi findExecutableOnPath, Windows branch). */
+function whereExecutable(name: string): string | undefined {
+	try {
+		const result = spawnSync("where", [name], { encoding: "utf-8", timeout: 5000, windowsHide: true });
+		if (result.status !== 0 || !result.stdout) return undefined;
+		const first = result.stdout.trim().split(/\r?\n/)[0];
+		return first && existsSync(first) ? first : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/** PowerShell 7 (pwsh.exe), else Windows PowerShell; undefined off Windows or when neither is found (P40b, pi). */
+export function findPowerShell(): string | undefined {
+	if (process.platform !== "win32") return undefined;
+	if (powerShellPath === undefined) {
+		powerShellPath = whereExecutable("pwsh.exe") ?? whereExecutable("powershell.exe") ?? null;
+	}
+	return powerShellPath ?? undefined;
+}
+
+/** How commands run: bash (the default) or PowerShell, a bash path, and a prefix for bash commands (P40b). */
+export interface ShellOptions {
+	interpreter?: "bash" | "powershell";
+	/** pi's shellPath: the bash executable. */
+	shellPath?: string;
+	/** pi's shellCommandPrefix: put before every bash command, on its own line. */
+	commandPrefix?: string;
+}
+
+/** The program and arguments that run one command. */
+export function shellInvocation(
+	command: string,
+	options: ShellOptions = {},
+): { file: string; args: string[]; verbatim: boolean } {
+	if (options.interpreter === "powershell") {
+		const file = findPowerShell();
+		if (!file) {
+			throw new ShellError(
+				"spawn_error",
+				"No PowerShell executable found. Install PowerShell or add powershell.exe/pwsh.exe to PATH.",
+			);
+		}
+		return { file, args: [...POWERSHELL_ARGS, `${UTF8_OUTPUT_PREFIX}${command}`], verbatim: false };
+	}
+	const shellCommand = process.platform === "win32" ? unwrapCmdWrapper(command) : command;
+	const { shell, args, verbatim } = findShell(shellCommand, options.shellPath);
+	// What Node itself does for shell: true on Windows: /s strips the outer quotes again.
+	if (verbatim) return { file: shell, args: [...args, `"${shellCommand}"`], verbatim: true };
+	const prefixed = options.commandPrefix ? `${options.commandPrefix}\n${shellCommand}` : shellCommand;
+	return { file: shell, args: [...args, prefixed], verbatim: false };
 }
 
 export function killProcessTree(pid: number): void {
@@ -150,10 +218,14 @@ export class NodeShell implements Shell {
 	readonly cwd: string;
 	/** The environment of spawned commands; default: this process's (P32b: the CLI passes one without secrets). */
 	readonly env: Record<string, string> | undefined;
+	/** P40b: PowerShell instead of bash, a bash path, a prefix for bash commands (the CLI updates them on /reload). */
+	options: ShellOptions;
 
-	constructor(cwd: string = process.cwd(), options: { env?: Record<string, string> } = {}) {
+	constructor(cwd: string = process.cwd(), options: { env?: Record<string, string> } & ShellOptions = {}) {
 		this.cwd = resolve(cwd);
 		this.env = options.env;
+		const { env: _env, ...shellOptions } = options;
+		this.options = shellOptions;
 	}
 
 	async exec(
@@ -175,8 +247,7 @@ export class NodeShell implements Shell {
 		}
 		const timeoutMs = timeoutSeconds === undefined ? undefined : Math.min(timeoutSeconds * 1000, MAX_TIMEOUT_MS);
 		const cwd = options?.cwd ? (isAbsolute(options.cwd) ? options.cwd : resolve(this.cwd, options.cwd)) : this.cwd;
-		const shellCommand = process.platform === "win32" ? unwrapCmdWrapper(command) : command;
-		const { shell, args, verbatim } = findShell(shellCommand);
+		const { file, args, verbatim } = shellInvocation(command, this.options);
 
 		return await new Promise((resolvePromise, rejectPromise) => {
 			let stdout = "";
@@ -185,8 +256,7 @@ export class NodeShell implements Shell {
 			let timedOut = false;
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
-			// What Node itself does for shell: true on Windows: /s strips the outer quotes again.
-			const child = spawn(shell, [...args, verbatim ? `"${shellCommand}"` : shellCommand], {
+			const child = spawn(file, args, {
 				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd,
 				...(this.env ? { env: this.env } : {}),

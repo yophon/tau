@@ -114,10 +114,11 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
 			return `[write: ${path}]`;
 		case "edit":
 			return `[edit: ${path}]`;
-		case "bash": {
+		case "bash":
+		case "powershell": {
 			const raw = String(args.command ?? "");
 			const command = normalize(raw).slice(0, 50);
-			return `[bash: ${command}${raw.length > 50 ? "..." : ""}]`;
+			return `[${name}: ${command}${raw.length > 50 ? "..." : ""}]`;
 		}
 		case "grep":
 			return `[grep: /${String(args.pattern ?? "")}/ in ${shortenPath(String(args.path ?? "."))}]`;

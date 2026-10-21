@@ -23,6 +23,7 @@ import {
 } from "@yophon/tau-ext-provider-anthropic";
 import {
 	digestDirectory,
+	findPowerShell,
 	importExtensionFiles,
 	listExtensionFiles,
 	loadExtensionsFromDir,
@@ -108,12 +109,22 @@ import {
 	localSettingsIsRepoFile,
 	migrateLegacyPermissions,
 	openAlwaysOptions,
+	powershellAllowedBy,
 	splitRuleList,
 	WorkspacePermissions,
 } from "./permissions.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
-import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
+import {
+	loadSettings,
+	readSettings,
+	type TauSettings,
+	tuiScreen,
+	withoutP40Keys,
+	writeSectionKey,
+	writeSettings,
+	writeTuiMode,
+} from "./settings.ts";
 import { createStatusLineExtension, StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/controller.ts";
 import {
@@ -1649,6 +1660,8 @@ async function main(): Promise<void> {
 		permissionRules?: boolean;
 		/** P39d: false keeps a bash command that reaches its timeout stopped instead of moved to the background (the gateway). */
 		backgroundOnTimeout?: boolean;
+		/** P40: false keeps settings.json to its pre-P40 keys and leaves out the PowerShell tool (the gateway). */
+		extendedSettings?: boolean;
 		/** P32c: the audit's host, trigger and approval kind for this workspace (the gateway's chats). */
 		audit?: {
 			host?: AuditHost;
@@ -1713,6 +1726,13 @@ async function main(): Promise<void> {
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
+		// P40c (pi): settings.json in layers, the user's then a trusted project's; /reload reads them again.
+		// The gateway, parked, keeps the keys it had before P40.
+		const readWorkspaceSettings = (): TauSettings =>
+			spec.extendedSettings === false
+				? withoutP40Keys(readSettings(join(userHome(), ".tau", "settings.json")))
+				: loadSettings({ home: userHome(), cwd, projectTrusted });
+		let workspaceSettings = readWorkspaceSettings();
 		// Permission rules (P37a): settings files, flags, /permissions; "always allow" saves rules.
 		let currentAgent: Agent | undefined;
 		const permissions =
@@ -1784,6 +1804,8 @@ async function main(): Promise<void> {
 				hookRunner,
 			);
 			projectTrusted = next.projectTrusted;
+			workspaceSettings = readWorkspaceSettings();
+			applyShellSettings();
 			if (permissions) {
 				await next.registry.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
 			}
@@ -1796,6 +1818,31 @@ async function main(): Promise<void> {
 		// without secret-looking variables (P32b). Secrets are registered first so their values go too.
 		const shell = new NodeShell(cwd);
 		const toolShell = new NodeShell(cwd, { env: modelEnvironment() });
+		// P40b: pi's powershell tool on Windows when PowerShell is installed (Claude Code: on by default).
+		const powershellShell =
+			spec.extendedSettings !== false && findPowerShell() !== undefined
+				? new NodeShell(cwd, { env: modelEnvironment(), interpreter: "powershell" })
+				: undefined;
+		const powershellBackground = powershellShell ? background.forPowerShell() : undefined;
+		/** P40b (pi): shellPath and shellCommandPrefix for bash (the tool, `!` commands, background commands); hooks take the path. */
+		function applyShellSettings(): void {
+			const { shellPath, shellCommandPrefix } = workspaceSettings;
+			if (shellPath !== undefined && !existsSync(shellPath))
+				throw new Error(`Custom shell path not found: ${shellPath}`);
+			const shellOptions = {
+				...(shellPath !== undefined ? { shellPath } : {}),
+				...(shellCommandPrefix !== undefined ? { commandPrefix: shellCommandPrefix } : {}),
+			};
+			shell.options = shellOptions;
+			toolShell.options = shellOptions;
+			background.setShellOptions(shellOptions);
+			hookRunner.setShellPath(shellPath);
+		}
+		applyShellSettings();
+		const powershellAllowed = (): boolean => {
+			const rules = permissions?.rules();
+			return rules === undefined || powershellAllowedBy(rules);
+		};
 		// Project context files (P21a, pi loadProjectContextFiles): ~/.tau first, then
 		// every directory from the root down to cwd. Appended to any system prompt.
 		const loadProjectContext = async (): Promise<string> =>
@@ -1823,7 +1870,20 @@ async function main(): Promise<void> {
 		): Agent => {
 			const mode = workspaceMode ?? permissionMode;
 			const codingTools = createCodingTools(
-				{ fs, shell: toolShell, background, images: imageProcessor },
+				{
+					fs,
+					shell: toolShell,
+					background,
+					images: imageProcessor,
+					...(powershellShell && powershellAllowed()
+						? {
+								powershell: {
+									shell: powershellShell,
+									...(powershellBackground ? { background: powershellBackground } : {}),
+								},
+							}
+						: {}),
+				},
 				{ mode, supportsImages: modelTakesImages },
 			);
 			const built = new Agent({

@@ -32,6 +32,7 @@ export function approvalBody(request: ApprovalRequest, max = MAX_LINES): StyledL
 	const small = max === MAX_LINES ? 10 : max;
 	switch (request.toolName) {
 		case "bash":
+		case "powershell":
 			lines.push(
 				...cap(
 					str(args, "command")

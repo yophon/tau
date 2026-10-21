@@ -9,6 +9,8 @@
  * Pure ES: hosts read and write the settings files, the kernel only matches.
  */
 
+import { canonicalPowerShellPattern, parsePowerShellCommand } from "./powershell-command.ts";
+
 export type PermissionRuleKind = "allow" | "ask" | "deny";
 
 export interface PermissionRule {
@@ -55,6 +57,7 @@ export const EMPTY_PERMISSION_RULES: PermissionRules = { allow: [], ask: [], den
  */
 const TOOL_ALIASES: Record<string, readonly string[]> = {
 	bash: ["bash"],
+	powershell: ["powershell"],
 	read: ["read", "grep", "find", "ls"],
 	edit: ["edit", "write"],
 	write: ["write"],
@@ -77,6 +80,8 @@ const UNCONSULTED_PATH_TOOLS: Record<string, string> = {
 };
 
 const BASH_TOOLS = new Set(["bash"]);
+/** P40b: Claude Code's PowerShell rules (same shape as Bash; aliases resolved; case ignored). */
+const POWERSHELL_TOOLS = new Set(["powershell"]);
 const READ_PATH_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const EDIT_PATH_TOOLS = new Set(["edit", "write"]);
 /** Main content fields a parameter rule may not name (Claude Code). */
@@ -154,7 +159,7 @@ function paramRule(specifier: string, toolName: string): { key: string; value: s
 	if (match[1] === "domain") return undefined;
 	// A Windows drive path (C:/Users/…), not a parameter.
 	if (match[1].length === 1 && /^[\\/]/.test(match[2])) return undefined;
-	if (toolName === "bash" && specifier.endsWith(":*")) return undefined;
+	if ((BASH_TOOLS.has(toolName) || POWERSHELL_TOOLS.has(toolName)) && specifier.endsWith(":*")) return undefined;
 	return { key: match[1], value: match[2] };
 }
 
@@ -192,8 +197,13 @@ export function matchPermissionRules(
 	call: PermissionRuleCall,
 ): PermissionRuleMatch | undefined {
 	const tool = call.toolName.toLowerCase();
-	const command = BASH_TOOLS.has(tool) ? commandOf(call.args) : undefined;
-	const parsed = command !== undefined ? parseShellCommand(command) : undefined;
+	const command = BASH_TOOLS.has(tool) || POWERSHELL_TOOLS.has(tool) ? commandOf(call.args) : undefined;
+	const parsed =
+		command === undefined
+			? undefined
+			: POWERSHELL_TOOLS.has(tool)
+				? parsePowerShellCommand(command)
+				: parseShellCommand(command);
 	for (const kind of ["deny", "ask"] as const) {
 		const hit =
 			firstMatch(rules[kind], call, parsed) ?? (parsed ? bashFileTargetMatch(rules[kind], call, parsed) : undefined);
@@ -204,7 +214,9 @@ export function matchPermissionRules(
 		if (!parsed.ok || parsed.segments.length === 0) return undefined;
 		let first: PermissionRule | undefined;
 		for (const segment of parsed.segments) {
-			const rule = rules.allow.find((candidate) => coversTool(candidate, tool) && bashRuleMatches(candidate, segment));
+			const rule = rules.allow.find(
+				(candidate) => coversTool(candidate, tool) && shellRuleMatches(tool, candidate, segment),
+			);
 			if (!rule) return undefined;
 			first ??= rule;
 		}
@@ -258,11 +270,11 @@ function ruleMatches(rule: PermissionRule, call: PermissionRuleCall, parsed: Par
 		const host = url ? hostOf(url) : undefined;
 		return host !== undefined && domainMatches(spec.slice("domain:".length), host);
 	}
-	if (BASH_TOOLS.has(tool)) {
+	if (BASH_TOOLS.has(tool) || POWERSHELL_TOOLS.has(tool)) {
 		if (!parsed) return false;
 		// Deny and ask: any subcommand. An unparseable command is matched as a whole.
 		const segments = parsed.ok ? parsed.segments : [parsed.raw];
-		return segments.some((segment) => bashRuleMatches(rule, segment));
+		return segments.some((segment) => shellRuleMatches(tool, rule, segment));
 	}
 	if (READ_PATH_TOOLS.has(tool) || EDIT_PATH_TOOLS.has(tool)) {
 		const targets = pathTargets(call);
@@ -331,6 +343,16 @@ export function bashPatternMatches(pattern: string, input: string): boolean {
 
 function bashRuleMatches(rule: PermissionRule, segment: string): boolean {
 	return rule.specifier === undefined || bashPatternMatches(rule.specifier, segment);
+}
+
+/** A PowerShell pattern: bash's wildcards over the command with aliases resolved, case ignored (Claude Code). */
+export function powerShellPatternMatches(pattern: string, segment: string): boolean {
+	return bashPatternMatches(canonicalPowerShellPattern(pattern), segment.toLowerCase());
+}
+
+function shellRuleMatches(tool: string, rule: PermissionRule, segment: string): boolean {
+	if (!POWERSHELL_TOOLS.has(tool)) return bashRuleMatches(rule, segment);
+	return rule.specifier === undefined || powerShellPatternMatches(rule.specifier, segment);
 }
 
 export interface ParsedCommand {

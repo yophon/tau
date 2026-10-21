@@ -443,11 +443,40 @@ export function backgroundMovedText(
 	return `${why}. It keeps running with ID: ${id}. Output is being written to: ${outputPath}. You are notified when it exits; read the output file to see progress.`;
 }
 
-function createBashTool(shell: Shell, background?: BackgroundShell): Tool {
+/** What tells the two shell tools apart (P40b): bash, and pi's powershell. */
+interface ShellToolVariant {
+	name: "bash" | "powershell";
+	lead: string;
+	/** A command that reaches its timeout is stopped instead of moved to the background (Claude Code: a sleep). */
+	sleep: RegExp;
+	promptSnippet?: string;
+	promptGuidelines?: string[];
+}
+
+const BASH_VARIANT: ShellToolVariant = {
+	name: "bash",
+	lead: "Run a shell command in the working directory and return its output. ",
+	sleep: /^\s*sleep\b/,
+};
+
+/** pi's powershell tool; Claude Code treats PowerShell as the primary shell when it is on (Windows). */
+const POWERSHELL_VARIANT: ShellToolVariant = {
+	name: "powershell",
+	lead: "Run a PowerShell command in the working directory and return its output. ",
+	sleep: /^\s*(?:sleep|start-sleep)\b/i,
+	promptSnippet: "Execute PowerShell commands",
+	promptGuidelines: [
+		"PowerShell is the primary shell on this Windows machine: use powershell for commands, and bash (Git Bash) only for POSIX scripts.",
+	],
+};
+
+function createBashTool(shell: Shell, background?: BackgroundShell, variant: ShellToolVariant = BASH_VARIANT): Tool {
 	return {
-		name: "bash",
+		name: variant.name,
+		...(variant.promptSnippet ? { promptSnippet: variant.promptSnippet } : {}),
+		...(variant.promptGuidelines ? { promptGuidelines: variant.promptGuidelines } : {}),
 		description:
-			"Run a shell command in the working directory and return its output. " +
+			variant.lead +
 			(background?.run
 				? `Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; a command still running then moves to the background (a sleep is stopped); pass timeoutSeconds to wait longer.`
 				: `Default timeout ${DEFAULT_BASH_TIMEOUT_SECONDS}s; pass timeoutSeconds for longer builds or tests.`) +
@@ -512,7 +541,7 @@ function createBashTool(shell: Shell, background?: BackgroundShell): Tool {
 					const description = typeof args.description === "string" ? args.description.trim() : "";
 					const outcome = await background.run(command, {
 						timeoutSeconds,
-						onTimeout: /^\s*sleep\b/.test(command) ? "stop" : "background",
+						onTimeout: variant.sleep.test(command) ? "stop" : "background",
 						signal,
 						...streams,
 						...(description === "" ? {} : { description }),
@@ -568,10 +597,10 @@ function createBashTool(shell: Shell, background?: BackgroundShell): Tool {
 }
 
 /** Stop a background command (P36a, Claude Code TaskStop). */
-function createTaskStopTool(background: BackgroundShell): Tool {
+function createTaskStopTool(background: BackgroundShell, powershell: boolean): Tool {
 	return {
 		name: "task_stop",
-		description: "Stop a background command started with bash run_in_background, by its task ID.",
+		description: `Stop a background command started with ${powershell ? "bash or powershell" : "bash"} run_in_background, by its task ID.`,
 		promptSnippet: "Stop a background command",
 		parameters: {
 			type: "object",
@@ -598,7 +627,14 @@ function createTaskStopTool(background: BackgroundShell): Tool {
  * registered by other paths.
  */
 export function createCodingTools(
-	capabilities: { fs?: FileSystem; shell?: Shell; background?: BackgroundShell; images?: ImageProcessor },
+	capabilities: {
+		fs?: FileSystem;
+		shell?: Shell;
+		background?: BackgroundShell;
+		images?: ImageProcessor;
+		/** P40b (pi's powershell tool): a shell that runs PowerShell, and its view of the background tasks. */
+		powershell?: { shell: Shell; background?: BackgroundShell };
+	},
 	options?: { mode?: PermissionMode; supportsImages?: () => boolean },
 ): Tool[] {
 	const readOnly = options?.mode === "read-only";
@@ -617,8 +653,10 @@ export function createCodingTools(
 	if (capabilities.shell && !readOnly) {
 		// P36a: background commands come with the shell; read-only has neither.
 		const background = capabilities.background;
+		const powershell = capabilities.powershell;
 		tools.push(createBashTool(capabilities.shell, background));
-		if (background) tools.push(createTaskStopTool(background));
+		if (powershell) tools.push(createBashTool(powershell.shell, powershell.background, POWERSHELL_VARIANT));
+		if (background) tools.push(createTaskStopTool(background, powershell !== undefined));
 	}
 	return tools;
 }

@@ -206,7 +206,8 @@ function isInsideWorkingDirectories(path: string, cwd: string | undefined, extra
 		return resolved === base || resolved.startsWith(`${base}/`);
 	});
 }
-const BASH_TOOLS = new Set(["bash"]);
+/** Shell tools: medium, high when the command matches a dangerous pattern (P40b: powershell like bash). */
+const BASH_TOOLS = new Set(["bash", "powershell"]);
 
 /** Lower-cased segments with `.` and `..` folded (P37a: `.tau/x/../settings.json` is the protected file it writes). */
 function pathSegments(path: string): string[] {
