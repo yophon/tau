@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-20（P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = 规划 P40**）
+> 最后更新：2026-10-20（P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P40**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -328,6 +328,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 规格书（2026-10-20 确认；用户：「全做，按你的建议来」）：[specs/phase-39-loose-limits-daily-features.md](specs/phase-39-loose-limits-daily-features.md)。39a 四项限制对齐同类（命令拿完整环境变量、删掉 secret-guard、信任照 pi 每个目录记一次、记忆照 Claude Code 写入不限只加载前 200 行）；39b `/diff`（Codex）；39c `/btw` 旁支问题（Claude Code）；39d Ctrl+B 与超时转后台（Claude Code）；39e `keybindings.json` 改键（pi）；39f 会话树画出分支（pi）。
 
 **完成记录**：39a 的记忆和 39b–39f 已完成。全量测试 1075 个，1072 通过、3 跳过；CI 通过。smoke-tui 新增 p39 场景，三十三个场景在全屏与 inline 下各跑一遍都通过。真 DeepSeek 上，超时转后台和 `/btw` 都按预期工作。决策记为 D42，偏差见规格书「实施记录」。39a 的另外三项暂缓，记在 Backlog C。真机验收待用户执行。
+
+## Phase 40 🚧 代理、Windows 命令环境与设置对齐 pi
+
+规格书（2026-10-20 确认；用户：「可以，都做吧，写」）：[specs/phase-40-proxy-shell-settings.md](specs/phase-40-proxy-shell-settings.md)。40a 代理与 HTTP 超时（pi 的 undici dispatcher，认 `HTTPS_PROXY`/`NO_PROXY` 与 `httpProxy`）；40b PowerShell 工具（Windows 上默认开，权限规则照 Claude Code）与 `shellPath`、`shellCommandPrefix`（pi）；40c 设置补齐（pi 键名，项目 `.tau/settings.json` 信任后整体生效，新文档 `docs/settings.md`）；40d pi 扩展面收尾（模型请求三个事件、扩展弹窗事件、Markdown 变换、溢出时压缩并重试、换分支的 label 与 userWantsSummary）。
 
 ## 产品层后续 ⬜ 待定
 
