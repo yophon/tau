@@ -17,6 +17,7 @@ import { asideMaxScroll } from "./render/aside.ts";
 import { CARET_END, CARET_MARK, renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineCache, type LineOptions } from "./render/lines.ts";
 import { listRows } from "./render/list.ts";
+import { markdownTransformersVersion } from "./render/markdown.ts";
 import {
 	buildTranscript,
 	type Highlight,
@@ -55,6 +56,21 @@ export function viewSlice(
 	const visible = rows.slice(start, start + height);
 	return { visible, below: Math.max(0, rows.length - start - visible.length), top: start };
 }
+
+/** Two transcripts one after the other (the committed part, then the live blocks). */
+export function joinTranscripts(first: TranscriptRows, second: TranscriptRows): TranscriptRows {
+	if (second.blocks.length === 0) return first;
+	const offset = first.rows.length;
+	return {
+		rows: [...first.rows, ...second.rows],
+		starts: [...first.starts, ...second.starts.map((start) => start + offset)],
+		blocks: [...first.blocks, ...second.blocks],
+		meta: [...first.meta, ...second.meta],
+	};
+}
+
+/** Pre-rendering's time slice (P42d): short enough that a key never waits on it. */
+const PRERENDER_SLICE_MS = 8;
 
 /** The last rows of the transcript, at least `height` of them (all when it is shorter): live rows, then finished blocks from the end. */
 export function tailRows(
@@ -345,15 +361,106 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 	const committedLines = (block: Block) => cache.lines(block, optionsFor(block));
 	const liveLines = (block: Block) => blockLines(block, optionsFor(block));
 	const liveRows = state.live.flatMap(liveLines);
+	// What decides every committed block's rows: when it is the same, so are they (P42d).
+	const renderKey = `${options.width}|${options.verbose}|${options.showReasoning}|${options.colors}|${markdownTransformersVersion()}`;
+	// The committed part of the transcript is kept across renders (P42d): scrolling a long
+	// conversation reuses it instead of copying every row again each frame.
+	const committedMemo = useRef<
+		{ blocks: readonly Block[]; key: string; expanded: unknown; transcript: TranscriptRows } | undefined
+	>(undefined);
+	const committedTranscript = (): TranscriptRows => {
+		const memo = committedMemo.current;
+		if (memo && memo.blocks === state.committed && memo.key === renderKey && memo.expanded === state.expanded) {
+			return memo.transcript;
+		}
+		const built = buildTranscript(state.committed, committedLines);
+		committedMemo.current = { blocks: state.committed, key: renderKey, expanded: state.expanded, transcript: built };
+		return built;
+	};
 	// The whole transcript, built at most once a render and only when something needs it.
 	let full: TranscriptRows | undefined;
 	const transcript = (): TranscriptRows => {
-		full ??= buildTranscript([...state.committed, ...state.live], (block) =>
-			state.live.includes(block) ? liveLines(block) : committedLines(block),
-		);
+		full ??= joinTranscripts(committedTranscript(), buildTranscript(state.live, liveLines));
 		return full;
 	};
 	controller.setTranscript(transcript);
+	// P42d: while idle, render the committed blocks not yet in the cache, newest first, in short
+	// slices, and work out their search pieces, so scrolling up and Ctrl+F find them ready; then
+	// build the search corpus from the first block on, so a search only adds the live rows.
+	// Blocks rendered for this width and these options are not done again.
+	const prerender = useRef<{
+		key: string;
+		expanded: unknown;
+		epoch: number;
+		/** Committed blocks seen; blocks past it are new and go first. */
+		count: number;
+		/** New blocks still to render, newest first: from high down to low. */
+		newHigh: number;
+		newLow: number;
+		/** The next older block to render; -1 when all are done. */
+		next: number;
+		/** Once all are rendered: the next block to add to the search corpus, and its first row. */
+		searchBlock: number;
+		searchRow: number;
+	}>({
+		key: "",
+		expanded: undefined,
+		epoch: -1,
+		count: 0,
+		newHigh: -1,
+		newLow: 0,
+		next: -1,
+		searchBlock: 0,
+		searchRow: 0,
+	});
+	useEffect(() => {
+		const blocks = state.committed;
+		const work = prerender.current;
+		if (work.key !== renderKey || work.expanded !== state.expanded || work.epoch !== state.epoch) {
+			if (work.key !== renderKey || work.epoch !== state.epoch) controller.resetSearchPieces();
+			Object.assign(work, {
+				key: renderKey,
+				expanded: state.expanded,
+				epoch: state.epoch,
+				count: blocks.length,
+				newHigh: -1,
+				newLow: 0,
+				next: blocks.length - 1,
+				searchBlock: 0,
+				searchRow: 0,
+			});
+		} else if (blocks.length > work.count) {
+			if (work.newHigh < work.newLow) work.newLow = work.count;
+			work.newHigh = blocks.length - 1;
+			work.count = blocks.length;
+		}
+		if (work.newHigh < work.newLow && work.next < 0 && work.searchBlock >= blocks.length) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const slice = (): void => {
+			const deadline = performance.now() + PRERENDER_SLICE_MS;
+			while (performance.now() < deadline) {
+				const index = work.newHigh >= work.newLow ? work.newHigh-- : work.next >= 0 ? work.next-- : -1;
+				if (index >= 0) {
+					const block = blocks[index];
+					if (block) controller.warmSearch(cache.lines(block, optionsFor(block)));
+					continue;
+				}
+				const block = blocks[work.searchBlock];
+				if (!block) return;
+				const rows = cache.lines(block, optionsFor(block));
+				controller.prepareSearch(work.searchRow, rows);
+				work.searchBlock++;
+				work.searchRow += rows.length;
+			}
+			timer = setTimeout(slice, 0);
+			timer.unref?.();
+		};
+		timer = setTimeout(slice, 0);
+		timer.unref?.();
+		return () => {
+			if (timer) clearTimeout(timer);
+		};
+	});
 
 	// One row less than the screen: Ink writes a newline after the frame.
 	const frameHeight = Math.max(3, screenRows - 1);

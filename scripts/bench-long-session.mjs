@@ -10,10 +10,11 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { blockLines } from "../packages/cli/src/tui/render/lines.ts";
+import { blockLines, LineCache } from "../packages/cli/src/tui/render/lines.ts";
 import { TranscriptSearch } from "../packages/cli/src/tui/render/search.ts";
 import { messagesToBlocks } from "../packages/cli/src/tui/replay.ts";
 import { buildTree, SessionTreeView } from "../packages/cli/src/tui/session-tree.ts";
+import { buildTranscript } from "../packages/cli/src/tui/transcript.ts";
 import { NodeFileSystem } from "../packages/host-node/src/index.ts";
 import {
 	Agent,
@@ -152,6 +153,24 @@ for (const entries of sizes) {
 			}
 		}, 1);
 		const firstSearch = await time(() => new TranscriptSearch().search(allRows, "file1234"), 1);
+		// After the full-screen view pre-rendered while idle (P42d): every block in the cache, its
+		// search pieces worked out, then the corpus built block by block. What scrolling up and
+		// Ctrl+F then cost.
+		const options = { width: 120, verbose: false, showReasoning: false, colors: true };
+		const cache = new LineCache();
+		const search = new TranscriptSearch();
+		for (let index = blocks.length - 1; index >= 0; index--) search.warm(cache.lines(blocks[index], options));
+		let at = 0;
+		for (const block of blocks) {
+			const blockRows = cache.lines(block, options);
+			search.prepare(at, blockRows);
+			at += blockRows.length;
+		}
+		let warmRows = [];
+		const warmAll = await time(() => {
+			warmRows = buildTranscript(blocks, (block) => cache.lines(block, options)).rows;
+		});
+		const warmSearch = await time(() => search.search([...warmRows], "file1234"), 1);
 		const all = await store.getEntries();
 		const leaf = await store.getLeafId();
 		const roots = buildTree(all);
@@ -164,12 +183,16 @@ for (const entries of sizes) {
 			view.move(-1);
 			view.rows();
 		});
-		const treeType = await time(() => {
-			view.type("x");
-			view.rows();
-			view.backspace();
-			view.rows();
-		});
+		// One keystroke: typing a character and deleting it again, halved.
+		const treeType =
+			Math.round(
+				(await time(() => {
+					view.type("x");
+					view.rows();
+					view.backspace();
+					view.rows();
+				})) * 5,
+			) / 10;
 		rows.push({
 			entries,
 			"10-tool turn": `${turnWithCheck} ms`,
@@ -178,6 +201,7 @@ for (const entries of sizes) {
 			"list (1 file)": `${list} ms`,
 			"full-screen all rows": `${renderAll} ms (${allRows.length})`,
 			"first Ctrl+F": `${firstSearch} ms`,
+			"after pre-render: all rows / Ctrl+F": `${warmAll} / ${warmSearch} ms`,
 			"/tree open / ↑ / keystroke": `${treeOpen} / ${treeMove} / ${treeType} ms`,
 		});
 		console.error(`done: ${entries} entries`);

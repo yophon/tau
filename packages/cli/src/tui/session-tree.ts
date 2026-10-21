@@ -36,6 +36,12 @@ interface FlatNode {
 	isLast: boolean;
 	gutters: GutterInfo[];
 	isVirtualRootChild: boolean;
+	/** P42d: the parent entry's node, and the filter pass that last showed this one. */
+	parent?: FlatNode | undefined;
+	stamp?: number;
+	/** P42d: the nearest shown ancestor and the shown nodes hanging on this one (set while shown). */
+	shownParent?: FlatNode | undefined;
+	shownChildren?: FlatNode[];
 }
 
 export interface TreeRow {
@@ -151,10 +157,19 @@ export class SessionTreeView {
 	private readonly activePath = new Set<string>();
 	private readonly toolCalls = new Map<string, { name: string; arguments: Record<string, unknown> }>();
 	private multipleRoots: boolean;
-	private visibleParent = new Map<string, string | null>();
-	private visibleChildren = new Map<string | null, string[]>();
 	private lastSelectedId: string | null = null;
 	private readonly folded = new Set<string>();
+	/** P42d: every node by id, built once (the tree does not change while the view is open). */
+	private byId = new Map<string, FlatNode>();
+	/** P42d: each node's lowercased search text, worked out once (a label change drops it). */
+	private readonly searchCache = new Map<TreeNode, string>();
+	/** P42d: rows() until the filter, a fold, a label or the label times change; moving keeps them. */
+	private rowsCache: TreeRow[] | undefined;
+	/** P42d: each visible entry's row index, rebuilt with the filter. */
+	private visibleIndex = new Map<string, number>();
+	private pass = 0;
+	/** P42d: the entries the filter mode shows before the search (a label change drops it). */
+	private modeNodes: { mode: FilterMode; nodes: FlatNode[] } | undefined;
 	selectedIndex = 0;
 	filterMode: FilterMode;
 	searchQuery = "";
@@ -169,6 +184,11 @@ export class SessionTreeView {
 		this.filterMode = options.filter ?? "default";
 		this.multipleRoots = roots.length > 1;
 		this.flatNodes = this.flatten(roots);
+		this.byId = new Map(this.flatNodes.map((flat) => [flat.node.entry.id, flat]));
+		for (const flat of this.flatNodes) {
+			const parentId = flat.node.entry.parentId;
+			flat.parent = parentId == null ? undefined : this.byId.get(parentId);
+		}
 		this.buildActivePath();
 		this.applyFilter();
 		this.selectedIndex = this.nearestVisibleIndex(options.selectedId ?? currentLeafId);
@@ -195,8 +215,8 @@ export class SessionTreeView {
 
 	private nearestVisibleIndex(entryId: string | null): number {
 		if (this.filtered.length === 0) return 0;
-		const byId = new Map(this.flatNodes.map((flat) => [flat.node.entry.id, flat]));
-		const visible = new Map(this.filtered.map((flat, i) => [flat.node.entry.id, i]));
+		const byId = this.byId;
+		const visible = this.visibleIndex;
 		let current = entryId;
 		while (current !== null) {
 			const index = visible.get(current);
@@ -209,7 +229,7 @@ export class SessionTreeView {
 	}
 
 	private buildActivePath(): void {
-		const byId = new Map(this.flatNodes.map((flat) => [flat.node.entry.id, flat]));
+		const byId = this.byId;
 		let current = this.currentLeafId;
 		while (current) {
 			this.activePath.add(current);
@@ -300,45 +320,21 @@ export class SessionTreeView {
 			this.lastSelectedId = this.filtered[this.selectedIndex]?.node.entry.id ?? this.lastSelectedId;
 		}
 		const tokens = this.searchQuery.toLowerCase().split(/\s+/).filter(Boolean);
-		this.filtered = this.flatNodes.filter((flat) => {
-			const entry = flat.node.entry;
-			if (this.hidden(entry)) return false;
-			const isLeaf = entry.id === this.currentLeafId;
-			// An answer with only tool calls is left out unless it failed (pi); the leaf always shows.
-			if (entry.type === "message" && entry.message.role === "assistant" && !isLeaf) {
-				const reason = entry.message.stopReason;
-				if (!hasText(entry.message.content) && reason === "stop") return false;
-				if (!hasText(entry.message.content) && reason === "toolUse") return false;
-			}
-			const settings =
-				entry.type === "label" ||
-				entry.type === "context_edit" ||
-				entry.type === "custom" ||
-				entry.type === "model_change" ||
-				entry.type === "thinking_level_change" ||
-				entry.type === "session_info";
-			let passes: boolean;
-			switch (this.filterMode) {
-				case "user-only":
-					passes = entry.type === "message" && entry.message.role === "user";
-					break;
-				case "no-tools":
-					passes = !settings && !(entry.type === "message" && entry.message.role === "toolResult");
-					break;
-				case "labeled-only":
-					passes = flat.node.label !== undefined;
-					break;
-				case "all":
-					passes = true;
-					break;
-				default:
-					passes = !settings;
-			}
-			if (!passes) return false;
-			if (tokens.length === 0) return true;
-			const text = this.searchText(flat.node).toLowerCase();
-			return tokens.every((token) => text.includes(token));
-		});
+		// P42d: the entries this filter mode shows are kept, so a keystroke only matches text.
+		if (this.modeNodes?.mode !== this.filterMode) {
+			this.modeNodes = { mode: this.filterMode, nodes: this.flatNodes.filter((flat) => this.modeShows(flat)) };
+		}
+		this.filtered =
+			tokens.length === 0
+				? this.modeNodes.nodes
+				: this.modeNodes.nodes.filter((flat) => {
+						let text = this.searchCache.get(flat.node);
+						if (text === undefined) {
+							text = this.searchText(flat.node).toLowerCase();
+							this.searchCache.set(flat.node, text);
+						}
+						return tokens.every((token) => text.includes(token));
+					});
 		if (this.folded.size > 0) {
 			const skip = new Set<string>();
 			for (const flat of this.flatNodes) {
@@ -348,6 +344,7 @@ export class SessionTreeView {
 			this.filtered = this.filtered.filter((flat) => !skip.has(flat.node.entry.id));
 		}
 		this.recalculate();
+		this.rowsCache = undefined;
 		if (this.lastSelectedId) this.selectedIndex = this.nearestVisibleIndex(this.lastSelectedId);
 		else if (this.selectedIndex >= this.filtered.length) this.selectedIndex = Math.max(0, this.filtered.length - 1);
 		if (this.filtered.length > 0) {
@@ -355,47 +352,79 @@ export class SessionTreeView {
 		}
 	}
 
+	/** Whether the filter mode shows this entry, before the search (pi applyFilter). */
+	private modeShows(flat: FlatNode): boolean {
+		const entry = flat.node.entry;
+		if (this.hidden(entry)) return false;
+		const isLeaf = entry.id === this.currentLeafId;
+		// An answer with only tool calls is left out unless it failed (pi); the leaf always shows.
+		if (entry.type === "message" && entry.message.role === "assistant" && !isLeaf) {
+			const reason = entry.message.stopReason;
+			if (!hasText(entry.message.content) && reason === "stop") return false;
+			if (!hasText(entry.message.content) && reason === "toolUse") return false;
+		}
+		const settings =
+			entry.type === "label" ||
+			entry.type === "context_edit" ||
+			entry.type === "custom" ||
+			entry.type === "model_change" ||
+			entry.type === "thinking_level_change" ||
+			entry.type === "session_info";
+		let passes: boolean;
+		switch (this.filterMode) {
+			case "user-only":
+				passes = entry.type === "message" && entry.message.role === "user";
+				break;
+			case "no-tools":
+				passes = !settings && !(entry.type === "message" && entry.message.role === "toolResult");
+				break;
+			case "labeled-only":
+				passes = flat.node.label !== undefined;
+				break;
+			case "all":
+				passes = true;
+				break;
+			default:
+				passes = !settings;
+		}
+		return passes;
+	}
+
 	/** pi recalculateVisualStructure: hidden entries' children hang on the nearest shown ancestor. */
 	private recalculate(): void {
+		const pass = ++this.pass;
+		const visible = new Map<string, number>();
+		this.filtered.forEach((flat, index) => {
+			flat.stamp = pass;
+			visible.set(flat.node.entry.id, index);
+		});
+		this.visibleIndex = visible;
 		if (this.filtered.length === 0) return;
-		const visible = new Set(this.filtered.map((flat) => flat.node.entry.id));
-		const byId = new Map(this.flatNodes.map((flat) => [flat.node.entry.id, flat]));
-		const visibleAncestor = (id: string): string | null => {
-			let current = byId.get(id)?.node.entry.parentId ?? null;
-			while (current !== null) {
-				if (visible.has(current)) return current;
-				current = byId.get(current)?.node.entry.parentId ?? null;
-			}
-			return null;
-		};
-		const parentOf = new Map<string, string | null>();
-		const childrenOf = new Map<string | null, string[]>([[null, []]]);
+		// Each shown node hangs on its nearest shown ancestor, found along parent pointers
+		// (P42d: kept on the nodes, so a keystroke does not fill id maps).
+		const roots: FlatNode[] = [];
+		for (const flat of this.filtered) flat.shownChildren = [];
 		for (const flat of this.filtered) {
-			const id = flat.node.entry.id;
-			const ancestor = visibleAncestor(id);
-			parentOf.set(id, ancestor);
-			if (!childrenOf.has(ancestor)) childrenOf.set(ancestor, []);
-			childrenOf.get(ancestor)?.push(id);
+			let ancestor = flat.parent;
+			while (ancestor && ancestor.stamp !== pass) ancestor = ancestor.parent;
+			flat.shownParent = ancestor;
+			(ancestor ? (ancestor.shownChildren as FlatNode[]) : roots).push(flat);
 		}
-		const roots = childrenOf.get(null) ?? [];
 		this.multipleRoots = roots.length > 1;
-		const shown = new Map(this.filtered.map((flat) => [flat.node.entry.id, flat]));
-		type StackItem = [string, number, boolean, boolean, boolean, GutterInfo[], boolean];
+		type StackItem = [FlatNode, number, boolean, boolean, boolean, GutterInfo[], boolean];
 		const stack: StackItem[] = [];
 		for (let i = roots.length - 1; i >= 0; i--) {
 			const multiple = this.multipleRoots;
-			stack.push([roots[i] as string, multiple ? 1 : 0, multiple, multiple, i === roots.length - 1, [], multiple]);
+			stack.push([roots[i] as FlatNode, multiple ? 1 : 0, multiple, multiple, i === roots.length - 1, [], multiple]);
 		}
 		while (stack.length > 0) {
-			const [id, indent, justBranched, showConnector, isLast, gutters, isVirtualRootChild] = stack.pop() as StackItem;
-			const flat = shown.get(id);
-			if (!flat) continue;
+			const [flat, indent, justBranched, showConnector, isLast, gutters, isVirtualRootChild] = stack.pop() as StackItem;
 			flat.indent = indent;
 			flat.showConnector = showConnector;
 			flat.isLast = isLast;
 			flat.gutters = gutters;
 			flat.isVirtualRootChild = isVirtualRootChild;
-			const children = childrenOf.get(id) ?? [];
+			const children = flat.shownChildren ?? [];
 			const branches = children.length > 1;
 			const childIndent = branches || (justBranched && indent > 0) ? indent + 1 : indent;
 			const connectorShown = showConnector && !isVirtualRootChild;
@@ -405,7 +434,7 @@ export class SessionTreeView {
 				: gutters;
 			for (let i = children.length - 1; i >= 0; i--) {
 				stack.push([
-					children[i] as string,
+					children[i] as FlatNode,
 					childIndent,
 					branches,
 					branches,
@@ -415,8 +444,12 @@ export class SessionTreeView {
 				]);
 			}
 		}
-		this.visibleParent = parentOf;
-		this.visibleChildren = childrenOf;
+	}
+
+	/** A node in the current rows, or undefined when it is hidden or unknown. */
+	private shownNode(id: string): FlatNode | undefined {
+		const flat = this.byId.get(id);
+		return flat?.stamp === this.pass && this.filtered.length > 0 ? flat : undefined;
 	}
 
 	private searchText(node: TreeNode): string {
@@ -459,6 +492,18 @@ export class SessionTreeView {
 				break;
 		}
 		return parts.join(" ");
+	}
+
+	/** P42d: an entry's display text does not change while the view is open (labels are separate). */
+	private readonly displayCache = new Map<TreeNode, string>();
+
+	private cachedDisplayText(node: TreeNode): string {
+		let text = this.displayCache.get(node);
+		if (text === undefined) {
+			text = this.displayText(node);
+			this.displayCache.set(node, text);
+		}
+		return text;
 	}
 
 	/** pi getEntryDisplayText, without colors. */
@@ -509,6 +554,11 @@ export class SessionTreeView {
 
 	/** The rows in order, each with its tree lines (pi render without colors and panning). */
 	rows(): TreeRow[] {
+		this.rowsCache ??= this.buildRows();
+		return this.rowsCache;
+	}
+
+	private buildRows(): TreeRow[] {
 		return this.filtered.map((flat) => {
 			const entry = flat.node.entry;
 			const displayIndent = this.multipleRoots ? Math.max(0, flat.indent - 1) : flat.indent;
@@ -536,7 +586,7 @@ export class SessionTreeView {
 					: "";
 			return {
 				id: entry.id,
-				text: `${prefix}${foldMark}${active ? "• " : ""}${label}${time}${this.displayText(flat.node)}`,
+				text: `${prefix}${foldMark}${active ? "• " : ""}${label}${time}${this.cachedDisplayText(flat.node)}`,
 				active,
 			};
 		});
@@ -625,11 +675,15 @@ export class SessionTreeView {
 
 	toggleLabelTimestamps(): void {
 		this.showLabelTimestamps = !this.showLabelTimestamps;
+		this.rowsCache = undefined;
 	}
 
 	setLabel(id: string, label: string | undefined): void {
-		const flat = this.flatNodes.find((candidate) => candidate.node.entry.id === id);
+		const flat = this.byId.get(id);
 		if (!flat) return;
+		this.searchCache.delete(flat.node);
+		this.rowsCache = undefined;
+		this.modeNodes = undefined;
 		if (label) {
 			flat.node.label = label;
 			flat.node.labelTimestamp = new Date().toISOString();
@@ -656,33 +710,33 @@ export class SessionTreeView {
 
 	/** A root, or the first entry of a branch, with children shown (pi isFoldable). */
 	private isFoldable(id: string): boolean {
-		const children = this.visibleChildren.get(id);
-		if (!children || children.length === 0) return false;
-		const parent = this.visibleParent.get(id);
-		if (parent === null || parent === undefined) return true;
-		return (this.visibleChildren.get(parent)?.length ?? 0) > 1;
+		const flat = this.shownNode(id);
+		if (!flat?.shownChildren || flat.shownChildren.length === 0) return false;
+		const parent = flat.shownParent;
+		if (!parent) return true;
+		return (parent.shownChildren?.length ?? 0) > 1;
 	}
 
 	/** pi findBranchSegmentStart: up the parents to a branch's first entry, or down to the next branch point. */
 	private segmentStart(direction: "up" | "down"): number {
 		const selectedId = this.selected()?.entry.id;
 		if (!selectedId) return this.selectedIndex;
-		const indexOf = new Map(this.filtered.map((flat, i) => [flat.node.entry.id, i]));
-		let current = selectedId;
+		const indexOf = (flat: FlatNode) => this.visibleIndex.get(flat.node.entry.id) ?? this.selectedIndex;
+		let current = this.shownNode(selectedId);
+		if (!current) return this.selectedIndex;
 		if (direction === "down") {
 			while (true) {
-				const children = this.visibleChildren.get(current) ?? [];
-				if (children.length === 0) return indexOf.get(current) ?? this.selectedIndex;
-				if (children.length > 1) return indexOf.get(children[0] as string) ?? this.selectedIndex;
-				current = children[0] as string;
+				const children = current.shownChildren ?? [];
+				if (children.length === 0) return indexOf(current);
+				if (children.length > 1) return indexOf(children[0] as FlatNode);
+				current = children[0] as FlatNode;
 			}
 		}
 		while (true) {
-			const parent = this.visibleParent.get(current) ?? null;
-			if (parent === null) return indexOf.get(current) ?? this.selectedIndex;
-			const siblings = this.visibleChildren.get(parent) ?? [];
-			if (siblings.length > 1) {
-				const start = indexOf.get(current) ?? this.selectedIndex;
+			const parent: FlatNode | undefined = current.shownParent;
+			if (!parent) return indexOf(current);
+			if ((parent.shownChildren?.length ?? 0) > 1) {
+				const start = indexOf(current);
 				if (start < this.selectedIndex) return start;
 			}
 			current = parent;

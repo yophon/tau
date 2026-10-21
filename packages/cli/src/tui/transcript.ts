@@ -25,10 +25,10 @@ export function buildTranscript(blocks: readonly Block[], lines: (block: Block) 
 		starts.push(rows.length);
 		const blockRows = lines(block);
 		const known = rowMeta(blockRows);
-		blockRows.forEach((row, i) => {
-			rows.push(row);
+		for (let i = 0; i < blockRows.length; i++) {
+			rows.push(blockRows[i] as string);
 			meta.push(known?.[i] ?? { indent: 0 });
-		});
+		}
 	}
 	return { rows, starts, blocks: [...blocks], meta };
 }

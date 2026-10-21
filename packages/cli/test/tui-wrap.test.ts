@@ -30,6 +30,9 @@ const PIECES = [
 	"👨‍👩‍👧",
 	"é",
 	"é",
+	// A word that starts with a combining mark or a joiner (P42d: row widths are added up word by word).
+	"́x",
+	"‍😀",
 	"\t",
 	"",
 	"-",

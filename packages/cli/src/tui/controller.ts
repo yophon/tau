@@ -76,7 +76,7 @@ import { useMarkdownTransformers } from "./render/markdown.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
-import { SessionTreeView, type TreeNode } from "./session-tree.ts";
+import { SessionTreeView, type TreeNode, type TreeRow } from "./session-tree.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
@@ -652,10 +652,18 @@ export class TuiController {
 	}
 
 	/** The tree's rows as the picker's items, the selection kept in view. */
+	private readonly treeItems = new WeakMap<readonly TreeRow[], PickerItem[]>();
+
 	private showTree(): void {
 		const tree = this.tree;
 		if (!tree) return;
 		const rows = tree.view.rows();
+		// P42d: the same rows (a move) keep the same items, so a keystroke does not rebuild them all.
+		let items = this.treeItems.get(rows);
+		if (!items) {
+			items = rows.map((row) => ({ label: row.text, value: row.id }));
+			this.treeItems.set(rows, items);
+		}
 		const selected = tree.view.selectedIndex;
 		const height = this.listHeight;
 		const previous =
@@ -666,7 +674,7 @@ export class TuiController {
 			picker: {
 				id: tree.id,
 				title: "Session tree",
-				items: rows.map((row) => ({ label: row.text, value: row.id })),
+				items,
 				selected,
 				start: Math.max(0, start),
 				tree: { search: tree.view.searchQuery, status: tree.view.status() },
@@ -1066,6 +1074,21 @@ export class TuiController {
 		const maxTop = this.maxTop();
 		const top = Math.min(Math.max(0, row), maxTop);
 		this.dispatch({ type: "scroll", ...(top >= maxTop ? {} : { top }) });
+	}
+
+	/** Work out these rows' search pieces ahead of a search (P42d: the full-screen view, while idle). */
+	warmSearch(rows: readonly string[]): void {
+		this.searchIndex.warm(rows);
+	}
+
+	/** Add these rows, the transcript's from row `at` on, to the search corpus ahead of a search (P42d). */
+	prepareSearch(at: number, rows: readonly string[]): void {
+		this.searchIndex.prepare(at, rows);
+	}
+
+	/** Forget the search pieces of rows no longer shown (a new width or session, P42d). */
+	resetSearchPieces(): void {
+		this.searchIndex.reset();
 	}
 
 	/** Search matches in these rows (the full-screen view asks while rendering). */

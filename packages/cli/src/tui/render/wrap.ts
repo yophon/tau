@@ -2,9 +2,10 @@
  * wrap-ansi 9.0.2 (MIT, Sindre Sorhus), ported for the one mode Ink uses:
  * `{ trim: false, hard: true }` (ink/build/wrap-text.js). Same rows, same escape
  * handling — including its quirks, such as reopening only the last simple SGR
- * code on the next row — but widths come from a printable-ASCII fast path, and
- * the escape scan is one sticky regex instead of a new RegExp and a slice per
- * escape. tui-wrap.test.ts compares it with wrap-ansi on generated text.
+ * code on the next row — but widths come from a printable-ASCII fast path, the
+ * escape scan is one sticky regex instead of a new RegExp and a slice per
+ * escape, and (P42d) a row's width is added up word by word instead of measured
+ * again for each word. tui-wrap.test.ts compares it with wrap-ansi on generated text.
  */
 import { strWidth } from "../input/width.ts";
 
@@ -93,9 +94,12 @@ function exec(line: string, columns: number): string {
 	const words = line.split(" ");
 	const lengths = words.map(width);
 	const rows = [""];
+	// The last row's width, kept as words are added (P42d: wrap-ansi measures the whole row again
+	// for every word); undefined after wrapWord, which builds rows itself, so it is measured.
+	let lastWidth: number | undefined = 0;
 	for (let index = 0; index < words.length; index++) {
 		const word = words[index] as string;
-		let rowLength = width(rows[rows.length - 1] as string);
+		let rowLength: number = lastWidth ?? width(rows[rows.length - 1] as string);
 		if (index !== 0) {
 			if (rowLength >= columns) {
 				rows.push("");
@@ -111,24 +115,43 @@ function exec(line: string, columns: number): string {
 			const breaksNextLine = Math.floor((length - 1) / columns);
 			if (breaksNextLine < breaksThisLine) rows.push("");
 			wrapWord(rows, word, columns);
+			lastWidth = undefined;
 			continue;
 		}
-		if (rowLength + length > columns && rowLength > 0 && length > 0) rows.push("");
+		if (rowLength + length > columns && rowLength > 0 && length > 0) {
+			rows.push("");
+			rowLength = 0;
+		}
 		rows[rows.length - 1] += word;
+		lastWidth = rowLength + length;
 	}
 
 	const pre = rows.join("\n");
 	if (!pre.includes(ESC) && !pre.includes(CSI8)) return pre;
+	// wrap-ansi walks every character; only escapes and newlines do anything, so the text
+	// between them is copied in slices (P42d). After the character before a newline the open
+	// style and link are closed; after a newline not followed by another they are reopened.
 	let out = "";
 	let escapeCode: number | undefined;
 	let escapeUrl: string | undefined;
-	const characters = [...pre];
-	let offset = 0;
-	for (let index = 0; index < characters.length; index++) {
-		const character = characters[index] as string;
-		out += character;
-		if (isEscape(character)) {
-			CODE.lastIndex = offset;
+	let from = 0;
+	for (let index = 0; index < pre.length; index++) {
+		const character = pre[index] as string;
+		if (character === "\n") {
+			const close = escapeCode === undefined ? undefined : CLOSE.get(escapeCode);
+			out += pre.slice(from, index);
+			if (index > 0) {
+				if (escapeUrl) out += `${ESC}${LINK}${BELL}`;
+				if (escapeCode && close) out += `${ESC}[${close}m`;
+			}
+			out += "\n";
+			from = index + 1;
+			if (pre[index + 1] !== "\n") {
+				if (escapeCode && close) out += `${ESC}[${escapeCode}m`;
+				if (escapeUrl) out += `${ESC}${LINK}${escapeUrl}${BELL}`;
+			}
+		} else if (isEscape(character)) {
+			CODE.lastIndex = index;
 			const groups = CODE.exec(pre)?.groups ?? {};
 			if (groups.code !== undefined) {
 				const code = Number.parseFloat(groups.code);
@@ -137,17 +160,8 @@ function exec(line: string, columns: number): string {
 				escapeUrl = groups.uri.length === 0 ? undefined : groups.uri;
 			}
 		}
-		const close = escapeCode === undefined ? undefined : CLOSE.get(escapeCode);
-		if (characters[index + 1] === "\n") {
-			if (escapeUrl) out += `${ESC}${LINK}${BELL}`;
-			if (escapeCode && close) out += `${ESC}[${close}m`;
-		} else if (character === "\n") {
-			if (escapeCode && close) out += `${ESC}[${escapeCode}m`;
-			if (escapeUrl) out += `${ESC}${LINK}${escapeUrl}${BELL}`;
-		}
-		offset += character.length;
 	}
-	return out;
+	return out + pre.slice(from);
 }
 
 /** wrapAnsi(text, columns, { trim: false, hard: true }). */

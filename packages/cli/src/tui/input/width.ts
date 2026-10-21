@@ -28,9 +28,20 @@ export function cellWidth(grapheme: string): number {
 	return width;
 }
 
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+/** Short strings already measured (P42d: block prefixes like "  ⎿ " are measured for every block). */
+const SHORT_WIDTHS = new Map<string, number>();
+
 /** Cells of a whole string; ANSI escapes count as zero. */
 export function strWidth(text: string): number {
-	return stringWidth(text);
+	if (PRINTABLE_ASCII.test(text)) return text.length;
+	if (text.length > 16) return stringWidth(text);
+	let width = SHORT_WIDTHS.get(text);
+	if (width === undefined) {
+		width = stringWidth(text);
+		if (SHORT_WIDTHS.size < 10_000) SHORT_WIDTHS.set(text, width);
+	}
+	return width;
 }
 
 /** A CSI sequence (colors) or an OSC sequence (OSC 8 links), at the start of the text. */
