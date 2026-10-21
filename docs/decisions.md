@@ -239,6 +239,18 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D44：技能与提示模板内置，资源参数照抄 pi（2026-10-21，P41，用户确认）
+
+- **技能包内置**：pi、Claude Code、Codex 都内置技能；tau 原来要用户自己写导入文件，等于默认没有。改成 CLI 内置 `@yophon/tau-ext-resources`，网关不加载（搁置中）。
+- **目录照 pi**：Agent Skills 的 `~/.agents/skills`（用户的，不受信任限制）和项目的 `.agents/skills`（从工作目录往上到仓库根）。项目的这些目录、包括上级目录里的，都要项目信任，和 pi 的判断一样。判断「用户自己的」时，`$HOME` 与系统的家目录都算：Windows 上两者可能不同，测试也只改 `HOME`。
+- **Claude Code 的技能目录不读**：pi 不读，用户的 `~/.claude/skills` 里只有从 claude.ai 同步来的内容；想用的在设置里写 `"skills": ["~/.claude/skills"]`。
+- **加载规则对齐 pi 1.2**：`SKILL.md` 目录不再往下找，跳过点目录和 `node_modules`，独立 `.md` 只认顶层，重名保留先找到的。这改变了原来「后来的覆盖」的行为，照 pi。pi 在技能目录里遵守 `.gitignore`，tau 不做（很少用到）。
+- **`enableSkillCommands` 照 pi 的语义**：不出现在命令发现里，手动输入照样可用。内核的 `RegisteredCommand` 因此加了可选的 `hidden`；这是 tau 自己的扩展字段，pi 的技能命令不走扩展命令表。
+- **旧的导入文件不报错**：同一个 registry 里第二份技能包什么也不做，以事件总线为键、跨模块副本共享，所以另装的一份也认得出。
+- **资源参数照 pi**：显式给的路径不受信任和 `-ne`/`-ns`/`-np` 影响。`-ne` 只管自动发现和设置里的扩展：tau 的内置功能（权限、钩子、记忆、子代理、技能包）不是 pi 那种可以单独关掉的 `builtin:` 扩展。`--no-mcp` 连 ACP 编辑器给的服务器也不连。
+- **`SYSTEM.md`、`APPEND_SYSTEM.md` 照 pi**：受信任项目的优先、不合并，命令行参数盖过文件，追加的内容在项目上下文之前。
+- **不做**：pi 的 `-a`/`-na`（等 P39a 的信任改动）、`builtin:` 扩展名、主题参数、扩展包。
+
 ## D43：代理、PowerShell、设置分层与 pi 扩展面收尾都照抄（2026-10-20，P40，用户确认）
 
 - **代理照 pi**：undici 的 `EnvHttpProxyAgent` 做全局 dispatcher，全局 fetch 换成同一份 undici，参数照抄。Claude Code、Codex 也都认 `HTTP(S)_PROXY`/`NO_PROXY`。`httpProxy` 与 `httpIdleTimeoutMs` 只认用户设置，因为 dispatcher 在问信任之前就装好了。为此新增依赖 `undici`，版本与 pi 相同。网关不装（搁置中）。

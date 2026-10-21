@@ -57,7 +57,7 @@
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
 | `registerTool` | 0.80 | ✅ P2 | 无对象 `parameters` schema 即判该扩展加载失败（P21-HF-8）。跨扩展同名先注册者胜，后来者记 warning（P23c）；同一扩展再注册同名 = 替换（P24b，pi 按扩展存工具），重新注册为 hidden 即撤回。P24b 起 Tool 带 pi 的 `outputSchema`/`exposure`/`namespace`/`reachesTools`/`defaultActive`/`prepareLoadout`/`promptSnippet`/`promptGuidelines`；`ToolLoadout` 的元素是不含 `execute` 的 ToolInfo（偏离：pi 给 AgentTool），`annotations` 不进内核类型（作者自报、未经校验，D20） |
-| `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；重名时每个都加 `:N`（P23c，pi）；`getArgumentCompletions` 参数补全（P27，pi） |
+| `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；重名时每个都加 `:N`（P23c，pi）；`getArgumentCompletions` 参数补全（P27，pi）；tau 另有可选的 `hidden`（P41）：不进命令列表、输入照样执行，用来实现 pi 的 `enableSkillCommands: false` |
 | `registerShortcut` | 0.80 | ✅ P8 | TUI 空闲快捷键，`/help` 显示；P25 起撞 TUI 内置键时内置优先，启动提示并列进 `/diagnostics` |
 | `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
 | `getFlag` | 0.80 | ✅ P2 | |

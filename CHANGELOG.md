@@ -4,6 +4,41 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P41)
+- CLI: skills and prompt templates are built in (pi): `~/.tau/skills`,
+  `~/.agents/skills` and `~/.tau/prompts` work without an import file; a
+  trusted project's `.tau/skills`, `.pi/skills` and every `.agents/skills`
+  from the working directory up to the repository root (the Agent Skills
+  locations), and its `.tau/prompts`, `.pi/prompts`. If you wrote a
+  `~/.tau/extensions` file importing `@yophon/tau-ext-resources`, you can
+  delete it (it now does nothing); paths you passed to
+  `createResourcesExtension(...)` belong in settings `skills` / `prompts`.
+- CLI: settings `enableSkillCommands` (pi): `false` keeps `/skill:name` out of
+  the menu and `/help`; typing it still works. kernel:
+  `RegisteredCommand.hidden`.
+- CLI: pi's resource flags: `-e`/`--extension`, `-ne`/`--no-extensions`,
+  `--no-mcp`, `--skill`, `-ns`/`--no-skills`, `--prompt-template`,
+  `-np`/`--no-prompt-templates`, `--append-system-prompt` (repeatable),
+  `--system-prompt` (`-s`/`--system` stay), both taking text or a file, and
+  `-v`/`--version`.
+- CLI: `SYSTEM.md` replaces the system prompt and `APPEND_SYSTEM.md` adds to
+  it, from `~/.tau/` or a trusted project's `.tau/` (the project's wins); the
+  flags override them (pi).
+
+### Changed (P41)
+- ext-resources: skills load as in pi 1.2: a directory with `SKILL.md` is one
+  skill and the search stops there; dot directories and `node_modules` are
+  skipped; a standalone `.md` file is a skill only at the top of a skills
+  directory; when two skills share a name the first one found is kept and the
+  later one reported (it used to replace the first); prompt templates likewise.
+  Explicit paths may be a single `.md` file; missing ones are reported.
+  Options `defaultSkillPaths`, `configuredSkillPaths`, `noSkills`,
+  `skillCommands` (and the prompt counterparts) let a host choose; a second
+  copy in one registry does nothing.
+- CLI: a project's `.agents/skills` (also in parent directories, except your
+  own `~/.agents/skills`) and its `.tau/SYSTEM.md` / `.tau/APPEND_SYSTEM.md`
+  need project trust; a project already trusted that has them is asked again.
+
 ### Added (P40)
 - CLI: `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (either case) and
   settings.json `httpProxy` now apply to every request: model calls,

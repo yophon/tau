@@ -39,7 +39,8 @@ tau 读两份设置文件，键名尽量照 pi：
 | `externalEditor` | Ctrl+G、`/memory edit`、`/keybindings` 打开的编辑器命令（P40c，pi） | `$VISUAL`、`$EDITOR`，Windows 上记事本，其他系统 nano | 是 | 重读 |
 | `sessionDir` | 会话存放的目录，相对路径按工作目录算；`--session-dir` 优先；`session_search` 也会搜这里（P40c，pi） | `~/.tau/sessions/<项目>` | 是 | 启动 |
 | `extensions` | 额外加载的扩展文件或目录，在 `~/.tau/extensions` 之后加载；用户设置里的路径相对 `~/.tau`，项目设置里的相对项目的 `.tau`；找不到的报一句并跳过（P40c，pi） | 无 | 是 | 启动、重读 |
-| `skills`、`prompts` | 额外的技能、提示模板路径，规则同 `extensions`；由技能与提示模板包（`@yophon/tau-ext-resources`）读取（P40c，pi） | 无 | 是 | 启动、重读 |
+| `skills`、`prompts` | 额外的技能、提示模板路径（目录或单个 `.md` 文件），解析规则同 `extensions`；排在约定目录（`~/.tau/skills`、`~/.agents/skills`、项目的 `.tau`/`.pi`/`.agents`）之后、`--skill`/`--prompt-template` 之前（P40c、P41，pi）。想用 Claude Code 的技能就写 `"skills": ["~/.claude/skills"]` | 无 | 是 | 启动、重读 |
+| `enableSkillCommands` | `false` 时 `/skill:名字` 不出现在斜杠菜单和 `/help` 里，手动输入照样可用（P41，pi） | true | 是 | 启动、重读 |
 | `images.autoResize` | 读图片时缩到 2000×2000 以内（P40c，pi） | true | 是 | 重读 |
 | `images.blockImages` | 不给模型发图片，换成「Image reading is disabled.」（P40c，pi） | false | 是 | 启动、重读 |
 | `codemode.mode`、`codemode.inlineBudget` | codemode 工具怎么列出其他工具（P24，pi） | `"on"`、3000 | 是 | 启动、重读 |

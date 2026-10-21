@@ -79,7 +79,9 @@ inject a small adapter instead of polyfilling globals.
   commands, flags, renderers, widgets, shortcuts. Standard packs: subagents,
   MCP client bridges (a zero-dependency pure-`Platform` MCP core, plus a stdio
   transport and OAuth sign-in on Node), tool_search and codemode, skills &
-  prompt templates (pi-file-compatible). The CLI reads MCP servers from
+  prompt templates (pi-file-compatible, built into the CLI: `~/.tau/skills`,
+  `~/.agents/skills`, `~/.tau/prompts`, and a trusted project's `.tau`, `.pi`
+  and `.agents/skills`). The CLI reads MCP servers from
   `~/.tau/mcp.json` (pi's format) with secrets kept in `tau credentials` and
   referenced as `${cred:name}`, out of the model's reach (see
   [docs/connectors.md](docs/connectors.md)).

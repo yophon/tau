@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-20（P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P41**）
+> 最后更新：2026-10-21（P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = 规划 P42**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -341,9 +341,15 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 顺带修了两处：P36 起 Windows 后台命令里 Git Bash 的 `echo`、`ls`、`grep` 没有输出；smoke 查出的 `ask_user` 加载失败（40c 引入，已补回归测试）。
 - 偏差见规格书「实施记录」。真机验收待用户执行。
 
-## Phase 41 🚧 技能与提示模板内置、pi 的资源参数
+## Phase 41 ✅ 技能与提示模板内置、pi 的资源参数（2026-10-21）
 
 规格书（2026-10-20 确认；用户：「可以，做吧」）：[specs/phase-41-builtin-resources-flags.md](specs/phase-41-builtin-resources-flags.md)。41a 技能与提示模板内置（pi；加 Agent Skills 的 `~/.agents/skills`、`.agents/skills`，加载规则对齐 pi 1.2，`enableSkillCommands`）；41b pi 的资源参数（`-e`、`-ne`、`--no-mcp`、`--skill`、`-ns`、`--prompt-template`、`-np`、`--system-prompt`、`--append-system-prompt`、`-v`，以及 `SYSTEM.md`、`APPEND_SYSTEM.md`）。
+
+**完成记录**：
+- 测试：全量 1143 个，1138 通过、5 跳过；check、pack smoke 通过；smoke-tui 33 个场景在全屏与 inline 下各跑一遍都通过。
+- 真 DeepSeek：`~/.agents/skills` 里的技能不需要导入文件，模型自己读了 `SKILL.md` 并照做。
+- 技能加载规则对齐 pi 1.2；重名改成保留先找到的，CHANGELOG 已写明。
+- 决策记为 D44，偏差见规格书「实施记录」。真机验收待用户执行。
 
 ## 产品层后续 ⬜ 待定
 
@@ -385,7 +391,6 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 - **远程执行**：工具跑在另一台机器上，会话与凭据留在本地（pi 的 ssh 示例与 pi-env）；与 D 组的 bash 沙箱、网关放在哪台机器一起考虑。
 - **扩展安装命令**：`tau install <包>` 生成 `.tau/extensions` 里的导入文件；有外部扩展之后再做。
-- **技能与提示模板内置**（P40 发现）：CLI 不自带 `@yophon/tau-ext-resources`，`~/.tau/skills`、`.tau/prompts` 要用户自己写导入文件才生效；pi、Claude Code 都内置技能。改成内置时要处理已经手动导入的用户（避免技能块注入两次），`enableSkillCommands` 也在那时接上。
 - **TUI 余项**（P33、P34 范围外）：按终端类型自动退回 inline、复制开关（滚动条、Ctrl+Z 挂起并入 P38）。
 - ~~P38 范围外的新功能~~：keybindings.json、Ctrl+B、`/btw`、`/diff`、会话树分支已进 P39。
 - 不做：预设、提示里内联命令（用户：没什么应用场景）；计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；改完自动诊断（用户在钩子里配类型检查即可）；`/review`、`/commit`；自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
