@@ -38,6 +38,16 @@ inject a small adapter instead of polyfilling globals.
   `web_search`, `ask_user` (questions with options; by default the model
   goes on working and your answer arrives when you give it), and five
   permission modes (read-only, supervised, accept-edits, autonomous, bypass).
+- **Windows and networks** — on Windows a `powershell` tool sits next to
+  `bash` (Git Bash), on by default as in Claude Code, with Claude Code's
+  `PowerShell(...)` permission rules. `HTTP_PROXY` / `HTTPS_PROXY` /
+  `NO_PROXY` (or `httpProxy` in settings) reach every request: the model,
+  `web_fetch`, MCP, OAuth. `shellPath` and `shellCommandPrefix` pick the bash
+  and set it up (pi).
+- **Settings** — `~/.tau/settings.json`, and a trusted project's
+  `.tau/settings.json` on top of it, with pi's key names (`defaultTools`,
+  `retry`, `compaction`, `sessionDir`, `extensions`, …). Every key is in
+  [docs/settings.md](docs/settings.md).
 - **Permission rules** — Claude Code's `permissions.allow/ask/deny` in
   `settings.json` (`Bash(npm test *)`, `Edit(.env*)`,
   `WebFetch(domain:github.com)`, `mcp__github`): rules copied from Claude
@@ -373,6 +383,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
 - [docs/decisions.md](docs/decisions.md) — design decision records (D1–D40)
+- [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search

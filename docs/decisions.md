@@ -239,6 +239,31 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D43：代理、PowerShell、设置分层与 pi 扩展面收尾都照抄（2026-10-20，P40，用户确认）
+
+- **代理照 pi**：undici 的 `EnvHttpProxyAgent` 做全局 dispatcher，全局 fetch 换成同一份 undici，参数照抄。Claude Code、Codex 也都认 `HTTP(S)_PROXY`/`NO_PROXY`。`httpProxy` 与 `httpIdleTimeoutMs` 只认用户设置，因为 dispatcher 在问信任之前就装好了。为此新增依赖 `undici`，版本与 pi 相同。网关不装（搁置中）。
+- **PowerShell 工具：形状照 pi，开关照 Claude Code**：
+  - Windows 上默认开，因为 Claude Code 在装了 Git Bash 的 Windows 上默认开；pi 默认关，要手动开。
+  - 提示词照 Claude Code：PowerShell 是主 shell，bash 留给 POSIX 脚本。
+  - 超时转后台、`run_in_background`、Ctrl+B 与 bash 相同，共用一张任务表。宿主给内核一个 PowerShell 版的 `Shell` 和后台视图，内核工具只换名字与说明。
+  - 风险等级与 bash 相同。secret-guard 也检查 PowerShell 命令，不让它成为绕过 P32 保护的路。
+- **PowerShell 规则照 Claude Code**：
+  - 形状与 Bash 规则相同；匹配前把别名换成 cmdlet 名，不分大小写；复合命令按 `|`、`;`、`&&`、`||` 拆开，每段都要被允许。
+  - Claude Code 解析语法树，tau 用分词器，所以遇到拆不清的写法（子表达式、脚本块、调用运算符），allow 规则一律不生效，宁可多问一次。
+  - 有 Bash deny 规则、又没有任何 PowerShell 规则时，不注册 PowerShell 工具（Claude Code）。
+- **设置分层照 pi**：
+  - 项目设置在信任后盖过用户设置：对象逐层合并，资源列表叠加，`defaultTools` 按 `+`、`-` 增减。
+  - 在问信任之前就要用到的键只认用户设置：网络、TUI、启动模型、worktree。用户自己的键也只认用户设置：搜索密钥、`shell.envAllow`、审计。
+  - 新键用 pi 的名字，只补 tau 已有功能的开关，不借机加功能。
+- **`skills`、`prompts` 经 `resources_discover` 交给技能包**：tau 的 CLI 不内置技能与提示模板，要用户自己装 `@yophon/tau-ext-resources`。这一步不把它改成内置；pi 内置技能，记为以后的候选。`enableSkillCommands` 因此没有可接的地方，不做。
+- **pi 扩展面收尾**：
+  - 三个模型请求事件经传输层回调实现。传输层声明支持后才能注册，未声明时注册即报错，与 P23d 的请求头一样（D15 补记）。
+  - `ui_prompt_*` 只包装交给扩展的 `ctx.ui`，审批不经过它。
+  - Markdown 变换只作用于 TUI 显示。
+  - 溢出恢复照 pi：请求失败、错误是溢出时，去掉失败的那次、压缩、重试这一轮；一次成功的请求之前只试一次。pi 另外两种情况（成功回复的用量超窗、输出上限被压低导致截断）不抄：tau 在下一轮之前本来就按阈值压缩，也不压低输出上限。
+  - 换分支时的标签挂在摘要条目上，没有摘要时挂在目标上。
+  - 做完后 pi 对照表里没有未排期项。
+
 ## D42：限制改成同类最松的做法，五项日常功能各照抄一家（2026-10-20，P39，用户确认）
 
 - **四项比同类严的限制改掉**（用户：几个阶段「莫名其妙的加一堆限制而不是优化功能、体验」）：

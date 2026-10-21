@@ -31,7 +31,7 @@
 
 ## 规则怎么写
 
-`工具` 或 `工具(说明)`。工具名用 tau 的（`bash`、`read`、`edit`、`write`、`grep`、`find`、`ls`、`web_fetch`、`web_search`、`subagent`、`mcp__<服务器>__<工具>`），不分大小写；Claude Code 的 `Bash`、`Read`、`Edit`、`Write`、`Grep`、`Glob`、`LS`、`WebFetch`、`WebSearch`、`Agent`、`Task`、`TodoWrite` 也认。
+`工具` 或 `工具(说明)`。工具名用 tau 的（`bash`、`powershell`、`read`、`edit`、`write`、`grep`、`find`、`ls`、`web_fetch`、`web_search`、`subagent`、`mcp__<服务器>__<工具>`），不分大小写；Claude Code 的 `Bash`、`PowerShell`、`Read`、`Edit`、`Write`、`Grep`、`Glob`、`LS`、`WebFetch`、`WebSearch`、`Agent`、`Task`、`TodoWrite` 也认。
 
 | 写法 | 含义 |
 |---|---|
@@ -66,6 +66,15 @@
 - 你写的 `Edit`/`Read` 的 deny、ask 也套到 bash 上：`>`、`>>`、`tee` 的目标（`/dev/null` 这类不算）按 Edit，`<` 和 `cat`、`head`、`tail`、`less`、`more`、`sed` 的文件按 Read，即使这条命令被 allow 放行。
 - `Write(路径)`、`Glob(路径)` 不生效（Claude Code 也不生效），会列在诊断里，改用 `Edit(…)`、`Read(…)`。
 
+**PowerShell 命令**（Windows 上的 `powershell` 工具，P40，照 Claude Code）：
+
+- 写法与 Bash 相同：`PowerShell`、`PowerShell(*)` 是整个工具，`PowerShell(Get-ChildItem *)` 里的 `*` 可在任意位置，`:*` 等于结尾的 ` *`。不分大小写。
+- 匹配前把常见别名换成 cmdlet 名：写 `PowerShell(Get-ChildItem *)` 也管 `gci`、`ls`、`dir`；写 `PowerShell(Remove-Item *)` 也管 `rm`、`del`、`ri`。
+- 复合命令按 `|`、`;`、`&&`、`||` 和换行拆开：allow 要每段都放行，deny、ask 只要有一段命中。引号里的分隔符不算。
+- 带 `$(…)`、脚本块 `{ … }`、调用运算符 `&` 的命令 tau 拆不清（Claude Code 解析语法树，tau 只分词），不按 allow 放行，照常询问；deny 照样检查。
+- `>`、`>>` 的目标按 Edit 检查。
+- Bash 规则不管 PowerShell。所以和 Claude Code 一样：只要有 Bash 的 deny 规则（整个工具或带模式的），又没有任何 PowerShell 规则，这次会话就没有 PowerShell 工具，免得模型在 PowerShell 里做 Bash 规则禁止的事。想留着它，就给 PowerShell 也写一条规则，例如 `"deny": ["Bash(git push *)", "PowerShell(git push *)"]`。
+
 ## 怎么判
 
 1. 钩子或扩展拦下的调用直接拦下。
@@ -88,6 +97,7 @@
 审批面板的第二项写明这一次存的是什么：
 
 - bash：`Always allow in this project: Bash(npm test *)`。前缀取命令开头的两个词（`npm|pnpm|yarn|bun run <脚本>` 取三个）；第二个词是路径、选项之类时存整条命令。复合命令里每个要审批的段各存一条。
+- powershell：同样的取法，存成 `PowerShell(…)`，别名已换成 cmdlet 名（`gci src` 存成 `PowerShell(Get-ChildItem src *)`）。
 - `web_fetch`：`WebFetch(domain:<主机>)`；MCP 工具：它的名字。
 - 这些都存进项目的 `.tau/settings.local.json`，只对这个项目、只在你的机器上生效。第一次写这个文件时，tau 往仓库的 `info/exclude` 加一行 `**/.tau/settings.local.json`，它不会被提交。
 - `edit`、`write`：`Allow all edits this session`，把这个会话切到 accept-edits，不存盘（照 Claude Code）。

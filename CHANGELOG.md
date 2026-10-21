@@ -4,6 +4,64 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P40)
+- CLI: `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` (either case) and
+  settings.json `httpProxy` now apply to every request: model calls,
+  `web_fetch`, `web_search`, MCP and OAuth (pi's undici dispatcher; Claude Code
+  and Codex read the same variables). `httpIdleTimeoutMs` (default 5 minutes,
+  0 = none) bounds the wait for headers and body chunks. New dependency
+  `undici` 8.10.2 (pi's version). The gateway is unchanged.
+- CLI/kernel: a `powershell` tool on Windows, on by default when PowerShell is
+  installed (Claude Code; pi's tool): `pwsh.exe`, else `powershell.exe`, with
+  pi's arguments and UTF-8 output; timeouts, `run_in_background`, Ctrl+B and
+  `/tasks` as for bash. Turn it off with `--tools -powershell` or
+  `"defaultTools": ["-powershell"]`. Permission rules `PowerShell(...)` follow
+  Claude Code: bash's pattern shape, aliases resolved to cmdlets (`gci` →
+  `Get-ChildItem`), case ignored, compound commands split at `|` `;` `&&`
+  `||`; a command with `$(...)`, a script block or `&` is never allowed by a
+  rule. A Bash deny rule turns the tool off unless some rule names PowerShell.
+  kernel: `createCodingTools({ powershell })`, `parsePowerShellCommand`,
+  `canonicalPowerShellCommand`, `powerShellPatternMatches`; host-node:
+  `NodeShell` options `interpreter`, `shellPath`, `commandPrefix`,
+  `findPowerShell`, `shellInvocation`, `NodeBackgroundShell.forPowerShell()`
+  and `setShellOptions`.
+- CLI: settings.json `shellPath` (the bash to use) and `shellCommandPrefix`
+  (put before every bash and `!` command), as in pi.
+- CLI: more of pi's settings keys: `defaultTools` (`--tools` changes it),
+  `compaction.*`, `branchSummary.reserveTokens`, `branchSummary.skipPrompt`,
+  `retry.*`, `steeringMode`, `followUpMode`, `treeFilterMode`,
+  `externalEditor`, `sessionDir` (and `--session-dir`), `extensions`,
+  `skills`, `prompts`, `images.autoResize`, `images.blockImages`. Every key
+  is listed in docs/settings.md. kernel: `AgentOptions.branchSummary`;
+  host-node: `NodeImageProcessor({ autoResize })`.
+- kernel: pi's `before_provider_request` (may replace the request body),
+  `after_provider_response` and `provider_stream_event` on every provider call
+  (`TransportRequest.onPayload` / `onResponse` / `onStreamEvent`, declared by
+  `supportsProviderEvents`; the OpenAI-compatible and Anthropic transports
+  have them), `ui_prompt_start` / `ui_prompt_end` around an extension's
+  prompts, and `registerMarkdownTransformer` (applied by the TUI).
+- kernel: overflow recovery (pi): a request that fails because the context
+  overflowed is left out, the session is compacted with reason `overflow` and
+  the turn runs again, once until a request goes through; a second overflow
+  ends with pi's message. Compaction events carry `willRetry`; the
+  `compaction` event carries its reason.
+- kernel: `session_before_tree`'s preparation carries `userWantsSummary`,
+  `replaceInstructions` and `label`; handlers may change the last two, and
+  `Agent.navigateTo` takes them. The label goes on the branch summary entry.
+
+### Changed (P40)
+- CLI: a trusted project's `.tau/settings.json` applies on top of the user's
+  for every key except those read before the trust question (network, TUI,
+  startup model, worktree) and the user's own (search key, `shell.envAllow`,
+  `audit.details`), as in pi. `session.autoTitle`, `session.dirtyRepoGuard`,
+  `askUser.wait` and `maxTurnsPerPrompt` follow the layers too.
+
+### Fixed (P40)
+- host-node: on Windows, background commands that run Git Bash builtins or
+  MSYS programs (`echo`, `ls`, `grep`) exited 1 with no output: their output
+  file was opened for appending only.
+- CLI tests: the P39 session tree test no longer depends on today's date.
+
 ### Added (P39)
 - CLI TUI: `/diff` shows the uncommitted changes (against HEAD, staged ones
   too) and every untracked file, in the transcript and never to the model

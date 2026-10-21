@@ -1,6 +1,6 @@
 # 用户钩子
 
-在 `settings.json` 里写 shell 命令，tau 运行到对应时机时执行它。格式与 Claude Code 相同（Codex、Gemini CLI、Copilot CLI、Cursor 也采用或兼容这一格式），现成的钩子脚本一般改一下工具名就能用（tau 的工具名是 `bash`、`read`、`edit`、`write` 等，matcher 不分大小写，所以 `Bash`、`Edit|Write` 也能匹配）。
+在 `settings.json` 里写 shell 命令，tau 运行到对应时机时执行它。格式与 Claude Code 相同（Codex、Gemini CLI、Copilot CLI、Cursor 也采用或兼容这一格式），现成的钩子脚本一般改一下工具名就能用（tau 的工具名是 `bash`、`read`、`edit`、`write` 等，matcher 不分大小写，所以 `Bash`、`Edit|Write` 也能匹配）。Windows 上还有 `powershell` 工具（P40），它的 `tool_input.command` 与 bash 相同；检查命令的钩子照 Claude Code 写 `Bash|PowerShell`。
 
 钩子批准调用（`permissionDecision: "allow"`）越不过 `settings.json` 里的 deny 和 ask 规则（P37a，照 Claude Code，见 [permissions.md](permissions.md)）。
 

@@ -1,6 +1,6 @@
 # Phase 40：代理、Windows 命令环境与设置对齐 pi 规格书
 
-> 状态：已确认（2026-10-20）。用户：「可以，都做吧，写」：40a–40d 全做；PowerShell 工具在 Windows 上默认开（Claude Code 的做法）。
+> 状态：已完成（2026-10-20），偏差见文末「实施记录」。已确认（2026-10-20）。用户：「可以，都做吧，写」：40a–40d 全做；PowerShell 工具在 Windows 上默认开（Claude Code 的做法）。
 > 对应 roadmap 阶段：Phase 40
 > 起因：P39 之后把 pi 1.2 的文档、设置表、工具和 Claude Code 的文档逐项对照 tau，剩下的缺口集中在这四块。
 
@@ -151,3 +151,44 @@
 - **PowerShell 规则用分词器而不是完整语法树**：拆不清的写法一律不套 allow 规则，宁可多问一次。
 - **Windows 上多一个工具**：每次请求多几百个 token 的工具说明。
 - **开放问题**：无，都按建议。
+
+## 实施记录（2026-10-20）
+
+### 提交
+
+| 提交 | 内容 |
+|---|---|
+| 035028e | 规格书 |
+| 7e5098e | 40a 代理与 HTTP 超时；顺带修 P39 树测试依赖当天日期 |
+| d5a37f0 | 40b PowerShell 工具、`shellPath`、`shellCommandPrefix`；设置分层的读取；修 P36 后台命令在 Windows 上的输出文件 |
+| 4b9767b | 40c 设置补齐与 `docs/settings.md` |
+| 0181f3f | 40d pi 扩展面收尾 |
+
+### 验收
+
+- **测试**：全量 1129 个，1124 通过、5 跳过（Windows 上本来跳过的 3 个，加上只在没有 PowerShell 的系统上跑的 2 个）。check、pack smoke 通过。
+- **smoke-tui**：33 个场景在全屏与 inline 下各跑一遍都通过（第一次跑出了下面的 `ask_user` 问题；有一次与全量测试同时跑，两个场景因机器太忙超时，单独重跑和空闲时整套重跑都通过）。
+- **真 DeepSeek**（脚本在 scratchpad `p40real.mjs`）：
+  - 经一个本地 CONNECT 代理跑一轮，回复正确，代理只看到通往 API 主机的隧道。
+  - 让模型用 PowerShell 列出目录的前三项：它调了 `powershell`（`Get-ChildItem -Name | Select-Object -First 3`），结果与转述都对。
+- **pi 对照表**：`check-pi-parity` 通过，91 行里没有未排期项。
+
+### 与规格的偏差
+
+- **40b**：
+  - 「PowerShell 是主 shell」写在 `powershell` 工具的提示词准则里，系统提示词一份，两个工具都看得到；bash 的说明没有另加这一句。
+  - 设了 `shellPath` 时，参数用 pi 的 `-c`，不带 tau 给 Git Bash 加的 `--noprofile --norc`；Windows 原生命令照旧交给 cmd.exe。
+  - 钩子也用 `shellPath`（规格写了），但不加 `shellCommandPrefix`。
+- **40c**：
+  - **技能不是内置的**：tau 的 CLI 不自带技能与提示模板包，要用户自己写导入文件。`skills`、`prompts` 两个键经 `resources_discover` 交给这个包，装了才生效。`enableSkillCommands` 没有可接的地方，没做。改成内置记在 roadmap Backlog E。
+  - `session.autoTitle`、`session.dirtyRepoGuard`、`askUser.wait`、`maxTurnsPerPrompt` 也跟着分层（规格只列了新键）；`tui.*` 只认用户设置。
+  - `sessionDir` 指向的目录也加进 `session_search` 的搜索范围。
+  - 设置→Agent 选项的转换放在 `settings.ts` 的 `agentOptionsFromSettings`，方便单测。
+- **40d**：
+  - 会话标题的请求（`completeText`）不触发三个模型请求事件，和它原来不带 `before_provider_headers` 一样；对话、压缩、分支摘要、`/btw` 都触发。
+  - 平台列不出响应头时，`after_provider_response` 的 `headers` 是空对象。
+  - `compaction` 事件加了 `reason`，JSON 模式的 `compaction_end` 照实写原因（原来固定写 threshold）。溢出恢复失败时，TUI 和 REPL 不再说「continuing」。
+  - tau 的 TUI 里用户消息按纯文字显示，Markdown 变换的结果也按纯文字显示；inline 模式已经写进终端滚动记录的行不会重画。
+- **smoke 发现并修正**：`ask_user` 在 TUI 里加载失败，模型调用时报「Unknown tool」。原因是 40c 让它的 `wait` 读工作区设置，而这个扩展加载时就会调用 `wait`，那时变量还没声明。改成在 `openWorkspace` 开头先用用户设置声明，信任决定后再换成分层的。单测不经过 `openWorkspace`，所以没发现；补了一个经 RPC 模式的回归测试，在旧代码上会失败。
+- **审查中发现并修正**：`session_before_tree` 处理器返回的 `label`、`replaceInstructions` 被 registry 丢掉（补上）；溢出测试暴露压缩可能发两次摘要请求（测试按请求内容回复）。
+- **另修**：P36 起，Windows 上的后台命令输出文件以追加方式打开，Git Bash 内建命令和 MSYS 程序（`echo`、`ls`、`grep`）写不进去，直接退出 1、没有输出；原来的测试只用 node 命令，没发现。
