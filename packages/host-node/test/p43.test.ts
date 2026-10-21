@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, before, describe, it } from "node:test";
 import type { BackgroundTaskInfo } from "@yophon/tau-kernel";
 import { NodeBackgroundShell } from "../src/background.ts";
 import { commandEnvironment, NodeShell } from "../src/shell.ts";
@@ -21,6 +21,13 @@ function printer(dir: string): string {
 }
 
 describe("P43 per-command environment", () => {
+	// Background children are unref'd: something has to keep the loop alive while a test waits for one (P36).
+	let keepAlive: ReturnType<typeof setInterval> | undefined;
+	before(() => {
+		keepAlive = setInterval(() => undefined, 1000);
+	});
+	after(() => clearInterval(keepAlive));
+
 	it("commandEnvironment sets values and removes the ones given as undefined", () => {
 		const env = commandEnvironment({ BASE: "1", TAU_SESSION_FILE: "/old" }, () => ({
 			TAU_SESSION_MODEL: "m1",
