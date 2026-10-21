@@ -1407,6 +1407,8 @@ export class TuiController {
 			this.lastEscapeAt = 0;
 			return;
 		}
+		// P44 (Claude Code): Esc stops a self-paced /loop waiting for its next iteration.
+		this.extensions.events.emit("tau:idle-escape", undefined);
 		const action = this.options.doubleEscapeAction ?? "tree";
 		if (action === "none") return;
 		const now = this.now();

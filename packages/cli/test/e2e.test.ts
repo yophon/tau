@@ -305,6 +305,7 @@ test("--tools narrows the declared built-in tools (P23e)", async () => {
 					"session_search",
 					"session_read",
 					"web_fetch",
+					"monitor",
 				],
 				"nope is not a tool; read and ls survive; --tools narrows built-in coding tools only",
 			);

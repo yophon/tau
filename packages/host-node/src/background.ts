@@ -292,9 +292,19 @@ export class NodeBackgroundShell implements BackgroundShell {
 		return count;
 	}
 
+	/**
+	 * Start a command in the background. With `onStdout` (P44, the Monitor tool) stdout is
+	 * read as it arrives (and still written to the file); stderr goes to the file only, and
+	 * the task ends once its output is read to the end.
+	 */
 	async start(
 		command: string,
-		options: { cwd?: string; description?: string; interpreter?: "bash" | "powershell" } = {},
+		options: {
+			cwd?: string;
+			description?: string;
+			interpreter?: "bash" | "powershell";
+			onStdout?: (chunk: string) => void;
+		} = {},
 	): Promise<BackgroundTaskInfo> {
 		const id = `b${this.next++}`;
 		mkdirSync(this.dir, { recursive: true });
@@ -307,6 +317,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 		// "w", not "a": on Windows, Git Bash builtins and MSYS programs (echo, ls, grep) cannot write
 		// to a handle opened for appending only, and exit 1 with no output. Every task has a new file.
 		const fd = openSync(outputPath, "w");
+		const onStdout = options.onStdout;
 		let child: ReturnType<typeof spawn>;
 		try {
 			child = spawn(file, args, {
@@ -315,7 +326,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 				...this.envOption(),
 				// Unix: its own process group, so stop() reaches the children too (NodeShell does the same).
 				detached: process.platform !== "win32",
-				stdio: ["ignore", fd, fd],
+				stdio: ["ignore", onStdout ? "pipe" : fd, fd],
 				windowsHide: process.platform === "win32",
 			});
 		} finally {
@@ -324,6 +335,23 @@ export class NodeBackgroundShell implements BackgroundShell {
 		}
 		// A background command must not keep tau running: when tau is done it exits, and the exit hook stops the command.
 		child.unref();
+		if (onStdout && child.stdout) {
+			const stdout = child.stdout;
+			(stdout as unknown as { unref?: () => void }).unref?.();
+			stdout.setEncoding("utf8");
+			stdout.on("data", (chunk: string) => {
+				try {
+					appendFileSync(outputPath, chunk);
+				} catch {
+					// The output file went away: the lines still arrive.
+				}
+				try {
+					onStdout(chunk);
+				} catch {
+					// A broken callback must not break the command.
+				}
+			});
+		}
 		const task: BackgroundTaskInfo = {
 			id,
 			command,
@@ -346,7 +374,8 @@ export class NodeBackgroundShell implements BackgroundShell {
 				this.finish(task, "failed", undefined);
 				if (!spawned) rejectSpawn(error);
 			});
-			child.once("exit", (code, signal) => {
+			// Read stdout to the end first when it is piped ("close"), so the last lines arrive before the end.
+			child.once(onStdout ? "close" : "exit", (code: number | null, signal: NodeJS.Signals | null) => {
 				if (this.stopping.delete(id)) this.finish(task, "killed", code ?? undefined);
 				else if (code === 0) this.finish(task, "completed", 0);
 				else this.finish(task, "failed", code ?? (signal ? 128 : 1));

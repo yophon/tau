@@ -56,7 +56,8 @@ export const EMPTY_PERMISSION_RULES: PermissionRules = { allow: [], ask: [], den
  * applies Edit rules to every file-editing tool); Read rules cover the search tools.
  */
 const TOOL_ALIASES: Record<string, readonly string[]> = {
-	bash: ["bash"],
+	bash: ["bash", "monitor"],
+	monitor: ["monitor"],
 	powershell: ["powershell"],
 	read: ["read", "grep", "find", "ls"],
 	edit: ["edit", "write"],
@@ -79,7 +80,8 @@ const UNCONSULTED_PATH_TOOLS: Record<string, string> = {
 	multiedit: "Edit",
 };
 
-const BASH_TOOLS = new Set(["bash"]);
+/** P44: Claude Code applies Bash rules to Monitor commands too. */
+const BASH_TOOLS = new Set(["bash", "monitor"]);
 /** P40b: Claude Code's PowerShell rules (same shape as Bash; aliases resolved; case ignored). */
 const POWERSHELL_TOOLS = new Set(["powershell"]);
 const READ_PATH_TOOLS = new Set(["read", "grep", "find", "ls"]);

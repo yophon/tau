@@ -44,6 +44,11 @@ export interface SubagentsOptions {
 	 * its own background work turns it off and follows {@link SUBAGENT_TASK_CHANNEL} instead.
 	 */
 	tasksCommand?: boolean;
+	/**
+	 * Parent tools a child never inherits (P44: the CLI's scheduling and monitor tools, whose
+	 * tasks would outlive the child). Agents naming them in `tools` still get them.
+	 */
+	parentOnlyTools?: readonly string[];
 }
 
 /** Event bus channel (api.events) carrying a {@link BackgroundTask} copy whenever one starts or ends (P36a). */
@@ -202,7 +207,8 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 								options.directories ?? defaultDirectories(ctx),
 							);
 							const byName = new Map(available.map((agent) => [agent.name, agent]));
-							const parentTools = api.getActiveTools().filter((name) => name !== toolName);
+							const parentOnly = new Set(options.parentOnlyTools ?? []);
+							const parentTools = api.getActiveTools().filter((name) => name !== toolName && !parentOnly.has(name));
 							const tasks = steps(args.tasks, "tasks");
 							const chain = steps(args.chain, "chain");
 							const single =

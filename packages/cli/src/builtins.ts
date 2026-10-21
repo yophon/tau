@@ -346,7 +346,11 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		}),
 		// P26b: subagents (single, parallel, chain, background) over agent definitions; active by default.
 		// Its /tasks is replaced by the CLI's, which also lists background commands (P36a).
-		createSubagentsExtension({ tasksCommand: false }),
+		createSubagentsExtension({
+			tasksCommand: false,
+			// P44: scheduled tasks and monitors belong to the session, not to a child that ends.
+			parentOnlyTools: ["cron_create", "cron_list", "cron_delete", "schedule_wakeup", "monitor"],
+		}),
 		// P26c: the todo list and long-term memory.
 		todoExtension,
 		createMemoryExtension(() => options.memory ?? state.memory),

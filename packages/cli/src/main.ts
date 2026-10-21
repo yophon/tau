@@ -79,7 +79,7 @@ import {
 	auditedPolicy,
 	createAuditExtension,
 } from "./audit.ts";
-import { createBackgroundExtension } from "./background.ts";
+import { createBackgroundExtension, MONITOR_MAX_MS, MONITOR_PRINT_MAX_MS } from "./background.ts";
 import { attachPromptAgent, builtinExtensions, configureBuiltins, setResourceFlags, toolLine } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
@@ -1937,9 +1937,33 @@ async function main(): Promise<void> {
 			...(commandEnv ? { commandEnv } : {}),
 			...(spec.backgroundOnTimeout === false ? { moveOnTimeout: false } : {}),
 		});
+		// P44 (Claude Code): /loop and the cron tools in the TUI and the REPL (-p ends before a task
+		// could fire); TAU_DISABLE_CRON=1 turns them off. Monitor everywhere but the gateway, 10 min
+		// at most in -p. The gateway is parked and gets neither.
+		const extended = spec.extendedSettings !== false;
+		const scheduling =
+			extended && (workspaceHost === "tui" || workspaceHost === "repl") && process.env.TAU_DISABLE_CRON !== "1"
+				? (await import("./loop.ts")).createSchedulerExtension({
+						home: userHome(),
+						cwd,
+						projectTrusted: () => projectTrusted,
+					})
+				: undefined;
 		const hostExtensions = [
 			...(askUser ? [askUser] : []),
-			createBackgroundExtension(background),
+			createBackgroundExtension(background, {
+				...(scheduling ? { scheduler: scheduling.scheduler } : {}),
+				// Like bash, which read-only mode leaves out (createCodingTools).
+				...(extended && (workspaceMode ?? permissionMode) !== "read-only"
+					? {
+							monitor: {
+								maxTimeoutMs:
+									workspaceHost === "print" || workspaceHost === "json" ? MONITOR_PRINT_MAX_MS : MONITOR_MAX_MS,
+							},
+						}
+					: {}),
+			}),
+			...(scheduling ? [scheduling.extension] : []),
 			...(spec.extensions ?? []),
 		];
 		const trustUi = spec.trustPrompt === false ? undefined : spec.ui;

@@ -468,7 +468,7 @@ export function powershellAllowedBy(rules: PermissionRules): boolean {
 /** The rules "always allow" saves for a call, leaving out what the current rules already allow. */
 export function suggestRules(request: ApprovalRequest, current: PermissionRules): string[] {
 	const name = request.toolName;
-	if (name === "bash") {
+	if (name === "bash" || name === "monitor") {
 		const command = typeof request.args.command === "string" ? request.args.command : undefined;
 		if (command === undefined) return [];
 		const parsed = parseShellCommand(command);

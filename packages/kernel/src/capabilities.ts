@@ -78,7 +78,10 @@ export type ForegroundOutcome =
  */
 export interface BackgroundShell {
 	/** Start a command and return at once. */
-	start(command: string, options?: { cwd?: string; description?: string }): Promise<BackgroundTaskInfo>;
+	start(
+		command: string,
+		options?: { cwd?: string; description?: string; onStdout?: (chunk: string) => void },
+	): Promise<BackgroundTaskInfo>;
 	/** Stop a running task and its child processes. Rejects for unknown or finished ids. */
 	stop(id: string): Promise<BackgroundTaskInfo>;
 	list(): BackgroundTaskInfo[];
