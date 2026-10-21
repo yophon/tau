@@ -4,6 +4,44 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P44)
+- ext-mcp-http, ext-mcp: MCP prompts become `/mcp__<server>__<prompt>`
+  commands (Claude Code), re-listed on `prompts/list_changed`; `@server:uri`
+  mentions are completed next to files and read and attached when a message is
+  sent; elicitation (MCP 2025-11-25) in form and URL mode through the host's
+  `elicit` handler (`elicitWithUi` is the dialog flow), including
+  `notifications/elicitation/complete` and URLElicitationRequiredError; tool
+  calls report progress through `onUpdate` and send `notifications/cancelled`
+  when aborted. McpClient: `capabilities`, `setRequestHandler`,
+  `onProgress`, `listPrompts`, `getPrompt`.
+- kernel: `UiCapability.form` and `askFormStepByStep` (forms with validation);
+  `UiCapability.addAutocompleteProvider` (pi); events `command_prompt`,
+  `subagent_start`, `subagent_stop`; command results may carry images
+  (`commandPromptContent`); `RegisteredCommand.source`.
+- CLI: session-scoped scheduled tasks per Claude Code — tools `cron_create`,
+  `cron_list`, `cron_delete`, `/loop` on an interval or self-paced with
+  `schedule_wakeup`, `loop.md`, kept in the session for `--resume`,
+  `TAU_DISABLE_CRON=1`; the `monitor` tool streams a background command's
+  stdout lines to the model; `/tasks` lists both. Hook events
+  `PostToolUseFailure`, `PostToolBatch`, `UserPromptExpansion`,
+  `SubagentStart`, `SubagentStop`, `StopFailure`, `PostCompact`,
+  `PreModelSwitch`, `PostModelSwitch`, `DirectoryAdded`,
+  `InstructionsLoaded`, `Elicitation`, `ElicitationResult`; the TUI form
+  dialog. host-node: `NodeBackgroundShell.start` option `onStdout`.
+
+### Changed (P44)
+- CLI: hook matchers apply to every event that has them (Claude Code), not only
+  the tool events; `PostToolUse` fires after successful calls only (failures go
+  to `PostToolUseFailure`); `SessionEnd` reasons are `clear`, `resume`,
+  `prompt_input_exit` and `other`, and `SessionStart` sources `startup`,
+  `resume`, `clear` and `compact`. Bash permission rules also apply to
+  `monitor`. The gateway keeps its previous hook behavior.
+- kernel: an extension registering a command name again replaces its own
+  command (pi) instead of adding a `:2` copy.
+
+### Fixed (P44)
+- CLI: `PermissionRequest` hooks with a matcher never ran.
+
 ### Added (P43)
 - ext-mcp-http, ext-mcp: MCP resource tools `list_mcp_resources`,
   `list_mcp_resource_templates` and `read_mcp_resource` (pi 1.2; the names

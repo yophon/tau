@@ -105,6 +105,8 @@ export function createSchedulerExtension(options: SchedulerExtensionOptions): Sc
 	});
 	/** The self-paced loop in progress: its prompt and how the current iteration went. */
 	let loop: { prompt: string; running: boolean; rescheduled: boolean; fallback: boolean } | undefined;
+	/** The session the tasks belong to. */
+	let lastSessionId: string | undefined;
 
 	const setWakeupTool = (on: boolean) => {
 		try {
@@ -158,6 +160,19 @@ export function createSchedulerExtension(options: SchedulerExtensionOptions): Sc
 
 		extensionApi.on("session_start", (event, startCtx) => {
 			ctx = startCtx;
+			// Tasks belong to a session: switching to another (/new, /resume) leaves this one's behind.
+			const sessionId = startCtx.sessionManager?.getSessionId?.();
+			if (lastSessionId !== undefined && sessionId !== lastSessionId) {
+				restoring = true;
+				try {
+					loop = undefined;
+					setWakeupTool(false);
+					for (const job of scheduler.list()) scheduler.delete(job.id);
+				} finally {
+					restoring = false;
+				}
+			}
+			lastSessionId = sessionId;
 			if (event.reason === "startup") return;
 			// --resume, --continue, /reload: the tasks this session still has (Claude Code).
 			const live = new Map<string, CronJob>();

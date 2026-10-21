@@ -239,6 +239,45 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D47：MCP 交互、会话内定时与钩子照 Claude Code（2026-10-21，P44，用户确认）
+
+- **MCP 2026-07-28 另开阶段**：Claude Code 默认已经会问服务器支不支持新协议，支持就用，官方 SDK 2.x 却默认还发旧协议，服务器也普遍新旧都支持。新协议改动大：
+  - 没有握手，版本随每个请求；
+  - 服务器要信息改成「返回需要补充、客户端重发」；
+  - 通知改走 `subscriptions/listen`；
+  - 去掉续传。
+
+  本阶段的 elicitation 与进度仍按 2025-11-25 做，旧服务器还会用很久。roots、sampling、logging 在新规范里弃用，sampling、logging 不加。
+- **客户端照 pi 补上通用能力**：`capabilities`、带取消信号的 `setRequestHandler`、进度令牌（收到进度重置超时）、双向 `notifications/cancelled`、回复里保留 McpError 的错误码。`tools/call` 仍不设超时（P24）。
+- **提示词命令名用 `mcp__服务器__提示名`**：Claude Code 菜单里显示的是 `/服务器:提示名`，但 tau 的 `名字:数字` 后缀用来区分同名命令；Claude Code 也接受 `mcp__` 形式。
+  - 参数多出来的词并进最后一个参数，这是 tau 的细节，免得静默丢字。
+  - 结果里有 assistant 消息时按角色标注、拼成一条用户消息。
+- **同一扩展重复注册同名命令时替换**（照 pi，每个扩展各管各的命令表）。原来 tau 按全局计数，会加 `:2`；提示列表变化时要靠替换来更新命令。
+- **`@` 补全照抄 pi 的 `ui.addAutocompleteProvider`**：内核只定义形状，TUI 用异步结果刷新菜单（`menu-refresh`）。资源读出后附在消息后面，标签 `<mcp_resource>` 是 tau 定的，Claude Code 的格式没有公开。
+- **表单是 tau 的 `ui.form`**：
+  - TUI 实现成一个字段列表，选中字段就改它，内置的选择器和输入框复用，没有另写表单组件。规格里写的是「Tab 和上下键切换字段」，实际是上下键选、Enter 改。
+  - 没有表单的宿主用内核的 `askFormStepByStep` 逐个字段问。
+  - URL 模式照 Claude Code：完整网址加域名，标出 punycode，征得同意才打开，长度上限约 8000（需转义的字符按 4 个算）。
+- **定时任务照 Claude Code**，不做时间抖动。Claude Code 抖动是为了避免所有会话同时打到 Anthropic 的 API、赶在 5 分钟提示缓存过期前；tau 各用各的密钥和服务商，抖动只会让任务无故晚跑。
+  - 任务记进会话日志供 `--resume` 恢复；唤醒不记、不恢复。
+  - cron 解析复用网关 P31 的纯函数；调度器与 `/loop` 按需加载，不拖慢启动。
+- **`/loop` 用代码解析间隔**：Claude Code 让模型换算成 cron，tau 自己算，小模型也不会算错。
+- **Monitor 的阈值与边界**：
+  - 一分钟超过 60 条通知就停，60 是 tau 定的；Claude Code 只说事件太多会停。
+  - 不做 WebSocket 来源。
+  - 只读模式不注册 monitor，和 bash 一样；`Bash(...)` 规则同样管它（Claude Code）。
+- **钩子事件只补 tau 有对应概念的**。实现上：
+  - UserPromptExpansion 新增内核事件 `command_prompt`，三个宿主在命令展开时触发；
+  - SubagentStart/Stop 新增内核事件 `subagent_start`、`subagent_stop`，在 `runSubagent` 里对父 agent 的扩展触发，child 可以被要求接着跑；
+  - PostToolBatch 用 pi 的 `finishTurn` 接缝；
+  - `PostToolUse` 改成只在成功后触发。
+  - PreModelSwitch 没有 Claude Code 的缓存与费用字段（D19），`source` 总是 `command`；恢复会话时还原模型不触发 PostModelSwitch。
+- **网关**（搁置中）：
+  - 网关里钩子本来就跑（P35），规格书写的「网关不跑钩子」是错的。改为 `HookRunnerOptions.legacy`：网关保持 P44 之前的钩子行为，没有新事件，matcher 只对工具事件生效。
+  - 网关里也没有 elicitation、提示命令、`@` 引用、定时与 Monitor。
+  - 进度与取消是协议层的，网关一起用。
+- **顺带修正**：带 matcher 的 `PermissionRequest` 钩子原来从不运行，因为 `run()` 没拿到工具名。
+
 ## D46：MCP 与 pi 1.2 余项照抄；MCP 图片交给模型；会话环境变量换前缀（2026-10-21，P43，用户确认）
 
 - **协议 2025-11-25、版本协商、SSE 续传，照 pi**：服务器选的版本须在 pi 认的四个之中。只升版本号不做续传的话，会主动关流的新服务器上请求会失败，所以一起做。没有 `Platform.sleep` 的宿主不续传。GET 通知流仍是可选的（P24 记过的偏离）。

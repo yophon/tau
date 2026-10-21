@@ -297,6 +297,28 @@ describe("the cron tools and /loop", () => {
 		assert.match(h.notes.join("\n"), /Self-paced loop stopped/);
 	});
 
+	it("switching to another session leaves this one's tasks behind", async () => {
+		const h = await loopHarness();
+		open.push(h.handle);
+		let id = "s1";
+		const ctx = {
+			...h.ctx,
+			sessionManager: { getSessionId: () => id, getBranch: () => [] },
+		} as unknown as ExtensionContext;
+		await h.registry.notifySessionStart("startup", ctx);
+		await h.run("cron_create", { cron: "0 12 * * *", prompt: "noon" });
+		await h.command("self paced");
+		id = "s2";
+		await h.registry.notifySessionStart("startup", ctx);
+		assert.deepEqual(h.handle.scheduler.list(), []);
+		assert.ok(!h.active().includes("schedule_wakeup"));
+		assert.equal(
+			h.entries.filter((entry) => (entry.data as { type: string }).type === "delete").length,
+			0,
+			"not logged as deleted",
+		);
+	});
+
 	it("--resume restores the tasks from the session log", async () => {
 		const h = await loopHarness();
 		open.push(h.handle);

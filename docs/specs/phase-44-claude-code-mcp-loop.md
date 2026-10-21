@@ -1,6 +1,6 @@
 # Phase 44：MCP 交互、会话内定时与钩子补齐（照 Claude Code）规格书
 
-> 状态：已确认（2026-10-21）。用户同意了提案（「可以，开搞」），「需要确认」的七条也按建议确认（「可以」）。
+> 状态：已完成（2026-10-21）。用户同意了提案（「可以，开搞」），「需要确认」的七条也按建议确认（「可以」）。
 > 对应 roadmap 阶段：Phase 44
 > 起因：P43 后 pi 1.2 已经对齐完，下一步照 Claude Code 补还缺的功能。提案里的四块：MCP 交互补完、会话内定时与监视、钩子事件补齐、技术债 #22。
 
@@ -292,28 +292,28 @@
 
 ## 验收清单
 
-- [ ] 44a：
-  - [ ] 客户端：进度带 `progressToken`、重置超时、回调；中止和超时发 `notifications/cancelled`，`initialize` 不发；服务器取消时处理器收到中止。
-  - [ ] 提示命令：连上后出现在斜杠菜单；参数按位置对应、多余的并进最后一个；缺必填时给用法；结果里的文字、图片、嵌入资源进对话；`list_changed` 后新增的出现、去掉的隐藏并报不可用；hidden 服务器没有命令；服务器名里的特殊字符换成 `_`。
-  - [ ] `@` 资源：TUI 里 `@` 同时列出文件和资源，模糊匹配名字；发出后文字、图片、二进制附件各自正确；读失败时警告且消息照发；`-p` 和 RPC 里也附上内容；MCP App 资源不出现。
-  - [ ] Elicitation：表单各字段类型的生成与校验、缺省值、必填；提交 / 拒绝 / 取消三种结果；URL 模式显示完整 URL 与域名、punycode 警告、打开浏览器、过长只能拒绝；完成通知；-32042；没有界面时回 cancel；RPC 里逐个字段问；不合规的请求回 -32602；`Elicitation` 钩子代答、拒绝，`ElicitationResult` 钩子改值、拦下。
-  - [ ] 内核：同一扩展重复注册同名命令时替换，不同扩展照旧加后缀；`addAutocompleteProvider` 的提供者能包住内置补全。
-  - [ ] 真服务器：用仓库里已有的官方 MCP SDK 写一个带提示、资源、表单与 URL elicitation、进度的 stdio 服务器；真 DeepSeek 用 `/mcp__…` 跑提示、用 `@` 引用资源回答问题、调用触发表单的工具（tmux 里填表）、看到进度。
-- [ ] 44b：
-  - [ ] 调度器：只在空闲时触发、错过只补一次、本地时区、50 个上限、一次性任务触发后删除、循环任务 7 天后最后跑一次就删除（测试里用假时钟）。
-  - [ ] 恢复：`--continue` 恢复没过期的任务，过期的和自定间隔的唤醒不恢复。
-  - [ ] 工具：三个 cron 工具的参数、返回和低风险；`schedule_wakeup` 只在自定间隔的循环里出现，`delaySeconds` 限制在 60–3600。
-  - [ ] `/loop`：间隔写法（开头、末尾 `every`、各单位）与取整提示；固定间隔立刻跑一次再按时触发；自定间隔的重排、停止、20 分钟兜底和结束；Esc 清掉唤醒；`loop.md` 的查找顺序与截断；内置维护提示。
-  - [ ] Monitor：逐行通知与 200 毫秒合并、stderr 不通知、退出码、到期通知与事件数、事件太多时停、`task_stop` 与 `/tasks`、权限规则 `Bash(...)` 生效、子 agent 没有这几个工具。
-  - [ ] `TAU_DISABLE_CRON=1` 时工具和 `/loop` 都没有。
-  - [ ] 真 DeepSeek：`/loop 1m` 触发两次后删掉；自定间隔的循环由模型重排一次再用 `stop` 结束；monitor 盯一个文件，写入几行后模型逐条反应。
-- [ ] 44c：
-  - [ ] 每个新事件的输入字段与决定方式各有测试；matcher 对每个事件按上表生效；`PostToolUse` 只在成功后触发。
-  - [ ] `SubagentStop` 拦下后子 agent 接着跑；`PreModelSwitch` 拦下后模型不变，ask 在 TUI 里弹确认；`PostModelSwitch` 的输出随下一次请求给模型；`PostToolBatch` 能停下循环。
-  - [ ] 真 DeepSeek：用 `-p` 跑一次 `PostToolUseFailure` 和 `SubagentStart` 注入上下文。
-- [ ] 44d：留现场的改动生效；原因查清就修，查不清时债表写明新线索。
-- [ ] 全量测试、check、pack smoke、smoke-tui（全屏与 inline，新增 elicitation 表单和 `/loop` 场景）通过；ext-mcp-http 是纯 ES，浏览器 runtime、QuickJS MCP、小程序 smoke 也要通过。
-- [ ] DoD 通用项（见 development.md）；决策记为 D47；pi-parity 表（`ui` 一行、命令注册）、hooks 文档、MCP 文档（connectors.md）更新。
+- [x] 44a：
+  - [x] 客户端：进度带 `progressToken`、重置超时、回调；中止和超时发 `notifications/cancelled`，`initialize` 不发；服务器取消时处理器收到中止。
+  - [x] 提示命令：连上后出现在斜杠菜单；参数按位置对应、多余的并进最后一个；缺必填时给用法；结果里的文字、图片、嵌入资源进对话；`list_changed` 后新增的出现、去掉的隐藏并报不可用；hidden 服务器没有命令；服务器名里的特殊字符换成 `_`。
+  - [x] `@` 资源：TUI 里 `@` 同时列出文件和资源，模糊匹配名字；发出后文字、图片、二进制附件各自正确；读失败时警告且消息照发；`-p` 和 RPC 里也附上内容；MCP App 资源不出现。
+  - [x] Elicitation：表单各字段类型的生成与校验、缺省值、必填；提交 / 拒绝 / 取消三种结果；URL 模式显示完整 URL 与域名、punycode 警告、打开浏览器、过长只能拒绝；完成通知；-32042；没有界面时回 cancel；RPC 里逐个字段问；不合规的请求回 -32602；`Elicitation` 钩子代答、拒绝，`ElicitationResult` 钩子改值、拦下。
+  - [x] 内核：同一扩展重复注册同名命令时替换，不同扩展照旧加后缀；`addAutocompleteProvider` 的提供者能包住内置补全。
+  - [x] 真服务器：用仓库里已有的官方 MCP SDK 写一个带提示、资源、表单与 URL elicitation、进度的 stdio 服务器；真 DeepSeek 用 `/mcp__…` 跑提示、用 `@` 引用资源回答问题、调用触发表单的工具（tmux 里填表）、看到进度。
+- [x] 44b：
+  - [x] 调度器：只在空闲时触发、错过只补一次、本地时区、50 个上限、一次性任务触发后删除、循环任务 7 天后最后跑一次就删除（测试里用假时钟）。
+  - [x] 恢复：`--continue` 恢复没过期的任务，过期的和自定间隔的唤醒不恢复。
+  - [x] 工具：三个 cron 工具的参数、返回和低风险；`schedule_wakeup` 只在自定间隔的循环里出现，`delaySeconds` 限制在 60–3600。
+  - [x] `/loop`：间隔写法（开头、末尾 `every`、各单位）与取整提示；固定间隔立刻跑一次再按时触发；自定间隔的重排、停止、20 分钟兜底和结束；Esc 清掉唤醒；`loop.md` 的查找顺序与截断；内置维护提示。
+  - [x] Monitor：逐行通知与 200 毫秒合并、stderr 不通知、退出码、到期通知与事件数、事件太多时停、`task_stop` 与 `/tasks`、权限规则 `Bash(...)` 生效、子 agent 没有这几个工具。
+  - [x] `TAU_DISABLE_CRON=1` 时工具和 `/loop` 都没有。
+  - [x] 真 DeepSeek：`/loop 1m` 触发两次后删掉；自定间隔的循环由模型重排一次再用 `stop` 结束；monitor 盯一个文件，写入几行后模型逐条反应。
+- [x] 44c：
+  - [x] 每个新事件的输入字段与决定方式各有测试；matcher 对每个事件按上表生效；`PostToolUse` 只在成功后触发。
+  - [x] `SubagentStop` 拦下后子 agent 接着跑；`PreModelSwitch` 拦下后模型不变，ask 在 TUI 里弹确认；`PostModelSwitch` 的输出随下一次请求给模型；`PostToolBatch` 能停下循环。
+  - [x] 真 DeepSeek：用 `-p` 跑一次 `PostToolUseFailure` 和 `SubagentStart` 注入上下文。
+- [x] 44d：留现场的改动生效；原因查清就修，查不清时债表写明新线索。
+- [x] 全量测试、check、pack smoke、smoke-tui（全屏与 inline，新增 elicitation 表单和 `/loop` 场景）通过；ext-mcp-http 是纯 ES，浏览器 runtime、QuickJS MCP、小程序 smoke 也要通过。
+- [x] DoD 通用项（见 development.md）；决策记为 D47；pi-parity 表（`ui` 一行、命令注册）、hooks 文档、MCP 文档（connectors.md）更新。
 
 ## 风险与开放问题
 
@@ -321,3 +321,32 @@
 - **调度器和现有的输入排队**：定时触发、Monitor 通知、后台命令结束通知、用户输入可能同时到。按「用户输入优先，其余按到达顺序」排，用现有的跟进队列，不另起一套。
 - **小模型能不能好好用 `schedule_wakeup`**：DeepSeek 可能忘了重排，靠 20 分钟兜底和结束规则兜住。
 - **开放问题**：无（「需要确认」的七条已按建议确认）。
+
+## 实施记录（2026-10-21）
+
+### 提交
+
+- 433062e 规格书；9419f45 44a（MCP 交互）；f2c44fb 44b（定时与 Monitor）；6ab8a72 44c（钩子）；之后一个提交是 44d、网关保持原样的钩子开关、会话切换时任务归零与文档。
+
+### 验收
+
+- **测试**：全量 1235 个，1230 通过、5 跳过；check 通过。
+- **smoke**：pack smoke、浏览器 bundle、浏览器 runtime（无头 Edge）、QuickJS、QuickJS MCP、小程序 smoke 通过。smoke-tui 新增 p44 场景（`/loop` 与 `/tasks`、MCP 提示命令、在 tmux 里填写并提交 elicitation 表单），34 个场景在全屏与 inline 下各一遍全部通过。
+- **真 DeepSeek**（deepseek-flash；用仓库里已有的官方 MCP SDK 写的 stdio 服务器）：
+  - `-p`：`/mcp__lab__review 42` 回 `REVIEWED-42`；`@lab:memo://notes` 不调工具答出资源里的口令；`ask_name` 工具发起的表单由 `Elicitation` 钩子代填，工具拿到名字；`slow` 工具的三步进度作为工具更新送达；`SubagentStart` 注入的密语、`PostToolUseFailure` 补充的代号都被模型用上。
+  - REPL：`/loop 1m` 立刻跑一次、下一分钟又跑一次（81 秒），再由模型用 `cron_list`、`cron_delete` 删掉；自定间隔的循环里模型调用一次 `schedule_wakeup` 重排，一分钟后看到文件出现，用 `stop` 结束；monitor 的命令靠 `Bash(tail *)`、`Bash(grep *)` 两条规则放行（autonomous 模式下 bash 和 monitor 都要批准，REPL 没有批准界面），日志里写入 ERROR 行后，模型收到通知并复述了这一行。
+- **技术债 #22**：加了现场记录（见 44d），之后 3 遍完整运行（其中一遍跑完第 31 个场景后因内存不足被停）共 99 个场景都没有再出现空白首屏，原因仍未查明，债表写明了出现时怎么看现场。
+
+### 与规格的偏差
+
+- **表单对话框的操作方式**：做成一个字段列表，上下键选字段、Enter 修改，最后选「Submit」或「Decline」；复用了内置的选择器和输入框，没有另写组件。规格写的是 Tab 和上下键在字段间切换。
+- **网关里的钩子**：规格写「网关不跑钩子」，这是错的，网关从 P35 起就跑钩子。改成 `HookRunnerOptions.legacy`，网关保持 P44 之前的行为：没有新事件，matcher 只对工具事件生效，`PostToolUse` 照旧包括失败。
+- **PreModelSwitch / PostModelSwitch**：`source` 总是 `command`，tau 的换模型事件不分来源；恢复会话时还原模型不触发 PostModelSwitch。
+- **UserPromptExpansion 与子 agent 钩子要内核事件**：新增 `command_prompt`、`subagent_start`、`subagent_stop`，内核的子 agent 可以被要求接着跑。规格里写的是「ext-subagents 加两个可选回调」，改成在内核 `runSubagent` 里触发，这样任何经 `runSubagent` 的子 agent 都适用。
+- **PostToolBatch 用 pi 的 `finishTurn` 接缝**，规格没写实现方式。
+- **会话切换时任务归零**：TUI 里 `/new`、`/resume` 换到另一个会话时，丢掉这个会话的任务（不记成删除），恢复目标会话自己的。规格只写了 `--resume` 恢复。
+- **新增 `RegisteredCommand.source`**（skill、prompt、mcp），供 UserPromptExpansion 的 `command_source`。
+- **`/tasks` 的弹出选择**：定时任务行只有「Delete」一个动作。
+- **顺带修正**：带 matcher 的 `PermissionRequest` 钩子原来从不运行（`run()` 没拿到工具名）。
+- **monitor 不在只读模式下注册**，和 bash 一样；规格没提。
+- **真 DeepSeek 验收的表单**：真模型那条用 `Elicitation` 钩子代填；TUI 里填表在 smoke-tui 里用 mock 模型走通。界面一样，模型只决定调不调工具。URL 模式只有单元测试，没有拿真服务器跑。

@@ -1,6 +1,6 @@
 # pi 扩展面对照清单
 
-> 最后更新：2026-10-20（P40d：剩下的 7 行未排期全部完成，表里不再有 📍Backlog；此前 P22：会话日志为上下文唯一来源；context_with_system、setLabel、sessionManager、getSystemPrompt 落地）。
+> 最后更新：2026-10-21（P44：`ui` 补上 `addAutocompleteProvider`，同一扩展重复注册命令改为替换；此前 2026-10-20 P40d：剩下的 7 行未排期全部完成，表里不再有 📍Backlog；此前 P22：会话日志为上下文唯一来源；context_with_system、setLabel、sessionManager、getSystemPrompt 落地）。
 > 行集合：pi tag v1.2.0 `packages/coding-agent/src/core/extensions/types.ts` 的 `on(event: "…")` 重载（41）、`ExtensionAPI` 成员（32）、`ExtensionContext` 成员（18），共 91 行（D23）。`node scripts/check-pi-parity.mjs` 从 `../pi` 抽取成员并与下面三张表比对，二者必须完全相等。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期 · ❌Dn 决策排除 · ⚠Dn 有意偏离（写明形状与理由）。
 > 「快照」列：0.80 表示 v0.80.3 就有的成员，1.2 表示之后新增的成员。
@@ -57,7 +57,7 @@
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
 | `registerTool` | 0.80 | ✅ P2 | 无对象 `parameters` schema 即判该扩展加载失败（P21-HF-8）。跨扩展同名先注册者胜，后来者记 warning（P23c）；同一扩展再注册同名 = 替换（P24b，pi 按扩展存工具），重新注册为 hidden 即撤回。P24b 起 Tool 带 pi 的 `outputSchema`/`exposure`/`namespace`/`reachesTools`/`defaultActive`/`prepareLoadout`/`promptSnippet`/`promptGuidelines`；`ToolLoadout` 的元素是不含 `execute` 的 ToolInfo（偏离：pi 给 AgentTool），`annotations` 不进内核类型（作者自报、未经校验，D20） |
-| `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；重名时每个都加 `:N`（P23c，pi）；`getArgumentCompletions` 参数补全（P27，pi）；tau 另有可选的 `hidden`（P41）：不进命令列表、输入照样执行，用来实现 pi 的 `enableSkillCommands: false` |
+| `registerCommand` | 0.80 | ✅ P2 | 缺 name 或 handler 判加载失败；不同扩展重名时每个都加 `:N`（P23c，pi），同一扩展再注册同名命令是替换（P44，pi 每个扩展各管各的命令表）；`getArgumentCompletions` 参数补全（P27，pi）；tau 另有可选的 `hidden`（P41）：不进命令列表、输入照样执行，用来实现 pi 的 `enableSkillCommands: false` |
 | `registerShortcut` | 0.80 | ✅ P8 | TUI 空闲快捷键，`/help` 显示；P25 起撞 TUI 内置键时内置优先，启动提示并列进 `/diagnostics` |
 | `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
 | `getFlag` | 0.80 | ✅ P2 | |
@@ -93,7 +93,7 @@
 
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
-| `ui` | 0.80 | ✅ P2 | 可选能力，headless 缺失（D10） |
+| `ui` | 0.80 | ✅ P2 | 可选能力，headless 缺失（D10）。P44：`addAutocompleteProvider`（pi，TUI 实现，MCP 的 `@` 资源用它）；tau 另有可选的 `form`（MCP elicitation 的表单，没有的宿主用 `askFormStepByStep` 逐个字段问） |
 | `mode` | 0.80 | ❌D10 | 宿主模式不进内核；扩展按 `ui` 能力是否存在降级 |
 | `hasUI` | 0.80 | ⚠D10 | 即 `ctx.ui !== undefined` |
 | `cwd` | 0.80 | ✅ P23c | 取 `capabilities.paths.cwd`（无则 `fs.cwd`），与能力门面同源 |

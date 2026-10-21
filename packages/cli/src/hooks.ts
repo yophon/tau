@@ -56,6 +56,8 @@ export type HookEventName = (typeof HOOK_EVENTS)[number];
  */
 const UNMATCHED_EVENTS: ReadonlySet<HookEventName> = new Set(["UserPromptSubmit", "Stop", "PostToolBatch"]);
 const isMatched = (event: HookEventName): boolean => !UNMATCHED_EVENTS.has(event);
+/** Before P44 only the tool events had matchers; the parked gateway keeps that. */
+const LEGACY_MATCHED: ReadonlySet<HookEventName> = new Set(["PreToolUse", "PermissionRequest", "PostToolUse"]);
 
 /** Claude Code: a PreModelSwitch hook that does not answer within 30 seconds blocks the switch. */
 const MODEL_SWITCH_TIMEOUT_SECONDS = 30;
@@ -323,6 +325,8 @@ export interface HookRunnerOptions {
 	/** Stop and SubagentStop's background_tasks and session_crons (P44). */
 	backgroundTasks?(): unknown[];
 	sessionCrons?(): unknown[];
+	/** Keep the hooks as they were before P44 (the parked gateway): no new events, matchers on tool events only. */
+	legacy?: boolean;
 }
 
 /** One workspace's hooks: the configuration (replaced on /reload) and how commands run. */
@@ -359,12 +363,17 @@ export class HookRunner {
 	/** The handlers that apply to an event, for what its matcher matches (the tool name, …). */
 	handlers(event: HookEventName, match?: string): HookHandler[] {
 		return (this.config[event] ?? [])
-			.filter((group) => !isMatched(event) || matcherMatches(group.matcher, match ?? ""))
+			.filter((group) => !this.matched(event) || matcherMatches(group.matcher, match ?? ""))
 			.flatMap((group) => group.hooks);
 	}
 
 	has(event: HookEventName, match?: string): boolean {
 		return this.handlers(event, match).length > 0;
+	}
+
+	/** Whether the event's groups filter with their matcher. */
+	matched(event: HookEventName): boolean {
+		return this.options.legacy ? LEGACY_MATCHED.has(event) : isMatched(event);
 	}
 
 	/** The fields every event carries (Claude Code names). */
@@ -487,7 +496,7 @@ export class HookRunner {
 		for (const event of HOOK_EVENTS) {
 			for (const group of this.config[event] ?? []) {
 				for (const hook of group.hooks) {
-					const matcher = isMatched(event) && group.matcher ? ` [${group.matcher}]` : "";
+					const matcher = this.matched(event) && group.matcher ? ` [${group.matcher}]` : "";
 					const flags = [hook.async ? "async" : "", hook.timeout !== undefined ? `timeout ${hook.timeout}s` : ""]
 						.filter((flag) => flag !== "")
 						.join(", ");
@@ -592,6 +601,8 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		let stopActive = false;
 		/** When each tool call started, for PostToolUseFailure's duration_ms. */
 		const startedAt = new Map<string, number>();
+		/** The parked gateway: hooks as they were before P44. */
+		const legacy = runner.options.legacy === true;
 
 		api.on("tool_call", async (event, ctx) => {
 			startedAt.set(event.toolCallId, Date.now());
@@ -619,7 +630,8 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		api.on("tool_result", async (event, ctx) => {
 			const started = startedAt.get(event.toolCallId);
 			startedAt.delete(event.toolCallId);
-			const failed = event.isError;
+			// The parked gateway keeps PostToolUse for every result, failures included (before P44).
+			const failed = event.isError && !legacy;
 			const name = failed ? "PostToolUseFailure" : "PostToolUse";
 			if (!runner.has(name, event.toolName)) return undefined;
 			const outcomes = await runner.run(
@@ -637,7 +649,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 							tool_name: event.toolName,
 							tool_input: event.input,
 							tool_use_id: event.toolCallId,
-							tool_response: { content: resultText(event.content), is_error: false },
+							tool_response: { content: resultText(event.content), is_error: event.isError },
 						},
 				{ match: event.toolName, ctx },
 			);
@@ -675,7 +687,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 
 		// A typed command expanding into a prompt (skills, templates, MCP prompts; P44).
 		api.on("command_prompt", async (event, ctx) => {
-			if (!runner.has("UserPromptExpansion", event.command)) return undefined;
+			if (legacy || !runner.has("UserPromptExpansion", event.command)) return undefined;
 			const outcomes = await runner.run(
 				"UserPromptExpansion",
 				{
@@ -703,6 +715,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		// SessionStart's source (Claude Code): startup, resume, clear (a new session), compact.
 		let nextSource: string | undefined;
 		api.on("session_before_switch", async (event, ctx) => {
+			if (legacy) return undefined;
 			const reason = event.reason === "new" ? "clear" : "resume";
 			nextSource = reason;
 			if (runner.has("SessionEnd", reason)) await runner.run("SessionEnd", { reason }, { match: reason, ctx });
@@ -717,13 +730,13 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		};
 
 		api.on("session_start", async (event, ctx) => {
-			const source = event.reason === "startup" ? (nextSource ?? "startup") : "resume";
+			const source = legacy ? event.reason : event.reason === "startup" ? (nextSource ?? "startup") : "resume";
 			nextSource = undefined;
 			await sessionStart(source, ctx);
 		});
 
-		api.on("session_shutdown", async (_event, ctx) => {
-			const reason = runner.options.exitReason ?? "other";
+		api.on("session_shutdown", async (event, ctx) => {
+			const reason = legacy ? event.reason : (runner.options.exitReason ?? "other");
 			if (!runner.has("SessionEnd", reason)) return;
 			await runner.run("SessionEnd", { reason }, { match: reason, ctx });
 		});
@@ -733,7 +746,9 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 			if (!runner.has("PreCompact", trigger)) return undefined;
 			const outcomes = await runner.run(
 				"PreCompact",
-				{ trigger, custom_instructions: event.reason === "manual" ? (event.customInstructions ?? null) : null },
+				legacy
+					? { trigger }
+					: { trigger, custom_instructions: event.reason === "manual" ? (event.customInstructions ?? null) : null },
 				{ match: trigger, ctx },
 			);
 			const reason = blockingReason(outcomes);
@@ -744,6 +759,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 
 		// PostCompact, then SessionStart with source "compact" (Claude Code), whose context the next request carries.
 		api.on("session_compact", async (event, ctx) => {
+			if (legacy) return;
 			const trigger = event.reason === "manual" ? "manual" : "auto";
 			if (runner.has("PostCompact", trigger)) {
 				await runner.run("PostCompact", { trigger, compact_summary: event.result.summary }, { match: trigger, ctx });
@@ -752,7 +768,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		});
 
 		api.on("agent_before_settle", async (event, ctx) => {
-			if (event.outcome === "error") {
+			if (event.outcome === "error" && !legacy) {
 				// StopFailure (Claude Code): the turn ended on an API error; output and exit code are ignored.
 				const failure = lastFailure(ctx);
 				runner.fire("StopFailure", failure, ctx, failure.error);
@@ -761,11 +777,13 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 			if (event.outcome !== "completed" || !runner.has("Stop")) return undefined;
 			const outcomes = await runner.run(
 				"Stop",
-				{
-					stop_hook_active: stopActive,
-					background_tasks: runner.options.backgroundTasks?.() ?? [],
-					session_crons: runner.options.sessionCrons?.() ?? [],
-				},
+				legacy
+					? { stop_hook_active: stopActive }
+					: {
+							stop_hook_active: stopActive,
+							background_tasks: runner.options.backgroundTasks?.() ?? [],
+							session_crons: runner.options.sessionCrons?.() ?? [],
+						},
 				{ ctx },
 			);
 			const reason = blockingReason(outcomes);
@@ -790,7 +808,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		// SubagentStart may add context; SubagentStop may keep the child going (Claude Code, P44).
 		api.on("subagent_start", async (event, ctx) => {
 			const type = event.agentType ?? "";
-			if (!runner.has("SubagentStart", type)) return undefined;
+			if (legacy || !runner.has("SubagentStart", type)) return undefined;
 			const outcomes = await runner.run(
 				"SubagentStart",
 				{ agent_id: event.agentId, agent_type: type },
@@ -802,7 +820,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 
 		api.on("subagent_stop", async (event, ctx) => {
 			const type = event.agentType ?? "";
-			if (!runner.has("SubagentStop", type)) return undefined;
+			if (legacy || !runner.has("SubagentStop", type)) return undefined;
 			const outcomes = await runner.run(
 				"SubagentStop",
 				{
@@ -823,6 +841,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 
 		// PreModelSwitch may cancel or ask; PostModelSwitch's output reaches the next request (Claude Code).
 		api.on("model_select", async (event, ctx) => {
+			if (legacy) return undefined;
 			const fields = {
 				from_model: event.currentModel,
 				to_model: event.phase === "before" ? event.requestedModel : event.selectedModel,
@@ -861,7 +880,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 		// /add-dir announces new directories (P44): DirectoryAdded runs in the background.
 		api.events.on(DIRECTORY_ADDED_CHANNEL, (data) => {
 			const { directory, source } = data as { directory: string; source: string };
-			if (!runner.has("DirectoryAdded", source)) return;
+			if (legacy || !runner.has("DirectoryAdded", source)) return;
 			void runner
 				.run("DirectoryAdded", { directory, source }, { match: source, systemMessageToModel: true })
 				.then((outcomes) => {

@@ -38,6 +38,13 @@ inject a small adapter instead of polyfilling globals.
   `web_search`, `ask_user` (questions with options; by default the model
   goes on working and your answer arrives when you give it), and five
   permission modes (read-only, supervised, accept-edits, autonomous, bypass).
+- **Loops and watches** — as in Claude Code: `/loop 5m check the deploy`
+  reruns a prompt on an interval, `/loop check CI` lets the model pick when
+  to look again, and the model can schedule reminders itself (`cron_create`;
+  tasks fire between turns and come back with `--resume`; `TAU_DISABLE_CRON=1`
+  turns this off). The `monitor`
+  tool runs a command in the background and hands the model each line it
+  prints, e.g. errors in a log as they appear.
 - **Windows and networks** — on Windows a `powershell` tool sits next to
   `bash` (Git Bash), on by default as in Claude Code, with Claude Code's
   `PowerShell(...)` permission rules. `HTTP_PROXY` / `HTTPS_PROXY` /
@@ -84,7 +91,10 @@ inject a small adapter instead of polyfilling globals.
   and `.agents/skills`). The CLI reads MCP servers from
   `~/.tau/mcp.json` (pi's format) with secrets kept in `tau credentials` and
   referenced as `${cred:name}`, out of the model's reach (see
-  [docs/connectors.md](docs/connectors.md)).
+  [docs/connectors.md](docs/connectors.md)); as in Claude Code, server prompts
+  are `/mcp__server__prompt` commands, `@server:uri` attaches a resource,
+  servers can ask you for input in a form or a browser link, and long calls
+  show their progress.
 - **Hosts** — terminal (REPL / product-grade TUI / one-shot `-p`), browser
   (OPFS), WeChat mini-program, React Native (Expo), a phone (Flutter via
   `flutter_js`, kernel running in QuickJS), and a bare QuickJS engine with zero

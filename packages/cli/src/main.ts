@@ -1928,6 +1928,8 @@ async function main(): Promise<void> {
 			onHookApproval: (toolCallId) => approvals.record(toolCallId, { source: "hook_allow" }),
 			// P44 (Claude Code): SessionEnd's reason on exit; Stop and SubagentStop see the background work.
 			exitReason: workspaceHost === "tui" || workspaceHost === "repl" ? "prompt_input_exit" : "other",
+			// The parked gateway keeps its hooks as they were before P44.
+			...(spec.extendedSettings === false ? { legacy: true } : {}),
 			backgroundTasks: () =>
 				background.list().map((task) => ({
 					id: task.id,
@@ -2152,8 +2154,8 @@ async function main(): Promise<void> {
 				// P37d (pi): a nested worktree's own AGENTS.md shadows the main checkout's.
 				skip: [shadowedContextFile(cwd)].filter((path): path is string => path !== undefined),
 			});
-			// P44 (Claude Code): InstructionsLoaded for each file, for the record only.
-			for (const file of files) {
+			// P44 (Claude Code): InstructionsLoaded for each file, for the record only; not in the parked gateway.
+			for (const file of spec.extendedSettings === false ? [] : files) {
 				hookRunner.fire(
 					"InstructionsLoaded",
 					{

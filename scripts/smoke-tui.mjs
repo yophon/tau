@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -57,6 +57,7 @@ async function main() {
 		await run("worktree", runWorktreeSmoke);
 		await run("keys", runKeysSmoke);
 		await run("p39", runP39Smoke);
+		await run("p44", runP44Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -312,13 +313,72 @@ async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
 	].join(" ");
 	// SMOKE_KEEP=1 keeps the pane after tau exits (debugging a scenario that dies early).
 	const kept = process.env.SMOKE_KEEP ? `${command} 2>&1; echo EXITED=$?; sleep 60` : command;
+	// P44 (debt #22): everything the pane receives, stdout and stderr alike, goes to a log, so a
+	// first screen that never comes can be told apart from a tau that died or never started.
+	const log = join(dirname(dirs.home), `${label}.pane.log`);
 	await tmux(["new-session", "-d", "-x", "120", "-y", "38", "-s", name, "-c", dirs.cwd, kept]);
-	return new TmuxSession(name);
+	await tmux(["pipe-pane", "-t", name, "-o", `cat >> ${shellQuote(log)}`]).catch(() => undefined);
+	return new TmuxSession(name, log, Date.now());
 }
 
+/** Where failed sessions' pane logs are kept after the sandbox is removed (debt #22). */
+const failureDir = join(tmpdir(), "tau-smoke-failures");
+
 class TmuxSession {
-	constructor(name) {
+	constructor(name, log, startedAt) {
 		this.name = name;
+		this.log = log;
+		this.startedAt = startedAt;
+	}
+
+	/**
+	 * What the pane's process is doing and what it wrote (debt #22): alive or dead with its
+	 * status, its process tree, the size and end of the raw pane log, kept in tau-smoke-failures.
+	 */
+	async diagnose() {
+		const lines = [`--- diagnosis of ${this.name} (${Math.round((Date.now() - this.startedAt) / 1000)}s after start)`];
+		try {
+			const pane = (
+				await tmux(["display", "-p", "-t", this.name, "#{pane_pid} #{pane_dead} #{pane_dead_status}"])
+			).trim();
+			lines.push(`pane pid/dead/status: ${pane}`);
+			const pid = pane.split(" ")[0];
+			if (pid) {
+				const tree = await execFileP("ps", ["-o", "pid,ppid,stat,etime,pcpu,rss,args", "--ppid", pid, "-p", pid]).catch(
+					(error) => `ps failed: ${error.message}`,
+				);
+				lines.push(tree.trimEnd());
+			}
+		} catch (error) {
+			lines.push(`tmux display failed: ${error.message}`);
+		}
+		if (this.log) {
+			try {
+				const size = (await stat(this.log)).size;
+				const raw = await readFile(this.log, "utf8");
+				lines.push(`pane log: ${size} bytes; last 1500 chars: ${JSON.stringify(raw.slice(-1500))}`);
+				await mkdir(failureDir, { recursive: true });
+				const kept = join(failureDir, `${this.name}.log`);
+				await copyFile(this.log, kept);
+				lines.push(`kept at ${kept}`);
+			} catch (error) {
+				lines.push(`pane log unavailable: ${error.message}`);
+			}
+		}
+		return lines.join("\n");
+	}
+
+	/** Send what the pane receives to `file` instead of the session log (tmux has one pipe per pane). */
+	async pipe(file) {
+		await tmux(["pipe-pane", "-t", this.name]);
+		await tmux(["pipe-pane", "-o", "-t", this.name, `cat >> ${shellQuote(file)}`]);
+	}
+
+	/** Back to the session log. */
+	async unpipe() {
+		await tmux(["pipe-pane", "-t", this.name]);
+		if (this.log)
+			await tmux(["pipe-pane", "-o", "-t", this.name, `cat >> ${shellQuote(this.log)}`]).catch(() => undefined);
 	}
 
 	async send(...keys) {
@@ -342,7 +402,9 @@ class TmuxSession {
 			if (screen.includes(needle)) return;
 			await sleep(100);
 		}
-		throw new Error(`Timed out waiting for ${JSON.stringify(needle)} in tmux ${this.name}:\n${screen}`);
+		throw new Error(
+			`Timed out waiting for ${JSON.stringify(needle)} in tmux ${this.name}:\n${screen}\n${await this.diagnose()}`,
+		);
 	}
 
 	async waitForExit(timeoutMs = 10_000) {
@@ -355,7 +417,9 @@ class TmuxSession {
 			}
 			await sleep(100);
 		}
-		throw new Error(`Timed out waiting for tmux ${this.name} to exit:\n${await this.capture()}`);
+		throw new Error(
+			`Timed out waiting for tmux ${this.name} to exit:\n${await this.capture()}\n${await this.diagnose()}`,
+		);
 	}
 
 	async kill() {
@@ -430,7 +494,7 @@ async function runResizeSmoke(root, baseUrl) {
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
 		// Everything the TUI writes from here on, to check what a resize sends.
 		const raw = join(dirs.home, "resize-output.bin");
-		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await session.pipe(raw);
 		await sleep(200);
 		for (const width of [100, 80, 60, 110]) {
 			const offset = await readFile(raw).then(
@@ -464,7 +528,7 @@ async function runResizeSmoke(root, baseUrl) {
 				);
 			}
 		}
-		await tmux(["pipe-pane", "-t", session.name]);
+		await session.unpipe();
 		await session.waitFor("SMOKE_PRICING_OK", 5_000);
 		await session.send("exit", "Enter");
 		await session.waitForExit();
@@ -493,7 +557,7 @@ async function runFullscreenResizeSmoke(root, baseUrl) {
 		await session.send("pricing smoke", "Enter");
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
 		const raw = join(dirs.home, "fs-resize-output.bin");
-		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await session.pipe(raw);
 		await sleep(200);
 		for (const [width, height] of [
 			[100, 38],
@@ -529,7 +593,7 @@ async function runFullscreenResizeSmoke(root, baseUrl) {
 				}
 			}
 		}
-		await tmux(["pipe-pane", "-t", session.name]);
+		await session.unpipe();
 		await session.send("exit", "Enter");
 		await session.waitForExit();
 		console.log("ok fullscreen resize");
@@ -687,11 +751,11 @@ async function runFullscreenSelectSmoke(root, baseUrl) {
 		const at = cellOf(await tmux(["capture-pane", "-t", session.name, "-p"]), "SMOKE_PRICING_OK");
 		if (!at) throw new Error("SMOKE_PRICING_OK is not on screen");
 		const raw = join(dirs.home, "fs-select-output.bin");
-		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await session.pipe(raw);
 		await sleep(200);
 		await session.send("-l", mouse(0, at.x, at.y) + mouse(32, at.x + 8, at.y) + mouse(0, at.x + 16, at.y, "m"));
 		await session.waitFor("Copied 16 characters", 5_000);
-		await tmux(["pipe-pane", "-t", session.name]);
+		await session.unpipe();
 		const written = await readFile(raw, "utf8").catch(() => "");
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: OSC 52 starts with ESC and ends with BEL
 		const osc52 = written.match(/\x1b\]52;c;([A-Za-z0-9+/=]+)\x07/);
@@ -959,6 +1023,78 @@ async function runP39Smoke(root, baseUrl) {
 	}
 }
 
+/** A stdio MCP server with one prompt and one tool that asks the user through a form (P44). */
+const SMOKE_MCP_SERVER = `
+import { createInterface } from "node:readline";
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
+const waiting = new Map();
+let next = 1;
+const ask = (method, params) => new Promise((resolve) => { const id = "s" + next++; waiting.set(id, resolve); send({ id, method, params }); });
+createInterface({ input: process.stdin }).on("line", async (line) => {
+	if (!line.trim()) return;
+	const message = JSON.parse(line);
+	if (message.method === undefined) { waiting.get(message.id)?.(message); waiting.delete(message.id); return; }
+	if (message.id === undefined) return;
+	const reply = (result) => send({ id: message.id, result });
+	switch (message.method) {
+		case "initialize": return reply({ protocolVersion: message.params.protocolVersion, capabilities: { tools: {}, prompts: {} }, serverInfo: { name: "smoke" } });
+		case "ping": return reply({});
+		case "tools/list": return reply({ tools: [{ name: "ask", description: "Ask the user a name", inputSchema: { type: "object", properties: {} } }] });
+		case "prompts/list": return reply({ prompts: [{ name: "greet", description: "SMOKE_PROMPT_DESC" }] });
+		case "prompts/get": return reply({ messages: [{ role: "user", content: { type: "text", text: "SMOKE_PROMPT_TEXT" } }] });
+		case "tools/call": {
+			const answer = await ask("elicitation/create", { message: "SMOKE_ELICIT", requestedSchema: { type: "object", properties: { name: { type: "string", title: "Name" } }, required: ["name"] } });
+			const result = answer.result ?? {};
+			return reply({ content: [{ type: "text", text: "GOT_" + (result.content?.name ?? result.action) }] });
+		}
+		default: return send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+	}
+});
+`;
+
+// P44: /loop schedules and runs at once (shown in /tasks), an MCP prompt is a command, and an
+// MCP server's elicitation is answered in the TUI form.
+async function runP44Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p44", false);
+	const server = join(dirs.home, "smoke-mcp.mjs");
+	await writeFile(server, SMOKE_MCP_SERVER, "utf8");
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	await writeFile(
+		join(dirs.home, ".tau", "mcp.json"),
+		`${JSON.stringify({ mcpServers: { smoke: { command: process.execPath, args: [server] } } })}\n`,
+		"utf8",
+	);
+	const session = await startTui("p44", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("/loop 5m loop smoke", "Enter");
+		await session.waitFor("SMOKE_LOOP_RAN", 10_000);
+		const looped = await session.capture();
+		if (!/Loop [0-9a-f]{8}: every 5m/.test(looped)) throw new Error(`No loop confirmation:\n${looped}`);
+		await session.send("/tasks", "Enter");
+		await session.waitFor("*/5 * * * *", 10_000);
+		await session.send("Escape");
+		await sleep(200);
+		await session.send("/mcp__smoke__greet", "Enter");
+		await session.waitFor("SMOKE_PROMPT_DONE", 15_000);
+		await session.send("elicit smoke", "Enter");
+		await session.waitFor("Name *: —", 15_000);
+		await session.send("Enter");
+		await session.waitFor("Name *", 10_000);
+		await session.send("-l", "octo");
+		await session.send("Enter");
+		await session.waitFor("Name *: octo", 10_000);
+		// The selection moved on to Submit.
+		await session.send("Enter");
+		await session.waitFor("SMOKE_ELICIT_DONE", 15_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok p44");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P38a: tau reads keys itself — Home, Delete, Ctrl+Left and Alt+Backspace edit the line, a
 // burst of arrow keys in one write all count (tech debt #21), Shift+Enter (kitty CSI-u) is a
 // newline, Ctrl+R finds history, Ctrl+D on an empty input exits.
@@ -1075,13 +1211,13 @@ async function runNotifySmoke(root, baseUrl) {
 	try {
 		await session.waitFor("tau ·", 10_000);
 		const raw = join(dirs.home, "notify-output.bin");
-		await tmux(["pipe-pane", "-o", "-t", session.name, `cat >> ${shellQuote(raw)}`]);
+		await session.pipe(raw);
 		await sleep(200);
 		await session.send("-l", "\x1b[O");
 		await session.send("pricing smoke", "Enter");
 		await session.waitFor("SMOKE_PRICING_OK", 10_000);
 		await sleep(400);
-		await tmux(["pipe-pane", "-t", session.name]);
+		await session.unpipe();
 		const written = await readFile(raw, "utf8").catch(() => "");
 		if (!written.includes("\x1b]777;notify;tau · done;SMOKE_PRICING_OK\x07")) {
 			throw new Error(`No notification for the finished run: ${JSON.stringify(written.slice(-300))}`);
@@ -1389,6 +1525,7 @@ function responseFor(request) {
 		if (content.includes("Command running in background with ID: b1")) return textTurn("SMOKE_BG_STARTED");
 		if (content.includes("Command running in background with ID: b2")) return textTurn("SMOKE_BG_SECOND");
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
+		if (content.includes("GOT_octo")) return textTurn("SMOKE_ELICIT_DONE");
 	}
 	if (String(messages[0]?.content ?? "").includes("You are a context transfer assistant")) {
 		return textTurn("## Context\nSmoke context.\n\n## Task\nSMOKE_HANDOFF_TASK");
@@ -1396,6 +1533,9 @@ function responseFor(request) {
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("<side-question>")) return textTurn("SMOKE_BTW_ANSWER");
+	if (content.includes("loop smoke")) return textTurn("SMOKE_LOOP_RAN");
+	if (content.includes("SMOKE_PROMPT_TEXT")) return textTurn("SMOKE_PROMPT_DONE");
+	if (content.includes("elicit smoke")) return toolCallTurn("mcp__smoke__ask", {});
 	if (content.includes("which model")) return textTurn(`MODEL_IS_${request.model}`);
 	if (content.includes("fg smoke"))
 		return toolCallTurn("bash", { command: "echo SMOKE_FG_START; sleep 30; echo SMOKE_FG_END" });

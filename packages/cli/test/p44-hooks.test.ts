@@ -439,6 +439,44 @@ else process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 
 		assert.deepEqual(await postToolBatch(runner, { message: message([]), toolResults: [] }), {});
 	});
 
+	it("the parked gateway (legacy) keeps the hooks as they were before P44", async () => {
+		const dir = tempDir();
+		const post = recorder(dir, "post");
+		const start = recorder(dir, "start");
+		const end = recorder(dir, "end");
+		const h = await setup(
+			{
+				PostToolUse: [group(post.command, "bash")],
+				SessionStart: [group(start.command, "startup")],
+				SessionEnd: [group(end.command)],
+				PostCompact: [group(post.command)],
+			},
+			{ legacy: true, exitReason: "prompt_input_exit" },
+		);
+		const call = { type: "tool_call" as const, toolCallId: "c1", toolName: "bash", input: {} };
+		await h.registry.runToolCall(call, h.ctx);
+		await h.registry.runToolResult(
+			{ ...call, type: "tool_result", content: [{ type: "text", text: "boom" }], isError: true },
+			h.ctx,
+		);
+		assert.deepEqual(post.calls()[0]?.tool_response, { content: "boom", is_error: true });
+		// No matcher on SessionStart before P44: the "startup" group runs on reload too, with the raw reason.
+		await h.registry.notifySessionStart("reload", h.ctx);
+		assert.equal(start.calls()[0]?.source, "reload");
+		await h.registry.notifySessionShutdown("quit", h.ctx);
+		assert.equal(end.calls()[0]?.reason, "quit");
+		await h.registry.notifySessionCompact(
+			{
+				result: { summary: "s", firstKeptEntryId: "e", tokensBefore: 1 },
+				fromExtension: false,
+				reason: "manual",
+				willRetry: false,
+			},
+			h.ctx,
+		);
+		assert.equal(post.calls().length, 1, "no PostCompact");
+	});
+
 	it("InstructionsLoaded and Elicitation are matched on the load reason and the server", () => {
 		const runner = new HookRunner({
 			cwd: tempDir(),

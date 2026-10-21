@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-10-21（P43：MCP 照 pi 1.2（2025-11-25、SSE 续传、roots、资源工具、图片交给模型）、工具结果图片统一处理、命令里的 `TAU_SESSION_*`、`expandPromptTemplates`；P42：长会话性能（写入原地追加投影、按对象身份检查、列表逐行读、全屏空闲时预渲染、增量搜索语料、`/tree` 缓存）；P41：技能与提示模板内置、pi 的资源参数、SYSTEM.md；P40：代理、PowerShell 工具、设置分层、pi 扩展面收尾（模型请求事件、扩展弹窗事件、Markdown 变换、溢出时压缩重试）；P39：`/diff`、`/btw`、Ctrl+B 与超时转后台、`keybindings.json`、会话树画出分支、记忆写入不限；P38：TUI 自己解析按键、编辑 diff、工具参数流式显示、推理折叠、读取合并、会话树回到消息之前、只重写变了的行）
+> 最后更新：2026-10-21（P44：MCP 提示命令、`@` 资源、elicitation、进度与取消，`/loop` 与定时工具、Monitor，钩子补齐 13 个事件；P43：MCP 照 pi 1.2（2025-11-25、SSE 续传、roots、资源工具、图片交给模型）、工具结果图片统一处理、命令里的 `TAU_SESSION_*`、`expandPromptTemplates`；P42：长会话性能（写入原地追加投影、按对象身份检查、列表逐行读、全屏空闲时预渲染、增量搜索语料、`/tree` 缓存）；P41：技能与提示模板内置、pi 的资源参数、SYSTEM.md；P40：代理、PowerShell 工具、设置分层、pi 扩展面收尾（模型请求事件、扩展弹窗事件、Markdown 变换、溢出时压缩重试）；P39：`/diff`、`/btw`、Ctrl+B 与超时转后台、`keybindings.json`、会话树画出分支、记忆写入不限；P38：TUI 自己解析按键、编辑 diff、工具参数流式显示、推理折叠、读取合并、会话树回到消息之前、只重写变了的行）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -121,6 +121,20 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - P37（D40）：`/handoff`（`handoff.ts`，pi 的系统提示与请求，新会话 `SessionRepo.create({ parentSession })`，提示放进输入框）；`dirty-repo.ts`（pi 的 dirty-repo-guard，`session.dirtyRepoGuard` 打开，TUI 与 REPL 的切换命令里问）；TUI 连按两下 Esc（`controller.escape()`，500 毫秒，`tui.doubleEscapeAction`；stdin 过滤层把一块里的多个 Esc 拆开）；`statusline.ts`（`StatusLineSettings` 读用户与受信任项目的 `statusLine`，`StatusLineRunner` 300 毫秒防抖、新触发取消旧的，`statusLineInput` 按 Claude Code 字段名；TUI 在 `refreshStatus` 与切档时触发，行显示在内置状态行上面，`truncateAnsi` 截断）；`worktree.ts`（`openWorktree`/`finishWorktreeSession`：git worktree 与分支、fresh/head 起点、`.worktreeinclude`、`symlinkDirectories`、退出清理，`main.ts` 建好后 `chdir` 进去）与 `git-paths.ts`（不起 git 进程读 `.git`：worktree 里的分支、主仓库、pi 的 shadowed AGENTS.md；项目记忆按主仓库）。
 - 后台命令与图片（P36，D39）：`openWorkspace` 给每个工作区建一个 `NodeBackgroundShell`（P39d：它的 `run` 用管道跑前台命令，转后台时先把已有输出写进任务文件，之后的输出继续追加，子进程与管道 `unref`；`moveOnTimeout: false` 让超时照旧停止，网关经 `openWorkspace({ backgroundOnTimeout: false })` 用它；TUI 拿到 `background` 后 Ctrl+B 调 `moveToBackground`）（host-node：直接把输出写进 `<临时目录>/tau/<进程号>-<序号>/tasks/<id>.output`，Unix 进程组、Windows `taskkill /T` 结束整棵进程树，子进程 `unref`，进程退出时统一结束），交给 `createCodingTools` 与 `background.ts` 的扩展：命令自己结束时 `sendMessage`（customType `background_task`，followUp + triggerTurn）带最后 20 行输出，`/tasks` 合并后台命令与经 `api.events` 的 `subagents:task` 频道报告的后台子代理，输入框上方的 widget 计数；网关对话的 `busy()` 让有后台命令的对话不被卸载，`close()` 结束它们，聊天 `/tasks` 走 `backgroundTasksText` 直接查列表。图片：`NodeImageProcessor`（host-node `image/`：pi 的 photon 缩放与 EXIF 方向，跑在 worker 里）交给 `read`、`@file`（`file-args.ts`，照抄 pi file-processor）与 TUI 粘贴；`tui/clipboard-read.ts` 读剪贴板（PowerShell、osascript、wl-paste/xclip，WSL 退到 PowerShell），Alt+V/Ctrl+V 插入复制的文件路径、存好的图片路径或文字。`modelTakesImages` 看当前端点的 `input`，`read` 据此加 pi 的说明。
 - CLI 内置扩展（P24e，`builtins.ts`）：用户扩展之前加载 tool_search、codemode（都 inactive，`--tools +codemode`）和提示工具行（每次 run 按 `agent.getDeclaredTools()` 重写默认提示的工具行并附 promptGuidelines，隐藏的声明不点名）；`codemode.mode`/`inlineBudget` 读 `~/.tau/settings.json` 与已信任项目的 `.tau/settings.json`。
+- P44（D47）：
+  - **MCP**（ext-mcp-http）：
+    - `client.ts` 加 `capabilities`、`setRequestHandler`（处理器拿到取消信号，`notifications/cancelled` 中止它、被取消的请求不回复）、请求的 `onProgress`（请求 id 作进度令牌，收到进度经 `armTimeout` 重置超时）、中止或超时时发 `notifications/cancelled`（`initialize` 除外）、`listPrompts`/`getPrompt`。
+    - `prompts.ts` 命令名、参数与结果转换；`servers.ts` 的 `refreshPrompts`/`registerPrompts` 注册 `mcp__<服务器>__<提示>` 命令（`source: "mcp"`），去掉的改成 hidden。
+    - `mentions.ts` 是 `@` 的补全提供者（叠在宿主的上面）与 `findMentions`；`servers.ts` 的 `input` 处理器读资源、附在消息后面，资源列表 `resourceList` 按需拉、`resources/list_changed` 作废。
+    - `elicitation.ts` 校验 `elicitation/create`、把表单 schema 转成内核的 `UiForm`、`elicitWithUi`（表单、逐个字段问、URL 同意）；`servers.ts` 有 `elicit` 选项时声明能力、处理请求（用正在进行的工具调用的界面，`activeCalls`）、处理 -32042 与完成通知；工具调用的进度经 `onUpdate`（`progressLine`）。
+  - **内核**：`ui-form.ts`（`UiForm`、校验、`askFormStepByStep`），`UiCapability.form` 与 pi 的 `addAutocompleteProvider`；事件 `command_prompt`、`subagent_start`、`subagent_stop`（`runSubagent` 对父 agent 的扩展触发：开始时的上下文并进子 agent 的系统提示，结束时可以让它接着跑）；`RegisteredCommandResult` 带图片（`commandPromptContent`）、`RegisteredCommand.source`；同一扩展重复注册命令时替换；`BackgroundShell.start` 的 `onStdout`。
+  - **CLI**：
+    - `mcp-elicit.ts`：Elicitation 钩子、对话框、ElicitationResult 钩子；`open-url.ts` 从控制器里搬出来。
+    - TUI：`controller.form`（字段列表，选中就改，复用选择器与输入框）、`addAutocompleteProvider`（内置补全包成 pi 形状放在链底，异步结果按输入状态缓存，`menu-refresh` 重画菜单），空闲 Esc 在 `tau:idle-escape` 频道上通知。
+    - `scheduler.ts`（任务、到期取出、恢复、`/loop` 的间隔解析，cron 用网关的 `parseCron`/`nextCronTime`）与 `loop.ts`（cron 工具、`/loop`、`schedule_wakeup`、每秒检查且只在空闲时触发、`tau.cron` 自定义条目），`openWorkspace` 只在 TUI 与 REPL 里按需加载；`run-time.ts` 格式化时间。
+    - `background.ts` 加 monitor 工具（逐行、200 毫秒合并、到期与过量停止）与 `/tasks` 的定时任务；host-node 的 `start` 有 `onStdout` 时用管道读 stdout、等读完再结束。
+    - `hooks.ts`：13 个新事件，matcher 对除 UserPromptSubmit、Stop、PostToolBatch 外的事件生效（`legacy` 时照旧只对工具事件），PostToolBatch 经 `finishTurn`（`postToolBatch`），InstructionsLoaded 在 `loadProjectContext` 里触发，DirectoryAdded 经 `tau:directory-added` 频道。
+  - **网关**都不开（钩子用 `legacy`），只有进度与取消随协议层一起用。
 - P43（D46）：
   - **MCP 客户端**（ext-mcp-http）：
     - `client.ts` 发 2025-11-25、按 `SUPPORTED_PROTOCOL_VERSIONS` 检查服务器的选择，记下 `serverCapabilities`；给了 `roots` 就声明能力并回应 `roots/list`；有分页的资源方法。
