@@ -32,6 +32,7 @@ import {
 	type PlatformResponse,
 	parseJsonWithRepair,
 	resolveTranscript,
+	responseHeaders,
 	SseParser,
 	type StopReason,
 	type TauAbortSignal,
@@ -613,6 +614,8 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 			request.headers,
 		);
 		const body = buildRequestBody(config, request);
+		// before_provider_request (P40d, pi) may replace the body.
+		const payload = request.onPayload ? await request.onPayload(body) : body;
 
 		let response: PlatformResponse;
 		try {
@@ -620,7 +623,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 				platform.fetch(`${baseUrl}/v1/messages`, {
 					method: "POST",
 					headers,
-					body: JSON.stringify(body),
+					body: JSON.stringify(payload),
 					signal: request.signal,
 				}),
 				platform,
@@ -632,6 +635,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 			if (cause instanceof TauError && cause.code === "timeout") throw cause;
 			throw new TauError("network_error", `Network request failed: ${describeError(cause)}`, cause);
 		}
+		await request.onResponse?.({ status: response.status, headers: responseHeaders(response) });
 		if (!response.ok) {
 			throw new HttpError(response.status, await response.text());
 		}
@@ -687,6 +691,7 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 			} catch (cause) {
 				throw new TauError("invalid_response", `Failed to parse stream event: ${data.slice(0, 200)}`, cause);
 			}
+			request.onStreamEvent?.(event);
 			switch (event.type) {
 				case "message_start": {
 					sawMessageStart = true;
@@ -853,5 +858,6 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 		yield { type: "response_end", message };
 	};
 	transport.supportsHeaders = true;
+	transport.supportsProviderEvents = true;
 	return transport;
 }

@@ -1,6 +1,6 @@
 # pi 扩展面对照清单
 
-> 最后更新：2026-10-16（P22：会话日志为上下文唯一来源；context_with_system、setLabel、sessionManager、getSystemPrompt 落地）。
+> 最后更新：2026-10-20（P40d：剩下的 7 行未排期全部完成，表里不再有 📍Backlog；此前 P22：会话日志为上下文唯一来源；context_with_system、setLabel、sessionManager、getSystemPrompt 落地）。
 > 行集合：pi tag v1.2.0 `packages/coding-agent/src/core/extensions/types.ts` 的 `on(event: "…")` 重载（41）、`ExtensionAPI` 成员（32）、`ExtensionContext` 成员（18），共 91 行（D23）。`node scripts/check-pi-parity.mjs` 从 `../pi` 抽取成员并与下面三张表比对，二者必须完全相等。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期 · ❌Dn 决策排除 · ⚠Dn 有意偏离（写明形状与理由）。
 > 「快照」列：0.80 表示 v0.80.3 就有的成员，1.2 表示之后新增的成员。
@@ -16,27 +16,27 @@
 | `session_info_changed` | 0.80 | ✅ P3 | |
 | `session_before_switch` | 0.80 | ✅ P11 | TUI /resume、/sessions、/fork、/clone 与 REPL /fork 切换前；P25 起 TUI /new 以 reason "new" 触发 |
 | `session_before_fork` | 0.80 | ✅ P5 | 按 entry 的 /fork 触发；全量复制没有分叉点，不触发 |
-| `session_before_compact` | 0.80 | ✅ P4 | 可取消、可接管；`signal` 必填（P23a，未传时内核给一个永不中止的）；reason 取 manual/threshold，overflow 📍Backlog |
+| `session_before_compact` | 0.80 | ✅ P4 | 可取消、可接管；`signal` 必填（P23a，未传时内核给一个永不中止的）；reason 取 manual/threshold/overflow，带 `willRetry`（P40d：请求因上下文溢出失败时压缩并重试这一轮，一次成功的请求之前只试一次，照 pi `_checkCompaction`；未照抄成功回复用量超窗与输出被压低截断两种情况）。pi 的 `branchEntries` 未带 |
 | `session_compact` | 0.80 | ✅ P4 | |
-| `session_compact_failed` | 1.2 | ✅ P23a | pi 全形状 `{reason, errorMessage?, aborted, willRetry, fromExtension}`；扩展取消记 aborted；`willRetry` 恒 false（无 overflow 恢复）。循环内失败只报告不抛（D14），中止则以 agent_end 收尾；宿主直接调 `compact()` 先发事件再 reject |
+| `session_compact_failed` | 1.2 | ✅ P23a | pi 全形状 `{reason, errorMessage?, aborted, willRetry, fromExtension}`；扩展取消记 aborted；`willRetry` 在溢出恢复的压缩失败时为 true，连续第二次溢出时报 pi 原话、为 false（P40d）。循环内失败只报告不抛（D14），中止则以 agent_end 收尾；宿主直接调 `compact()` 先发事件再 reject |
 | `session_shutdown` | 0.80 | ✅ P3/P8 | reason：quit |
 | `mcp_servers_change` | 1.2 | ❌D21 | 属于 pi 核心 MCP 管理器。tau 的 MCP 在扩展包里，内核没有 MCP 概念（D3/D21 的分层；依赖 pi 内置管理器的扩展不在兼容目标内，D9） |
-| `session_before_tree` | 0.80 | ✅ P5 | 可取消、可接管摘要；`signal` 必填（P23a）；label/userWantsSummary 📍Backlog |
+| `session_before_tree` | 0.80 | ✅ P5 | 可取消、可接管摘要；`signal` 必填（P23a）；P40d：`preparation` 带 `userWantsSummary`、`replaceInstructions`、`label`，结果可改后两项，标签挂在摘要条目上（无摘要时挂在目标上），`navigateTo` 同样接受这两项 |
 | `session_tree` | 0.80 | ✅ P5 | 携带 summaryEntry |
 | `context` | 0.80 | ✅ P2/P22 | 每次 LLM 调用前改写对话。P22 起照抄 pi 两阶段语义：处理器看不到 system 消息，原位修改与返回值都生效，之后恢复 prompt/工具状态；作用于 JSON 副本，改不到日志 |
 | `context_with_system` | 1.2 | ✅ P22 | 在全部 `context` 处理器之后、看到含 system 消息的完整转录，结果原样发出；删掉首条 system 时经 error sink 报告（pi 报错但照用） |
 | `cache_warming_decision` | 1.2 | ❌D19 | 成本感知的缓存预热需要模型库与定价（D19-3 不伪造成本），且是后台计时器（D15） |
-| `before_provider_request` | 0.80 | 📍Backlog | 快照内漏登（P21 补行）。线层事件，无消费者 |
+| `before_provider_request` | 0.80 | ✅ P40 | 每次调用模型前（对话、压缩、摘要、`/btw`）；返回值不是 undefined 时替换请求体。传输层经 `TransportRequest.onPayload` 实现并声明 `supportsProviderEvents`（OpenAI 兼容、Anthropic 都支持），未声明时注册即报错（D15 补记） |
 | `before_provider_headers` | 1.2 | ✅ P23d | 每次 transport 调用触发（主循环、压缩、turn-prefix、分支摘要），不缓存；原地改 `event.headers`，null 删除，可改写鉴权与协议头（开放问题 2）。⚠ 偏离：transport 自己的 headers 不在事件里（D21）；transport 须声明 `supportsHeaders`，否则抛 `unsupported`（D15 补记） |
-| `after_provider_response` | 0.80 | 📍Backlog | 快照内漏登（P21 补行）。与 before_provider_request 同批 |
-| `provider_stream_event` | 1.2 | 📍Backlog | 只读的原始 chunk 通知，TransportRequest 可选回调（D15 模式） |
+| `after_provider_response` | 0.80 | ✅ P40 | 收到响应头、读流之前，带 `status` 与 `headers`（平台列不出头时为空对象）；`onResponse` |
+| `provider_stream_event` | 1.2 | ✅ P40 | 每个解析好的流事件在转换前触发，带 `provider`、`api`、`model`、`data`；不等待处理器，错误交给 error sink；`onStreamEvent` |
 | `before_agent_start` | 0.80 | ✅ P2/P3 | 替换 system prompt + 注入消息；`resume()` 同样触发（P21-HF-10） |
 | `agent_start` | 0.80 | ✅ P2 | |
 | `agent_end` | 0.80 | ✅ P2 | 每个 run 一次；其中入队的消息在同一个 prompt 里续跑一个 run（P23b，pi _handlePostAgentRun）。⚠ 偏离：自动重试在 run 内完成，重试之间不发 agent_end（pi 每次尝试一个 run） |
 | `agent_before_settle` | 1.2 | ✅ P23b | 可操作边界子集：草稿只收 custom/custom_message，无 `context` 预览（处理器读 ctx.messages）；continue 或队列非空则续跑一个 run，无可回答上下文时忽略并报错 |
 | `agent_settled` | 1.2 | ✅ P23b | 运行槽释放后发出，带 aborted；同步镜像到 AgentEvent；其中发起的 run 等全部处理器返回后才交给宿主 |
-| `ui_prompt_start` | 1.2 | 📍Backlog | 内核包装 UiCapability 即可实现；无消费者 |
-| `ui_prompt_end` | 1.2 | 📍Backlog | 同上 |
+| `ui_prompt_start` | 1.2 | ✅ P40 | 扩展经 `ctx.ui` 弹出要等回答的界面（confirm、input、select、editor，tau 的 selectMany 记为 select）前触发；审批不经过它（pi 只管扩展的弹窗）。有处理器时内核才包装 `ctx.ui` |
+| `ui_prompt_end` | 1.2 | ✅ P40 | 同上，界面结束后（含出错）触发 |
 | `turn_start` | 0.80 | ✅ P2 | |
 | `turn_end` | 0.80 | ✅ P2 | P23b 起为可操作边界：outcome、messageEntryId/toolResultEntryIds，草稿子集同 agent_before_settle，continue 在 error/aborted 或无可回答上下文时忽略。照抄 pi 事件序：steering 在 turn_end 之后拉取 |
 | `message_start` | 0.80 | ✅ P2/P3 | 全部消息角色 |
@@ -62,7 +62,7 @@
 | `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
 | `getFlag` | 0.80 | ✅ P2 | |
 | `registerMessageRenderer` | 0.80 | ✅ P8 | 按 role/customType 匹配 |
-| `registerMarkdownTransformer` | 1.2 | 📍Backlog | 纯展示变换。P25 的 TUI 自带 markdown 渲染（D31），按需在 `render/markdown.ts` 前加变换链，未排期 |
+| `registerMarkdownTransformer` | 1.2 | ✅ P40 | 每个扩展一个（再注册替换），按加载顺序作用于 TUI 里用户消息、助手消息与展开的推理；上下文 `messageType`、`isStreaming`、`availableWidth`。只改显示；inline 模式已写进终端历史的行不重画 |
 | `registerEntryRenderer` | 1.2 | ✅ P8 | ⚠ 同名异形：tau 早于 pi 自有（P8 形状，返回 string/`{text,format}`/组件，不接 Theme），代码注明偏离（D9/D10） |
 | `registerToolRenderer` | 1.2 | ✅ P8 | 同上 |
 | `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 `triggerTurn:false` 暂存到当前 turn_end 之后提交、不触发请求（P23b，pi 0.84.4）；压缩/导航占槽期间暂存到其结束后（P23a） |
@@ -143,7 +143,7 @@
 | 工具参数 JSON 修复（`repairJson`） | ✅ P21-HF-7 | |
 | 跨模型回放（`transformMessages`） | ✅ P21-HF-6 | 内核共享，Anthropic 扩展同用 |
 | 项目上下文文件（AGENTS.md，`loadProjectContextFiles`） | ✅ P21a | 内核 `loadProjectContextFiles(fs, …)` + `renderProjectContext`，CLI `-nc` 关闭、`/reload` 重读。嵌套 worktree 的重复文件照抄 pi `findShadowedContextFile`（P37d）：CLI 的 `git-paths.ts` 算出被遮住的主仓库文件，经 `skip` 交给内核（内核无 realpath） |
-| provider 线层事件 | 📍Backlog | `before_provider_headers` 已做（P23d）；`before_provider_request`/`after_provider_response`/`provider_stream_event` 无消费者 |
+| provider 线层事件 | ✅ P40 | `before_provider_headers`（P23d）与 `before_provider_request`/`after_provider_response`/`provider_stream_event`（P40d）都已实现 |
 | settings 层 | ❌D9 | 见 `getSettings` |
 | 模型库与目录（models.json、modelOverrides、models-store.json） | ❌D21 | 连同 auth.json 一起属于 pi 产品层配置面 |
 | 订阅与 OAuth 登录 | ❌D2 | |

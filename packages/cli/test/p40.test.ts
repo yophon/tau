@@ -663,3 +663,26 @@ describe("P40c: settings in layers (pi)", () => {
 		assert.equal(readFileSync(script, "utf8").includes("appendFileSync"), true);
 	});
 });
+
+describe("P40d: pi's markdown transformers in the TUI", () => {
+	it("change how user and assistant messages are drawn, in extension order", async () => {
+		const contexts: string[] = [];
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("plain answer"))],
+			extensions: [
+				(api) =>
+					api.registerMarkdownTransformer((text, context) => {
+						contexts.push(`${context.messageType}:${context.isStreaming}`);
+						return text.toUpperCase();
+					}),
+				(api) => api.registerMarkdownTransformer((text) => `${text} [checked]`),
+			],
+		});
+		await h.submit("my question");
+		await h.waitFor((f) => f.includes("PLAIN ANSWER [checked]"), "the transformed answer");
+		assert.match(h.frame(), /MY QUESTION \[checked\]/);
+		assert.ok(contexts.includes("user:false"));
+		assert.ok(contexts.includes("assistant:false"));
+		h.cleanup();
+	});
+});

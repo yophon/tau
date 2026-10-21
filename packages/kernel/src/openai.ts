@@ -472,7 +472,7 @@ export async function* streamChatCompletion(
 		thinkingLevel?: ThinkingLevel;
 		/** Model of this request; defaults to config.model (P23d, Agent.setModel). */
 		model?: string;
-	},
+	} & Pick<TransportRequest, "onPayload" | "onResponse" | "onStreamEvent">,
 ): AsyncGenerator<ChatStreamEvent> {
 	const model = options?.model ?? config.model;
 	throwIfAborted(options?.signal);
@@ -518,13 +518,16 @@ export async function* streamChatCompletion(
 	// before_provider_headers changes go last, after the configured headers (pi).
 	headers = applyHeaderChanges(headers, options?.headers);
 
+	// before_provider_request (P40d, pi) may replace the body.
+	const payload = options?.onPayload ? await options.onPayload(body) : body;
+
 	let response: PlatformResponse;
 	try {
 		response = await withStallTimeout(
 			platform.fetch(url, {
 				method: "POST",
 				headers,
-				body: JSON.stringify(body),
+				body: JSON.stringify(payload),
 				signal: options?.signal,
 			}),
 			platform,
@@ -537,6 +540,7 @@ export async function* streamChatCompletion(
 		if (cause instanceof TauError && cause.code === "timeout") throw cause;
 		throw new TauError("network_error", `Network request failed: ${describeError(cause)}`, cause);
 	}
+	await options?.onResponse?.({ status: response.status, headers: responseHeaders(response) });
 	if (!response.ok) {
 		throw new HttpError(response.status, await response.text());
 	}
@@ -587,6 +591,7 @@ export async function* streamChatCompletion(
 		} catch (cause) {
 			throw new TauError("invalid_response", `Failed to parse stream chunk: ${data.slice(0, 200)}`, cause);
 		}
+		options?.onStreamEvent?.(chunk);
 		if (chunk.error) {
 			throw new TauError("stream_error", chunk.error.message ?? "Provider returned an error in the stream");
 		}
@@ -772,6 +777,15 @@ export interface TransportRequest {
 	thinkingLevel?: ThinkingLevel;
 	/** Model of this request (P23d, Agent.setModel); transports fall back to their configured model. */
 	model?: string;
+	/**
+	 * P40d (pi before_provider_request): the request body just before it is sent; a value
+	 * returned replaces it. Only sent to transports declaring `supportsProviderEvents`.
+	 */
+	onPayload?: (payload: unknown) => Promise<unknown>;
+	/** P40d (pi after_provider_response): the status and headers, before the stream is read. */
+	onResponse?: (response: { status: number; headers: Record<string, string> }) => Promise<void>;
+	/** P40d (pi provider_stream_event): each parsed stream event, before it is converted. */
+	onStreamEvent?: (data: unknown) => void;
 }
 
 /**
@@ -782,7 +796,21 @@ export interface TransportRequest {
 export type ChatTransport = ((request: TransportRequest) => AsyncGenerator<ChatStreamEvent>) & {
 	/** The transport applies TransportRequest.headers; required before before_provider_headers handlers may run (P23d). */
 	supportsHeaders?: boolean;
+	/** The transport calls onPayload / onResponse / onStreamEvent (P40d); required before those handlers may run. */
+	supportsProviderEvents?: boolean;
 };
+
+/** A response's headers as a plain object (P40d), when the platform can list them; else empty. */
+export function responseHeaders(response: PlatformResponse): Record<string, string> {
+	const out: Record<string, string> = {};
+	const headers = response.headers as
+		| (PlatformResponse["headers"] & { forEach?: (callback: (value: string, key: string) => void) => void })
+		| undefined;
+	headers?.forEach?.((value, key) => {
+		out[key] = value;
+	});
+	return out;
+}
 
 /** The default transport: the OpenAI-compatible client, verbatim. */
 export function createOpenAICompatTransport(platform: Platform, config: OpenAICompatConfig): ChatTransport {
@@ -793,7 +821,11 @@ export function createOpenAICompatTransport(platform: Platform, config: OpenAICo
 			headers: request.headers,
 			thinkingLevel: request.thinkingLevel,
 			model: request.model,
+			...(request.onPayload ? { onPayload: request.onPayload } : {}),
+			...(request.onResponse ? { onResponse: request.onResponse } : {}),
+			...(request.onStreamEvent ? { onStreamEvent: request.onStreamEvent } : {}),
 		});
 	transport.supportsHeaders = true;
+	transport.supportsProviderEvents = true;
 	return transport;
 }

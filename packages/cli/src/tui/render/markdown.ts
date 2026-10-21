@@ -21,6 +21,44 @@ export function useHyperlinks(enabled: boolean): void {
 	hyperlinks = enabled;
 }
 
+/** What a markdown transformer knows (pi MarkdownTransformContext; the kernel's type, kept structural here). */
+export interface MarkdownTransformContext {
+	messageType: "user" | "assistant" | "assistant-thinking";
+	isStreaming: boolean;
+	availableWidth: number;
+}
+
+/** The extensions' markdown transformers (P40d, pi registerMarkdownTransformer), set on load and /reload. */
+let transformers: ReadonlyArray<(markdown: string, context: MarkdownTransformContext) => string> = [];
+let transformersVersion = 0;
+
+export function useMarkdownTransformers(
+	list: ReadonlyArray<(markdown: string, context: MarkdownTransformContext) => string>,
+): void {
+	if (list.length === 0 && transformers.length === 0) return;
+	transformers = [...list];
+	transformersVersion++;
+}
+
+/** Bumped whenever the transformers change: cached rows drawn with the old ones are stale. */
+export function markdownTransformersVersion(): number {
+	return transformersVersion;
+}
+
+/** The text after every transformer, in extension order; one that throws or returns no string is skipped. */
+export function transformMarkdown(text: string, context: MarkdownTransformContext): string {
+	let out = text;
+	for (const transformer of transformers) {
+		try {
+			const next = transformer(out, context);
+			if (typeof next === "string") out = next;
+		} catch {
+			// A broken transformer must not take the transcript down.
+		}
+	}
+	return out;
+}
+
 /** One markdown line: what leads its first row, its text, and what leads the rows it wraps onto. */
 export interface MarkdownItem {
 	prefix: Span[];

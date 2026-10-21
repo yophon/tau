@@ -72,6 +72,7 @@ import {
 } from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
+import { useMarkdownTransformers } from "./render/markdown.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
@@ -401,6 +402,8 @@ export class TuiController {
 
 	private attachHostActions(registry: ExtensionRegistry): void {
 		registry.setErrorSink(({ event, error }) => this.notice("error", `Extension error in ${event}: ${error.message}`));
+		// P40d (pi): the extensions' markdown transformers change how messages are drawn.
+		useMarkdownTransformers(registry.markdownTransformers());
 		registry.attachHostActions({
 			submitPrompt: (content) => {
 				// A finishing turn: run next. Other tasks refuse loudly so the caller can retry (ext-feishu re-queues).

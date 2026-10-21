@@ -13,7 +13,7 @@ import { fmtElapsed } from "../format.ts";
 import { stripEscapes, strWidth } from "../input/width.ts";
 import type { Block, ToolBlock } from "../model.ts";
 import { type RenderOptions, TONE_COLOR } from "./blocks.ts";
-import { type MarkdownItem, markdownItems } from "./markdown.ts";
+import { type MarkdownItem, markdownItems, markdownTransformersVersion, transformMarkdown } from "./markdown.ts";
 import { type RowMeta, setRowMeta } from "./row-meta.ts";
 import type { Span, StyledLine } from "./spans.ts";
 import { toolView } from "./tool-views.ts";
@@ -222,22 +222,32 @@ function blockOut(block: Block, options: LineOptions): Out {
 	const width = Math.max(10, options.width - 1);
 	switch (block.kind) {
 		case "user": {
-			const parts: StyledLine = [{ text: block.text, color: "cyan" }];
+			const text = transformMarkdown(block.text, { messageType: "user", isStreaming: false, availableWidth: width });
+			const parts: StyledLine = [{ text, color: "cyan" }];
 			if (block.images > 0) {
 				parts.push({ text: ` [${block.images} image${block.images === 1 ? "" : "s"}]`, dim: true });
 			}
 			const prefix = "› ";
 			return prefixedRows(prefix, { color: "cyan" }, wrapped(parts, width - strWidth(prefix), colors), colors);
 		}
-		case "assistant":
+		case "assistant": {
+			const text = transformMarkdown(block.text, {
+				messageType: "assistant",
+				isStreaming: !block.done,
+				availableWidth: width,
+			});
 			return concat(
-				markdownItems(block.text, options.width, { highlight: block.done }).map((line) =>
-					hangingRows(line, width, colors),
-				),
+				markdownItems(text, options.width, { highlight: block.done }).map((line) => hangingRows(line, width, colors)),
 			);
+		}
 		case "reasoning":
 			if (options.showReasoning) {
-				return wrapped([{ text: block.text.trim() }], width, colors, { dim: true, italic: true });
+				const text = transformMarkdown(block.text, {
+					messageType: "assistant-thinking",
+					isStreaming: false,
+					availableWidth: width,
+				});
+				return wrapped([{ text: text.trim() }], width, colors, { dim: true, italic: true });
 			}
 			// Collapsed (P38b, Claude Code): one row; Ctrl+T or a click shows the text.
 			if (block.continued) return { rows: [], meta: [] };
@@ -349,7 +359,7 @@ export class LineCache {
 	private readonly entries = new Map<string, { key: string; rows: string[] }>();
 
 	lines(block: Block, options: LineOptions): string[] {
-		const key = `${options.width}|${options.verbose}|${options.showReasoning}|${options.colors !== false}`;
+		const key = `${options.width}|${options.verbose}|${options.showReasoning}|${options.colors !== false}|${markdownTransformersVersion()}`;
 		const cached = this.entries.get(block.id);
 		if (cached && cached.key === key) return cached.rows;
 		const rows = blockLines(block, options);

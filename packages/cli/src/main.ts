@@ -1099,7 +1099,7 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 						dim(
 							event.aborted
 								? `[${event.reason} compaction aborted]\n`
-								: `[${event.reason} compaction failed, continuing: ${firstLine(event.errorMessage ?? "")}]\n`,
+								: `[${event.reason} compaction failed${event.reason === "overflow" ? "" : ", continuing"}: ${firstLine(event.errorMessage ?? "")}]\n`,
 						),
 					);
 					break;

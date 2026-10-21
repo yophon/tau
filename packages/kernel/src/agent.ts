@@ -19,6 +19,7 @@ import {
 	type AgentRunResult,
 	type AgentSpawnOptions,
 	type BoundaryDraft,
+	type CompactionReason,
 	type ExtensionCapabilities,
 	type ExtensionContext,
 	ExtensionRegistry,
@@ -28,6 +29,7 @@ import {
 	type ReadonlySessionManager,
 	type ThinkingLevel,
 	type TreePreparation,
+	type UIPromptKind,
 	type UiCapability,
 } from "./extensions.ts";
 import {
@@ -56,6 +58,7 @@ import {
 	createOpenAICompatTransport,
 	OPENAI_COMPLETIONS_API,
 	type OpenAICompatConfig,
+	type TransportRequest,
 } from "./openai.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import {
@@ -78,7 +81,13 @@ import {
 	sumSessionUsage,
 	toToolDeclaration,
 } from "./projection.ts";
-import { DEFAULT_RETRY_SETTINGS, isRetryableAssistantError, type RetrySettings, retryDelayMs } from "./retry.ts";
+import {
+	DEFAULT_RETRY_SETTINGS,
+	isContextOverflowError,
+	isRetryableAssistantError,
+	type RetrySettings,
+	retryDelayMs,
+} from "./retry.ts";
 import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
 import {
 	normalizeToolOutcome,
@@ -279,8 +288,8 @@ export type AgentEvent =
 	| { type: "tool_start"; toolCall: ToolCall }
 	| { type: "tool_update"; toolCall: ToolCall; partialOutput: string; stream?: ToolUpdateStream }
 	| { type: "tool_result"; toolCall: ToolCall; result: ToolResult; durationMs?: number }
-	| { type: "compaction"; result: CompactionResult }
-	| { type: "compaction_failed"; reason: "manual" | "threshold"; errorMessage?: string; aborted: boolean }
+	| { type: "compaction"; result: CompactionResult; reason?: CompactionReason }
+	| { type: "compaction_failed"; reason: CompactionReason; errorMessage?: string; aborted: boolean }
 	| {
 			type: "summarization_retry_scheduled";
 			attempt: number;
@@ -288,7 +297,7 @@ export type AgentEvent =
 			delayMs: number;
 			errorMessage: string;
 	  }
-	| { type: "summarization_retry_attempt_start"; source: "compaction"; reason: "manual" | "threshold" }
+	| { type: "summarization_retry_attempt_start"; source: "compaction"; reason: CompactionReason }
 	| { type: "summarization_retry_attempt_start"; source: "branchSummary" }
 	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_start"; attempt: number; maxAttempts: number; delayMs: number; errorMessage: string }
@@ -983,11 +992,40 @@ export class Agent {
 		return { message: final, entryId };
 	}
 
+	/**
+	 * ctx.ui for extensions (P40d, pi): a prompt that waits for the user is bracketed by
+	 * ui_prompt_start and ui_prompt_end. Approvals do not go through it (pi: extension prompts only).
+	 */
+	private promptingUi(ui: UiCapability | undefined): UiCapability | undefined {
+		const extensions = this.extensions;
+		if (!ui || !extensions?.hasUiPromptHandlers()) return ui;
+		const around = async <T>(kind: UIPromptKind, title: string, run: () => Promise<T>): Promise<T> => {
+			const ctx = this.extensionContext();
+			await extensions.notifyUiPrompt({ type: "ui_prompt_start", reason: "ui_prompt", kind, title }, ctx);
+			try {
+				return await run();
+			} finally {
+				await extensions.notifyUiPrompt({ type: "ui_prompt_end", reason: "ui_prompt", kind, title }, ctx);
+			}
+		};
+		const { editor, selectMany } = ui;
+		return {
+			confirm: (title, message) => around("confirm", title, () => ui.confirm(title, message)),
+			input: (title, placeholder) => around("input", title, () => ui.input(title, placeholder)),
+			select: (title, options) => around("select", title, () => ui.select(title, options)),
+			notify: (message, level) => ui.notify(message, level),
+			...(editor ? { editor: (title, prefill) => around("editor", title, () => editor.call(ui, title, prefill)) } : {}),
+			...(selectMany
+				? { selectMany: (title, options) => around("select", title, () => selectMany.call(ui, title, options)) }
+				: {}),
+		};
+	}
+
 	/** Context handed to extension handlers; also usable by hosts to dispatch extension commands. */
 	extensionContext(): ExtensionContext {
 		const agent = this;
 		return {
-			ui: this.ui,
+			ui: this.promptingUi(this.ui),
 			get messages() {
 				return agent.messages;
 			},
@@ -1238,6 +1276,42 @@ export class Agent {
 	}
 
 	/**
+	 * The provider event callbacks for one request (P40d, pi before_provider_request,
+	 * after_provider_response, provider_stream_event). A transport that does not report them
+	 * cannot honor them, so registering a handler with it is an error (D15 supplement).
+	 */
+	private providerEventHooks(
+		ctx: ExtensionContext,
+		model: string,
+	): Pick<TransportRequest, "onPayload" | "onResponse" | "onStreamEvent"> | undefined {
+		const extensions = this.extensions;
+		if (!extensions?.hasProviderEventHandlers()) return undefined;
+		if (!this.transport.supportsProviderEvents) {
+			throw new TauError(
+				"unsupported",
+				"before_provider_request / after_provider_response / provider_stream_event handlers are registered, but the transport does not declare supportsProviderEvents",
+			);
+		}
+		const wanted = extensions.providerEventHandlers();
+		const provider = this.config.provider ?? "openai-compat";
+		const api = this.config.api ?? "openai-completions";
+		return {
+			...(wanted.request ? { onPayload: (payload: unknown) => extensions.runBeforeProviderRequest(payload, ctx) } : {}),
+			...(wanted.response
+				? {
+						onResponse: (response: { status: number; headers: Record<string, string> }) =>
+							extensions.notifyAfterProviderResponse(response, ctx),
+					}
+				: {}),
+			...(wanted.stream
+				? {
+						onStreamEvent: (data: unknown) => extensions.notifyProviderStreamEvent({ provider, api, model, data }, ctx),
+					}
+				: {}),
+		};
+	}
+
+	/**
 	 * The transport for summary requests (compaction, turn prefix, branch summary):
 	 * the agent's model and thinking level, no prompt-cache write (pi 0.82.0), and
 	 * the before_provider_headers changes — pi runs the hook for every provider call.
@@ -1247,16 +1321,20 @@ export class Agent {
 		const agent = this;
 		const transport: ChatTransport = (request) =>
 			(async function* () {
-				const headers = await agent.providerHeaders(agent.extensionContext());
+				const ctx = agent.extensionContext();
+				const headers = await agent.providerHeaders(ctx);
+				const hooks = agent.providerEventHooks(ctx, agent.currentModel);
 				yield* inner({
 					...request,
 					model: agent.currentModel,
 					cacheRetention: "none",
 					...(agent.currentThinkingLevel !== undefined ? { thinkingLevel: agent.currentThinkingLevel } : {}),
 					...(headers ? { headers } : {}),
+					...hooks,
 				});
 			})();
 		transport.supportsHeaders = inner.supportsHeaders;
+		transport.supportsProviderEvents = inner.supportsProviderEvents;
 		return transport;
 	}
 
@@ -1305,7 +1383,7 @@ export class Agent {
 
 	/** Summarization retry for this agent: its RetrySettings, the host sleep, events through emit. */
 	private summarizationRetry(
-		source: { source: "compaction"; reason: "manual" | "threshold" } | { source: "branchSummary" },
+		source: { source: "compaction"; reason: CompactionReason } | { source: "branchSummary" },
 		emit?: (event: AgentEvent) => void,
 	): SummarizationRetry {
 		return {
@@ -1409,12 +1487,14 @@ export class Agent {
 		}
 		request.push({ role: "user", content: sideQuestion(question), timestamp: now });
 		const headers = await this.providerHeaders(ctx);
+		const hooks = this.providerEventHooks(ctx, this.currentModel);
 		const stream = this.transport({
 			messages: request,
 			...(options.signal ? { signal: options.signal } : {}),
 			model: this.currentModel,
 			...(this.currentThinkingLevel !== undefined ? { thinkingLevel: this.currentThinkingLevel } : {}),
 			...(headers ? { headers } : {}),
+			...hooks,
 		});
 		let text = "";
 		let message: AssistantMessage | undefined;
@@ -1485,9 +1565,11 @@ export class Agent {
 	 */
 	private async runCompactionOperation(
 		customInstructions: string | undefined,
-		reason: "manual" | "threshold",
+		reason: CompactionReason,
 		signal: TauAbortSignal | undefined,
 		onEvent?: (event: AgentEvent) => void,
+		/** P40d (pi): an overflow recovery runs the turn again after this compaction. */
+		willRetry = false,
 	): Promise<CompactionOutcome> {
 		const ctx = this.extensionContext();
 		// session_before_compact always gets a signal (pi: required); without a caller's, one that never fires.
@@ -1503,7 +1585,7 @@ export class Agent {
 
 			const decision = this.extensions
 				? await this.extensions.runSessionBeforeCompact(
-						{ preparation, customInstructions, reason, signal: hookSignal },
+						{ preparation, customInstructions, reason, willRetry, signal: hookSignal },
 						ctx,
 					)
 				: {};
@@ -1536,7 +1618,7 @@ export class Agent {
 				});
 				await this.refresh();
 			});
-			await this.extensions?.notifySessionCompact({ result, fromExtension, reason }, ctx);
+			await this.extensions?.notifySessionCompact({ result, fromExtension, reason, willRetry }, ctx);
 			return { kind: "done", result };
 		} catch (cause) {
 			const error = toError(cause);
@@ -1545,7 +1627,7 @@ export class Agent {
 				? undefined
 				: `${reason === "manual" ? "Compaction" : "Auto-compaction"} failed: ${error.message}`;
 			await this.extensions?.notifySessionCompactFailed(
-				{ reason, errorMessage, aborted, willRetry: false, fromExtension },
+				{ reason, errorMessage, aborted, willRetry, fromExtension },
 				ctx,
 			);
 			return { kind: "failed", errorMessage, aborted, cancelledByExtension, error };
@@ -1699,6 +1781,10 @@ export class Agent {
 		options?: {
 			summarize?: boolean;
 			customInstructions?: string;
+			/** P40d (pi): customInstructions replace the default summary prompt. */
+			replaceInstructions?: boolean;
+			/** P40d (pi): a label for the branch summary entry (or the target, without a summary). */
+			label?: string;
 			signal?: TauAbortSignal;
 			onEvent?: (event: AgentEvent) => void;
 		},
@@ -1714,7 +1800,15 @@ export class Agent {
 	private async runNavigation(
 		entryId: string,
 		signal: TauAbortSignal,
-		options: { summarize?: boolean; customInstructions?: string; onEvent?: (event: AgentEvent) => void } | undefined,
+		options:
+			| {
+					summarize?: boolean;
+					customInstructions?: string;
+					replaceInstructions?: boolean;
+					label?: string;
+					onEvent?: (event: AgentEvent) => void;
+			  }
+			| undefined,
 	): Promise<{ cancelled: boolean; editorText?: string }> {
 		await this.flushWrites();
 		const store = this.session.store;
@@ -1730,10 +1824,16 @@ export class Agent {
 			oldLeafId,
 			commonAncestorId,
 			entriesToSummarize: entries,
+			userWantsSummary: options?.summarize !== false,
 			customInstructions: options?.customInstructions,
+			...(options?.replaceInstructions !== undefined ? { replaceInstructions: options.replaceInstructions } : {}),
+			...(options?.label !== undefined ? { label: options.label } : {}),
 		};
 		const hook = this.extensions ? await this.extensions.runSessionBeforeTree({ preparation, signal }, ctx) : {};
 		if (hook.cancel || signal.aborted) return { cancelled: true };
+		// pi: handlers may override the instructions, whether they replace the prompt, and the label.
+		const replaceInstructions = hook.replaceInstructions ?? options?.replaceInstructions;
+		const label = (hook.label ?? options?.label)?.trim();
 
 		let summaryText = hook.summary?.summary;
 		let summaryDetails = hook.summary?.details;
@@ -1742,6 +1842,7 @@ export class Agent {
 			try {
 				const generated = await generateBranchSummary(this.summaryTransport(), entries, {
 					customInstructions: hook.customInstructions ?? options?.customInstructions,
+					...(replaceInstructions !== undefined ? { replaceInstructions } : {}),
 					contextWindow: this.config.contextWindow,
 					reserveTokens: this.branchSummaryReserveTokens ?? this.effectiveCompactionSettings().reserveTokens,
 					signal,
@@ -1782,6 +1883,11 @@ export class Agent {
 						}
 					: undefined,
 			);
+			// pi: the label goes on the summary entry, or on the target when there is no summary.
+			if (label) {
+				const labelled = summaryText ? entry?.id : entryId;
+				if (labelled) await this.session.appendLabel(labelled, label);
+			}
 			await this.refresh();
 			this.restoreToolsFromTranscript();
 			return entry;
@@ -1955,6 +2061,8 @@ export class Agent {
 		state: { turnIndex: number },
 	): AsyncGenerator<AgentEvent, ActivityOutcome> {
 		let retryAttempt = 0;
+		/** P40d (pi): an overflow was compacted and its turn retried; reset by a request that goes through. */
+		let overflowRecoveryAttempted = false;
 		let lengthStreak = 0;
 		let explicitContinue = false;
 		// Check for steering at start: the user may have typed while the run was starting (pi).
@@ -1992,7 +2100,7 @@ export class Agent {
 					const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
 						this.runCompactionOperation(customInstructions, reason, signal, emit),
 					);
-					if (outcome.kind === "done") yield { type: "compaction", result: outcome.result };
+					if (outcome.kind === "done") yield { type: "compaction", result: outcome.result, reason };
 					if (outcome.kind === "failed") {
 						yield {
 							type: "compaction_failed",
@@ -2057,12 +2165,14 @@ export class Agent {
 				let streamEnded = false;
 				// Awaited here, outside the stream: a failing headers handler is a bug, not a stream error.
 				const headers = await this.providerHeaders(ctx);
+				const hooks = this.providerEventHooks(ctx, this.currentModel);
 				const stream = this.transport({
 					messages: request,
 					signal,
 					model: this.currentModel,
 					...(this.currentThinkingLevel !== undefined ? { thinkingLevel: this.currentThinkingLevel } : {}),
 					...(headers ? { headers } : {}),
+					...hooks,
 				});
 				// Pull manually so only stream failures are converted to error messages;
 				// exceptions thrown by extension hooks inside the loop still propagate as bugs.
@@ -2152,6 +2262,45 @@ export class Agent {
 						this.retrySettings.enabled &&
 						this.platform.sleep !== undefined &&
 						isRetryableAssistantError(finalMessage);
+					// Overflow recovery (P40d, pi _checkCompaction): the request ran out of context. Leave the
+					// failed attempt out, compact, and run this turn again; once until a request succeeds.
+					if (finalMessage.stopReason === "error" && isContextOverflowError(finalMessage)) {
+						if (!overflowRecoveryAttempted) {
+							overflowRecoveryAttempted = true;
+							await this.enqueueWrite(async () => {
+								await this.session.appendContextEdit(failedEntryId, null);
+								await this.refresh();
+							});
+							const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
+								this.runCompactionOperation(undefined, "overflow", signal, emit, true),
+							);
+							if (outcome.kind === "done") {
+								yield { type: "compaction", result: outcome.result, reason: "overflow" };
+								hasMoreToolCalls = true;
+								continue;
+							}
+							if (outcome.kind === "failed") {
+								yield {
+									type: "compaction_failed",
+									reason: "overflow",
+									...(outcome.errorMessage !== undefined ? { errorMessage: outcome.errorMessage } : {}),
+									aborted: outcome.aborted,
+								};
+							}
+							if (signal?.aborted) {
+								yield* this.endRun(ctx, retryAttempt, pending);
+								return "aborted";
+							}
+						} else {
+							const errorMessage =
+								"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
+							yield { type: "compaction_failed", reason: "overflow", errorMessage, aborted: false };
+							await this.extensions?.notifySessionCompactFailed(
+								{ reason: "overflow", errorMessage, aborted: false, willRetry: false, fromExtension: false },
+								ctx,
+							);
+						}
+					}
 					if (retryEligible && retryAttempt < this.retrySettings.maxRetries) {
 						retryAttempt++;
 						const delayMs = retryDelayMs(this.retrySettings, retryAttempt);
@@ -2201,6 +2350,10 @@ export class Agent {
 				}
 				const messageEntryId = await this.record(assistantMessage);
 				yield { type: "assistant_message", message: assistantMessage };
+				// A request that went through: the next overflow may be recovered again (pi).
+				if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "length") {
+					overflowRecoveryAttempted = false;
+				}
 				if (retryAttempt > 0) {
 					// A clean response after retries closes the cycle (pi resets on success).
 					const endEvent = { success: true, attempt: retryAttempt };

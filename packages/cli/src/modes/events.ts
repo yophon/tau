@@ -126,7 +126,7 @@ export function sessionEventStream(emit: Emit): Extension {
 export function agentEventRecord(event: AgentEvent): Record<string, unknown> | undefined {
 	switch (event.type) {
 		case "compaction":
-			return { type: "compaction_end", reason: "threshold", result: event.result };
+			return { type: "compaction_end", reason: event.reason ?? "threshold", result: event.result };
 		case "compaction_failed":
 			return {
 				type: "compaction_end",

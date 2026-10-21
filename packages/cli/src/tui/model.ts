@@ -925,7 +925,8 @@ function reduceEvent(previous: UiState, event: AgentEvent, at?: number): UiState
 				tone: event.aborted ? "dim" : "warn",
 				text: event.aborted
 					? `${capitalize(event.reason)} compaction aborted.`
-					: `${capitalize(event.reason)} compaction failed, continuing: ${(event.errorMessage ?? "").split("\n")[0]}`,
+					: // An overflow recovery that fails ends the run (P40d): no "continuing".
+						`${capitalize(event.reason)} compaction failed${event.reason === "overflow" ? "" : ", continuing"}: ${(event.errorMessage ?? "").split("\n")[0]}`,
 			});
 		// Retries show on the activity line, updated in place (Claude Code, Codex).
 		case "auto_retry_start":

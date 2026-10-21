@@ -226,6 +226,59 @@ export interface BeforeProviderHeadersEvent {
 	headers: Record<string, string | null>;
 }
 
+/** Fired before a provider request is sent (P40d, pi): a handler's non-undefined result replaces the payload. */
+export interface BeforeProviderRequestEvent {
+	type: "before_provider_request";
+	payload: unknown;
+}
+
+export type BeforeProviderRequestEventResult = unknown;
+
+/** Fired after a provider response arrives and before its stream is read (P40d, pi). */
+export interface AfterProviderResponseEvent {
+	type: "after_provider_response";
+	status: number;
+	headers: Record<string, string>;
+}
+
+/** Fired for each parsed provider stream event before tau converts it (P40d, pi). Read-only. */
+export interface ProviderStreamEvent {
+	type: "provider_stream_event";
+	provider: string;
+	api: string;
+	model: string;
+	data: unknown;
+}
+
+/** pi UIPromptKind; tau's selectMany counts as "select" (tau has no ui.custom). */
+export type UIPromptKind = "select" | "confirm" | "input" | "editor" | "custom";
+
+/** Fired when an extension starts waiting on a blocking UI prompt (P40d, pi). */
+export interface UIPromptStartEvent {
+	type: "ui_prompt_start";
+	reason: "ui_prompt";
+	kind: UIPromptKind;
+	title?: string;
+}
+
+/** Fired when an extension is no longer waiting on a blocking UI prompt (P40d, pi). */
+export interface UIPromptEndEvent {
+	type: "ui_prompt_end";
+	reason: "ui_prompt";
+	kind: UIPromptKind;
+	title?: string;
+}
+
+/** What a markdown transformer knows about the text (pi MarkdownTransformContext). */
+export interface MarkdownTransformContext {
+	messageType: "user" | "assistant" | "assistant-thinking";
+	isStreaming: boolean;
+	availableWidth: number;
+}
+
+/** A display-only change to message markdown before a host renders it (P40d, pi registerMarkdownTransformer). */
+export type MarkdownTransformer = (markdown: string, context: MarkdownTransformContext) => string;
+
 /** How a turn or a run ended (pi AgentActivityOutcome). */
 export type ActivityOutcome = "completed" | "aborted" | "error";
 
@@ -432,7 +485,8 @@ export interface SessionInfoChangedEvent {
 	name: string | undefined;
 }
 
-export type CompactionReason = "manual" | "threshold";
+/** What started a compaction; "overflow" = the context overflowed and the turn is retried after it (P40d, pi). */
+export type CompactionReason = "manual" | "threshold" | "overflow";
 
 /** Fired before compaction runs; may cancel it or take it over entirely. */
 export interface SessionBeforeCompactEvent {
@@ -440,6 +494,8 @@ export interface SessionBeforeCompactEvent {
 	preparation: CompactionPreparation;
 	customInstructions?: string;
 	reason: CompactionReason;
+	/** True when the aborted turn is retried after this compaction (overflow recovery, pi). */
+	willRetry: boolean;
 	/** Aborts with the compaction (pi: required). Long-running handlers should observe it. */
 	signal: TauAbortSignal;
 }
@@ -452,6 +508,8 @@ export interface SessionCompactEvent {
 	result: CompactionResult;
 	fromExtension: boolean;
 	reason: CompactionReason;
+	/** True when the aborted turn is retried after this compaction (overflow recovery, pi). */
+	willRetry: boolean;
 }
 
 /**
@@ -459,7 +517,7 @@ export interface SessionCompactEvent {
  * queued ctx.compact()) fails. The turn continues uncompacted (pi 0.84.3
  * session_compact_failed; D14: provider failures never escape the loop).
  */
-/** Fired after a compaction failed or was aborted (pi 0.84.3 shape; tau has no overflow reason, so willRetry is false). */
+/** Fired after a compaction failed or was aborted (pi 0.84.3 shape; willRetry: an overflow recovery's turn would have been retried). */
 export interface SessionCompactFailedEvent {
 	type: "session_compact_failed";
 	reason: CompactionReason;
@@ -499,16 +557,19 @@ export interface SessionBeforeForkEvent {
 /** pi also has skipConversationRestore (product-layer restore concern); tau omits it. */
 export type SessionBeforeForkResult = { cancel?: boolean } | undefined;
 
-/**
- * What a tree navigation is about to do. pi subset (D7): userWantsSummary,
- * replaceInstructions and label are TUI interaction products, deferred to P8.
- */
+/** What a tree navigation is about to do (pi TreePreparation). */
 export interface TreePreparation {
 	targetId: string;
 	oldLeafId: string | null;
 	commonAncestorId: string | null;
 	entriesToSummarize: SessionEntry[];
+	/** P40d (pi): whether the user asked for a summary of the branch left behind. */
+	userWantsSummary: boolean;
 	customInstructions?: string;
+	/** P40d (pi): customInstructions replace the default prompt instead of being appended. */
+	replaceInstructions?: boolean;
+	/** P40d (pi): a label for the branch summary entry. */
+	label?: string;
 }
 
 /** Fired before tree navigation; may cancel it or supply the branch summary. */
@@ -526,6 +587,10 @@ export type SessionBeforeTreeResult =
 			summary?: { summary: string; details?: unknown; usage?: Usage };
 			/** Override custom instructions for summarization. */
 			customInstructions?: string;
+			/** Override whether customInstructions replace the default prompt (P40d, pi). */
+			replaceInstructions?: boolean;
+			/** Override the label for the branch summary entry (P40d, pi). */
+			label?: string;
 	  }
 	| undefined;
 
@@ -868,6 +933,14 @@ export interface ExtensionAPI {
 	on(event: "agent_before_settle", handler: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>): () => void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
 	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): () => void;
+	on(
+		event: "before_provider_request",
+		handler: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>,
+	): () => void;
+	on(event: "after_provider_response", handler: ExtensionHandler<AfterProviderResponseEvent>): () => void;
+	on(event: "provider_stream_event", handler: ExtensionHandler<ProviderStreamEvent>): () => void;
+	on(event: "ui_prompt_start", handler: ExtensionHandler<UIPromptStartEvent>): () => void;
+	on(event: "ui_prompt_end", handler: ExtensionHandler<UIPromptEndEvent>): () => void;
 	on(event: "turn_start", handler: ExtensionHandler<TurnStartEvent>): () => void;
 	on(event: "turn_end", handler: ExtensionHandler<TurnEndEvent, BoundaryResult>): () => void;
 	on(event: "input", handler: ExtensionHandler<InputEvent, InputEventResult>): () => void;
@@ -994,6 +1067,12 @@ export interface ExtensionAPI {
 	/** Register a custom TUI message renderer. Hosts that do not support renderers may ignore it. */
 	registerMessageRenderer(name: string, options: Omit<RegisteredMessageRenderer, "name">): void;
 
+	/**
+	 * Change message markdown before a host renders it (P40d, pi): one per extension (a later call
+	 * replaces it), applied in extension load order. Display only; the conversation is unchanged.
+	 */
+	registerMarkdownTransformer(transformer: MarkdownTransformer): void;
+
 	/** Register a custom TUI session-entry renderer. Hosts that do not support renderers may ignore it. */
 	registerEntryRenderer(name: string, options: Omit<RegisteredEntryRenderer, "name">): void;
 
@@ -1051,6 +1130,11 @@ interface HandlerLists {
 	agent_before_settle: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>[];
 	agent_settled: ExtensionHandler<AgentSettledEvent>[];
 	before_provider_headers: ExtensionHandler<BeforeProviderHeadersEvent>[];
+	before_provider_request: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>[];
+	after_provider_response: ExtensionHandler<AfterProviderResponseEvent>[];
+	provider_stream_event: ExtensionHandler<ProviderStreamEvent>[];
+	ui_prompt_start: ExtensionHandler<UIPromptStartEvent>[];
+	ui_prompt_end: ExtensionHandler<UIPromptEndEvent>[];
 	turn_start: ExtensionHandler<TurnStartEvent>[];
 	turn_end: ExtensionHandler<TurnEndEvent>[];
 	input: ExtensionHandler<InputEvent, InputEventResult>[];
@@ -1127,6 +1211,8 @@ export class ExtensionRegistry {
 	readonly shortcuts = new Map<string, RegisteredShortcut>();
 	readonly messageRenderers = new Map<string, RegisteredMessageRenderer>();
 	readonly entryRenderers = new Map<string, RegisteredEntryRenderer>();
+	/** P40d: each extension's markdown transformer, in load order. */
+	private readonly markdownTransformerMap = new Map<string, MarkdownTransformer>();
 	readonly toolRenderers = new Map<string, RegisteredToolRenderer>();
 	readonly widgets = new Map<string, RegisteredWidget>();
 	readonly headerItems = new Map<string, RegisteredStatusItem>();
@@ -1179,6 +1265,11 @@ export class ExtensionRegistry {
 		agent_before_settle: [],
 		agent_settled: [],
 		before_provider_headers: [],
+		before_provider_request: [],
+		after_provider_response: [],
+		provider_stream_event: [],
+		ui_prompt_start: [],
+		ui_prompt_end: [],
 		turn_start: [],
 		turn_end: [],
 		input: [],
@@ -1294,6 +1385,7 @@ export class ExtensionRegistry {
 			this.shortcuts,
 			this.messageRenderers,
 			this.entryRenderers,
+			this.markdownTransformerMap,
 			this.toolRenderers,
 			this.widgets,
 			this.headerItems,
@@ -1379,6 +1471,12 @@ export class ExtensionRegistry {
 			},
 			registerEntryRenderer: (name, options) => {
 				this.entryRenderers.set(name, { name, ...options });
+			},
+			registerMarkdownTransformer: (transformer) => {
+				if (typeof transformer !== "function") {
+					throw new TauError("invalid_extension", `registerMarkdownTransformer in "${name}" needs a function.`);
+				}
+				this.markdownTransformerMap.set(name, transformer);
 			},
 			registerToolRenderer: (name, options) => {
 				this.toolRenderers.set(name, { name, ...options });
@@ -1853,6 +1951,8 @@ export class ExtensionRegistry {
 			if (result.cancel) return { cancel: true };
 			if (result.summary) merged.summary = result.summary;
 			if (result.customInstructions !== undefined) merged.customInstructions = result.customInstructions;
+			if (result.replaceInstructions !== undefined) merged.replaceInstructions = result.replaceInstructions;
+			if (result.label !== undefined) merged.label = result.label;
 		}
 		return merged;
 	}
@@ -1962,6 +2062,75 @@ export class ExtensionRegistry {
 		const event: BeforeProviderHeadersEvent = { type: "before_provider_headers", headers: {} };
 		for (const handler of [...this.handlers.before_provider_headers]) await handler(event, ctx);
 		return event.headers;
+	}
+
+	/** Whether any provider event handler (request, response, stream) is registered (P40d). */
+	hasProviderEventHandlers(): boolean {
+		return (
+			this.handlers.before_provider_request.length > 0 ||
+			this.handlers.after_provider_response.length > 0 ||
+			this.handlers.provider_stream_event.length > 0
+		);
+	}
+
+	/** Which provider events have handlers (the agent wires only those into the request). */
+	providerEventHandlers(): { request: boolean; response: boolean; stream: boolean } {
+		return {
+			request: this.handlers.before_provider_request.length > 0,
+			response: this.handlers.after_provider_response.length > 0,
+			stream: this.handlers.provider_stream_event.length > 0,
+		};
+	}
+
+	/**
+	 * Run before_provider_request (P40d, pi): each handler sees the payload so far; a result that
+	 * is not undefined replaces it. Errors propagate: they change what goes on the wire.
+	 */
+	async runBeforeProviderRequest(payload: unknown, ctx: ExtensionContext): Promise<unknown> {
+		let current = payload;
+		for (const handler of [...this.handlers.before_provider_request]) {
+			const result = await handler({ type: "before_provider_request", payload: current }, ctx);
+			if (result !== undefined) current = result;
+		}
+		return current;
+	}
+
+	async notifyAfterProviderResponse(
+		event: Omit<AfterProviderResponseEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<void> {
+		await this.dispatch(this.handlers.after_provider_response, { type: "after_provider_response", ...event }, ctx);
+	}
+
+	/** provider_stream_event (P40d): read-only and in stream order; not awaited, errors go to the error sink. */
+	notifyProviderStreamEvent(event: Omit<ProviderStreamEvent, "type">, ctx: ExtensionContext): void {
+		const full: ProviderStreamEvent = { type: "provider_stream_event", ...event };
+		for (const handler of [...this.handlers.provider_stream_event]) {
+			const report = (error: unknown) => this.errorSink?.({ event: full.type, error: toError(error) });
+			try {
+				const result = handler(full, ctx) as unknown;
+				if (result && typeof (result as Promise<unknown>).then === "function") {
+					(result as Promise<unknown>).then(undefined, report);
+				}
+			} catch (error) {
+				report(error);
+			}
+		}
+	}
+
+	/** Whether any ui_prompt_start / ui_prompt_end handler is registered (P40d). */
+	hasUiPromptHandlers(): boolean {
+		return this.handlers.ui_prompt_start.length > 0 || this.handlers.ui_prompt_end.length > 0;
+	}
+
+	async notifyUiPrompt(event: UIPromptStartEvent | UIPromptEndEvent, ctx: ExtensionContext): Promise<void> {
+		if (event.type === "ui_prompt_start") await this.dispatch(this.handlers.ui_prompt_start, event, ctx);
+		else await this.dispatch(this.handlers.ui_prompt_end, event, ctx);
+	}
+
+	/** The extensions' markdown transformers in load order (P40d, pi). */
+	markdownTransformers(): MarkdownTransformer[] {
+		return [...this.markdownTransformerMap.values()];
 	}
 
 	async notifyAgentSettled(aborted: boolean, ctx: ExtensionContext): Promise<void> {

@@ -824,3 +824,57 @@ test("the default output cap follows the model: 32k for Claude 3.7 and 4+, else 
 	assert.equal(defaultMaxTokens("claude-3-opus-20240229"), 8192);
 	assert.equal(defaultMaxTokens("deepseek-chat"), 8192);
 });
+
+// ---------------------------------------------------------------------------
+// P40d: pi's provider events through the Anthropic transport.
+// ---------------------------------------------------------------------------
+
+test("P40d: onPayload replaces the body; onResponse and onStreamEvent report (pi provider events)", async () => {
+	const requests: { url: string; body: Record<string, unknown> }[] = [];
+	const platform = fakePlatform(
+		[
+			sseResponse([
+				messageStart({ input_tokens: 3 }),
+				{
+					event: "content_block_start",
+					data: { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+				},
+				{
+					event: "content_block_delta",
+					data: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hi" } },
+				},
+				{ event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+				{
+					event: "message_delta",
+					data: { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 1 } },
+				},
+				messageStop,
+			]),
+		],
+		requests,
+	);
+	const transport = createAnthropicTransport(CONFIG, platform);
+	assert.equal(transport.supportsProviderEvents, true);
+	const responses: number[] = [];
+	const types: string[] = [];
+	for await (const _event of transport({
+		messages: [user("hello")],
+		onPayload: async (payload) => ({ ...(payload as object), metadata: { user_id: "u1" } }),
+		onResponse: async (response) => {
+			responses.push(response.status);
+		},
+		onStreamEvent: (data) => types.push((data as { type: string }).type),
+	})) {
+		// drained
+	}
+	assert.deepEqual(requests[0]?.body.metadata, { user_id: "u1" });
+	assert.deepEqual(responses, [200]);
+	assert.deepEqual(types, [
+		"message_start",
+		"content_block_start",
+		"content_block_delta",
+		"content_block_stop",
+		"message_delta",
+		"message_stop",
+	]);
+});
