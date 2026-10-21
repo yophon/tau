@@ -1,6 +1,6 @@
 # tau 架构设计
 
-> 最后更新：2026-10-21（P42：长会话性能（写入原地追加投影、按对象身份检查、列表逐行读、全屏空闲时预渲染、增量搜索语料、`/tree` 缓存）；P41：技能与提示模板内置、pi 的资源参数、SYSTEM.md；P40：代理、PowerShell 工具、设置分层、pi 扩展面收尾（模型请求事件、扩展弹窗事件、Markdown 变换、溢出时压缩重试）；P39：`/diff`、`/btw`、Ctrl+B 与超时转后台、`keybindings.json`、会话树画出分支、记忆写入不限；P38：TUI 自己解析按键、编辑 diff、工具参数流式显示、推理折叠、读取合并、会话树回到消息之前、只重写变了的行）
+> 最后更新：2026-10-21（P43：MCP 照 pi 1.2（2025-11-25、SSE 续传、roots、资源工具、图片交给模型）、工具结果图片统一处理、命令里的 `TAU_SESSION_*`、`expandPromptTemplates`；P42：长会话性能（写入原地追加投影、按对象身份检查、列表逐行读、全屏空闲时预渲染、增量搜索语料、`/tree` 缓存）；P41：技能与提示模板内置、pi 的资源参数、SYSTEM.md；P40：代理、PowerShell 工具、设置分层、pi 扩展面收尾（模型请求事件、扩展弹窗事件、Markdown 变换、溢出时压缩重试）；P39：`/diff`、`/btw`、Ctrl+B 与超时转后台、`keybindings.json`、会话树画出分支、记忆写入不限；P38：TUI 自己解析按键、编辑 diff、工具参数流式显示、推理折叠、读取合并、会话树回到消息之前、只重写变了的行）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)。
 
 ## 一句话
@@ -121,6 +121,18 @@ API 镜像 pi 的 `core/extensions/types.ts`，取运行时无关的子集：
 - P37（D40）：`/handoff`（`handoff.ts`，pi 的系统提示与请求，新会话 `SessionRepo.create({ parentSession })`，提示放进输入框）；`dirty-repo.ts`（pi 的 dirty-repo-guard，`session.dirtyRepoGuard` 打开，TUI 与 REPL 的切换命令里问）；TUI 连按两下 Esc（`controller.escape()`，500 毫秒，`tui.doubleEscapeAction`；stdin 过滤层把一块里的多个 Esc 拆开）；`statusline.ts`（`StatusLineSettings` 读用户与受信任项目的 `statusLine`，`StatusLineRunner` 300 毫秒防抖、新触发取消旧的，`statusLineInput` 按 Claude Code 字段名；TUI 在 `refreshStatus` 与切档时触发，行显示在内置状态行上面，`truncateAnsi` 截断）；`worktree.ts`（`openWorktree`/`finishWorktreeSession`：git worktree 与分支、fresh/head 起点、`.worktreeinclude`、`symlinkDirectories`、退出清理，`main.ts` 建好后 `chdir` 进去）与 `git-paths.ts`（不起 git 进程读 `.git`：worktree 里的分支、主仓库、pi 的 shadowed AGENTS.md；项目记忆按主仓库）。
 - 后台命令与图片（P36，D39）：`openWorkspace` 给每个工作区建一个 `NodeBackgroundShell`（P39d：它的 `run` 用管道跑前台命令，转后台时先把已有输出写进任务文件，之后的输出继续追加，子进程与管道 `unref`；`moveOnTimeout: false` 让超时照旧停止，网关经 `openWorkspace({ backgroundOnTimeout: false })` 用它；TUI 拿到 `background` 后 Ctrl+B 调 `moveToBackground`）（host-node：直接把输出写进 `<临时目录>/tau/<进程号>-<序号>/tasks/<id>.output`，Unix 进程组、Windows `taskkill /T` 结束整棵进程树，子进程 `unref`，进程退出时统一结束），交给 `createCodingTools` 与 `background.ts` 的扩展：命令自己结束时 `sendMessage`（customType `background_task`，followUp + triggerTurn）带最后 20 行输出，`/tasks` 合并后台命令与经 `api.events` 的 `subagents:task` 频道报告的后台子代理，输入框上方的 widget 计数；网关对话的 `busy()` 让有后台命令的对话不被卸载，`close()` 结束它们，聊天 `/tasks` 走 `backgroundTasksText` 直接查列表。图片：`NodeImageProcessor`（host-node `image/`：pi 的 photon 缩放与 EXIF 方向，跑在 worker 里）交给 `read`、`@file`（`file-args.ts`，照抄 pi file-processor）与 TUI 粘贴；`tui/clipboard-read.ts` 读剪贴板（PowerShell、osascript、wl-paste/xclip，WSL 退到 PowerShell），Alt+V/Ctrl+V 插入复制的文件路径、存好的图片路径或文字。`modelTakesImages` 看当前端点的 `input`，`read` 据此加 pi 的说明。
 - CLI 内置扩展（P24e，`builtins.ts`）：用户扩展之前加载 tool_search、codemode（都 inactive，`--tools +codemode`）和提示工具行（每次 run 按 `agent.getDeclaredTools()` 重写默认提示的工具行并附 promptGuidelines，隐藏的声明不点名）；`codemode.mode`/`inlineBudget` 读 `~/.tau/settings.json` 与已信任项目的 `.tau/settings.json`。
+- P43（D46）：
+  - **MCP 客户端**（ext-mcp-http）：
+    - `client.ts` 发 2025-11-25、按 `SUPPORTED_PROTOCOL_VERSIONS` 检查服务器的选择，记下 `serverCapabilities`；给了 `roots` 就声明能力并回应 `roots/list`；有分页的资源方法。
+    - `http.ts` 的 `consumeResponseStream` 和 `runGetStream` 按 `StreamCursor`（最后的事件 id、`retry`）用 GET 加 `Last-Event-ID` 续流，退避照 pi。内核的 `SseParser` 为此加了 `onId`/`onRetry`。
+  - **资源与内容**：
+    - `servers.ts` 不向没有 tools 能力的服务器要工具，记下 `hasResources`；`syncResourceTools` 按服务器暴露方式里最宽的注册 `resources.ts` 的三个工具（风险 low），调用前等所有正在连接的服务器。
+    - `result.ts` 的 `convertMcpResult`/`toModelContent`/`limitMcpContent` 照 pi 转换内容。`saveBinary`、`images`、`resourceTools`、`roots` 是宿主选项；ext-mcp 用临时文件实现 `saveBinary`，CLI 给 `cwd`，网关关掉资源工具和图片。
+  - **内核**：`tool-result-images.ts` 的 `normalizeToolResultImages` 由 `ToolBatchRunner` 在 `tool_result` 处理器之后调用（`AgentOptions.imageProcessor`，子代理继承）。`sendUserMessage` 的 `expandPromptTemplates` 经 `commandOf`/`runSentCommand` 运行点名的扩展命令。`Agent.provider`、`decodeBase64`。
+  - **CLI 与 host-node**：
+    - host-node 的 `commandEnvironment`：`NodeShell`、`NodeBackgroundShell` 的 `commandEnv` 每条命令取值，值为 undefined 时删掉继承来的同名变量。
+    - `openWorkspace` 用 `sessionEnvironment` 给模型调用的 bash、PowerShell 和后台命令带上 `TAU_SESSION_*`，两个 shell 工具加 pi 的那句提示；`main()` 设 `AI_AGENT`、`TAU_CODING_AGENT`。
+    - 网关都不开。
 - P42（D45）：
   - **内核**：`Agent.refresh()` 先试 `appendInPlace`（新记录从原叶子接下去、没有压缩与上下文编辑时，原地追加 `activePath`、投影、`entriesById`、用量），否则整份重建。`assertTranscriptMatchesLog` 按日志重建投影后按对象身份比较，不同才比缓存的 JSON。`EntryTree` 随追加维护消息数、第一条消息与名字。`JsonlSessionRepo.list()` 用 `readSessionMetadata`（按行首类型跳过解析）和 `mapWithConcurrency`（10 个）。
   - **全屏**：`fullscreen.ts` 记住已提交部分的 `TranscriptRows`（块、渲染键、展开状态不变就复用），实时块另外拼上（`joinTranscripts`）。空闲时的预渲染 effect 每段 8 ms：先新块、再从新到旧 `cache.lines` 并 `controller.warmSearch`，都完了按顺序 `controller.prepareSearch(起始行, 行)`；宽度、选项、会话变了就重来并清空搜索缓存。

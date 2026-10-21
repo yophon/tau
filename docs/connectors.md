@@ -56,8 +56,18 @@ tau credentials audit                           # 找配置文件里直接写着
 
 ```bash
 tau mcp list            # 服务器、来自哪个文件、用了哪些凭据
-tau mcp list --check    # 顺便连一次，报告工具数
+tau mcp list --check    # 顺便连一次，报告工具数，有资源的标 resources
 ```
+
+### 资源、图片与工作目录（P43，照 pi 1.2）
+
+- **资源**：服务器提供资源时，模型多三个工具，和 Codex、opencode 同名：
+  - `list_mcp_resources`、`list_mcp_resource_templates` 列出资源（指定 `server` 时按页列）；
+  - `read_mcp_resource` 读一个资源。
+  - 它们只读，风险 low，不用审批。暴露方式跟着服务器的 `exposure` 走；服务器设成 `hidden` 时不会被读到。
+- **图片**：MCP 工具返回的图片、读出来的图片资源，直接交给模型。大图在写进会话前先缩小，和 `read` 读图一样；可以在设置里用 `images.autoResize` 关掉缩小。
+- **其他二进制资源**存成临时文件，结果里给出路径，模型可以接着用 `read` 或命令处理。
+- **工作目录**：tau 回答服务器的 `roots/list`，告诉它当前工作目录。官方 filesystem 服务器这类服务靠它确定能访问哪些目录。
 
 ### 项目里的 `.tau/mcp.json`
 

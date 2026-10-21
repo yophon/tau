@@ -4,6 +4,39 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P43)
+- ext-mcp-http, ext-mcp: MCP resource tools `list_mcp_resources`,
+  `list_mcp_resource_templates` and `read_mcp_resource` (pi 1.2; the names
+  Codex and opencode use), registered once a server offers resources, read
+  only (low risk). `/mcp` and `tau mcp list --check` mark servers with
+  resources.
+- ext-mcp-http: MCP protocol 2025-11-25, also accepting 2025-06-18,
+  2025-03-26 and 2024-11-05 (pi); a server choosing another version is
+  disconnected. SSE streams that drop before their response arrives are resumed
+  with `Last-Event-ID`, after the server's `retry` delay (pi). Option
+  `roots`, answered to `roots/list`; the CLI gives the working directory.
+- kernel: `AgentOptions.imageProcessor`: images tools return are converted
+  and shrunk before they are logged (pi `normalizeToolResultImages`, also
+  exported); the CLI passes its image processor. `decodeBase64`;
+  `SseParser` options `onId`/`onRetry`; `Agent.provider`;
+  `sendUserMessage(content, { expandPromptTemplates })` (pi 0.84.2) runs the
+  extension command, skill or prompt template the text names.
+- CLI: commands the bash and PowerShell tools run get `TAU_SESSION_ID`,
+  `TAU_SESSION_FILE`, `TAU_SESSION_PROVIDER`, `TAU_SESSION_MODEL` and
+  `TAU_SESSION_REASONING_LEVEL` (pi's `PI_*`; `TAU_PROVIDER` and
+  `TAU_MODEL` already configure tau), and tau sets `AI_AGENT=tau` and
+  `TAU_CODING_AGENT=true` for its child processes. host-node:
+  `NodeShell`/`NodeBackgroundShell` option `commandEnv`.
+
+### Changed (P43)
+- ext-mcp-http: MCP images reach the model as images instead of placeholder
+  text (pi); binary resources are saved to temp files where the host can (the
+  Node extension does) and named by path; embedded text resources and resource
+  links read as pi writes them; `structuredContent` may be any JSON value.
+  Servers without the `tools` capability are no longer asked for
+  `tools/list`. `toolOutput` is replaced by `convertMcpResult` and
+  `limitMcpContent`.
+
 ### Changed (P42)
 - kernel: long sessions stay fast. A write that extends the current branch
   extends the projection, path and usage in place instead of rebuilding them;

@@ -1,6 +1,6 @@
 # Phase 43：MCP 与 pi 1.2 余项对齐 规格书
 
-> 状态：已确认（2026-10-21）。用户同意了提案（「可以，写吧」），规格书里提案之外新加的三处（SSE 续传、MCP 图片交给模型、`TAU_SESSION_*` 的名字）也按建议确认（「可以，做吧」）。
+> 状态：已完成（2026-10-21），偏差见文末「实施记录」。已确认（2026-10-21）。用户同意了提案（「可以，写吧」），规格书里提案之外新加的三处（SSE 续传、MCP 图片交给模型、`TAU_SESSION_*` 的名字）也按建议确认（「可以，做吧」）。
 > 对应 roadmap 阶段：Phase 43
 > 起因：P42 后讨论下一阶段。对照 pi v1.2.0 源码，逐条复查 P21 审计里判为「以后」的条目，下面这些确认还缺。其余的已在 P32–P41 做掉，或 pi 自己也没做（如 Retry-After：pi 关掉了 SDK 的重试）。
 
@@ -109,25 +109,61 @@
 
 ## 验收清单
 
-- [ ] 43a：
-  - [ ] 对回 2025-11-25、2025-06-18 的服务器都能连上；回不支持的版本时断开并报错。
-  - [ ] SSE：服务器给过事件 ID 后在响应前关流，客户端带 `Last-Event-ID` 续上并拿到响应；遵守 `retry`；没给事件 ID 时只有这个请求失败。GET 通知流同样能续。
-  - [ ] `roots/list` 回工作目录；没给根时不声明能力。
-  - [ ] 只提供资源的服务器（没有 tools 能力）连得上，不发 `tools/list`，资源工具出现。
-  - [ ] 资源工具覆盖这些情况，对照 pi 的测试用例：列一页与续页、列全部服务器与 `errors`、模板、读文字/图片/二进制/多内容/空资源、跳过 MCP App 资源、未知服务器的报错、暴露方式随服务器变化。
-  - [ ] 工具结果：图片与嵌入图片交给模型，文本 MIME 的二进制解码，二进制存文件，`resource_link` 文字，`structuredContent` 为数组或 `null`。
-  - [ ] 内核：工具结果的图片在 `tool_result` 之后统一处理；没有处理能力或处理失败时原样保留；`images.autoResize: false` 时不缩小。
-  - [ ] 真服务器：用仓库里已有的官方 MCP SDK（根 devDependency，不装新东西）写一个带资源和图片的 stdio 服务器，真 DeepSeek 列资源、读资源、看图。
-- [ ] 43b：
-  - [ ] bash 与 PowerShell 的命令（前台、后台）读得到五个变量；切模型、改思考等级后下一条命令就变；`--no-session` 时没有 `TAU_SESSION_FILE`；继承来的同名值被替换。
-  - [ ] 子进程看得到 `AI_AGENT=tau`、`TAU_CODING_AGENT=true`；网关不设。
-  - [ ] `sendUserMessage`：缺省不展开；`expandPromptTemplates` 时提示模板与 `/skill:名字` 被展开、普通扩展命令被运行、未知的 `/xxx` 原样发出；运行中按 `deliverAs` 排队。
-  - [ ] 真 DeepSeek：问「现在用的是什么模型」，模型读 `TAU_SESSION_MODEL` 回答（pi 文档里的用法）。
-- [ ] 全量测试、check、pack smoke、smoke-tui（全屏与 inline）通过；ext-mcp-http 是纯 ES、浏览器宿主也用，所以浏览器 runtime smoke 也要通过。
-- [ ] DoD 通用项（见 development.md）；决策记为 D46；pi-parity 表与 MCP 文档（connectors.md）更新。
+- [x] 43a：
+  - [x] 对回 2025-11-25、2025-06-18 的服务器都能连上；回不支持的版本时断开并报错。
+  - [x] SSE：服务器给过事件 ID 后在响应前关流，客户端带 `Last-Event-ID` 续上并拿到响应；遵守 `retry`；没给事件 ID 时只有这个请求失败。GET 通知流同样能续。
+  - [x] `roots/list` 回工作目录；没给根时不声明能力。
+  - [x] 只提供资源的服务器（没有 tools 能力）连得上，不发 `tools/list`，资源工具出现。
+  - [x] 资源工具覆盖这些情况，对照 pi 的测试用例：列一页与续页、列全部服务器与 `errors`、模板、读文字/图片/二进制/多内容/空资源、跳过 MCP App 资源、未知服务器的报错、暴露方式随服务器变化。
+  - [x] 工具结果：图片与嵌入图片交给模型，文本 MIME 的二进制解码，二进制存文件，`resource_link` 文字，`structuredContent` 为数组或 `null`。
+  - [x] 内核：工具结果的图片在 `tool_result` 之后统一处理；没有处理能力或处理失败时原样保留；`images.autoResize: false` 时不缩小。
+  - [x] 真服务器：用仓库里已有的官方 MCP SDK（根 devDependency，不装新东西）写一个带资源和图片的 stdio 服务器，真 DeepSeek 列资源、读资源、看图。
+- [x] 43b：
+  - [x] bash 与 PowerShell 的命令（前台、后台）读得到五个变量；切模型、改思考等级后下一条命令就变；`--no-session` 时没有 `TAU_SESSION_FILE`；继承来的同名值被替换。
+  - [x] 子进程看得到 `AI_AGENT=tau`、`TAU_CODING_AGENT=true`；网关不设。
+  - [x] `sendUserMessage`：缺省不展开；`expandPromptTemplates` 时提示模板与 `/skill:名字` 被展开、普通扩展命令被运行、未知的 `/xxx` 原样发出；运行中按 `deliverAs` 排队。
+  - [x] 真 DeepSeek：问「现在用的是什么模型」，模型读 `TAU_SESSION_MODEL` 回答（pi 文档里的用法）。
+- [x] 全量测试、check、pack smoke、smoke-tui（全屏与 inline）通过；ext-mcp-http 是纯 ES、浏览器宿主也用，所以浏览器 runtime smoke 也要通过。
+- [x] DoD 通用项（见 development.md）；决策记为 D46；pi-parity 表与 MCP 文档（connectors.md）更新。
 
 ## 风险与开放问题
 
 - **SSE 续传**靠服务器给事件 ID，真服务器里少见，主要靠假服务器测试覆盖。
 - **图片进会话会让请求变大**：统一处理先把大图缩小，和 `read` 读图一样。
 - **开放问题**：无（「需要确认」三条已按建议确认）。
+
+## 实施记录（2026-10-21）
+
+### 提交
+
+| 提交 | 内容 |
+|---|---|
+| e8a0f1a | 规格书 |
+| 4a96c09 | 43a MCP 客户端、内核图片处理；43b 会话环境变量、进程标记、`expandPromptTemplates` |
+
+### 验收
+
+- **测试**：全量 1175 个，1170 通过、5 跳过。
+  - 新增 ext-mcp-http 13 个：版本协商、roots、响应流与 GET 流续传、不续的情况、没有 tools 能力的服务器、资源工具的列表/模板/读取/暴露方式/网关关闭、`/mcp`、内容转换。
+  - 新增内核 6 个：base64、SSE 的 id 与 retry、图片统一处理、`expandPromptTemplates`（空闲与运行中）。
+  - 新增 host-node 3 个、CLI e2e 1 个：`-p` 下 bash 读到 `TAU_SESSION_*` 与进程标记，继承来的旧值被替换，提示词里有那句说明。
+  - 原有测试里，假服务器补上了 tools 能力；HF-15 的「图片换占位」改成断言图片交给模型。
+- **check、pack smoke 通过**；浏览器 bundle、浏览器 runtime（Edge）、QuickJS、QuickJS MCP、小程序 smoke 通过。ext-mcp-http 和内核在裸引擎上照常工作。
+- **smoke-tui**：33 个场景在全屏与 inline 下各有一遍完整跑通（全屏第二遍、inline 第三遍）。之前几遍有偶发失败：两次是第 5 个场景（extension ctx.abort，全屏、inline 各一次）启动后 40 秒屏幕一直空白，一次是 inline 下 statusline 等首屏超时。这些场景单独重跑都通过（各 2–3 次），没有复现，原因未查明，登记为技术债 #22。
+- **真 DeepSeek**（脚本在 scratchpad `p43real.mjs`）：
+  - 用仓库根 devDependency 里的官方 MCP SDK 1.29 写了一个 stdio 服务器，提供一个文字资源、一个 PNG 资源和一个返回 3000×2000 图片的工具。
+  - 模型依次调用 `list_mcp_resources`、两次 `read_mcp_resource`、`mcp__gallery__snapshot`、bash。
+  - 答对了口令 PELICAN，认出图片资源是左红方块、右蓝圆。截图先缩成 2000×1333（124 KB）再交给模型，模型认出了绿圆。
+  - bash 打印出 `deepseek-flash`。
+
+### 与规格的偏差
+
+- **内容转换**：照 pi，嵌入的文字资源只给正文（原来带一行 `[resource uri]`），音频写 pi 的占位。
+  - 结果为空且不是错误时，仍写 `(empty MCP tool result)`；pi 返回空内容，tau 保留这句，免得空结果出问题。
+  - 宿主不给 `saveBinary` 时（浏览器、小程序），二进制资源写 pi `content.ts` 的占位。
+- **base64 解码**：内核新加纯 ES 的 `decodeBase64`。小程序等宿主没有 `atob`，内核本来就不依赖它。
+- **SSE 解析**：内核的 `SseParser` 加了 `onId`/`onRetry` 两个可选回调；事件类型不是 `message` 的不再当作 JSON-RPC（pi）。
+- **`Agent.provider`**：新加的只读属性，值和助手消息里记的一样（没有配置时为 `openai-compat`）。会话环境变量要用它。
+- **`tau mcp list --check`**：也照 pi 不向没有 tools 能力的服务器要工具，有资源时多写 `resources`。
+- **顺带改正**：pi-parity 表里的「MCP OAuth ❌D24」早已过时（P32b 移植了 pi-mcp 的 OAuth），改成 ✅。
+

@@ -66,7 +66,7 @@
 | `registerEntryRenderer` | 1.2 | ✅ P8 | ⚠ 同名异形：tau 早于 pi 自有（P8 形状，返回 string/`{text,format}`/组件，不接 Theme），代码注明偏离（D9/D10） |
 | `registerToolRenderer` | 1.2 | ✅ P8 | 同上 |
 | `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 `triggerTurn:false` 暂存到当前 turn_end 之后提交、不触发请求（P23b，pi 0.84.4）；压缩/导航占槽期间暂存到其结束后（P23a） |
-| `sendUserMessage` | 0.80 | ✅ P11 | 流中 steer/followUp，空闲经宿主 submitPrompt；启动窗口与宿主运行中抛 `busy`（P21-HF-11） |
+| `sendUserMessage` | 0.80 | ✅ P11 | 流中 steer/followUp，空闲经宿主 submitPrompt；启动窗口与宿主运行中抛 `busy`（P21-HF-11）。`expandPromptTemplates`（pi 0.84.2）✅ P43：tau 的技能与提示模板本身是扩展命令，展开即运行点名的扩展命令 |
 | `appendEntry` | 0.80 | ✅ P3 | |
 | `setSessionName` | 0.80 | ✅ P3 | |
 | `getSessionName` | 0.80 | ✅ P23c | |
@@ -147,13 +147,13 @@
 | settings 层 | ❌D9 | 见 `getSettings` |
 | 模型库与目录（models.json、modelOverrides、models-store.json） | ❌D21 | 连同 auth.json 一起属于 pi 产品层配置面 |
 | 订阅与 OAuth 登录 | ❌D2 | |
-| MCP OAuth | ❌D24 | 只走请求头 |
+| MCP OAuth | ✅ P32b | ext-mcp 的 `oauth/` 移植自 pi-mcp 1.2（`"auth": "oauth"`、`tau mcp login/logout`）；纯 ES 的 ext-mcp-http 只接宿主给的 token 提供者 `McpAuth`（D24） |
 | 约束采样（strict schema、grammar 工具） | ❌D25 | |
 | Themes | ❌ | 2026-07-20 用户否决 |
 | 嵌套工具调用 `ctx.executeTool`（ExtensionToolContext） | ✅ P24c | 照抄 pi：只给工具 execute 的 ctx，嵌套 id `<parent>/<n>`，tool_call/tool_result/tool_execution_* 带 `parentToolCallId`，不进转录，调用方结果记 `nestedCalls`（NESTED_CALL_LIMITS）并累加 usage，sequential 时排他执行，失败一律 isError 不 reject。偏离：`ctx.tools` 是不含 execute 的 ToolInfo；成员可选（D10）；嵌套调用不进 AgentEvent 流（宿主看不到逐个嵌套行，脚本进度由调用方工具的 onUpdate 给）；未知工具在 tool_call 钩子前失败、只有真正执行的调用才发 tool_execution_start（tau 既有 preflight 语义，pi 对嵌套调用总先发 start）；一棵 Agent 树共用 preflight 锁（审批恒串行，D22-2）；参数省略时 read/write/edit 保留 path（D29） |
 | bash 结构化结果（`outputSchema` + `structuredContent`） | ✅ P24c | `{output, truncated, exit_code, wall_time_seconds}`，1 MiB 首尾截断，非零退出码也给；`full_output_path` 不给（内核无临时文件能力）。模型侧文本不变 |
 | tool_search（`builtin:tool-search`） | ✅ P24d | `@yophon/tau-ext-tool-search`，照抄 pi 1.2.0（BM25、静态描述、注册即 inactive、激活走 active 集并记进转录）。CLI 静态装配见 P24e |
-| MCP exposure / namespace / `mcp_servers` 段 / 生命周期 | ✅ P24d | 照抄 pi 0.99.2–1.2.0：`exposure`/`toolExposure`、codemode 档注册为 deferred、namespace + aliases + instructions、`CallToolResult` 输出 schema 与 structuredContent、`mcp_servers` 段（4096 字符）、后台连接与首 prompt 等 direct 服务器、`reachesTools` 等待、HTTP 连接重试两次、`tools/list_changed` 撤回为 hidden。偏离：缺省 exposure 为 direct（pi 为 codemode，用户裁定）；`mcp_servers` 段经 before_agent_start 追加进提示，变化时由 P22 的 section diff 记一条新 system 消息；HTTP 的 GET 通知流在 ext-mcp-http 为可选（移动端不留空闲连接）；无 `mcp.json`、`/mcp`、resources 工具 |
+| MCP exposure / namespace / `mcp_servers` 段 / 生命周期 | ✅ P24d | 照抄 pi 0.99.2–1.2.0：`exposure`/`toolExposure`、codemode 档注册为 deferred、namespace + aliases + instructions、`CallToolResult` 输出 schema 与 structuredContent、`mcp_servers` 段（4096 字符）、后台连接与首 prompt 等 direct 服务器、`reachesTools` 等待、HTTP 连接重试两次、`tools/list_changed` 撤回为 hidden。偏离：缺省 exposure 为 direct（pi 为 codemode，用户裁定）；`mcp_servers` 段经 before_agent_start 追加进提示，变化时由 P22 的 section diff 记一条新 system 消息；HTTP 的 GET 通知流在 ext-mcp-http 为可选（移动端不留空闲连接）。`mcp.json` 见 P32b，`/mcp` 见 P27。P43 照 pi 1.2 补上：没有 tools 能力的服务器不发 `tools/list`；三个资源工具（`list_mcp_resources`、`list_mcp_resource_templates`、`read_mcp_resource`，风险 low，暴露方式取服务器里最宽的）；MCP 内容照 pi 转换（图片交给模型，二进制资源由宿主存临时文件，`resource_link` 提示可读）；工具结果图片在内核统一处理（`normalizeToolResultImages`）；`roots/list` 回工作目录 |
 | codemode（`builtin:codemode`） | ✅ P24e | `@yophon/tau-ext-codemode`：照抄 pi 1.2.0 的工具契约、脚本全局、输出约定、`on`/`only` 呈现与 `inlineBudget`、`store()`/`load()`（`codemode-store` 条目）；沙箱精确钉版消费 `@earendil-works/pi-codemode`（D30），纯 ES 入口注入沙箱，`./node` 接 worker 沙箱。CLI 作为 inactive 内置扩展装配，`--tools +codemode` 激活，`codemode.mode`/`inlineBudget` 读 settings.json。偏离：无 `models` 全局（D21）、无约束采样语法（D25）、`image()` 不落临时文件、预算用 `estimateStringTokens`（D19-1）、进度经 onUpdate 文本、内置不可被用户扩展替换 |
 | 权限与审批 | ✅ P15 | pi 无对应物（tau 原创，D20）；Windows 危险命令分级（P21-HF-3）；P26d 加 accept-edits 档（yo-agent / Claude Code）；P37a 加 Claude Code 的权限规则（`permissions.allow/ask/deny`、`/permissions`、`--add-dir`，D40）。pi 的 protected-paths 示例等于三条 deny 规则 |
 | 转交新会话（pi 示例扩展 `handoff.ts`） | ✅ P37b | 照抄系统提示、请求格式、压缩感知的输入、新会话记 `parentSession`（`SessionRepo.create({ parentSession })` 对应 pi `newSession({ parentSession })`）、提示放进输入框。偏离：TUI 内置命令而非扩展（tau 扩展拿不到开新会话与设输入框）；不另开编辑器对话框 |
@@ -183,7 +183,7 @@
 | 待办（pi 为示例扩展 `todo.ts`） | ✅ P26c | 采用 yo-agent / Claude Code 的 `todo_write` 整表替换，不用 pi 示例的增删勾（D32） |
 | 长期记忆 | ✅ P26c | pi 无对应物；照 yo-agent 的 memory_write 与 `#remember`，存用户目录（D32） |
 | 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18） |
-| 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；progress/cancelled/GET 通知流随 MCP 协议升级另立 |
+| 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。P43：协议 2025-11-25 与 pi 的版本集、SSE 用 `Last-Event-ID` 续流、`roots`。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；GET 通知流在 ext-mcp-http 为可选；progress/cancelled 未做 |
 
 ## pi-feishu 扩展移植（P20）
 
