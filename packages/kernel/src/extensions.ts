@@ -390,6 +390,53 @@ export interface AgentSettledEvent {
 }
 
 /**
+ * Fired on the parent's extensions when runSubagent starts a child (P44, tau; Claude
+ * Code's SubagentStart hook). Results' `context` joins the child's system prompt.
+ */
+export interface SubagentStartEvent {
+	type: "subagent_start";
+	agentId: string;
+	/** The spawn's label (ext-subagents: the agent's name). */
+	agentType?: string;
+	prompt: string;
+}
+
+export type SubagentStartEventResult = { context?: string } | undefined;
+
+/**
+ * Fired on the parent's extensions when a child's prompt settles (P44, tau; Claude
+ * Code's SubagentStop hook). A result with `continue` keeps the child running with
+ * that text as its next prompt; `stopHookActive` says this stop follows such a continuation.
+ */
+export interface SubagentStopEvent {
+	type: "subagent_stop";
+	agentId: string;
+	agentType?: string;
+	lastAssistantMessage: string;
+	stopHookActive: boolean;
+}
+
+export type SubagentStopEventResult = { continue?: string } | undefined;
+
+/**
+ * Fired by hosts before a command the user typed sends the prompt it expands to (P44,
+ * tau; Claude Code's UserPromptExpansion hook): skills, prompt templates, MCP prompts.
+ * A result with `cancel` drops the prompt; `reason` says why.
+ */
+export interface CommandPromptEvent {
+	type: "command_prompt";
+	/** The command's name as typed, without "/". */
+	command: string;
+	args: string;
+	/** "skill" | "prompt" | "mcp" | "extension": where the command comes from. */
+	source: string;
+	/** The prompt it expands to. */
+	text: string;
+}
+
+export type CommandPromptEventResult = { cancel?: boolean; reason?: string } | undefined;
+
+/**
  * Fired before each LLM call with the conversation about to be sent — system
  * messages excluded (pi). Handlers may return a replacement or edit
  * `event.messages` in place; the prompt and tool state is restored after each.
@@ -835,6 +882,8 @@ export interface RegisteredCommand {
 	description: string;
 	/** P41: left out of command lists (menus, /help) but still run when typed (pi enableSkillCommands: false). */
 	hidden?: boolean;
+	/** Where the command comes from, for hooks (P44): "skill", "prompt" (a template), "mcp"; absent = an extension's own. */
+	source?: string;
 	handler: (args: string, ctx: ExtensionContext) => Promise<RegisteredCommandResult> | RegisteredCommandResult;
 	/** Completions for the text typed after "/name " (pi); null or [] = none. */
 	getArgumentCompletions?: (argumentPrefix: string) => CommandCompletion[] | null | Promise<CommandCompletion[] | null>;
@@ -993,6 +1042,9 @@ export interface ExtensionAPI {
 	on(event: "agent_end", handler: ExtensionHandler<AgentEndEvent>): () => void;
 	on(event: "agent_before_settle", handler: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>): () => void;
 	on(event: "agent_settled", handler: ExtensionHandler<AgentSettledEvent>): () => void;
+	on(event: "subagent_start", handler: ExtensionHandler<SubagentStartEvent, SubagentStartEventResult>): () => void;
+	on(event: "subagent_stop", handler: ExtensionHandler<SubagentStopEvent, SubagentStopEventResult>): () => void;
+	on(event: "command_prompt", handler: ExtensionHandler<CommandPromptEvent, CommandPromptEventResult>): () => void;
 	on(event: "before_provider_headers", handler: ExtensionHandler<BeforeProviderHeadersEvent>): () => void;
 	on(
 		event: "before_provider_request",
@@ -1193,6 +1245,9 @@ interface HandlerLists {
 	agent_end: ExtensionHandler<AgentEndEvent>[];
 	agent_before_settle: ExtensionHandler<AgentBeforeSettleEvent, BoundaryResult>[];
 	agent_settled: ExtensionHandler<AgentSettledEvent>[];
+	subagent_start: ExtensionHandler<SubagentStartEvent, SubagentStartEventResult>[];
+	subagent_stop: ExtensionHandler<SubagentStopEvent, SubagentStopEventResult>[];
+	command_prompt: ExtensionHandler<CommandPromptEvent, CommandPromptEventResult>[];
 	before_provider_headers: ExtensionHandler<BeforeProviderHeadersEvent>[];
 	before_provider_request: ExtensionHandler<BeforeProviderRequestEvent, BeforeProviderRequestEventResult>[];
 	after_provider_response: ExtensionHandler<AfterProviderResponseEvent>[];
@@ -1328,6 +1383,9 @@ export class ExtensionRegistry {
 		agent_end: [],
 		agent_before_settle: [],
 		agent_settled: [],
+		subagent_start: [],
+		subagent_stop: [],
+		command_prompt: [],
 		before_provider_headers: [],
 		before_provider_request: [],
 		after_provider_response: [],
@@ -2207,5 +2265,47 @@ export class ExtensionRegistry {
 
 	async notifyAgentSettled(aborted: boolean, ctx: ExtensionContext): Promise<void> {
 		await this.dispatch(this.handlers.agent_settled, { type: "agent_settled", aborted }, ctx);
+	}
+
+	/** subagent_start (P44): every handler's context, in order. */
+	async runSubagentStart(event: Omit<SubagentStartEvent, "type">, ctx: ExtensionContext): Promise<string[]> {
+		const contexts: string[] = [];
+		for (const handler of [...this.handlers.subagent_start]) {
+			const result = await this.guarded("subagent_start", () => handler({ type: "subagent_start", ...event }, ctx));
+			if (typeof result?.context === "string" && result.context.trim() !== "") contexts.push(result.context.trim());
+		}
+		return contexts;
+	}
+
+	/** subagent_stop (P44): the first handler asking the child to go on wins. */
+	async runSubagentStop(event: Omit<SubagentStopEvent, "type">, ctx: ExtensionContext): Promise<string | undefined> {
+		for (const handler of [...this.handlers.subagent_stop]) {
+			const result = await this.guarded("subagent_stop", () => handler({ type: "subagent_stop", ...event }, ctx));
+			if (typeof result?.continue === "string" && result.continue.trim() !== "") return result.continue;
+		}
+		return undefined;
+	}
+
+	/** command_prompt (P44): a cancel from any handler drops the prompt. */
+	async runCommandPrompt(
+		event: Omit<CommandPromptEvent, "type">,
+		ctx: ExtensionContext,
+	): Promise<{ cancel: boolean; reason?: string }> {
+		for (const handler of [...this.handlers.command_prompt]) {
+			const result = await this.guarded("command_prompt", () => handler({ type: "command_prompt", ...event }, ctx));
+			if (result?.cancel) return { cancel: true, ...(result.reason ? { reason: result.reason } : {}) };
+		}
+		return { cancel: false };
+	}
+
+	/** Run one handler; with an error sink its failure is reported and counts as no result. */
+	private async guarded<R>(event: string, run: () => R | Promise<R>): Promise<R | undefined> {
+		if (!this.errorSink) return await run();
+		try {
+			return await run();
+		} catch (error) {
+			this.errorSink({ event, error: toError(error) });
+			return undefined;
+		}
 	}
 }

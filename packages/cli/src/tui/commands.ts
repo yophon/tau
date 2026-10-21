@@ -1109,7 +1109,16 @@ export async function runCommand(tui: TuiController, text: string): Promise<bool
 		await tui.renderNewMessages(start);
 		await tui.refreshSurfaces();
 		if (typeof output === "string") tui.notice("info", output);
-		else if (output?.action === "prompt") await tui.promptWhenFree(commandPromptContent(output));
+		else if (output?.action === "prompt") {
+			// P44: UserPromptExpansion hooks may stop the prompt the command expands to.
+			const expansion = await tui.extensions.runCommandPrompt(
+				{ command: parsed.name, args: parsed.args, source: command.source ?? "extension", text: output.text },
+				tui.agent.extensionContext(),
+			);
+			if (expansion.cancel)
+				tui.notice("warn", `/${parsed.name} blocked${expansion.reason ? `: ${expansion.reason}` : "."}`);
+			else await tui.promptWhenFree(commandPromptContent(output));
+		}
 	} catch (error) {
 		tui.notice("error", `/${parsed.name} failed: ${errorText(error)}`);
 	}

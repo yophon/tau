@@ -1196,11 +1196,23 @@ export class Agent {
 			(options.toolNames
 				? options.toolNames.map((name) => registered.get(name)).filter((tool): tool is Tool => tool !== undefined)
 				: this.baseTools);
+		// P44: the parent's extensions hear the child start (Claude Code's SubagentStart) and may add context.
+		const agentId = `agent-${Math.random().toString(16).slice(2, 10)}`;
+		const parentCtx = this.extensionContext();
+		const startContext = parent
+			? await parent.runSubagentStart(
+					{ agentId, ...(options.label !== undefined ? { agentType: options.label } : {}), prompt },
+					parentCtx,
+				)
+			: [];
 		const basePrompt = options.systemPrompt ?? this.systemPrompt;
-		const systemPrompt =
-			options.appendSystemPrompt === undefined
-				? basePrompt
-				: [basePrompt, options.appendSystemPrompt].filter((part) => part !== undefined && part !== "").join("\n\n");
+		const systemPrompt = [
+			basePrompt,
+			...(options.appendSystemPrompt === undefined ? [] : [options.appendSystemPrompt]),
+			...startContext,
+		]
+			.filter((part) => part !== undefined && part !== "")
+			.join("\n\n");
 		const parentApproval = this.onApproval;
 		const label = options.label;
 		const marks = {
@@ -1241,10 +1253,29 @@ export class Agent {
 		if (options.model !== undefined) child.setModel(options.model);
 		let text = "";
 		let lastAssistantText = "";
-		for await (const event of child.prompt(prompt, signal)) {
-			options.onEvent?.(event);
-			if (event.type === "text_delta") text += event.delta;
-			if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
+		let next: string | undefined = prompt;
+		let stopHookActive = false;
+		while (next !== undefined) {
+			text = "";
+			for await (const event of child.prompt(next, signal)) {
+				options.onEvent?.(event);
+				if (event.type === "text_delta") text += event.delta;
+				if (event.type === "assistant_message") lastAssistantText = messageText(event.message);
+			}
+			next = undefined;
+			// P44: Claude Code's SubagentStop — a handler may keep the child going with its next instruction.
+			if (parent && !signal?.aborted) {
+				next = await parent.runSubagentStop(
+					{
+						agentId,
+						...(options.label !== undefined ? { agentType: options.label } : {}),
+						lastAssistantMessage: text === "" ? lastAssistantText : text,
+						stopHookActive,
+					},
+					parentCtx,
+				);
+				stopHookActive = next !== undefined;
+			}
 		}
 		return {
 			text: text === "" ? lastAssistantText : text,

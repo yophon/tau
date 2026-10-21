@@ -3,7 +3,9 @@
  * same commands work in the TUI (pickers), the REPL, RPC and ACP; without a UI
  * /permissions prints the rules.
  */
+import { isAbsolute, relative } from "node:path";
 import type { Extension, PermissionRuleKind, UiCapability } from "@yophon/tau-kernel";
+import { DIRECTORY_ADDED_CHANNEL } from "./hooks.ts";
 import type { ListedRule, RuleDestination, WorkspacePermissions } from "./permissions.ts";
 
 const KIND_TITLES: Record<PermissionRuleKind, string> = { allow: "Allow", ask: "Ask", deny: "Deny" };
@@ -14,6 +16,11 @@ const DESTINATIONS: ReadonlyArray<{ label: string; value: RuleDestination }> = [
 ];
 const ADD_RULE = "Add a new rule…";
 const ADD_DIR = "Add a directory…";
+
+function isInside(path: string, root: string): boolean {
+	const rel = relative(root, path);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
 
 export function createPermissionsExtension(permissions: WorkspacePermissions): Extension {
 	return (api) => {
@@ -30,13 +37,21 @@ export function createPermissionsExtension(permissions: WorkspacePermissions): E
 			handler: async (args, ctx) => {
 				const dir = args.trim() || (ctx.ui ? ((await ctx.ui.input("Directory to add", "../shared")) ?? "") : "");
 				if (dir.trim() === "") return "Usage: /add-dir <directory>";
-				return addDirectory(permissions, dir.trim(), ctx.ui);
+				// P44 (Claude Code): DirectoryAdded hooks hear about a directory /add-dir added.
+				return addDirectory(permissions, dir.trim(), ctx.ui, (path) =>
+					api.events?.emit(DIRECTORY_ADDED_CHANNEL, { directory: path, source: "slash_command" }),
+				);
 			},
 		});
 	};
 }
 
-async function addDirectory(permissions: WorkspacePermissions, dir: string, ui: UiCapability | undefined) {
+async function addDirectory(
+	permissions: WorkspacePermissions,
+	dir: string,
+	ui: UiCapability | undefined,
+	onAdded?: (path: string) => void,
+) {
 	let remember = false;
 	if (ui) {
 		const choice = await ui.select(`Add ${dir} as a working directory?`, [
@@ -46,8 +61,12 @@ async function addDirectory(permissions: WorkspacePermissions, dir: string, ui: 
 		if (choice === undefined) return "Cancelled.";
 		remember = choice.startsWith("Yes, and remember");
 	}
+	const before = permissions.workingDirectories();
 	const added = permissions.addDirectory(dir, remember);
 	if (added.error) return added.error;
+	// Not for a directory that already was one, or inside one (Claude Code).
+	const path = added.path;
+	if (path && !before.some((root) => isInside(path, root))) onAdded?.(path);
 	return remember
 		? `Added ${added.path} as a working directory and saved it to .tau/settings.local.json.`
 		: `Added ${added.path} as a working directory for this session.`;

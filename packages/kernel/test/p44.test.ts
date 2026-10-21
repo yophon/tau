@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+	Agent,
 	askFormStepByStep,
 	commandPromptContent,
 	ExtensionRegistry,
@@ -10,10 +11,13 @@ import {
 	formFieldError,
 	formValueText,
 	parseFormText,
+	type SubagentStopEvent,
+	type Tool,
 	type UiCapability,
 	type UiForm,
 	type UiFormField,
 } from "../src/index.ts";
+import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "./helpers.ts";
 
 const field = (extra: Partial<UiFormField> & Pick<UiFormField, "type">): UiFormField => ({
 	name: "f",
@@ -112,4 +116,62 @@ test("a command prompt with images becomes text followed by the images", () => {
 			{ type: "image", data: "AA", mimeType: "image/png" },
 		],
 	);
+});
+
+test("subagent_start adds context to the child; subagent_stop keeps it going (Claude Code's SubagentStart/Stop)", async () => {
+	const stops: SubagentStopEvent[] = [];
+	const starts: Array<{ agentType?: string; prompt: string }> = [];
+	const extensions = await ExtensionRegistry.load([
+		(api) => {
+			api.on("subagent_start", (event) => {
+				starts.push({ ...(event.agentType ? { agentType: event.agentType } : {}), prompt: event.prompt });
+				return { context: "Remember: be brief." };
+			});
+			api.on("subagent_stop", (event) => {
+				stops.push(event);
+				return event.stopHookActive ? undefined : { continue: "Now double-check." };
+			});
+		},
+	]);
+	const taskTool: Tool = {
+		name: "task",
+		description: "Delegate",
+		parameters: { type: "object", properties: { prompt: { type: "string" } }, required: ["prompt"] },
+		execute: async (args, signal, _onUpdate, ctx) => {
+			const result = await ctx?.runSubagent?.(String(args.prompt), { label: "scout" }, signal);
+			return { content: [{ type: "text", text: result?.text ?? "missing" }] };
+		},
+	};
+	const requests: unknown[] = [];
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "fake-model" },
+		platform: fakePlatform(
+			[
+				makeSseResponse(toolCallTurn("task", { prompt: "look around" })),
+				makeSseResponse(textTurn("first look")),
+				makeSseResponse(textTurn("checked")),
+				makeSseResponse(textTurn("parent done")),
+			],
+			requests,
+		),
+		systemPrompt: "base",
+		tools: [taskTool],
+		extensions,
+	});
+	for await (const _event of agent.prompt("go")) {
+		// drain
+	}
+	assert.deepEqual(starts, [{ agentType: "scout", prompt: "look around" }]);
+	const first = requests[1] as { messages: Array<{ role: string; content: string }> };
+	assert.equal(first.messages[0]?.content, "base\n\nRemember: be brief.");
+	const second = requests[2] as { messages: Array<{ role: string; content: string }> };
+	assert.equal(second.messages.at(-1)?.content, "Now double-check.");
+	assert.deepEqual(
+		stops.map((event) => [event.agentType, event.lastAssistantMessage, event.stopHookActive]),
+		[
+			["scout", "first look", false],
+			["scout", "checked", true],
+		],
+	);
+	assert.equal(stops[0]?.agentId, stops[1]?.agentId);
 });

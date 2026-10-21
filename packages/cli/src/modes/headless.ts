@@ -314,7 +314,15 @@ export class HeadlessSession {
 		if (command) {
 			const output = await command.handler(args, this.agent.extensionContext());
 			if (typeof output === "string") return { output };
-			if (output?.action === "prompt") return { run: this.run(commandPromptContent(output)) };
+			if (output?.action === "prompt") {
+				// P44: UserPromptExpansion hooks may stop the prompt the command expands to.
+				const expansion = await this.extensions.runCommandPrompt(
+					{ command: name, args, source: command.source ?? "extension", text: output.text },
+					this.agent.extensionContext(),
+				);
+				if (expansion.cancel) return { output: `/${name} blocked${expansion.reason ? `: ${expansion.reason}` : "."}` };
+				return { run: this.run(commandPromptContent(output)) };
+			}
 			return {};
 		}
 		switch (name) {

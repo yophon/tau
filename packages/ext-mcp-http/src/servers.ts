@@ -438,6 +438,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			promptCommandNames.add(name);
 			target.registerCommand(name, {
 				description: promptCommandDescription(prompt),
+				source: "mcp",
 				handler: (args) => runPrompt(state, name, args),
 			});
 		}

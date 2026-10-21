@@ -85,7 +85,7 @@ import { CredentialStore, credentialsPath } from "./credentials.ts";
 import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
 import { shadowedContextFile } from "./git-paths.ts";
-import { createHooksExtension, HookRunner, loadHookConfig, withHookApprovals } from "./hooks.ts";
+import { createHooksExtension, HookRunner, loadHookConfig, postToolBatch, withHookApprovals } from "./hooks.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
 	availableModels,
@@ -1317,6 +1317,15 @@ async function runCommand(
 		if (typeof output === "string") {
 			console.log(output);
 		} else if (output?.action === "prompt") {
+			// P44: UserPromptExpansion hooks may stop the prompt the command expands to.
+			const expansion = await extensions.runCommandPrompt(
+				{ command: name, args, source: command.source ?? "extension", text: output.text },
+				agent.extensionContext(),
+			);
+			if (expansion.cancel) {
+				console.log(red(`/${name} blocked${expansion.reason ? `: ${expansion.reason}` : "."}`));
+				return;
+			}
 			await runTurn(agent, commandPromptContent(output), readline);
 		}
 	} catch (error) {
@@ -1917,6 +1926,22 @@ async function main(): Promise<void> {
 			notifications: spec.ui !== undefined && (spec.audit?.approvals ?? "terminal") !== "chat",
 			idleNotification: workspaceHost === "tui" || workspaceHost === "repl",
 			onHookApproval: (toolCallId) => approvals.record(toolCallId, { source: "hook_allow" }),
+			// P44 (Claude Code): SessionEnd's reason on exit; Stop and SubagentStop see the background work.
+			exitReason: workspaceHost === "tui" || workspaceHost === "repl" ? "prompt_input_exit" : "other",
+			backgroundTasks: () =>
+				background.list().map((task) => ({
+					id: task.id,
+					command: task.command,
+					status: task.status,
+					...(task.description ? { description: task.description } : {}),
+				})),
+			sessionCrons: () =>
+				(scheduling?.scheduler.list() ?? []).map((job) => ({
+					id: job.id,
+					cron: job.cron,
+					prompt: job.prompt,
+					recurring: job.recurring,
+				})),
 		});
 		// ask_user (P35) leads the host's extensions: wherever there is someone to ask.
 		const askUser =
@@ -2118,17 +2143,30 @@ async function main(): Promise<void> {
 		};
 		// Project context files (P21a, pi loadProjectContextFiles): ~/.tau first, then
 		// every directory from the root down to cwd. Appended to any system prompt.
-		const loadProjectContext = async (): Promise<string> =>
-			options.noContextFiles
-				? ""
-				: renderProjectContext(
-						await loadProjectContextFiles(fs, {
-							cwd,
-							globalDir: join(userHome(), ".tau"),
-							// P37d (pi): a nested worktree's own AGENTS.md shadows the main checkout's.
-							skip: [shadowedContextFile(cwd)].filter((path): path is string => path !== undefined),
-						}),
-					);
+		const loadProjectContext = async (): Promise<string> => {
+			if (options.noContextFiles) return "";
+			const globalDir = join(userHome(), ".tau");
+			const files = await loadProjectContextFiles(fs, {
+				cwd,
+				globalDir,
+				// P37d (pi): a nested worktree's own AGENTS.md shadows the main checkout's.
+				skip: [shadowedContextFile(cwd)].filter((path): path is string => path !== undefined),
+			});
+			// P44 (Claude Code): InstructionsLoaded for each file, for the record only.
+			for (const file of files) {
+				hookRunner.fire(
+					"InstructionsLoaded",
+					{
+						file_path: file.path,
+						memory_type: resolve(file.path).startsWith(resolve(globalDir)) ? "User" : "Project",
+						load_reason: "session_start",
+					},
+					undefined,
+					"session_start",
+				);
+			}
+			return renderProjectContext(files);
+		};
 		let projectContext = await loadProjectContext();
 		const sessionRepo = new JsonlSessionRepo(
 			new NodeFileSystem("/"),
@@ -2219,6 +2257,27 @@ async function main(): Promise<void> {
 				toolExecution,
 				onApproval: onWorkspaceApproval,
 				...(policy ? { policy } : {}),
+				// P44 (Claude Code): PostToolBatch after each batch of tool calls; the gateway is parked.
+				...(spec.extendedSettings !== false
+					? {
+							finishTurn: async (turn, signal) => {
+								const batch = await postToolBatch(hookRunner, turn, signal);
+								const send = agentExtensions.hostAction("sendMessage");
+								if (batch.context !== undefined) {
+									send?.(
+										{ customType: "hook_context", content: batch.context, display: false },
+										{ triggerTurn: false },
+									);
+								}
+								if (batch.stop === undefined) return undefined;
+								send?.(
+									{ customType: "hook_stop", content: `PostToolBatch hook: ${batch.stop}`, display: true },
+									{ triggerTurn: false },
+								);
+								return { action: "end" as const };
+							},
+						}
+					: {}),
 			});
 			// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
 			const active = selectActiveTools(

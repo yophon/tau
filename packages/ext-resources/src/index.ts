@@ -615,6 +615,7 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 				for (const template of resources.promptTemplates) {
 					api.registerCommand(template.name, {
 						description: template.description ?? `Prompt template ${template.name}`,
+						source: "prompt",
 						handler: (args) => ({
 							action: "prompt",
 							text: formatPromptTemplateInvocation(template, parseCommandArgs(args)),
@@ -627,6 +628,7 @@ export function createResourcesExtension(options: ResourcesExtensionOptions = {}
 				for (const skill of resources.skills) {
 					api.registerCommand(`skill:${skill.name}`, {
 						description: skill.description,
+						source: "skill",
 						...(listed ? {} : { hidden: true }),
 						handler: (args) => ({ action: "prompt", text: formatSkillInvocation(skill, args) }),
 					});
