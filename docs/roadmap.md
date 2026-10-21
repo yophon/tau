@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-20（P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = 规划 P41**）
+> 最后更新：2026-10-20（P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P41**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -340,6 +340,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 发现：CLI 不内置技能与提示模板，记进 Backlog E。
 - 顺带修了两处：P36 起 Windows 后台命令里 Git Bash 的 `echo`、`ls`、`grep` 没有输出；smoke 查出的 `ask_user` 加载失败（40c 引入，已补回归测试）。
 - 偏差见规格书「实施记录」。真机验收待用户执行。
+
+## Phase 41 🚧 技能与提示模板内置、pi 的资源参数
+
+规格书（2026-10-20 确认；用户：「可以，做吧」）：[specs/phase-41-builtin-resources-flags.md](specs/phase-41-builtin-resources-flags.md)。41a 技能与提示模板内置（pi；加 Agent Skills 的 `~/.agents/skills`、`.agents/skills`，加载规则对齐 pi 1.2，`enableSkillCommands`）；41b pi 的资源参数（`-e`、`-ne`、`--no-mcp`、`--skill`、`-ns`、`--prompt-template`、`-np`、`--system-prompt`、`--append-system-prompt`、`-v`，以及 `SYSTEM.md`、`APPEND_SYSTEM.md`）。
 
 ## 产品层后续 ⬜ 待定
 
