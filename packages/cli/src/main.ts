@@ -1720,6 +1720,9 @@ async function main(): Promise<void> {
 		// The audit ledger (P32c): who decided each approval, and a record per run and tool call.
 		const approvals = new ApprovalLog();
 		const settings = readSettings(join(userHome(), ".tau", "settings.json"));
+		// P40c: the settings in force. The user's until the trust decision below, then the layers;
+		// ask_user reads askUser.wait from it while it loads.
+		let workspaceSettings: TauSettings = settings;
 		const auditExtension = createAuditExtension({
 			ledger: AuditLedger.at(userHome()),
 			host: spec.audit?.host ?? auditHost,
@@ -1778,7 +1781,7 @@ async function main(): Promise<void> {
 			spec.extendedSettings === false
 				? withoutP40Keys(readSettings(join(userHome(), ".tau", "settings.json")))
 				: loadSettings({ home: userHome(), cwd, projectTrusted });
-		let workspaceSettings = readWorkspaceSettings();
+		workspaceSettings = readWorkspaceSettings();
 		// Permission rules (P37a): settings files, flags, /permissions; "always allow" saves rules.
 		let currentAgent: Agent | undefined;
 		const permissions =

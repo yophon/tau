@@ -542,3 +542,28 @@ describe("P29 coverage of the remaining commands", () => {
 		});
 	});
 });
+
+describe("P40 regression: openWorkspace", () => {
+	it("a UI host still gets ask_user (it reads askUser.wait while it loads)", async () => {
+		await sandbox(async ({ cwd, home }) => {
+			const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+			try {
+				const rpc = startMode(["--mode", "rpc", "--permission-mode", "autonomous"], {
+					cwd,
+					home,
+					baseUrl: mock.baseUrl,
+				});
+				rpc.send({ id: "p1", type: "prompt", message: "hi" });
+				await rpc.waitFor((r) => r.type === "agent_settled", "the run", 20_000);
+				const tools = ((mock.requests[0]?.tools ?? []) as Array<{ function?: { name?: string } }>).map(
+					(tool) => tool.function?.name,
+				);
+				assert.ok(tools.includes("ask_user"), tools.join(","));
+				rpc.end();
+				await rpc.exit();
+			} finally {
+				await mock.close();
+			}
+		});
+	});
+});

@@ -199,7 +199,7 @@ describe("P40a: proxy and HTTP idle timeout", () => {
 
 	it("httpIdleTimeoutMs bounds the wait for response headers", async () => {
 		const server = createServer((_req, res) => {
-			setTimeout(() => res.writeHead(200).end(), 3_000);
+			setTimeout(() => res.writeHead(200).end(), 20_000).unref();
 		});
 		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 		const address = server.address();
@@ -210,7 +210,8 @@ describe("P40a: proxy and HTTP idle timeout", () => {
 				home: tempHome({ httpIdleTimeoutMs: 300 }),
 				baseUrl: `http://127.0.0.1:${address.port}/v1`,
 			});
-			assert.ok(Date.now() - started < 2_900, "gave up before the server answered");
+			// The server answers after 20 s; tau gives up after 300 ms (plus its own startup, slow on a loaded machine).
+			assert.ok(Date.now() - started < 15_000, "gave up before the server answered");
 			assert.match(result.output, /timeout/i);
 		} finally {
 			server.closeAllConnections();
