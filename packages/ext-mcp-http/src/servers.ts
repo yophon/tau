@@ -10,33 +10,39 @@
 // state (P13, mobile-first): it has no tools, is reported, and the next call or
 // connect() retries. tools/list_changed re-registers the server's tools; tools it
 // dropped are re-registered as hidden (no unregister in the API).
-import {
-	type Extension,
-	type ExtensionAPI,
-	type ExtensionContext,
-	type JsonSchema,
-	type JsonValue,
-	limitToolText,
-	type Platform,
-	type RiskLevel,
-	type Tool,
-	type ToolNamespace,
-	type ToolResult,
+//
+// P43 (pi 1.2): servers without the tools capability are not asked for tools;
+// servers with resources are reached through three resource tools, registered
+// with the widest exposure of those servers; results reach the model as pi
+// converts them (images pass through, binary resources are saved by the host).
+import type {
+	Extension,
+	ExtensionAPI,
+	ExtensionContext,
+	JsonSchema,
+	JsonValue,
+	Platform,
+	RiskLevel,
+	Tool,
+	ToolNamespace,
+	ToolResult,
 } from "@yophon/tau-kernel";
-import { type CallToolResult, McpClient, type McpToolInfo } from "./client.ts";
+import { type CallToolResult, McpClient, type McpRoot, type McpToolInfo } from "./client.ts";
 import {
 	configuredExposures,
 	createMcpResultSchema,
 	getMcpToolExposure,
+	type McpExposure,
 	type McpExposureConfig,
 	reachesServer,
 	renderServersSection,
 	toToolExposure,
 } from "./exposure.ts";
 import { type McpAuth, McpHttpError, McpSessionExpiredError } from "./http.ts";
-import { McpAbortError, McpConnectionClosedError, McpError, McpTimeoutError } from "./jsonrpc.ts";
+import { JSON_RPC_ERROR_CODES, McpAbortError, McpConnectionClosedError, McpError, McpTimeoutError } from "./jsonrpc.ts";
 import { createMcpToolName, mcpNamespace } from "./naming.ts";
-import { MCP_OUTPUT_MAX_BYTES, toolOutput } from "./result.ts";
+import { createMcpResourceTools, type McpResourceServer, RESOURCE_TOOL_NAMES } from "./resources.ts";
+import { convertMcpResult, limitMcpContent, type McpContentOptions } from "./result.ts";
 import type { McpTransport } from "./transport.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
@@ -102,14 +108,19 @@ export interface McpServerStatus {
 	state: "connecting" | "connected" | "offline";
 	/** Number of tools offered (state "connected" only). */
 	toolCount?: number;
+	/** The server offers resources (state "connected" only; P43). */
+	resources?: boolean;
 	/** Failure description (state "offline" only). */
 	error?: string;
 }
 
 export interface McpServersOptions {
 	servers: McpServerConfig[];
-	/** Timers for request timeouts, connect retries and the startup wait (Platform.sleep). */
-	platform: Pick<Platform, "sleep">;
+	/**
+	 * Timers for request timeouts, connect retries and the startup wait (Platform.sleep);
+	 * createUtf8Decoder decodes text-typed binary resources (P43).
+	 */
+	platform: Pick<Platform, "sleep"> & Partial<Pick<Platform, "createUtf8Decoder">>;
 	/** A fresh transport for one connection attempt; throwing marks the server offline. */
 	createTransport(config: McpServerConfig): McpTransport;
 	clientInfo: { name: string; version: string };
@@ -119,6 +130,17 @@ export interface McpServersOptions {
 	 * not saved. Default: not saved — a pure-Platform client has no file access.
 	 */
 	saveFullOutput?: (text: string) => string;
+	/**
+	 * Save a binary resource (base64) where the model can read it and return the path;
+	 * throw when it cannot (P43, pi output files). Default: not saved.
+	 */
+	saveBinary?: (base64: string, extension: string) => string;
+	/** Roots answered to servers' roots/list, e.g. the working directory as a file URI (P43, pi). Default: none. */
+	roots?: McpRoot[];
+	/** Register the resource tools when a server offers resources (default true; P43). */
+	resourceTools?: boolean;
+	/** Pass MCP images to the model (default true; P43, pi). False keeps the placeholder text used before. */
+	images?: boolean;
 	/** Where an unavailable server is reported when the session has no UI to notify. Default: nowhere (onStatus only). */
 	reportUnavailable?: (message: string) => void;
 	/** How long the first prompt waits for servers with direct tools, ms (default 10000; needs Platform.sleep). */
@@ -143,6 +165,8 @@ interface ServerState {
 	instructions?: string;
 	/** Tool names the server currently offers. */
 	tools: Set<string>;
+	/** The server declared the resources capability when it connected (P43). */
+	hasResources: boolean;
 }
 
 function messageOf(cause: unknown): string {
@@ -179,6 +203,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		states.push({
 			config,
 			tools: new Set(),
+			hasResources: false,
 			...(clash ? { conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : {}),
 		});
 	}
@@ -209,7 +234,8 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		if (state.conflict) return `✗ ${name} (${transport}) · offline: ${state.conflict}`;
 		if (state.connecting) return `◐ ${name} (${transport}) · connecting`;
 		if (state.client?.connectionState === "connected") {
-			return `● ${name} (${transport}) · connected · ${state.tools.size} tool${state.tools.size === 1 ? "" : "s"}`;
+			const resources = state.hasResources ? " · resources" : "";
+			return `● ${name} (${transport}) · connected · ${state.tools.size} tool${state.tools.size === 1 ? "" : "s"}${resources}`;
 		}
 		const last = lastStatus.get(name);
 		return last?.state === "offline"
@@ -236,7 +262,11 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 
 	/** Open one connection (and list its tools); the client is tracked until closed. */
 	const openOnce = async (state: ServerState, list: boolean): Promise<{ client: McpClient; tools: McpToolInfo[] }> => {
-		const client = new McpClient({ ...options.clientInfo, platform: options.platform });
+		const client = new McpClient({
+			...options.clientInfo,
+			platform: options.platform,
+			...(options.roots ? { roots: options.roots } : {}),
+		});
 		clients.add(client);
 		client.onClose(() => {
 			clients.delete(client);
@@ -249,7 +279,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				void refreshTools(state, client);
 			});
 			state.instructions = client.instructions;
-			const tools = list ? await client.listTools({ timeoutMs }) : [];
+			state.hasResources = client.serverCapabilities?.resources !== undefined;
+			// Servers without the tools capability (resources or prompts only) do not answer tools/list (pi).
+			const tools = list && client.serverCapabilities?.tools !== undefined ? await client.listTools({ timeoutMs }) : [];
 			return { client, tools };
 		} catch (error) {
 			await client.close().catch(() => {});
@@ -288,6 +320,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		await state.connecting;
 		if (state.client !== client || !api) return;
 		try {
+			if (client.serverCapabilities?.tools === undefined) return;
 			const tools = await client.listTools({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS });
 			if (state.client === client) registerTools(api, state, tools);
 		} catch {
@@ -343,6 +376,86 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			if (!current.has(name) && definition) target.registerTool({ ...definition, exposure: "hidden" });
 		}
 		activateReachingTools(target, state);
+		syncResourceTools(target);
+	};
+
+	/** How a server's content reaches the model (P43). */
+	const contentOptions = (state: ServerState): McpContentOptions => ({
+		server: state.config.name,
+		readableResources: resourceStates().includes(state),
+		...(options.images === false ? { images: false } : {}),
+		...(options.saveBinary ? { saveBinary: options.saveBinary } : {}),
+		...(options.platform.createUtf8Decoder ? { createUtf8Decoder: options.platform.createUtf8Decoder } : {}),
+	});
+	const where = options.saveFullOutput ?? (() => "[Full output not saved: this MCP client has no file access]");
+
+	/** Run `call` on the server's client; a lost session reconnects once and replays (LAN servers restart routinely). */
+	const withClient = async <T>(state: ServerState, call: (client: McpClient) => Promise<T>): Promise<T> => {
+		try {
+			return await call(await clientFor(state));
+		} catch (cause) {
+			if (!(cause instanceof McpSessionExpiredError)) throw cause;
+			await state.client?.close();
+			return call(await clientFor(state));
+		}
+	};
+
+	/** Servers that do not implement resources/templates/list have no templates (pi). */
+	const withoutTemplates = async <T>(list: () => Promise<T>, empty: T): Promise<T> => {
+		try {
+			return await list();
+		} catch (error) {
+			if (error instanceof McpError && error.code === JSON_RPC_ERROR_CODES.methodNotFound) return empty;
+			throw error;
+		}
+	};
+
+	/** Servers with resources whose exposure is not `hidden`, which the resource tools reach (pi). */
+	const resourceStates = (): ServerState[] =>
+		states.filter((state) => state.hasResources && !state.conflict && (state.config.exposure ?? "direct") !== "hidden");
+
+	const resourceServer = (state: ServerState): McpResourceServer => ({
+		name: state.config.name,
+		timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+		resourcesPage: (cursor, requestOptions) =>
+			withClient(state, (client) => client.listResourcesPage(cursor, requestOptions)),
+		resourceTemplatesPage: (cursor, requestOptions) =>
+			withClient(state, (client) =>
+				withoutTemplates(() => client.listResourceTemplatesPage(cursor, requestOptions), { resourceTemplates: [] }),
+			),
+		allResources: (requestOptions) => withClient(state, (client) => client.listResources(requestOptions)),
+		allResourceTemplates: (requestOptions) =>
+			withClient(state, (client) => withoutTemplates(() => client.listResourceTemplates(requestOptions), [])),
+		readResource: (uri, requestOptions) => withClient(state, (client) => client.readResource(uri, requestOptions)),
+	});
+
+	/** Exposure the resource tools were last registered with; undefined until a server has resources. */
+	let resourceToolsExposure: McpExposure | undefined;
+	/**
+	 * Register the resource tools with the widest exposure of the servers they reach:
+	 * `direct` when one of them is direct, and so on; hidden when none has resources (pi).
+	 */
+	const syncResourceTools = (target: ExtensionAPI): void => {
+		if (options.resourceTools === false) return;
+		const exposures = new Set(resourceStates().map((state) => state.config.exposure ?? "direct"));
+		const next =
+			(["direct", "codemode", "deferred"] as const).find((candidate) => exposures.has(candidate)) ?? "hidden";
+		if (next === resourceToolsExposure || (resourceToolsExposure === undefined && next === "hidden")) return;
+		const wasDirect = resourceToolsExposure === "direct";
+		resourceToolsExposure = next;
+		const tools = createMcpResourceTools({
+			exposure: toToolExposure(next),
+			servers: () => resourceStates().map(resourceServer),
+			content: {
+				...(options.images === false ? { images: false } : {}),
+				...(options.saveBinary ? { saveBinary: options.saveBinary } : {}),
+				...(options.platform.createUtf8Decoder ? { createUtf8Decoder: options.platform.createUtf8Decoder } : {}),
+			},
+			where,
+		});
+		// Read only, like reading a file (pi readOnlyHint).
+		for (const tool of tools) target.registerTool(tool, { risk: "low" });
+		if (wasDirect) target.setActiveTools(target.getActiveTools().filter((name) => !RESOURCE_TOOL_NAMES.has(name)));
 	};
 
 	const createTauTool = (state: ServerState, name: string, info: McpToolInfo, namespace: ToolNamespace): Tool => ({
@@ -361,24 +474,14 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				};
 			}
 			try {
-				let result: CallToolResult;
-				try {
-					result = await (await clientFor(state)).callTool(info.name, args, { signal });
-				} catch (cause) {
-					// The server lost our session (LAN servers restart routinely): reconnect once and replay.
-					if (!(cause instanceof McpSessionExpiredError)) throw cause;
-					await state.client?.close();
-					result = await (await clientFor(state)).callTool(info.name, args, { signal });
-				}
-				const text = limitToolText(
-					toolOutput(result),
-					MCP_OUTPUT_MAX_BYTES,
-					options.saveFullOutput ?? (() => "[Full output not saved: this MCP client has no file access]"),
+				const result: CallToolResult = await withClient(state, (client) =>
+					client.callTool(info.name, args, { signal }),
 				);
+				const content = limitMcpContent(convertMcpResult(result, info.name, contentOptions(state)), where);
 				// Scripts get the whole CallToolResult (pi 1.2.0), never truncated; `_meta` is dropped.
 				const { _meta: _ignored, ...scriptResult } = result as CallToolResult & { _meta?: unknown };
 				return {
-					content: [{ type: "text", text }],
+					content,
 					structuredContent: scriptResult as unknown as JsonValue,
 					isError: result.isError === true,
 				};
@@ -408,7 +511,12 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				}
 				state.client = client;
 				if (api) registerTools(api, state, tools);
-				return report({ server, state: "connected", toolCount: tools.length });
+				return report({
+					server,
+					state: "connected",
+					toolCount: tools.length,
+					...(state.hasResources ? { resources: true } : {}),
+				});
 			} catch (cause) {
 				const status = report({ server, state: "offline", error: messageOf(cause) });
 				if (startedIn === generation) reportUnavailable(server, status.error ?? "");
@@ -493,10 +601,13 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			if (!tool) return undefined;
 			const reach = tool.reachesTools?.(event.input);
 			const owner = toolOwners.get(event.toolName)?.split("\0", 1)[0];
+			// The resource tools reach every server with resources, known only once connected (pi).
 			const waiting =
 				reach !== undefined
 					? states.filter((state) => reachesServer(reach, state.config.name))
-					: states.filter((state) => state.config.name === owner);
+					: RESOURCE_TOOL_NAMES.has(event.toolName)
+						? states
+						: states.filter((state) => state.config.name === owner);
 			await waitFor(waiting, ctx.signal);
 			return undefined;
 		});

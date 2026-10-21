@@ -4,7 +4,8 @@
 import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
 	createMcpServers,
 	type McpServerConfig,
@@ -41,11 +42,24 @@ function saveFullOutput(text: string): string {
 	}
 }
 
+/** Save a binary MCP resource where the model can read it: a new 0600 temp file (P43, pi saveToTempFile). */
+function saveBinary(base64: string, extension: string): string {
+	const path = join(tmpdir(), `tau-mcp-${randomBytes(8).toString("hex")}${extension}`);
+	writeFileSync(path, Buffer.from(base64, "base64"), { mode: 0o600, flag: "wx" });
+	return path;
+}
+
 export interface McpExtensionOptions {
 	servers: McpServerConfig[];
 	onStatus?: (status: McpServerStatus) => void;
 	/** How long the first prompt waits for servers with direct tools, ms (default 10000). */
 	startupWaitMs?: number;
+	/** The working directory, answered to servers' roots/list (P43, pi). Default: no roots. */
+	cwd?: string;
+	/** Register the resource tools (default true; P43). */
+	resourceTools?: boolean;
+	/** Pass MCP images to the model (default true; P43). False keeps the placeholder text used before. */
+	images?: boolean;
 }
 
 /**
@@ -62,6 +76,10 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		onStatus: options.onStatus,
 		startupWaitMs: options.startupWaitMs,
 		saveFullOutput,
+		saveBinary,
+		...(options.cwd ? { roots: [{ uri: pathToFileURL(options.cwd).href, name: basename(options.cwd) }] } : {}),
+		...(options.resourceTools === false ? { resourceTools: false } : {}),
+		...(options.images === false ? { images: false } : {}),
 		// Without a UI (tau -p, pipes) an unavailable server still gets reported.
 		reportUnavailable: (message) => process.stderr.write(`${message}\n`),
 		createTransport: (config) => {

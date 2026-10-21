@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./agent.ts";
+import type { ImageProcessor } from "./capabilities.ts";
 import { toError } from "./errors.ts";
 import type {
 	ExtensionContext,
@@ -10,6 +11,7 @@ import type {
 import type { ToolCall, ToolResultMessage } from "./messages.ts";
 import type { TauAbortSignal } from "./platform.ts";
 import type { ApprovalRequest, PermissionMode, ToolPolicy } from "./policy.ts";
+import { normalizeToolResultImages } from "./tool-result-images.ts";
 import {
 	errorResult,
 	hasToolSchema,
@@ -66,6 +68,8 @@ export interface ToolBatchHost {
 	toolContext(ctx: ExtensionContext, toolCallId: string, signal: TauAbortSignal | undefined): ExtensionToolContext;
 	/** Log one tool result and return its AgentEvent. */
 	commit(toolCall: ToolCall, outcome: ToolOutcome, ctx: ExtensionContext, batch: ToolBatch): Promise<AgentEvent>;
+	/** Converts and shrinks the images tools return before they are logged (P43, pi); absent: kept as they are. */
+	readonly images?: ImageProcessor;
 }
 
 interface ToolUpdate {
@@ -485,6 +489,11 @@ export class ToolBatchRunner {
 				...(finalResult.structuredContent !== undefined ? { structuredContent: finalResult.structuredContent } : {}),
 				...(result.terminate ? { terminate: true } : {}),
 			};
+		}
+		// After the tool_result handlers, so images they add are normalized too (pi).
+		if (this.host.images) {
+			const content = await normalizeToolResultImages(result.content, this.host.images);
+			if (content !== result.content) result = { ...result, content };
 		}
 		return durationMs !== undefined ? { ...result, durationMs } : result;
 	}

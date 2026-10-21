@@ -214,17 +214,43 @@ export function killProcessTree(pid: number): void {
 	}
 }
 
+/**
+ * Variables worked out when each command starts, over the base environment (P43: the CLI's
+ * TAU_SESSION_*, pi's PI_* session variables). An undefined value removes an inherited one.
+ */
+export type CommandEnv = () => Record<string, string | undefined>;
+
+/** The environment a command starts with: `base` (default: this process's) with `commandEnv` applied. */
+export function commandEnvironment(
+	base: Record<string, string> | undefined,
+	commandEnv: CommandEnv | undefined,
+): Record<string, string | undefined> | undefined {
+	if (!commandEnv) return base;
+	const env: Record<string, string | undefined> = { ...(base ?? process.env) };
+	for (const [name, value] of Object.entries(commandEnv())) {
+		if (value === undefined) delete env[name];
+		else env[name] = value;
+	}
+	return env;
+}
+
 export class NodeShell implements Shell {
 	readonly cwd: string;
 	/** The environment of spawned commands; default: this process's (P32b: the CLI passes one without secrets). */
 	readonly env: Record<string, string> | undefined;
+	/** Variables worked out per command over `env` (P43). */
+	readonly commandEnv: CommandEnv | undefined;
 	/** P40b: PowerShell instead of bash, a bash path, a prefix for bash commands (the CLI updates them on /reload). */
 	options: ShellOptions;
 
-	constructor(cwd: string = process.cwd(), options: { env?: Record<string, string> } & ShellOptions = {}) {
+	constructor(
+		cwd: string = process.cwd(),
+		options: { env?: Record<string, string>; commandEnv?: CommandEnv } & ShellOptions = {},
+	) {
 		this.cwd = resolve(cwd);
 		this.env = options.env;
-		const { env: _env, ...shellOptions } = options;
+		this.commandEnv = options.commandEnv;
+		const { env: _env, commandEnv: _commandEnv, ...shellOptions } = options;
 		this.options = shellOptions;
 	}
 
@@ -256,10 +282,11 @@ export class NodeShell implements Shell {
 			let timedOut = false;
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
+			const env = commandEnvironment(this.env, this.commandEnv);
 			const child = spawn(file, args, {
 				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd,
-				...(this.env ? { env: this.env } : {}),
+				...(env ? { env } : {}),
 				// Unix uses a process group so abort/timeout can kill descendants;
 				// Windows uses taskkill /T below and detached children can otherwise
 				// inherit handles that keep commands such as where/findstr alive.

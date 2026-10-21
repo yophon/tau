@@ -1543,3 +1543,33 @@ test("--worktree runs the session in a new worktree; -p leaves it in place (P37d
 		}
 	});
 });
+
+test("the shell tools' commands see their session (TAU_SESSION_*) and the AI_AGENT marker (P43, pi)", async () => {
+	await withSandbox(async ({ cwd, home }) => {
+		const mock = await startMockOpenAI([
+			() =>
+				mockToolCallTurn("bash", {
+					command:
+						'echo "m=$TAU_SESSION_MODEL p=$TAU_SESSION_PROVIDER a=$AI_AGENT c=$TAU_CODING_AGENT f=${TAU_SESSION_FILE:+yes} id=${TAU_SESSION_ID:+yes}"',
+				}),
+			(request) => mockTextTurn(`env: ${toolMessages(request).join(",").trim()}`),
+		]);
+		try {
+			// An inherited value is replaced by the session's own.
+			const cli = startCli(["-p", "show env"], {
+				cwd,
+				home,
+				baseUrl: mock.baseUrl,
+				env: { TAU_SESSION_MODEL: "stale" },
+			});
+			await cli.waitForExit();
+			assert.ok(cli.output().includes("env: m=mock-model p=openai-compat a=tau c=true f=yes id=yes"), cli.output());
+			const system = (mock.requests[0] as { messages: { role: string; content: string }[] }).messages.find(
+				(message) => message.role === "system",
+			);
+			assert.match(system?.content ?? "", /TAU_SESSION_\* environment variables/);
+		} finally {
+			await mock.close();
+		}
+	});
+});

@@ -1069,7 +1069,14 @@ async function loadExtensionRegistry(
 		for (const diagnostic of loadedMcp.diagnostics) console.log(dim(`mcp: ${diagnostic}`));
 		if (loadedMcp.servers.length > 0) {
 			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
-			await registry.add([createMcpExtension({ servers: withOAuth(loadedMcp.servers, userHome()) })]);
+			await registry.add([
+				createMcpExtension({
+					servers: withOAuth(loadedMcp.servers, userHome()),
+					// P43 (pi): the working directory as the root, resource tools, images to the model;
+					// the gateway is parked and keeps what it had.
+					...(extendedSettings ? { cwd } : { resourceTools: false, images: false }),
+				}),
+			]);
 		}
 	}
 	// User hooks (P35): ~/.tau/settings.json and, when trusted, the project's.
@@ -1312,6 +1319,25 @@ async function runCommand(
 }
 
 /**
+ * The session a shell tool's command runs in (P43): pi's PI_SESSION_ID, PI_SESSION_FILE,
+ * PI_PROVIDER, PI_MODEL and PI_REASONING_LEVEL, named TAU_SESSION_* because TAU_PROVIDER and
+ * TAU_MODEL already configure tau. Worked out when each command starts; an unset value
+ * removes an inherited one (pi), as for a session that is not saved (no file).
+ */
+function sessionEnvironment(agent: Agent | undefined): Record<string, string | undefined> {
+	const session = agent?.extensionContext().sessionManager;
+	const level = agent?.thinkingLevel;
+	return {
+		TAU_SESSION_ID: session?.getSessionId() || undefined,
+		TAU_SESSION_FILE: session?.getSessionFile(),
+		TAU_SESSION_PROVIDER: agent?.provider,
+		TAU_SESSION_MODEL: agent?.model,
+		// pi's word for no thinking.
+		TAU_SESSION_REASONING_LEVEL: level === "none" ? "off" : level,
+	};
+}
+
+/**
  * The environment for processes the model drives (P32b): secrets registered for masking
  * (secret-looking variables, the credential store), then scrubbed out.
  */
@@ -1329,6 +1355,10 @@ async function main(): Promise<void> {
 	// P40a (pi): HTTP_PROXY / HTTPS_PROXY / NO_PROXY and settings.json httpProxy apply to every
 	// request, subcommands included. The gateway is parked and stays as it was.
 	if (process.argv[2] !== "gateway") {
+		// P43 (pi setupCli: AI_AGENT=pi, PI_CODING_AGENT=true): child processes can tell they run
+		// inside tau — commands, hooks, the status line, stdio MCP servers.
+		process.env.AI_AGENT = "tau";
+		process.env.TAU_CODING_AGENT = "true";
 		const { applyHttpProxySettings, configureHttpDispatcher, DEFAULT_HTTP_IDLE_TIMEOUT_MS } = await import(
 			"./http-dispatcher.ts"
 		);
@@ -1892,9 +1922,13 @@ async function main(): Promise<void> {
 						onAsk: () => hookRunner.notify("Tau has a question for you", "elicitation_dialog"),
 					})
 				: undefined;
+		// P43 (pi): the shell tools' commands see their session (TAU_SESSION_*); the gateway is parked.
+		let sessionAgent: Agent | undefined;
+		const commandEnv = spec.extendedSettings !== false ? () => sessionEnvironment(sessionAgent) : undefined;
 		// P36a: background commands, one list per workspace (a gateway conversation has its own).
 		const background = new NodeBackgroundShell(cwd, {
 			env: modelEnvironment(),
+			...(commandEnv ? { commandEnv } : {}),
 			...(spec.backgroundOnTimeout === false ? { moveOnTimeout: false } : {}),
 		});
 		const hostExtensions = [
@@ -2022,11 +2056,15 @@ async function main(): Promise<void> {
 		// The user's own `!` commands get the full environment; the tools the model calls get it
 		// without secret-looking variables (P32b). Secrets are registered first so their values go too.
 		const shell = new NodeShell(cwd);
-		const toolShell = new NodeShell(cwd, { env: modelEnvironment() });
+		const toolShell = new NodeShell(cwd, { env: modelEnvironment(), ...(commandEnv ? { commandEnv } : {}) });
 		// P40b: pi's powershell tool on Windows when PowerShell is installed (Claude Code: on by default).
 		const powershellShell =
 			spec.extendedSettings !== false && findPowerShell() !== undefined
-				? new NodeShell(cwd, { env: modelEnvironment(), interpreter: "powershell" })
+				? new NodeShell(cwd, {
+						env: modelEnvironment(),
+						interpreter: "powershell",
+						...(commandEnv ? { commandEnv } : {}),
+					})
 				: undefined;
 		const powershellBackground = powershellShell ? background.forPowerShell() : undefined;
 		/** P40b (pi): shellPath and shellCommandPrefix for bash (the tool, `!` commands, background commands); hooks take the path. */
@@ -2096,6 +2134,16 @@ async function main(): Promise<void> {
 				},
 				{ mode, supportsImages: modelTakesImages },
 			);
+			// P43 (pi bash/powershell guidelines): the commands see TAU_SESSION_*.
+			if (commandEnv) {
+				for (const tool of codingTools) {
+					if (tool.name !== "bash" && tool.name !== "powershell") continue;
+					tool.promptGuidelines = [
+						...(tool.promptGuidelines ?? []),
+						"You can inspect TAU_SESSION_* environment variables for current model and session details.",
+					];
+				}
+			}
 			const built = new Agent({
 				config,
 				transport,
@@ -2128,6 +2176,9 @@ async function main(): Promise<void> {
 					},
 				},
 				isProjectTrusted: () => projectTrusted,
+				// P43 (pi): images tools return (MCP, extensions) are converted and shrunk before they
+				// are logged; the gateway is parked and keeps what it had.
+				...(spec.extendedSettings !== false ? { imageProcessor } : {}),
 				initialMessages: messages,
 				session,
 				// P40c (pi): settings' retry, compaction, branch summary, queue modes and turn cap; the env wins for retries.
@@ -2150,6 +2201,7 @@ async function main(): Promise<void> {
 			if (active) built.setActiveTools(active);
 			attachPromptAgent(built, promptSources.system === undefined);
 			currentAgent = built;
+			sessionAgent = built;
 			return built;
 		};
 		return {

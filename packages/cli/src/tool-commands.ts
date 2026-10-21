@@ -155,8 +155,10 @@ async function checkServer(server: LoadedMcpServer): Promise<string> {
 		: new StreamableHttpTransport({ url: server.url ?? "", platform, headers: server.headers });
 	try {
 		await client.connect(transport);
-		const tools = await client.listTools();
-		return `ok, ${tools.length} tool(s)`;
+		// Servers without the tools capability do not answer tools/list; resources are noted (P43, pi).
+		const capabilities = client.serverCapabilities ?? {};
+		const tools = capabilities.tools !== undefined ? await client.listTools() : [];
+		return `ok, ${tools.length} tool(s)${capabilities.resources !== undefined ? ", resources" : ""}`;
 	} catch (error) {
 		return `failed: ${maskSecrets(error instanceof Error ? error.message : String(error))}`;
 	} finally {

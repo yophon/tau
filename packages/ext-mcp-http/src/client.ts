@@ -1,10 +1,10 @@
 // MCP client over an McpTransport (pi-mcp client.ts, the subset tau uses):
-// initialize handshake, request/response correlation, paginated tools/list,
-// tools/call, notifications, and answers to server requests. Pure ES: timeouts
-// run on the injected Platform.sleep (no timers without it, D15).
+// initialize handshake with protocol version negotiation, request/response
+// correlation, paginated tools/list and resources (P43), tools/call,
+// notifications, and answers to server requests (ping, roots/list). Pure ES:
+// timeouts run on the injected Platform.sleep (no timers without it, D15).
 //
-// Not ported yet (MCP protocol upgrade, Backlog): progress notifications,
-// notifications/cancelled, roots, resources.
+// Not ported: progress notifications, notifications/cancelled.
 import { AbortHandle, type Platform, type TauAbortSignal } from "@yophon/tau-kernel";
 import {
 	isJsonRpcNotification,
@@ -24,8 +24,15 @@ import {
 } from "./jsonrpc.ts";
 import type { McpTransport } from "./transport.ts";
 
-/** Protocol version tau offers; the server's choice in `initialize` is accepted as is. */
-export const MCP_PROTOCOL_VERSION = "2025-06-18";
+/** Protocol version tau offers (pi 1.2 LATEST_PROTOCOL_VERSION). */
+export const MCP_PROTOCOL_VERSION = "2025-11-25";
+/** Versions the server may select in `initialize`; any other closes the connection (pi). */
+export const SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
+	MCP_PROTOCOL_VERSION,
+	"2025-06-18",
+	"2025-03-26",
+	"2024-11-05",
+];
 
 const MAX_LIST_PAGES = 1_000;
 
@@ -42,20 +49,67 @@ export interface McpToolInfo {
 	};
 }
 
+/** One item of a resources/read result, or the resource of an embedded resource block. */
+export interface McpResourceContents {
+	uri: string;
+	mimeType?: string;
+	text?: string;
+	/** base64 */
+	blob?: string;
+	_meta?: Record<string, unknown>;
+}
+
 export interface McpContentBlock {
 	type: string;
 	text?: string;
 	data?: string;
 	mimeType?: string;
-	resource?: { uri?: string; text?: string; blob?: string; mimeType?: string };
+	resource?: Partial<McpResourceContents>;
 	uri?: string;
 	name?: string;
+	title?: string;
+	description?: string;
+	size?: number;
 }
 
 export interface CallToolResult {
 	content: McpContentBlock[];
+	/** Any JSON value, including arrays and `null` (pi 1.2: MCP 2026-07-28; earlier revisions allowed only objects). */
 	structuredContent?: unknown;
 	isError?: boolean;
+}
+
+/** A resource a server lists (pi Resource; `name` falls back to the URI). */
+export interface McpResource {
+	uri: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+	size?: number;
+	_meta?: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+/** A parameterized resource (RFC 6570 URI template; `name` falls back to the template). */
+export interface McpResourceTemplate {
+	uriTemplate: string;
+	name: string;
+	title?: string;
+	description?: string;
+	mimeType?: string;
+	_meta?: Record<string, unknown>;
+	[key: string]: unknown;
+}
+
+export interface McpReadResourceResult {
+	contents: McpResourceContents[];
+}
+
+/** A root the client exposes to servers (roots/list). */
+export interface McpRoot {
+	uri: string;
+	name?: string;
 }
 
 export interface InitializeResult {
@@ -72,6 +126,8 @@ export interface McpClientOptions {
 	platform?: Pick<Platform, "sleep">;
 	/** Default timeout of every request, ms; undefined = none. */
 	requestTimeoutMs?: number;
+	/** Roots answered to roots/list; given, the roots capability is declared (pi). */
+	roots?: readonly McpRoot[];
 }
 
 export interface McpRequestOptions {
@@ -109,7 +165,53 @@ function validateInitializeResult(value: unknown): InitializeResult {
 	};
 }
 
-/** `content` is required by the spec, but servers that only return `structuredContent` omit it (pi). */
+/** One page of a paginated list: the items under `key`, each checked by `isItem` (pi validateListPage). */
+function validateListPage(
+	method: string,
+	key: string,
+	value: unknown,
+	isItem: (item: Record<string, unknown>) => boolean,
+): { items: Record<string, unknown>[]; nextCursor?: string } {
+	const items = isObject(value) ? value[key] : undefined;
+	if (!isObject(value) || !Array.isArray(items)) throw invalid(`Invalid MCP ${method} result`);
+	for (const item of items) {
+		if (!isObject(item) || !isItem(item)) throw invalid(`Invalid entry in MCP ${method} result`);
+	}
+	// Some servers end pagination with `null` or `""` instead of omitting the cursor (pi).
+	const nextCursor = value.nextCursor === null || value.nextCursor === "" ? undefined : value.nextCursor;
+	if (nextCursor !== undefined && typeof nextCursor !== "string") throw invalid(`Invalid MCP ${method} cursor`);
+	return { items, ...(nextCursor === undefined ? {} : { nextCursor }) };
+}
+
+// `name` is required by the spec, but some servers omit it; the URI stands in (pi).
+const isResource = (item: Record<string, unknown>) =>
+	typeof item.uri === "string" && (item.name === undefined || typeof item.name === "string");
+const isResourceTemplate = (item: Record<string, unknown>) =>
+	typeof item.uriTemplate === "string" && (item.name === undefined || typeof item.name === "string");
+const toResource = (item: Record<string, unknown>) => ({ ...item, name: item.name ?? item.uri }) as McpResource;
+const toResourceTemplate = (item: Record<string, unknown>) =>
+	({ ...item, name: item.name ?? item.uriTemplate }) as McpResourceTemplate;
+const pageCursor = (page: { nextCursor?: string }) =>
+	page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor };
+
+function validateReadResourceResult(value: unknown): McpReadResourceResult {
+	if (!isObject(value) || !Array.isArray(value.contents)) throw invalid("Invalid MCP resources/read result");
+	for (const contents of value.contents) {
+		if (
+			!isObject(contents) ||
+			typeof contents.uri !== "string" ||
+			(typeof contents.text !== "string" && typeof contents.blob !== "string")
+		) {
+			throw invalid("Invalid contents in MCP resources/read result");
+		}
+	}
+	return value as unknown as McpReadResourceResult;
+}
+
+/**
+ * `content` is required by the spec, but servers that only return `structuredContent` omit it (pi).
+ * `structuredContent` may be any JSON value (pi 1.2).
+ */
 function validateCallToolResult(value: unknown): CallToolResult {
 	if (!isObject(value) || (value.content !== undefined && !Array.isArray(value.content))) {
 		throw invalid("Invalid MCP tools/call result");
@@ -124,6 +226,7 @@ export class McpClient {
 	private nextRequestId = 1;
 	private instructionsValue: string | undefined;
 	private protocolVersionValue: string | undefined;
+	private serverCapabilitiesValue: Record<string, unknown> | undefined;
 	private pending = new Map<JsonRpcId, PendingRequest>();
 	private requestHandlers = new Map<string, RequestHandler>();
 	private notificationListeners = new Map<string, Set<NotificationListener>>();
@@ -134,6 +237,8 @@ export class McpClient {
 	constructor(options: McpClientOptions) {
 		this.options = Object.freeze({ ...options });
 		this.requestHandlers.set("ping", () => ({}));
+		const roots = options.roots;
+		if (roots) this.requestHandlers.set("roots/list", () => ({ roots: roots.map((root) => ({ ...root })) }));
 	}
 
 	get connectionState(): ClientState {
@@ -147,6 +252,11 @@ export class McpClient {
 
 	get protocolVersion(): string | undefined {
 		return this.protocolVersionValue;
+	}
+
+	/** What the server offers (`initialize`): `tools`, `resources`, `prompts`, … */
+	get serverCapabilities(): Record<string, unknown> | undefined {
+		return this.serverCapabilitiesValue;
 	}
 
 	async connect(transport: McpTransport, options: McpRequestOptions = {}): Promise<InitializeResult> {
@@ -166,14 +276,18 @@ export class McpClient {
 					"initialize",
 					{
 						protocolVersion: MCP_PROTOCOL_VERSION,
-						capabilities: {},
+						capabilities: this.options.roots ? { roots: {} } : {},
 						clientInfo: { name: this.options.name, version: this.options.version },
 					},
 					options,
 					true,
 				),
 			);
+			if (!SUPPORTED_PROTOCOL_VERSIONS.includes(result.protocolVersion)) {
+				throw new Error(`MCP server selected unsupported protocol version ${result.protocolVersion}`);
+			}
 			this.protocolVersionValue = result.protocolVersion;
+			this.serverCapabilitiesValue = result.capabilities;
 			this.instructionsValue = result.instructions?.trim() || undefined;
 			transport.setProtocolVersion?.(result.protocolVersion);
 			await this.notifyInternal("notifications/initialized", undefined, true);
@@ -244,6 +358,81 @@ export class McpClient {
 			cursor = next;
 		}
 		throw new Error(`MCP tools/list exceeded ${MAX_LIST_PAGES} pages`);
+	}
+
+	/** Every resource, following `nextCursor` through all pages (pi). */
+	async listResources(options: McpRequestOptions = {}): Promise<McpResource[]> {
+		return (await this.listAll("resources/list", "resources", isResource, options)).map(toResource);
+	}
+
+	/** One page of resources, starting at `cursor` (pi). */
+	async listResourcesPage(
+		cursor?: string,
+		options: McpRequestOptions = {},
+	): Promise<{ resources: McpResource[]; nextCursor?: string }> {
+		const page = await this.listPage("resources/list", "resources", isResource, cursor, options);
+		return { resources: page.items.map(toResource), ...pageCursor(page) };
+	}
+
+	/** Every resource template, following `nextCursor` through all pages (pi). */
+	async listResourceTemplates(options: McpRequestOptions = {}): Promise<McpResourceTemplate[]> {
+		const templates = await this.listAll("resources/templates/list", "resourceTemplates", isResourceTemplate, options);
+		return templates.map(toResourceTemplate);
+	}
+
+	/** One page of resource templates, starting at `cursor` (pi). */
+	async listResourceTemplatesPage(
+		cursor?: string,
+		options: McpRequestOptions = {},
+	): Promise<{ resourceTemplates: McpResourceTemplate[]; nextCursor?: string }> {
+		const page = await this.listPage(
+			"resources/templates/list",
+			"resourceTemplates",
+			isResourceTemplate,
+			cursor,
+			options,
+		);
+		return { resourceTemplates: page.items.map(toResourceTemplate), ...pageCursor(page) };
+	}
+
+	async readResource(uri: string, options: McpRequestOptions = {}): Promise<McpReadResourceResult> {
+		return validateReadResourceResult(await this.request("resources/read", { uri }, options));
+	}
+
+	private async listPage(
+		method: string,
+		key: string,
+		isItem: (item: Record<string, unknown>) => boolean,
+		cursor: string | undefined,
+		options: McpRequestOptions,
+	): Promise<{ items: Record<string, unknown>[]; nextCursor?: string }> {
+		return validateListPage(
+			method,
+			key,
+			await this.request(method, cursor === undefined ? undefined : { cursor }, options),
+			isItem,
+		);
+	}
+
+	/** Every item of a paginated list method (pi listAll). */
+	private async listAll(
+		method: string,
+		key: string,
+		isItem: (item: Record<string, unknown>) => boolean,
+		options: McpRequestOptions,
+	): Promise<Record<string, unknown>[]> {
+		const items: Record<string, unknown>[] = [];
+		const cursors = new Set<string>();
+		let cursor: string | undefined;
+		for (let pageNumber = 0; pageNumber < MAX_LIST_PAGES; pageNumber++) {
+			const page = await this.listPage(method, key, isItem, cursor, options);
+			items.push(...page.items);
+			if (page.nextCursor === undefined) return items;
+			if (cursors.has(page.nextCursor)) throw new Error(`MCP ${method} returned duplicate cursor: ${page.nextCursor}`);
+			cursors.add(page.nextCursor);
+			cursor = page.nextCursor;
+		}
+		throw new Error(`MCP ${method} exceeded ${MAX_LIST_PAGES} pages`);
 	}
 
 	async callTool(
@@ -338,7 +527,7 @@ export class McpClient {
 		else entry.resolve(message.result);
 	}
 
-	/** Answer a server request: `ping`, or method-not-found so the server never waits forever. */
+	/** Answer a server request: `ping`, `roots/list`, or method-not-found so the server never waits forever. */
 	private async handleRequest(message: JsonRpcRequest): Promise<void> {
 		const transport = this.transport;
 		if (!transport) return;

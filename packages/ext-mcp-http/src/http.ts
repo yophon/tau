@@ -2,13 +2,15 @@
 // transports/streamable-http.ts, the subset tau uses). Each request is a POST;
 // the reply comes back as JSON or as an SSE stream on the same response.
 //
-// The server-to-client GET stream (server notifications such as
-// tools/list_changed) is opt-in (`openGetStream`): mobile hosts keep no idle
-// connection open. Deviations from pi, written down (D7): no SSE resumption with
-// Last-Event-ID, no DELETE on close (the server expires the session), no auth
-// provider (headers only, D24). Adapters without response headers (some
-// mini-program request APIs) are handled by sniffing the body.
-import { AbortHandle, type Platform, type PlatformResponse, SseParser } from "@yophon/tau-kernel";
+// An SSE stream that ends or breaks before its response arrives is resumed with
+// GET and Last-Event-ID when the server assigned event ids, as servers may close
+// response streams at will (pi; MCP 2025-11-25). The server-to-client GET stream
+// (server notifications such as tools/list_changed) is opt-in (`openGetStream`):
+// mobile hosts keep no idle connection open. Deviations from pi, written down
+// (D7): the GET stream is opt-in, no DELETE on close (the server expires the
+// session), no auth provider (headers only, D24). Adapters without response
+// headers (some mini-program request APIs) are handled by sniffing the body.
+import { AbortHandle, type Platform, type PlatformResponse, SseParser, type TauAbortSignal } from "@yophon/tau-kernel";
 import {
 	isJsonRpcRequest,
 	JSON_RPC_ERROR_CODES,
@@ -45,7 +47,7 @@ export interface StreamableHttpTransportOptions {
 	headers?: Record<string, string>;
 	/**
 	 * Keep a GET stream open for server notifications (tools/list_changed) once the
-	 * session is initialized; reopened up to 3 times when it drops (needs Platform.sleep).
+	 * session is initialized; reopened with backoff when it drops (needs Platform.sleep).
 	 */
 	openGetStream?: boolean;
 	/** OAuth (P32b): a bearer token per request, and a refresh after a 401 before one retry (pi AuthProvider). */
@@ -64,10 +66,45 @@ export interface McpAuth {
 	}): Promise<void>;
 }
 
-const GET_STREAM_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+/** Reconnecting a dropped SSE stream (pi's defaults): from 1 s doubling to 30 s, 5 failures in a row. */
+const RECONNECT_INITIAL_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 30_000;
+const RECONNECT_MAX_RETRIES = 5;
+
+/** Where an SSE stream got to (pi StreamCursor). */
+interface StreamCursor {
+	lastEventId: string | undefined;
+	/** The server's `retry` field, ms. */
+	retryMs: number | undefined;
+	/** Whether the stream delivered any event since it was (re)opened. */
+	received: boolean;
+}
+
+function newCursor(): StreamCursor {
+	return { lastEventId: undefined, retryMs: undefined, received: false };
+}
 
 function contentType(response: PlatformResponse): string | undefined {
 	return response.headers?.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+}
+
+/** 408, 429 and 5xx other than 501 are worth another attempt (pi isTransientStatus). */
+function isTransientStatus(status: number): boolean {
+	return status === 408 || status === 429 || (status >= 500 && status !== 501);
+}
+
+/**
+ * Network failures and transient statuses are retried; auth, session and protocol errors are not (pi).
+ * Errors the Platform's fetch or a stream read throw count as network failures.
+ */
+function isRetryable(error: unknown): boolean {
+	if (error instanceof McpHttpError) return isTransientStatus(error.status);
+	return !(error instanceof McpConnectionClosedError);
+}
+
+function reconnectDelay(attempt: number, serverDelayMs: number | undefined): number {
+	if (serverDelayMs !== undefined) return serverDelayMs;
+	return Math.min(RECONNECT_INITIAL_DELAY_MS * 2 ** attempt, RECONNECT_MAX_DELAY_MS);
 }
 
 export class StreamableHttpTransport extends TransportEvents implements McpTransport {
@@ -166,7 +203,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		const type = contentType(response);
 		if (type === "text/event-stream") {
 			// The reply streams in; read it in the background so send() resolves on dispatch (pi).
-			void this.consumeSse(response, message.id, request);
+			void this.consumeResponseStream(response, message.id, request);
 			return;
 		}
 		try {
@@ -177,47 +214,64 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		}
 	}
 
-	/** Keep the GET stream open, reopening it with backoff when it drops (pi runGetStream). */
+	/** Keep the GET stream open, reconnecting with backoff when it drops (pi runGetStream). */
 	private async runGetStream(): Promise<void> {
-		for (let attempt = 0; !this.closed; attempt++) {
-			let delivered = false;
+		const cursor = newCursor();
+		const sleep = this.options.platform.sleep;
+		for (let attempt = 0; !this.closed; ) {
 			try {
-				const headers: Record<string, string> = { accept: "text/event-stream", ...this.options.headers };
-				const token = await this.options.auth?.token();
-				if (token) headers.authorization = `Bearer ${token}`;
-				if (this.protocolVersion !== undefined) headers["mcp-protocol-version"] = this.protocolVersion;
-				if (this.sessionIdValue !== undefined) headers["mcp-session-id"] = this.sessionIdValue;
-				const response = await this.options.platform.fetch(this.options.url, {
-					method: "GET",
-					headers,
-					signal: this.lifetime.signal,
-				});
-				// 405: the server offers no GET stream.
-				if (response.status === 405 || !response.ok || contentType(response) !== "text/event-stream") return;
-				const reader = response.body?.getReader();
-				if (!reader) return;
-				const decoder = this.options.platform.createUtf8Decoder();
-				const parser = new SseParser();
-				while (!this.closed) {
-					const { done, value } = await reader.read();
-					const events = done ? parser.flush() : value ? parser.push(decoder.decode(value)) : [];
-					for (const event of events) if (this.emitEventData(event.data)) delivered = true;
-					if (done) break;
+				const response = await this.openSseStream(cursor.lastEventId, this.lifetime.signal);
+				// The server offers no GET stream.
+				if (!response) return;
+				const openedAt = Date.now();
+				await this.readSse(response, cursor, this.lifetime.signal);
+				// A stream that stayed up for a while counts as healthy, even if it was idle (pi).
+				if (cursor.received || Date.now() - openedAt > RECONNECT_MAX_DELAY_MS) attempt = 0;
+			} catch (error) {
+				if (this.closed) return;
+				if (!isRetryable(error)) {
+					this.emitError(error);
+					return;
 				}
-			} catch {
-				// A dropped stream is retried below; a closed transport ends the loop.
 			}
-			if (this.closed) return;
-			if (delivered) attempt = 0;
-			const delay = GET_STREAM_RETRY_DELAYS_MS[attempt];
-			const sleep = this.options.platform.sleep;
-			if (delay === undefined || !sleep) return;
+			cursor.received = false;
+			if (attempt >= RECONNECT_MAX_RETRIES) {
+				this.emitError(new Error("MCP server-to-client stream dropped and could not be reopened"));
+				return;
+			}
+			if (!sleep) return;
 			try {
-				await sleep(delay, this.lifetime.signal);
+				await sleep(reconnectDelay(attempt++, cursor.retryMs), this.lifetime.signal);
 			} catch {
 				return;
 			}
 		}
+	}
+
+	/** Open a GET SSE stream, resuming after `lastEventId`. Resolves undefined when the server answers 405. */
+	private async openSseStream(
+		lastEventId: string | undefined,
+		signal: TauAbortSignal,
+	): Promise<PlatformResponse | undefined> {
+		const headers: Record<string, string> = { accept: "text/event-stream", ...this.options.headers };
+		const token = await this.options.auth?.token();
+		if (token) headers.authorization = `Bearer ${token}`;
+		if (this.protocolVersion !== undefined) headers["mcp-protocol-version"] = this.protocolVersion;
+		if (this.sessionIdValue !== undefined) headers["mcp-session-id"] = this.sessionIdValue;
+		if (lastEventId !== undefined) headers["last-event-id"] = lastEventId;
+		const response = await this.options.platform.fetch(this.options.url, { method: "GET", headers, signal });
+		if (response.status === 405) return undefined;
+		if (!response.ok) {
+			if (response.status === 404 && this.sessionIdValue !== undefined) throw new McpSessionExpiredError();
+			throw new McpHttpError(response.status, `MCP server responded HTTP ${response.status}`);
+		}
+		const sessionId = response.headers?.get("mcp-session-id");
+		if (sessionId) this.sessionIdValue = sessionId;
+		const type = contentType(response);
+		if (type !== "text/event-stream" || !response.body) {
+			throw new McpHttpError(response.status, `Unsupported MCP GET response content type: ${type ?? "missing"}`);
+		}
+		return response;
 	}
 
 	async close(): Promise<void> {
@@ -262,43 +316,106 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		return true;
 	}
 
-	/** Read the SSE reply to one request; a stream that ends unanswered fails only that request. */
-	private async consumeSse(response: PlatformResponse, requestId: JsonRpcId, request: AbortHandle): Promise<void> {
-		let answered = false;
-		let stoppedEarly = false;
-		let failure: unknown;
+	/**
+	 * Read one SSE stream until it ends, `signal` aborts or `until` holds, delivering its
+	 * JSON-RPC messages and noting event ids and the retry delay in `cursor`. Events
+	 * without data prime resumption; other event types are not JSON-RPC (pi).
+	 */
+	private async readSse(
+		response: PlatformResponse,
+		cursor: StreamCursor,
+		signal: TauAbortSignal,
+		onData?: (data: string) => void,
+		until?: () => boolean,
+	): Promise<void> {
 		const reader = response.body?.getReader();
+		if (!reader) throw new Error("MCP SSE response had no readable body");
+		const decoder = this.options.platform.createUtf8Decoder();
+		const parser = new SseParser({
+			onId: (id) => {
+				cursor.lastEventId = id;
+			},
+			onRetry: (delayMs) => {
+				cursor.retryMs = delayMs;
+			},
+		});
 		try {
-			if (!reader) throw new Error("MCP SSE response had no readable body");
-			const decoder = this.options.platform.createUtf8Decoder();
-			const parser = new SseParser();
-			while (!answered) {
-				if (request.signal.aborted) {
-					stoppedEarly = true;
-					break;
-				}
+			while (!signal.aborted && !until?.()) {
 				const { done, value } = await reader.read();
 				const events = done ? parser.flush() : value ? parser.push(decoder.decode(value)) : [];
 				for (const event of events) {
+					cursor.received = true;
+					if (event.event !== undefined && event.event !== "message") continue;
 					// Server requests and notifications interleaved on the stream are delivered too.
-					if (!this.emitEventData(event.data)) continue;
-					if (answersRequest(event.data, requestId)) answered = true;
+					if (this.emitEventData(event.data)) onData?.(event.data);
 				}
-				if (done) break;
+				if (done) return;
 			}
-		} catch (error) {
-			// A read failing because the request was given up on is not a stream failure.
-			if (request.signal.aborted) stoppedEarly = true;
-			else failure = error;
 		} finally {
 			try {
-				reader?.cancel("done");
+				reader.cancel("done");
 			} catch {
 				// cancel is best-effort
 			}
+		}
+	}
+
+	/**
+	 * Read the SSE reply to one request. When the stream ends or breaks before the response
+	 * arrives and the server assigned event ids, resume it with GET and Last-Event-ID (pi);
+	 * otherwise, or once resuming fails, only this request fails.
+	 */
+	private async consumeResponseStream(
+		response: PlatformResponse,
+		requestId: JsonRpcId,
+		request: AbortHandle,
+	): Promise<void> {
+		const cursor = newCursor();
+		let answered = false;
+		const onData = (data: string) => {
+			if (answersRequest(data, requestId)) answered = true;
+		};
+		const sleep = this.options.platform.sleep;
+		let stream: PlatformResponse | undefined = response;
+		let failure: unknown;
+		// The request was given up on (timeout, abort) or the transport closed: say nothing.
+		const stopped = () => request.signal.aborted || this.closed;
+		try {
+			for (let attempt = 0; ; ) {
+				if (stream) {
+					try {
+						await this.readSse(stream, cursor, request.signal, onData, () => answered);
+						failure = undefined;
+					} catch (error) {
+						failure = error;
+					}
+				}
+				if (answered || stopped()) return;
+				if (failure !== undefined && !isRetryable(failure)) break;
+				if (cursor.lastEventId === undefined || attempt >= RECONNECT_MAX_RETRIES || !sleep) break;
+				if (cursor.received) attempt = 0;
+				cursor.received = false;
+				try {
+					await sleep(reconnectDelay(attempt++, cursor.retryMs), request.signal);
+				} catch {
+					return;
+				}
+				if (stopped()) return;
+				try {
+					stream = await this.openSseStream(cursor.lastEventId, request.signal);
+					// No GET stream to resume on.
+					if (!stream) break;
+				} catch (error) {
+					if (stopped()) return;
+					failure = error;
+					if (!isRetryable(error)) break;
+					stream = undefined;
+				}
+			}
+		} finally {
 			request.abort("settled");
 		}
-		if (answered || stoppedEarly || this.closed) return;
+		if (this.closed) return;
 		const reason = failure === undefined ? "stream ended without a response" : toError(failure).message;
 		this.emitMessage({
 			jsonrpc: "2.0",

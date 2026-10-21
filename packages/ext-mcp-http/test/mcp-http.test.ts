@@ -105,7 +105,7 @@ function scriptedHandler(options: {
 		switch (message.method) {
 			case "initialize":
 				return jsonResponse(
-					{ jsonrpc: "2.0", id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {} } },
+					{ jsonrpc: "2.0", id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} } } },
 					{ sessionId: options.sessionId },
 				);
 			case "notifications/initialized":
@@ -323,7 +323,11 @@ test("abort settles an in-flight tools/call as an isError result", async () => {
 		const message = JSON.parse(init?.body ?? "{}") as Record<string, unknown>;
 		const id = message.id as number;
 		if (message.method === "initialize")
-			return jsonResponse({ jsonrpc: "2.0", id, result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {} } });
+			return jsonResponse({
+				jsonrpc: "2.0",
+				id,
+				result: { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: { tools: {} } },
+			});
 		if (message.method === "notifications/initialized") return acceptedResponse();
 		if (message.method === "tools/list") return jsonResponse({ jsonrpc: "2.0", id, result: { tools: [ECHO_TOOL] } });
 		return new Promise((_resolve, reject) => {

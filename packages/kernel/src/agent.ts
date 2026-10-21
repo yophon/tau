@@ -1,5 +1,6 @@
 import { AbortHandle } from "./abort.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./branch.ts";
+import type { ImageProcessor } from "./capabilities.ts";
 import {
 	type CompactionResult,
 	type CompactionSettings,
@@ -27,6 +28,7 @@ import {
 	type InputSource,
 	type QueuedInputDisposition,
 	type ReadonlySessionManager,
+	type RegisteredCommand,
 	type ThinkingLevel,
 	type TreePreparation,
 	type UIPromptKind,
@@ -261,6 +263,12 @@ export interface AgentOptions {
 	 */
 	verifyTranscript?: boolean;
 	/**
+	 * Converts and shrinks the images tools return before they are logged (P43, pi
+	 * normalizeToolResultImages): MCP and extension tools hand back arbitrary images.
+	 * Absent: images are logged as the tools return them. Subagents inherit it.
+	 */
+	imageProcessor?: ImageProcessor;
+	/**
 	 * Whether the host trusts project-local resources (backs ctx.isProjectTrusted,
 	 * pi). Only an explicit true counts (D20-3); subagents inherit it.
 	 */
@@ -382,6 +390,7 @@ export class Agent {
 	private readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	private readonly toolExecution: ToolExecutionMode;
 	private readonly verifyTranscript: boolean;
+	private readonly imageProcessor: ImageProcessor | undefined;
 	/** Custom instructions of a requested compaction, or null when none is pending. */
 	private pendingCompaction: string | null = null;
 	/** Custom messages held for the next run's context (sendMessage deliverAs:"nextTurn"). */
@@ -476,6 +485,7 @@ export class Agent {
 		this.onApproval = options.onApproval;
 		this.toolExecution = options.toolExecution ?? "parallel";
 		this.verifyTranscript = options.verifyTranscript ?? true;
+		this.imageProcessor = options.imageProcessor;
 		this.finishTurn = options.finishTurn;
 		this.isProjectTrusted = options.isProjectTrusted;
 		this.preflightLock = options.preflightLock ?? new PreflightLock();
@@ -493,6 +503,7 @@ export class Agent {
 			preflightLock: this.preflightLock,
 			toolContext: (ctx, toolCallId, signal) => this.toolContext(ctx, toolCallId, signal),
 			commit: (toolCall, outcome, ctx, batch) => this.commitToolResult(toolCall, outcome, ctx, batch),
+			...(options.imageProcessor ? { images: options.imageProcessor } : {}),
 		});
 		this.nestedCalls = new NestedToolCallRunner({
 			getTools: () => this.callableTools(),
@@ -539,6 +550,15 @@ export class Agent {
 				}
 			},
 			sendUserMessage: (content, sendOptions) => {
+				// P43 (pi expandPromptTemplates): `/name args` naming an extension command runs it at
+				// once, even mid-run; the prompt it returns is sent the usual way.
+				if (sendOptions?.expandPromptTemplates) {
+					const command = this.commandOf(content);
+					if (command) {
+						void this.runSentCommand(command, content, sendOptions.deliverAs);
+						return;
+					}
+				}
 				// pi semantics: always triggers a turn. Streaming → steer/followUp; idle →
 				// the host submits a fresh prompt (no host action → the call is a no-op
 				// beyond a queued message, so require it explicitly).
@@ -1215,6 +1235,7 @@ export class Agent {
 			thinkingLevel: options.thinkingLevel ?? this.currentThinkingLevel,
 			toolExecution: this.toolExecution,
 			preflightLock: this.preflightLock,
+			...(this.imageProcessor ? { imageProcessor: this.imageProcessor } : {}),
 		});
 		if (options.model !== undefined) child.setModel(options.model);
 		let text = "";
@@ -1242,9 +1263,46 @@ export class Agent {
 		return typeof this.pricing === "function" ? this.pricing(model) : this.pricing;
 	}
 
+	/** The extension command a sent message names, with its arguments (P43, as hosts parse typed input). */
+	private commandOf(content: UserContent): { command: RegisteredCommand; args: string } | undefined {
+		const text =
+			typeof content === "string"
+				? content
+				: content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
+		if (!text.startsWith("/") || !this.extensions) return undefined;
+		const space = text.search(/\s/);
+		const name = (space === -1 ? text : text.slice(0, space)).slice(1);
+		const command = this.extensions.commands.get(name);
+		return command ? { command, args: space === -1 ? "" : text.slice(space + 1).trim() } : undefined;
+	}
+
+	/** Run a command named by sendUserMessage (P43); the prompt it returns goes out with the message's images. */
+	private async runSentCommand(
+		found: { command: RegisteredCommand; args: string },
+		content: UserContent,
+		deliverAs: "steer" | "followUp" | undefined,
+	): Promise<void> {
+		try {
+			const output = await found.command.handler(found.args, this.extensionContext());
+			if (typeof output === "string") this.ui?.notify(output, "info");
+			else if (output?.action === "prompt") {
+				const images = typeof content === "string" ? [] : content.filter((part) => part.type === "image");
+				const prompt: UserContent = images.length > 0 ? [{ type: "text", text: output.text }, ...images] : output.text;
+				this.extensions?.hostAction("sendUserMessage")?.(prompt, deliverAs ? { deliverAs } : undefined);
+			}
+		} catch (error) {
+			this.extensions?.reportError("send_user_message", toError(error).message);
+		}
+	}
+
 	/** The model this agent's requests use. */
 	get model(): string {
 		return this.currentModel;
+	}
+
+	/** The provider of that model, as assistant messages record it (P43: the shell tools' TAU_SESSION_PROVIDER). */
+	get provider(): string {
+		return this.config.provider ?? "openai-compat";
 	}
 
 	/**

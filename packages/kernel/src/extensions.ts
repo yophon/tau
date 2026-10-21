@@ -766,6 +766,13 @@ export interface CommandCompletion {
 	description?: string;
 }
 
+/** Options of sendUserMessage (pi). */
+export interface SendUserMessageOptions {
+	deliverAs?: "steer" | "followUp";
+	/** Handle the text like typed input: run the extension command it names (pi 0.84.2; default false). */
+	expandPromptTemplates?: boolean;
+}
+
 export interface RegisteredCommand {
 	name: string;
 	/**
@@ -1009,9 +1016,12 @@ export interface ExtensionAPI {
 	/**
 	 * Send a user message. Always triggers a turn (as in pi): steers or queues a
 	 * follow-up while streaming, and submits a fresh prompt via the host when
-	 * idle (requires a host that provides submitPrompt).
+	 * idle (requires a host that provides submitPrompt). With
+	 * `expandPromptTemplates` (pi 0.84.2, default false) the text is handled like
+	 * typed input: `/name args` naming an extension command runs it — skills and
+	 * prompt templates are extension commands — and the prompt it returns is sent.
 	 */
-	sendUserMessage(content: UserContent, options?: { deliverAs?: "steer" | "followUp" }): void;
+	sendUserMessage(content: UserContent, options?: SendUserMessageOptions): void;
 
 	/** Persist extension state as a session entry that never enters LLM context. */
 	appendEntry(customType: string, data: unknown): void;
@@ -1181,7 +1191,7 @@ export interface SendMessageOptions {
 /** Actions an attached Agent/host provides to back the extension action methods. */
 export interface ExtensionHostActions {
 	sendMessage?(message: CustomMessageInput, options?: SendMessageOptions): void;
-	sendUserMessage?(content: UserContent, options?: { deliverAs?: "steer" | "followUp" }): void;
+	sendUserMessage?(content: UserContent, options?: SendUserMessageOptions): void;
 	appendEntry?(customType: string, data: unknown): void;
 	setSessionName?(name: string): void;
 	setLabel?(entryId: string, label: string | undefined): void;

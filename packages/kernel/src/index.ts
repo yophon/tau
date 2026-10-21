@@ -7,7 +7,7 @@ export {
 	type QueueMode,
 	type SetModelOptions,
 } from "./agent.ts";
-export { encodeBase64 } from "./base64.ts";
+export { decodeBase64, encodeBase64 } from "./base64.ts";
 export {
 	BRANCH_SUMMARY_MAX_TOKENS,
 	BRANCH_SUMMARY_PREAMBLE,
@@ -168,6 +168,7 @@ export {
 	type ResourcesDiscoverEvent,
 	type ResourcesDiscoverResult,
 	type SendMessageOptions,
+	type SendUserMessageOptions,
 	type SessionBeforeCompactEvent,
 	type SessionBeforeCompactResult,
 	type SessionBeforeForkEvent,
@@ -373,8 +374,9 @@ export {
 	type SessionStore,
 	sessionDirSlug,
 } from "./session.ts";
-export { type SseEvent, SseParser } from "./sse.ts";
+export { type SseEvent, SseParser, type SseParserOptions } from "./sse.ts";
 export { PreflightLock } from "./tool-batch.ts";
+export { normalizeToolResultImages } from "./tool-result-images.ts";
 export {
 	assertToolSchema,
 	errorResult,

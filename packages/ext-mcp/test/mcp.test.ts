@@ -98,7 +98,7 @@ test("a server that never answers does not hold the first prompt past the startu
 	assert.equal(messageText(s.agent.messages.at(-1) ?? s.agent.messages[0]), "no tools");
 });
 
-test("one unreachable server does not cost the others their tools; images become placeholders (HF-12/15)", async () => {
+test("one unreachable server does not cost the others their tools; images reach the model (HF-12, P43)", async () => {
 	const s = await session(
 		[{ name: "broken", command: process.execPath, args: ["-e", "process.exit(3)"] }, mock()],
 		[makeSseResponse(toolCallTurn("mcp__mock__snapshot", {})), makeSseResponse(textTurn("done"))],
@@ -114,10 +114,13 @@ test("one unreachable server does not cost the others their tools; images become
 	}
 	const toolResult = s.agent.messages.find((message) => message.role === "toolResult");
 	assert.ok(toolResult);
-	const text = messageText(toolResult);
-	assert.match(text, /see image/);
-	assert.match(text, /\[image image\/png, ~3 KiB omitted\]/);
-	assert.ok(!text.includes("AAAA"), text);
+	assert.match(messageText(toolResult), /see image/);
+	// pi: MCP images go to the model as images (they used to become placeholder text, HF-15).
+	const image = (toolResult as { content: Array<{ type: string; mimeType?: string; data?: string }> }).content.find(
+		(block) => block.type === "image",
+	);
+	assert.equal(image?.mimeType, "image/png");
+	assert.ok((image?.data ?? "").length > 1000);
 });
 
 test("tools whose names sanitize alike both get a hash suffix (pi createMcpToolName)", async () => {

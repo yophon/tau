@@ -16,8 +16,14 @@ export {
 	McpClient,
 	type McpClientOptions,
 	type McpContentBlock,
+	type McpReadResourceResult,
 	type McpRequestOptions,
+	type McpResource,
+	type McpResourceContents,
+	type McpResourceTemplate,
+	type McpRoot,
 	type McpToolInfo,
+	SUPPORTED_PROTOCOL_VERSIONS,
 } from "./client.ts";
 export {
 	configuredExposures,
@@ -56,7 +62,23 @@ export {
 	parseJsonRpcMessage,
 } from "./jsonrpc.ts";
 export { createMcpToolName, MAX_TOOL_NAME_LENGTH, mcpNamespace, sha256Hex } from "./naming.ts";
-export { MCP_OUTPUT_MAX_BYTES, toolOutput } from "./result.ts";
+export {
+	createMcpResourceTools,
+	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
+	LIST_MCP_RESOURCES_TOOL,
+	type McpResourceServer,
+	type McpResourceToolsOptions,
+	READ_MCP_RESOURCE_TOOL,
+	RESOURCE_TOOL_NAMES,
+} from "./resources.ts";
+export {
+	convertMcpResult,
+	limitMcpContent,
+	MCP_OUTPUT_MAX_BYTES,
+	type McpContentOptions,
+	type McpModelContent,
+	toModelContent,
+} from "./result.ts";
 export {
 	createMcpServers,
 	declaredToolRisk,

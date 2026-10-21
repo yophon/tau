@@ -15,7 +15,7 @@ import {
 	type TauAbortSignal,
 	toError,
 } from "@yophon/tau-kernel";
-import { killProcessTree, type ShellOptions, shellInvocation } from "./shell.ts";
+import { type CommandEnv, commandEnvironment, killProcessTree, type ShellOptions, shellInvocation } from "./shell.ts";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
@@ -38,6 +38,8 @@ export class NodeBackgroundShell implements BackgroundShell {
 	/** Where output files go: `<dir>/<id>.output`. */
 	readonly dir: string;
 	private readonly env: Record<string, string> | undefined;
+	/** Variables worked out per command over `env` (P43). */
+	private readonly commandEnv: CommandEnv | undefined;
 	/** P40b: the bash path and the prefix for bash commands (PowerShell commands come through forPowerShell()). */
 	private shellOptions: Omit<ShellOptions, "interpreter">;
 	private readonly tasks = new Map<string, BackgroundTaskInfo>();
@@ -54,6 +56,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 		cwd: string = process.cwd(),
 		options: {
 			env?: Record<string, string>;
+			commandEnv?: CommandEnv;
 			dir?: string;
 			moveOnTimeout?: boolean;
 			shellPath?: string;
@@ -62,6 +65,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 	) {
 		this.cwd = resolve(cwd);
 		this.env = options.env;
+		this.commandEnv = options.commandEnv;
 		this.shellOptions = {
 			...(options.shellPath !== undefined ? { shellPath: options.shellPath } : {}),
 			...(options.commandPrefix !== undefined ? { commandPrefix: options.commandPrefix } : {}),
@@ -84,6 +88,12 @@ export class NodeBackgroundShell implements BackgroundShell {
 	 * The same tasks, run with PowerShell (P40b): the powershell tool's background. Task ids,
 	 * /tasks, Ctrl+B and the exit hook are shared with the bash commands.
 	 */
+	/** The spawn env option: the base environment with the per-command variables (P43). */
+	private envOption(): { env?: Record<string, string | undefined> } {
+		const env = commandEnvironment(this.env, this.commandEnv);
+		return env ? { env } : {};
+	}
+
 	forPowerShell(): BackgroundShell {
 		return {
 			start: (command, options) => this.start(command, { ...options, interpreter: "powershell" }),
@@ -143,7 +153,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 			const child = spawn(file, args, {
 				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd: this.cwd,
-				...(this.env ? { env: this.env } : {}),
+				...this.envOption(),
 				detached: process.platform !== "win32",
 				stdio: ["pipe", "pipe", "pipe"],
 				windowsHide: process.platform === "win32",
@@ -302,7 +312,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 			child = spawn(file, args, {
 				...(verbatim ? { windowsVerbatimArguments: true } : {}),
 				cwd,
-				...(this.env ? { env: this.env } : {}),
+				...this.envOption(),
 				// Unix: its own process group, so stop() reaches the children too (NodeShell does the same).
 				detached: process.platform !== "win32",
 				stdio: ["ignore", fd, fd],
