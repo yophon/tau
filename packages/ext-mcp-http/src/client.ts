@@ -1,10 +1,11 @@
 // MCP client over an McpTransport (pi-mcp client.ts, the subset tau uses):
 // initialize handshake with protocol version negotiation, request/response
-// correlation, paginated tools/list and resources (P43), tools/call,
-// notifications, and answers to server requests (ping, roots/list). Pure ES:
-// timeouts run on the injected Platform.sleep (no timers without it, D15).
-//
-// Not ported: progress notifications, notifications/cancelled.
+// correlation, paginated tools/list, resources (P43) and prompts (P44),
+// tools/call, notifications, progress (P44: a progress notification re-arms the
+// request's timeout), notifications/cancelled both ways (P44), and answers to
+// server requests (ping, roots/list, handlers set by the host such as
+// elicitation/create). Pure ES: timeouts run on the injected Platform.sleep (no
+// timers without it, D15).
 import { AbortHandle, type Platform, type TauAbortSignal } from "@yophon/tau-kernel";
 import {
 	isJsonRpcNotification,
@@ -112,6 +113,35 @@ export interface McpRoot {
 	name?: string;
 }
 
+/** A prompt a server offers (prompts/list). */
+export interface McpPrompt {
+	name: string;
+	title?: string;
+	description?: string;
+	arguments?: McpPromptArgument[];
+	[key: string]: unknown;
+}
+
+export interface McpPromptArgument {
+	name: string;
+	description?: string;
+	required?: boolean;
+}
+
+/** prompts/get: the messages the prompt expands to. */
+export interface McpGetPromptResult {
+	description?: string;
+	messages: Array<{ role: "user" | "assistant"; content: McpContentBlock }>;
+}
+
+/** A notifications/progress payload (pi ProgressNotification params). */
+export interface McpProgress {
+	progressToken: JsonRpcId;
+	progress: number;
+	total?: number;
+	message?: string;
+}
+
 export interface InitializeResult {
 	protocolVersion: string;
 	capabilities: Record<string, unknown>;
@@ -128,16 +158,21 @@ export interface McpClientOptions {
 	requestTimeoutMs?: number;
 	/** Roots answered to roots/list; given, the roots capability is declared (pi). */
 	roots?: readonly McpRoot[];
+	/** Client capabilities declared in `initialize`, besides `roots` (pi), e.g. `elicitation`. */
+	capabilities?: Record<string, unknown>;
 }
 
 export interface McpRequestOptions {
 	signal?: TauAbortSignal;
 	timeoutMs?: number;
+	/** Asks the server for progress (pi): each notification re-arms the timeout, then calls this. */
+	onProgress?: (progress: McpProgress) => void;
 }
 
 type ClientState = "idle" | "connecting" | "connected" | "closed";
 type NotificationListener = (params: unknown) => void;
-type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
+/** Answers a server request; `signal` aborts when the server cancels it (notifications/cancelled). */
+export type McpRequestHandler = (params: unknown, context: { signal: TauAbortSignal }) => unknown | Promise<unknown>;
 
 interface PendingRequest {
 	resolve: (value: unknown) => void;
@@ -146,6 +181,13 @@ interface PendingRequest {
 	onAbort: () => void;
 	/** Aborted when the request settles: stops the timeout and tells the transport not to dispatch. */
 	settle: AbortHandle;
+	timeoutMs: number | undefined;
+	/** The armed timeout; re-armed on each progress notification (pi). */
+	timer: AbortHandle | undefined;
+	/** The spec forbids cancelling `initialize`. */
+	cancellable: boolean;
+	onProgress: ((progress: McpProgress) => void) | undefined;
+	progressToken: JsonRpcId | undefined;
 }
 
 function invalid(message: string): McpError {
@@ -219,6 +261,26 @@ function validateCallToolResult(value: unknown): CallToolResult {
 	return (value.content === undefined ? { ...value, content: [] } : value) as unknown as CallToolResult;
 }
 
+const isPrompt = (item: Record<string, unknown>) =>
+	typeof item.name === "string" && (item.arguments === undefined || Array.isArray(item.arguments));
+
+function validateGetPromptResult(value: unknown): McpGetPromptResult {
+	if (!isObject(value) || !Array.isArray(value.messages)) throw invalid("Invalid MCP prompts/get result");
+	for (const message of value.messages) {
+		if (
+			!isObject(message) ||
+			(message.role !== "user" && message.role !== "assistant") ||
+			!isObject(message.content) ||
+			typeof message.content.type !== "string"
+		) {
+			throw invalid("Invalid message in MCP prompts/get result");
+		}
+	}
+	return value as unknown as McpGetPromptResult;
+}
+
+const isJsonRpcIdValue = (value: unknown): value is JsonRpcId => typeof value === "string" || typeof value === "number";
+
 export class McpClient {
 	readonly options: Readonly<McpClientOptions>;
 	private state: ClientState = "idle";
@@ -228,7 +290,11 @@ export class McpClient {
 	private protocolVersionValue: string | undefined;
 	private serverCapabilitiesValue: Record<string, unknown> | undefined;
 	private pending = new Map<JsonRpcId, PendingRequest>();
-	private requestHandlers = new Map<string, RequestHandler>();
+	/** progressToken → request id of the requests that asked for progress. */
+	private progressRequests = new Map<JsonRpcId, JsonRpcId>();
+	/** Server requests being answered, to abort on notifications/cancelled. */
+	private incoming = new Map<JsonRpcId, AbortHandle>();
+	private requestHandlers = new Map<string, McpRequestHandler>();
 	private notificationListeners = new Map<string, Set<NotificationListener>>();
 	private errorListeners = new Set<(error: Error) => void>();
 	private closeListeners = new Set<() => void>();
@@ -276,7 +342,7 @@ export class McpClient {
 					"initialize",
 					{
 						protocolVersion: MCP_PROTOCOL_VERSION,
-						capabilities: this.options.roots ? { roots: {} } : {},
+						capabilities: { ...this.options.capabilities, ...(this.options.roots ? { roots: {} } : {}) },
 						clientInfo: { name: this.options.name, version: this.options.version },
 					},
 					options,
@@ -309,6 +375,14 @@ export class McpClient {
 
 	notify(method: string, params?: Record<string, unknown>): Promise<void> {
 		return this.notifyInternal(method, params, false);
+	}
+
+	/** Answer server requests of `method` (pi); returns a disposer. */
+	setRequestHandler(method: string, handler: McpRequestHandler): () => void {
+		this.requestHandlers.set(method, handler);
+		return () => {
+			if (this.requestHandlers.get(method) === handler) this.requestHandlers.delete(method);
+		};
 	}
 
 	onNotification(method: string, listener: NotificationListener): () => void {
@@ -399,6 +473,21 @@ export class McpClient {
 		return validateReadResourceResult(await this.request("resources/read", { uri }, options));
 	}
 
+	/** Every prompt, following `nextCursor` through all pages (P44). */
+	async listPrompts(options: McpRequestOptions = {}): Promise<McpPrompt[]> {
+		return (await this.listAll("prompts/list", "prompts", isPrompt, options)) as unknown as McpPrompt[];
+	}
+
+	async getPrompt(
+		name: string,
+		args?: Record<string, string>,
+		options: McpRequestOptions = {},
+	): Promise<McpGetPromptResult> {
+		return validateGetPromptResult(
+			await this.request("prompts/get", { name, ...(args === undefined ? {} : { arguments: args }) }, options),
+		);
+	}
+
 	private async listPage(
 		method: string,
 		key: string,
@@ -467,27 +556,69 @@ export class McpClient {
 		}
 		if (options.signal?.aborted) return Promise.reject(new McpAbortError());
 		const id = this.nextRequestId++;
-		const message: JsonRpcRequest = { jsonrpc: "2.0", id, method, ...(params === undefined ? {} : { params }) };
+		// The request id doubles as the progress token (pi).
+		const progressToken = options.onProgress ? id : undefined;
+		const requestParams =
+			progressToken === undefined
+				? params
+				: { ...params, _meta: { ...(isObject(params?._meta) ? params._meta : {}), progressToken } };
+		const message: JsonRpcRequest = {
+			jsonrpc: "2.0",
+			id,
+			method,
+			...(requestParams === undefined ? {} : { params: requestParams }),
+		};
+		const cancellable = method !== "initialize";
 		return new Promise<unknown>((resolve, reject) => {
 			const entry: PendingRequest = {
 				resolve,
 				reject,
 				signal: options.signal,
-				onAbort: () => this.failPending(id, new McpAbortError()),
+				onAbort: () =>
+					this.cancelPending(id, new McpAbortError(), cancellable, String(options.signal?.reason ?? "Aborted")),
 				settle: new AbortHandle(),
+				timeoutMs: options.timeoutMs ?? this.options.requestTimeoutMs,
+				timer: undefined,
+				cancellable,
+				onProgress: options.onProgress,
+				progressToken,
 			};
 			this.pending.set(id, entry);
+			if (progressToken !== undefined) this.progressRequests.set(progressToken, id);
 			options.signal?.addEventListener("abort", entry.onAbort);
-			const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs;
-			const sleep = this.options.platform?.sleep;
-			if (timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0 && sleep) {
-				sleep(timeoutMs, entry.settle.signal).then(
-					() => this.failPending(id, new McpTimeoutError(timeoutMs)),
-					() => {},
-				);
-			}
+			this.armTimeout(id, entry);
 			transport.send(message, { signal: entry.settle.signal }).catch((error) => this.failPending(id, error));
 		});
+	}
+
+	/** (Re)start the request's timeout (pi armTimeout); a timeout cancels the request on the server too. */
+	private armTimeout(id: JsonRpcId, entry: PendingRequest): void {
+		entry.timer?.abort("re-armed");
+		entry.timer = undefined;
+		const timeoutMs = entry.timeoutMs;
+		const sleep = this.options.platform?.sleep;
+		if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0 || !sleep) return;
+		const timer = new AbortHandle();
+		entry.timer = timer;
+		entry.settle.signal.addEventListener("abort", () => timer.abort("settled"));
+		sleep(timeoutMs, timer.signal).then(
+			() => this.cancelPending(id, new McpTimeoutError(timeoutMs), entry.cancellable, "Request timed out"),
+			() => {},
+		);
+	}
+
+	/** Reject the request and, when `notifyServer`, tell the server with notifications/cancelled (pi). */
+	private cancelPending(id: JsonRpcId, error: unknown, notifyServer: boolean, reason?: string): void {
+		if (!this.pending.has(id)) return;
+		this.failPending(id, error);
+		if (!notifyServer || !this.transport || this.state === "closed") return;
+		this.transport
+			.send({
+				jsonrpc: "2.0",
+				method: "notifications/cancelled",
+				params: { requestId: id, ...(reason ? { reason } : {}) },
+			})
+			.catch((sendError) => this.emitError(sendError));
 	}
 
 	private async notifyInternal(
@@ -527,7 +658,7 @@ export class McpClient {
 		else entry.resolve(message.result);
 	}
 
-	/** Answer a server request: `ping`, `roots/list`, or method-not-found so the server never waits forever. */
+	/** Answer a server request through its handler, or method-not-found so the server never waits forever. */
 	private async handleRequest(message: JsonRpcRequest): Promise<void> {
 		const transport = this.transport;
 		if (!transport) return;
@@ -540,26 +671,58 @@ export class McpClient {
 				error: { code: JSON_RPC_ERROR_CODES.methodNotFound, message: `Method not found: ${message.method}` },
 			};
 		} else {
+			const cancel = new AbortHandle();
+			this.incoming.set(message.id, cancel);
 			try {
-				reply = { jsonrpc: "2.0", id: message.id, result: (await handler(message.params)) ?? {} };
-			} catch (error) {
 				reply = {
 					jsonrpc: "2.0",
 					id: message.id,
-					error: { code: JSON_RPC_ERROR_CODES.internalError, message: toError(error).message },
+					result: (await handler(message.params, { signal: cancel.signal })) ?? {},
 				};
+			} catch (error) {
+				// Handlers throw McpError for protocol errors such as invalid params (pi).
+				reply = {
+					jsonrpc: "2.0",
+					id: message.id,
+					error:
+						error instanceof McpError
+							? { code: error.code, message: error.message, ...(error.data !== undefined ? { data: error.data } : {}) }
+							: { code: JSON_RPC_ERROR_CODES.internalError, message: toError(error).message },
+				};
+			} finally {
+				this.incoming.delete(message.id);
 			}
+			// The receiver of a cancellation does not answer the cancelled request (MCP).
+			if (cancel.isAborted) return;
 		}
 		await transport.send(reply).catch((error) => this.emitError(error));
 	}
 
 	private handleNotification(method: string, params: unknown): void {
+		if (method === "notifications/progress") this.handleProgress(params);
+		else if (method === "notifications/cancelled" && isObject(params) && isJsonRpcIdValue(params.requestId)) {
+			this.incoming.get(params.requestId)?.abort(params.reason ?? "cancelled");
+		}
 		for (const listener of this.notificationListeners.get(method) ?? []) {
 			try {
 				listener(params);
 			} catch (error) {
 				this.emitError(error);
 			}
+		}
+	}
+
+	/** Progress for a request that asked for it: re-arm its timeout, then report (pi). */
+	private handleProgress(params: unknown): void {
+		if (!isObject(params) || !isJsonRpcIdValue(params.progressToken) || typeof params.progress !== "number") return;
+		const id = this.progressRequests.get(params.progressToken);
+		const entry = id === undefined ? undefined : this.pending.get(id);
+		if (id === undefined || !entry) return;
+		this.armTimeout(id, entry);
+		try {
+			entry.onProgress?.(params as unknown as McpProgress);
+		} catch (error) {
+			this.emitError(error);
 		}
 	}
 
@@ -572,6 +735,7 @@ export class McpClient {
 
 	private removePending(id: JsonRpcId, entry: PendingRequest): void {
 		this.pending.delete(id);
+		if (entry.progressToken !== undefined) this.progressRequests.delete(entry.progressToken);
 		entry.signal?.removeEventListener("abort", entry.onAbort);
 		entry.settle.abort("settled");
 	}
@@ -584,6 +748,8 @@ export class McpClient {
 			this.removePending(id, entry);
 			entry.reject(error);
 		}
+		// Nobody can receive the answers any more: close the dialogs waiting on them.
+		for (const cancel of this.incoming.values()) cancel.abort("closed");
 		if (wasClosed) return;
 		for (const listener of [...this.closeListeners]) {
 			try {

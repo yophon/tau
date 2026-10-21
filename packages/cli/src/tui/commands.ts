@@ -8,6 +8,7 @@ import { copyFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
 	type AgentMessage,
+	commandPromptContent,
 	type ExtensionRegistry,
 	estimateStringTokens,
 	estimateTokens,
@@ -1108,7 +1109,7 @@ export async function runCommand(tui: TuiController, text: string): Promise<bool
 		await tui.renderNewMessages(start);
 		await tui.refreshSurfaces();
 		if (typeof output === "string") tui.notice("info", output);
-		else if (output?.action === "prompt") await tui.promptWhenFree(output.text);
+		else if (output?.action === "prompt") await tui.promptWhenFree(commandPromptContent(output));
 	} catch (error) {
 		tui.notice("error", `/${parsed.name} failed: ${errorText(error)}`);
 	}

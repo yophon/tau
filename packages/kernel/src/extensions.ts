@@ -20,6 +20,7 @@ import type { PermissionMode, RiskLevel } from "./policy.ts";
 import { getCurrentSystemMessage, type SessionProjection } from "./projection.ts";
 import type { SessionEntry } from "./session.ts";
 import { assertToolSchema, type Tool, type ToolInfo, type ToolResult } from "./tools.ts";
+import type { UiForm, UiFormResult } from "./ui-form.ts";
 
 export type { ToolInfo };
 
@@ -46,7 +47,50 @@ export interface UiCapability {
 	editor?(title: string, prefill?: string): Promise<string | undefined>;
 	/** Pick any number of options (tau, P35); undefined when cancelled. Hosts without one omit it. */
 	selectMany?(title: string, options: string[]): Promise<string[] | undefined>;
+	/**
+	 * Fill in a form in one dialog (tau, P44; MCP elicitation); undefined when cancelled,
+	 * also when `signal` aborts. Hosts without one omit it: askFormStepByStep asks field by field.
+	 */
+	form?(form: UiForm, options?: { signal?: TauAbortSignal }): Promise<UiFormResult | undefined>;
+	/** Stack more autocomplete behavior on top of the host's (pi ui.addAutocompleteProvider). Hosts without input completion omit it. */
+	addAutocompleteProvider?(factory: AutocompleteProviderFactory): void;
 }
+
+/** One completion (pi AutocompleteItem): `value` replaces the matched prefix. */
+export interface AutocompleteItem {
+	value: string;
+	label: string;
+	description?: string;
+}
+
+/** pi AutocompleteSuggestions: the items and the text before the cursor they match. */
+export interface AutocompleteSuggestions {
+	items: AutocompleteItem[];
+	prefix: string;
+}
+
+/** pi AutocompleteProvider, over the input's lines and cursor. */
+export interface AutocompleteProvider {
+	/** Characters that should naturally trigger this provider at token boundaries. */
+	triggerCharacters?: string[];
+	getSuggestions(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		options: { signal: TauAbortSignal; force?: boolean },
+	): Promise<AutocompleteSuggestions | null>;
+	applyCompletion(
+		lines: string[],
+		cursorLine: number,
+		cursorCol: number,
+		item: AutocompleteItem,
+		prefix: string,
+	): { lines: string[]; cursorLine: number; cursorCol: number };
+	shouldTriggerFileCompletion?(lines: string[], cursorLine: number, cursorCol: number): boolean;
+}
+
+/** Wraps the current provider with more behavior (pi). */
+export type AutocompleteProviderFactory = (current: AutocompleteProvider) => AutocompleteProvider;
 
 /** Host capabilities exposed to extensions through a facade. Every host capability is optional. */
 export interface ExtensionPaths {
@@ -757,7 +801,15 @@ export interface ThinkingLevelSelectEvent {
 export type ThinkingLevelSelectEventResult = { cancel?: boolean; reason?: string; level?: ThinkingLevel } | undefined;
 
 /** Host-invocable command (e.g. "/checkpoint" in a REPL). Dispatch is up to the host. */
-export type RegisteredCommandResult = string | { action: "prompt"; text: string } | undefined;
+/** A command's output: text to show, or a prompt to send (P44: with images, e.g. an MCP prompt's). */
+export type RegisteredCommandResult = string | { action: "prompt"; text: string; images?: ImageContent[] } | undefined;
+
+/** The user content a command's prompt sends: its text, followed by its images. */
+export function commandPromptContent(output: { text: string; images?: ImageContent[] }): UserContent {
+	return output.images && output.images.length > 0
+		? [{ type: "text", text: output.text }, ...output.images]
+		: output.text;
+}
 
 /** One argument completion (pi AutocompleteItem): `value` replaces the text after "/name ". */
 export interface CommandCompletion {
@@ -1370,6 +1422,14 @@ export class ExtensionRegistry {
 
 	/** Register a command; duplicates get pi's occurrence suffixes (`name:1`, `name:2`, …). */
 	private addCommand(name: string, options: Omit<RegisteredCommand, "name" | "invocationName">, owner: string): void {
+		// The same extension registering a name again replaces its command (pi keeps commands
+		// per extension); only another extension's command of that name gets a suffix (P44).
+		for (const [invocationName, command] of this.commands) {
+			if (command.name === name && this.commandOwners.get(invocationName) === owner) {
+				this.commands.set(invocationName, { name, ...options, invocationName });
+				return;
+			}
+		}
 		const occurrences = (this.commandOccurrences.get(name) ?? 0) + 1;
 		this.commandOccurrences.set(name, occurrences);
 		if (occurrences === 2) {

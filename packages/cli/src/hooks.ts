@@ -30,11 +30,19 @@ export const HOOK_EVENTS = [
 	"SessionEnd",
 	"PreCompact",
 	"Notification",
+	"Elicitation",
+	"ElicitationResult",
 ] as const;
 export type HookEventName = (typeof HOOK_EVENTS)[number];
 
-/** Events whose groups filter on the tool name. */
-const TOOL_EVENTS: ReadonlySet<HookEventName> = new Set(["PreToolUse", "PermissionRequest", "PostToolUse"]);
+/** Events whose groups filter with their matcher (Claude Code): on the tool name, the MCP server name, … */
+const MATCHED_EVENTS: ReadonlySet<HookEventName> = new Set([
+	"PreToolUse",
+	"PermissionRequest",
+	"PostToolUse",
+	"Elicitation",
+	"ElicitationResult",
+]);
 
 /** Claude Code's default: ten minutes. */
 const DEFAULT_TIMEOUT_SECONDS = 600;
@@ -69,6 +77,9 @@ export interface HookOutput {
 		permissionDecisionReason?: string;
 		updatedInput?: Record<string, unknown>;
 		decision?: { behavior?: "allow" | "deny"; message?: string };
+		/** Elicitation, ElicitationResult (P44). */
+		action?: "accept" | "decline" | "cancel";
+		content?: Record<string, unknown>;
 	};
 }
 
@@ -240,6 +251,31 @@ export function permissionDecision(outcomes: readonly HookOutcome[]): "allow" | 
 	return decision;
 }
 
+/**
+ * Elicitation and ElicitationResult's answer (Claude Code): exit 2, a top-level block or
+ * a decline from any hook declines; otherwise the first accept or cancel; undefined when
+ * no hook decided (the dialog, or the user's answer, stands).
+ */
+export function elicitationDecision(
+	outcomes: readonly HookOutcome[],
+): { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> } | undefined {
+	let decided: { action: "accept" | "cancel"; content?: Record<string, unknown> } | undefined;
+	for (const outcome of outcomes) {
+		if (outcome.exitCode === 2) return { action: "decline" };
+		if (outcome.exitCode !== 0) continue;
+		if (outcome.json?.decision === "block") return { action: "decline" };
+		const output = outcome.json?.hookSpecificOutput;
+		if (output?.action === "decline") return { action: "decline" };
+		if (decided || (output?.action !== "accept" && output?.action !== "cancel")) continue;
+		const content = output.content;
+		decided =
+			output.action === "accept" && typeof content === "object" && content !== null && !Array.isArray(content)
+				? { action: "accept", content }
+				: { action: output.action };
+	}
+	return decided;
+}
+
 /** PermissionRequest's answer: deny wins; undefined when no hook decided. */
 export function approvalDecision(outcomes: readonly HookOutcome[]): boolean | undefined {
 	let decision: boolean | undefined;
@@ -299,15 +335,15 @@ export class HookRunner {
 		this.diagnostics = loaded.diagnostics;
 	}
 
-	/** The handlers that apply to an event (and tool). */
-	handlers(event: HookEventName, toolName?: string): HookHandler[] {
+	/** The handlers that apply to an event, for what its matcher matches (the tool name, …). */
+	handlers(event: HookEventName, match?: string): HookHandler[] {
 		return (this.config[event] ?? [])
-			.filter((group) => !TOOL_EVENTS.has(event) || matcherMatches(group.matcher, toolName ?? ""))
+			.filter((group) => !MATCHED_EVENTS.has(event) || matcherMatches(group.matcher, match ?? ""))
 			.flatMap((group) => group.hooks);
 	}
 
-	has(event: HookEventName, toolName?: string): boolean {
-		return this.handlers(event, toolName).length > 0;
+	has(event: HookEventName, match?: string): boolean {
+		return this.handlers(event, match).length > 0;
 	}
 
 	/** The fields every event carries (Claude Code names). */
@@ -331,9 +367,9 @@ export class HookRunner {
 	async run(
 		event: HookEventName,
 		fields: Record<string, unknown>,
-		options: { toolName?: string; ctx?: ExtensionContext; signal?: TauAbortSignal } = {},
+		options: { match?: string; ctx?: ExtensionContext; signal?: TauAbortSignal } = {},
 	): Promise<HookOutcome[]> {
-		const handlers = this.handlers(event, options.toolName);
+		const handlers = this.handlers(event, options.match);
 		if (handlers.length === 0) return [];
 		const input = JSON.stringify({ ...this.base(event, options.ctx), ...fields });
 		const warn = (text: string) => this.warn(text, options.ctx);
@@ -413,7 +449,7 @@ export class HookRunner {
 		for (const event of HOOK_EVENTS) {
 			for (const group of this.config[event] ?? []) {
 				for (const hook of group.hooks) {
-					const matcher = TOOL_EVENTS.has(event) && group.matcher ? ` [${group.matcher}]` : "";
+					const matcher = MATCHED_EVENTS.has(event) && group.matcher ? ` [${group.matcher}]` : "";
 					const flags = [hook.async ? "async" : "", hook.timeout !== undefined ? `timeout ${hook.timeout}s` : ""]
 						.filter((flag) => flag !== "")
 						.join(", ");
@@ -449,7 +485,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 			const outcomes = await runner.run(
 				"PreToolUse",
 				{ tool_name: event.toolName, tool_input: event.input, tool_use_id: event.toolCallId },
-				{ toolName: event.toolName, ctx, ...(ctx.signal ? { signal: ctx.signal } : {}) },
+				{ match: event.toolName, ctx, ...(ctx.signal ? { signal: ctx.signal } : {}) },
 			);
 			const reason = blockingReason(outcomes);
 			if (reason !== undefined) return { block: true, reason };
@@ -475,7 +511,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 					tool_use_id: event.toolCallId,
 					tool_response: { content: resultText(event.content), is_error: event.isError },
 				},
-				{ toolName: event.toolName, ctx },
+				{ match: event.toolName, ctx },
 			);
 			const parts = [blockingReason(outcomes), contextText(outcomes, false)].filter(
 				(part): part is string => part !== undefined,
@@ -582,11 +618,12 @@ export function withHookApprovals(
 	if (!handler && (runner.config.PermissionRequest ?? []).length === 0) return undefined;
 	return async (request) => {
 		if (runner.has("PermissionRequest", request.toolName)) {
-			const outcomes = await runner.run("PermissionRequest", {
-				tool_name: request.toolName,
-				tool_input: request.args,
-				tool_use_id: request.toolCallId,
-			});
+			const outcomes = await runner.run(
+				"PermissionRequest",
+				{ tool_name: request.toolName, tool_input: request.args, tool_use_id: request.toolCallId },
+				// The matcher filters on the tool name here too (P44: groups with a matcher never ran).
+				{ match: request.toolName },
+			);
 			const decided = approvalDecision(outcomes);
 			if (decided !== undefined) {
 				noteApprovalSource(request.toolCallId, decided ? "hook_allow" : "hook");

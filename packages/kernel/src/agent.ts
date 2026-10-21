@@ -21,6 +21,7 @@ import {
 	type AgentSpawnOptions,
 	type BoundaryDraft,
 	type CompactionReason,
+	commandPromptContent,
 	type ExtensionCapabilities,
 	type ExtensionContext,
 	ExtensionRegistry,
@@ -1286,8 +1287,11 @@ export class Agent {
 			const output = await found.command.handler(found.args, this.extensionContext());
 			if (typeof output === "string") this.ui?.notify(output, "info");
 			else if (output?.action === "prompt") {
-				const images = typeof content === "string" ? [] : content.filter((part) => part.type === "image");
-				const prompt: UserContent = images.length > 0 ? [{ type: "text", text: output.text }, ...images] : output.text;
+				const images = [
+					...(output.images ?? []),
+					...(typeof content === "string" ? [] : content.filter((part) => part.type === "image")),
+				];
+				const prompt = commandPromptContent({ text: output.text, images });
 				this.extensions?.hostAction("sendUserMessage")?.(prompt, deliverAs ? { deliverAs } : undefined);
 			}
 		} catch (error) {

@@ -16,7 +16,12 @@ export {
 	McpClient,
 	type McpClientOptions,
 	type McpContentBlock,
+	type McpGetPromptResult,
+	type McpProgress,
+	type McpPrompt,
+	type McpPromptArgument,
 	type McpReadResourceResult,
+	type McpRequestHandler,
 	type McpRequestOptions,
 	type McpResource,
 	type McpResourceContents,
@@ -25,6 +30,20 @@ export {
 	type McpToolInfo,
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "./client.ts";
+export {
+	ELICITATION_CAPABILITY,
+	elicitationForm,
+	elicitWithUi,
+	MAX_URL_ARGUMENT,
+	type McpElicitation,
+	type McpElicitHandler,
+	type McpElicitResult,
+	parseElicitation,
+	requiredUrlElicitations,
+	URL_ELICITATION_REQUIRED,
+	urlArgumentLength,
+	urlHost,
+} from "./elicitation.ts";
 export {
 	configuredExposures,
 	createMcpResultSchema,
@@ -61,9 +80,26 @@ export {
 	McpTimeoutError,
 	parseJsonRpcMessage,
 } from "./jsonrpc.ts";
+export {
+	createMentionProvider,
+	findMentions,
+	MENTION_LIMIT,
+	type MentionResource,
+	mentionBlock,
+	mentionItems,
+	mentionValue,
+} from "./mentions.ts";
 export { createMcpToolName, MAX_TOOL_NAME_LENGTH, mcpNamespace, sha256Hex } from "./naming.ts";
 export {
+	mcpPromptCommandName,
+	promptArguments,
+	promptCommandDescription,
+	promptMessageContent,
+	promptUsage,
+} from "./prompts.ts";
+export {
 	createMcpResourceTools,
+	isMcpAppResource,
 	LIST_MCP_RESOURCE_TEMPLATES_TOOL,
 	LIST_MCP_RESOURCES_TOOL,
 	type McpResourceServer,
@@ -86,6 +122,7 @@ export {
 	type McpServerStatus,
 	type McpServersHandle,
 	type McpServersOptions,
+	progressLine,
 } from "./servers.ts";
 export {
 	type McpTransport,

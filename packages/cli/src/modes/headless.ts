@@ -10,6 +10,7 @@ import {
 	type AgentEvent,
 	type AgentMessage,
 	type BackgroundShell,
+	commandPromptContent,
 	type ExtensionRegistry,
 	messageText,
 	type PermissionMode,
@@ -313,7 +314,7 @@ export class HeadlessSession {
 		if (command) {
 			const output = await command.handler(args, this.agent.extensionContext());
 			if (typeof output === "string") return { output };
-			if (output?.action === "prompt") return { run: this.run(output.text) };
+			if (output?.action === "prompt") return { run: this.run(commandPromptContent(output)) };
 			return {};
 		}
 		switch (name) {

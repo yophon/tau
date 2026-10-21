@@ -280,6 +280,8 @@ export type UiAction =
 	/** Without a start the window keeps its place, moving up only as far as the selection needs. */
 	| { type: "menu-select"; index: number; start?: number }
 	| { type: "menu-suppress"; token: string | undefined }
+	/** Completions settled outside the store (async providers): draw the menu again. */
+	| { type: "menu-refresh" }
 	| { type: "toggle-verbose" }
 	| { type: "toggle-reasoning" }
 	| { type: "armed"; exit?: boolean }
@@ -640,6 +642,8 @@ export function reduce(state: UiState, action: UiAction): UiState {
 				? state
 				: { ...state, menu: { ...state.menu, selected: action.index, start } };
 		}
+		case "menu-refresh":
+			return { ...state, menu: { ...state.menu } };
 		case "menu-suppress":
 			return state.menu.suppressedToken === action.token
 				? state

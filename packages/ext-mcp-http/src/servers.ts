@@ -15,19 +15,42 @@
 // servers with resources are reached through three resource tools, registered
 // with the widest exposure of those servers; results reach the model as pi
 // converts them (images pass through, binary resources are saved by the host).
+//
+// P44 (Claude Code): prompts become /mcp__<server>__<prompt> commands, `@server:uri`
+// mentions are completed and attached, servers can ask the user (elicitation,
+// through the host's handler), tool calls show progress and cancel on abort.
 import type {
 	Extension,
 	ExtensionAPI,
 	ExtensionContext,
+	ExtensionToolContext,
+	ImageContent,
 	JsonSchema,
 	JsonValue,
 	Platform,
 	RiskLevel,
+	TauAbortSignal,
 	Tool,
 	ToolNamespace,
 	ToolResult,
+	UiCapability,
 } from "@yophon/tau-kernel";
-import { type CallToolResult, McpClient, type McpRoot, type McpToolInfo } from "./client.ts";
+import {
+	type CallToolResult,
+	McpClient,
+	type McpProgress,
+	type McpPrompt,
+	type McpRoot,
+	type McpToolInfo,
+} from "./client.ts";
+import {
+	ELICITATION_CAPABILITY,
+	type McpElicitHandler,
+	type McpElicitResult,
+	parseElicitation,
+	requiredUrlElicitations,
+	URL_ELICITATION_REQUIRED,
+} from "./elicitation.ts";
 import {
 	configuredExposures,
 	createMcpResultSchema,
@@ -40,12 +63,16 @@ import {
 } from "./exposure.ts";
 import { type McpAuth, McpHttpError, McpSessionExpiredError } from "./http.ts";
 import { JSON_RPC_ERROR_CODES, McpAbortError, McpConnectionClosedError, McpError, McpTimeoutError } from "./jsonrpc.ts";
+import { createMentionProvider, findMentions, type MentionResource, mentionBlock } from "./mentions.ts";
 import { createMcpToolName, mcpNamespace } from "./naming.ts";
-import { createMcpResourceTools, type McpResourceServer, RESOURCE_TOOL_NAMES } from "./resources.ts";
-import { convertMcpResult, limitMcpContent, type McpContentOptions } from "./result.ts";
+import { mcpPromptCommandName, promptArguments, promptCommandDescription, promptMessageContent } from "./prompts.ts";
+import { createMcpResourceTools, isMcpAppResource, type McpResourceServer, RESOURCE_TOOL_NAMES } from "./resources.ts";
+import { convertMcpResult, limitMcpContent, type McpContentOptions, toModelContent } from "./result.ts";
 import type { McpTransport } from "./transport.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
+/** For calls made without a signal: an elicitation then waits for the user alone. */
+const neverAborted: TauAbortSignal = { aborted: false, addEventListener: () => {}, removeEventListener: () => {} };
 const DEFAULT_STARTUP_WAIT_MS = 10_000;
 /** Retries of a failed HTTP connect (pi CONNECT_RETRY_DELAYS_MS). */
 const CONNECT_RETRY_DELAYS_MS = [250, 1_000];
@@ -145,6 +172,15 @@ export interface McpServersOptions {
 	reportUnavailable?: (message: string) => void;
 	/** How long the first prompt waits for servers with direct tools, ms (default 10000; needs Platform.sleep). */
 	startupWaitMs?: number;
+	/**
+	 * Answer servers' elicitation/create (P44): given, the client declares elicitation
+	 * (form and URL modes). elicitWithUi is the plain dialog flow. Default: not declared.
+	 */
+	elicit?: McpElicitHandler;
+	/** Register servers' prompts as /mcp__<server>__<prompt> commands (default true; P44, Claude Code). */
+	promptCommands?: boolean;
+	/** Complete and attach `@server:uri` resource mentions (default true; P44, Claude Code). */
+	resourceMentions?: boolean;
 }
 
 export interface McpServersHandle {
@@ -167,6 +203,20 @@ interface ServerState {
 	tools: Set<string>;
 	/** The server declared the resources capability when it connected (P43). */
 	hasResources: boolean;
+	/** Prompts the server offers now, by command name (P44). */
+	prompts: Map<string, McpPrompt>;
+	/** Resources for `@` completion, listed on first use, dropped on resources/list_changed (P44). */
+	resourceList?: Promise<MentionResource[]>;
+	/** Contexts of this server's tool calls in flight: an elicitation asks through the latest (P44). */
+	activeCalls: ExtensionToolContext[];
+	/** URL elicitations the user opened, for notifications/elicitation/complete. */
+	openedUrls: Set<string>;
+}
+
+/** Progress as a line of the tool's live output (P44). */
+export function progressLine(progress: McpProgress): string {
+	const amount = progress.total !== undefined ? `${progress.progress}/${progress.total}` : `${progress.progress}`;
+	return `Progress ${amount}${progress.message ? ` · ${progress.message}` : ""}\n`;
 }
 
 function messageOf(cause: unknown): string {
@@ -204,6 +254,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			config,
 			tools: new Set(),
 			hasResources: false,
+			prompts: new Map(),
+			activeCalls: [],
+			openedUrls: new Set(),
 			...(clash ? { conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : {}),
 		});
 	}
@@ -266,17 +319,36 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			...options.clientInfo,
 			platform: options.platform,
 			...(options.roots ? { roots: options.roots } : {}),
+			...(options.elicit ? { capabilities: { elicitation: ELICITATION_CAPABILITY } } : {}),
 		});
 		clients.add(client);
 		client.onClose(() => {
 			clients.delete(client);
 			if (state.client === client) state.client = undefined;
 		});
+		if (options.elicit) {
+			client.setRequestHandler("elicitation/create", (params, { signal }) => elicit(state, params, signal));
+			client.onNotification("notifications/elicitation/complete", (params) => {
+				const id =
+					typeof params === "object" && params !== null
+						? (params as { elicitationId?: unknown }).elicitationId
+						: undefined;
+				// Unknown or already completed ids are ignored (MCP).
+				if (typeof id !== "string" || !state.openedUrls.delete(id)) return;
+				uiFor(state)?.notify(`MCP server "${state.config.name}": the step in the browser is done.`, "info");
+			});
+		}
 		try {
 			const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
 			await client.connect(options.createTransport(state.config), { timeoutMs });
 			client.onNotification("notifications/tools/list_changed", () => {
 				void refreshTools(state, client);
+			});
+			client.onNotification("notifications/prompts/list_changed", () => {
+				void refreshPrompts(state, client);
+			});
+			client.onNotification("notifications/resources/list_changed", () => {
+				state.resourceList = undefined;
 			});
 			state.instructions = client.instructions;
 			state.hasResources = client.serverCapabilities?.resources !== undefined;
@@ -327,6 +399,112 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			// A failed refresh keeps the tools registered so far.
 		}
 	};
+
+	/** The UI to ask through for this server: its latest tool call's, else the session's (P44). */
+	const uiFor = (state: ServerState): UiCapability | undefined =>
+		state.activeCalls[state.activeCalls.length - 1]?.ui ?? sessionCtx?.ui;
+
+	/** elicitation/create: check the request, then let the host ask (P44). */
+	const elicit = async (state: ServerState, params: unknown, signal: Parameters<McpElicitHandler>[1]["signal"]) => {
+		const request = parseElicitation(state.config.name, params);
+		const handler = options.elicit;
+		if (!handler) return { action: "cancel" } satisfies McpElicitResult;
+		const result = await handler(request, { ui: uiFor(state), signal });
+		if (request.mode === "url" && result.action === "accept") state.openedUrls.add(request.elicitationId);
+		return result.action === "accept" && request.mode === "form" ? result : { action: result.action };
+	};
+
+	/** Names of the prompt commands registered so far, to hide the ones a server drops. */
+	const promptCommandNames = new Set<string>();
+
+	const refreshPrompts = async (state: ServerState, client: McpClient): Promise<void> => {
+		await state.connecting;
+		if (state.client !== client || !api || options.promptCommands === false) return;
+		if (client.serverCapabilities?.prompts === undefined) return;
+		if ((state.config.exposure ?? "direct") === "hidden") return;
+		try {
+			const prompts = await client.listPrompts({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS });
+			if (state.client === client) registerPrompts(api, state, prompts);
+		} catch {
+			// A failed listing keeps the commands registered so far (Claude Code).
+		}
+	};
+
+	/** One command per prompt; commands of prompts the server dropped become hidden (P44). */
+	const registerPrompts = (target: ExtensionAPI, state: ServerState, prompts: McpPrompt[]): void => {
+		const previous = new Set(state.prompts.keys());
+		state.prompts = new Map(prompts.map((prompt) => [mcpPromptCommandName(state.config.name, prompt.name), prompt]));
+		for (const [name, prompt] of state.prompts) {
+			promptCommandNames.add(name);
+			target.registerCommand(name, {
+				description: promptCommandDescription(prompt),
+				handler: (args) => runPrompt(state, name, args),
+			});
+		}
+		for (const name of previous) {
+			if (state.prompts.has(name)) continue;
+			target.registerCommand(name, {
+				description: "MCP prompt no longer offered",
+				hidden: true,
+				handler: () => runPrompt(state, name, ""),
+			});
+		}
+	};
+
+	/** /mcp__<server>__<prompt>: prompts/get, then send its messages as a prompt (Claude Code). */
+	const runPrompt = async (
+		state: ServerState,
+		name: string,
+		args: string,
+	): Promise<string | { action: "prompt"; text: string; images?: ImageContent[] }> => {
+		const prompt = state.prompts.get(name);
+		if (!prompt) return `MCP prompt /${name} is no longer available.`;
+		const parsed = promptArguments(name, prompt, args);
+		if ("error" in parsed) return parsed.error;
+		try {
+			const result = await withClient(state, (client) =>
+				client.getPrompt(prompt.name, parsed.values, {
+					timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
+				}),
+			);
+			const { text, images } = promptMessageContent(result, contentOptions(state));
+			if (text === "" && images.length === 0) return `MCP prompt /${name} returned no messages.`;
+			return { action: "prompt", text, ...(images.length > 0 ? { images } : {}) };
+		} catch (cause) {
+			return `MCP prompt /${name} failed: ${messageOf(cause)}`;
+		}
+	};
+
+	/** Resources of every connected server with resources, for `@` completion (listed once, cached). */
+	const mentionResources = async (): Promise<MentionResource[]> => {
+		const lists = await Promise.all(
+			mentionStates().map((state) => {
+				state.resourceList ??= withClient(state, (client) =>
+					client.listResources({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS }),
+				)
+					.then((resources) =>
+						resources
+							.filter((resource) => !isMcpAppResource(resource))
+							.map((resource) => ({
+								server: state.config.name,
+								uri: resource.uri,
+								name: resource.name,
+								...(typeof resource.title === "string" ? { title: resource.title } : {}),
+							})),
+					)
+					.catch((error: unknown) => {
+						state.resourceList = undefined;
+						throw error;
+					});
+				return state.resourceList.catch(() => [] as MentionResource[]);
+			}),
+		);
+		return lists.flat();
+	};
+
+	/** Connected servers whose resources `@` reaches: resources offered, not hidden. */
+	const mentionStates = (): ServerState[] =>
+		resourceStates().filter((state) => state.client?.connectionState === "connected");
 
 	/** Activate the tool that reaches indirect MCP tools: codemode, or tool_search for deferred ones (pi). */
 	const activateReachingTools = (target: ExtensionAPI, state: ServerState): void => {
@@ -465,7 +643,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		outputSchema: createMcpResultSchema(info.outputSchema),
 		exposure: toToolExposure(getMcpToolExposure(state.config, info.name)),
 		namespace,
-		execute: async (args, signal): Promise<ToolResult> => {
+		execute: async (args, signal, onUpdate, ctx): Promise<ToolResult> => {
 			if (signal?.aborted) return { content: [{ type: "text", text: "MCP tool call aborted" }], isError: true };
 			if (!state.tools.has(name)) {
 				return {
@@ -473,9 +651,13 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 					isError: true,
 				};
 			}
+			if (ctx) state.activeCalls.push(ctx);
 			try {
 				const result: CallToolResult = await withClient(state, (client) =>
-					client.callTool(info.name, args, { signal }),
+					client.callTool(info.name, args, {
+						...(signal ? { signal } : {}),
+						...(onUpdate ? { onProgress: (progress: McpProgress) => onUpdate(progressLine(progress)) } : {}),
+					}),
 				);
 				const content = limitMcpContent(convertMcpResult(result, info.name, contentOptions(state)), where);
 				// Scripts get the whole CallToolResult (pi 1.2.0), never truncated; `_meta` is dropped.
@@ -486,11 +668,44 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 					isError: result.isError === true,
 				};
 			} catch (cause) {
+				if (cause instanceof McpError && cause.code === URL_ELICITATION_REQUIRED) {
+					return { content: [{ type: "text", text: await urlRequired(state, cause, signal) }], isError: true };
+				}
 				const text = cause instanceof McpAbortError ? "MCP tool call aborted" : messageOf(cause);
 				return { content: [{ type: "text", text }], isError: true };
+			} finally {
+				if (ctx) state.activeCalls.splice(state.activeCalls.lastIndexOf(ctx), 1);
 			}
 		},
 	});
+
+	/**
+	 * URLElicitationRequiredError (MCP 2025-11-25): show each link it carries, then tell
+	 * the model what happened so it retries once the user has finished in the browser.
+	 */
+	const urlRequired = async (
+		state: ServerState,
+		error: McpError,
+		signal: ExtensionContext["signal"],
+	): Promise<string> => {
+		const server = state.config.name;
+		const requests = requiredUrlElicitations(server, error.data);
+		if (requests.length === 0 || !options.elicit) return `MCP server "${server}": ${error.message}`;
+		const lines = [`MCP server "${server}" needs the user to finish a step in the browser first: ${error.message}`];
+		for (const request of requests) {
+			const result = await options.elicit(request, { ui: uiFor(state), signal: signal ?? neverAborted });
+			if (request.mode === "url" && result.action === "accept") state.openedUrls.add(request.elicitationId);
+			const outcome =
+				result.action === "accept"
+					? "the user opened the link"
+					: result.action === "decline"
+						? "the user declined"
+						: "the user dismissed it";
+			lines.push(`- ${request.message} (${request.mode === "url" ? request.url : ""}): ${outcome}`);
+		}
+		lines.push("Retry the tool once the user has finished.");
+		return lines.join("\n");
+	};
 
 	const connectOne = (state: ServerState): Promise<McpServerStatus> => {
 		const server = state.config.name;
@@ -511,6 +726,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				}
 				state.client = client;
 				if (api) registerTools(api, state, tools);
+				void refreshPrompts(state, client);
 				return report({
 					server,
 					state: "connected",
@@ -555,9 +771,16 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 
 	const extension: Extension = (extensionApi) => {
 		api = extensionApi;
+		// One `@` provider per host UI, however many sessions start in it (P44).
+		const completing = new WeakSet<UiCapability>();
 		extensionApi.on("session_start", (_event, ctx) => {
 			sessionCtx = ctx;
 			waitedForStartup = false;
+			const ui = ctx.ui;
+			if (options.resourceMentions !== false && ui?.addAutocompleteProvider && !completing.has(ui)) {
+				completing.add(ui);
+				ui.addAutocompleteProvider((current) => createMentionProvider(current, () => mentionResources()));
+			}
 			// Exposure is known from the config: the tool that reaches indirect servers is
 			// active before the first request, not only once a slow server has connected.
 			for (const state of states) if (!state.conflict) activateReachingTools(extensionApi, state);
@@ -610,6 +833,42 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 						: states.filter((state) => state.config.name === owner);
 			await waitFor(waiting, ctx.signal);
 			return undefined;
+		});
+
+		// `@server:uri` in a message: read each resource and attach it (P44, Claude Code).
+		extensionApi.on("input", async (event, ctx) => {
+			if (options.resourceMentions === false || !event.text.includes("@")) return undefined;
+			const named = new Set(states.filter((state) => !state.conflict).map((state) => state.config.name));
+			const mentions = findMentions(event.text, named);
+			if (mentions.length === 0) return undefined;
+			const involved = states.filter((state) => mentions.some((mention) => mention.server === state.config.name));
+			await waitFor(involved, ctx.signal);
+			const blocks: string[] = [];
+			const images: ImageContent[] = [...(event.images ?? [])];
+			for (const mention of mentions) {
+				const state = states.find((candidate) => candidate.config.name === mention.server);
+				if (!state || !resourceStates().includes(state)) continue;
+				try {
+					const result = await withClient(state, (client) =>
+						client.readResource(mention.uri, { timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS }),
+					);
+					const content = toModelContent(
+						result.contents.map((contents) => ({ type: "resource", resource: contents })),
+						contentOptions(state),
+					);
+					const text = content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("\n");
+					images.push(...content.filter((block): block is ImageContent => block.type === "image"));
+					blocks.push(mentionBlock(mention.server, mention.uri, text));
+				} catch (cause) {
+					ctx.ui?.notify(`Could not read @${mention.server}:${mention.uri}: ${messageOf(cause)}`, "warning");
+				}
+			}
+			if (blocks.length === 0 && images.length === (event.images ?? []).length) return undefined;
+			return {
+				action: "transform" as const,
+				text: [event.text, ...blocks].join("\n\n"),
+				...(images.length > 0 ? { images } : {}),
+			};
 		});
 
 		extensionApi.registerCommand("mcp", {

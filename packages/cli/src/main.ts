@@ -37,6 +37,7 @@ import {
 	type AgentMessage,
 	type ApprovalRequest,
 	type ChatTransport,
+	commandPromptContent,
 	createCodingTools,
 	createDefaultPolicy,
 	createOpenAICompatTransport,
@@ -1069,12 +1070,17 @@ async function loadExtensionRegistry(
 		for (const diagnostic of loadedMcp.diagnostics) console.log(dim(`mcp: ${diagnostic}`));
 		if (loadedMcp.servers.length > 0) {
 			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
+			const { createElicitHandler } = await import("./mcp-elicit.ts");
+			const { openUrl } = await import("./open-url.ts");
 			await registry.add([
 				createMcpExtension({
 					servers: withOAuth(loadedMcp.servers, userHome()),
 					// P43 (pi): the working directory as the root, resource tools, images to the model;
-					// the gateway is parked and keeps what it had.
-					...(extendedSettings ? { cwd } : { resourceTools: false, images: false }),
+					// P44 (Claude Code): elicitation, prompt commands, `@` resources. The gateway is
+					// parked and keeps what it had.
+					...(extendedSettings
+						? { cwd, elicit: createElicitHandler(hooks, openUrl) }
+						: { resourceTools: false, images: false, promptCommands: false, resourceMentions: false }),
 				}),
 			]);
 		}
@@ -1311,7 +1317,7 @@ async function runCommand(
 		if (typeof output === "string") {
 			console.log(output);
 		} else if (output?.action === "prompt") {
-			await runTurn(agent, output.text, readline);
+			await runTurn(agent, commandPromptContent(output), readline);
 		}
 	} catch (error) {
 		console.log(red(`Command failed: ${error instanceof Error ? error.message : String(error)}`));

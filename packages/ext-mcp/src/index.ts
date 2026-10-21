@@ -8,6 +8,7 @@ import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
 	createMcpServers,
+	type McpElicitHandler,
 	type McpServerConfig,
 	type McpServerStatus,
 	StreamableHttpTransport,
@@ -15,7 +16,13 @@ import {
 import { defaultPlatform, type Extension } from "@yophon/tau-kernel";
 import { StdioTransport } from "./stdio.ts";
 
-export { MCP_OUTPUT_MAX_BYTES } from "@yophon/tau-ext-mcp-http";
+export {
+	elicitWithUi,
+	MCP_OUTPUT_MAX_BYTES,
+	type McpElicitation,
+	type McpElicitHandler,
+	type McpElicitResult,
+} from "@yophon/tau-ext-mcp-http";
 export { McpOAuthAuthorizationRequiredError } from "./oauth/errors.ts";
 export {
 	createMcpOAuth,
@@ -60,6 +67,12 @@ export interface McpExtensionOptions {
 	resourceTools?: boolean;
 	/** Pass MCP images to the model (default true; P43). False keeps the placeholder text used before. */
 	images?: boolean;
+	/** Answer servers' elicitation requests (P44); given, elicitation is declared. */
+	elicit?: McpElicitHandler;
+	/** Prompts as /mcp__<server>__<prompt> commands (default true; P44). */
+	promptCommands?: boolean;
+	/** `@server:uri` completion and attachments (default true; P44). */
+	resourceMentions?: boolean;
 }
 
 /**
@@ -80,6 +93,9 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		...(options.cwd ? { roots: [{ uri: pathToFileURL(options.cwd).href, name: basename(options.cwd) }] } : {}),
 		...(options.resourceTools === false ? { resourceTools: false } : {}),
 		...(options.images === false ? { images: false } : {}),
+		...(options.elicit ? { elicit: options.elicit } : {}),
+		...(options.promptCommands === false ? { promptCommands: false } : {}),
+		...(options.resourceMentions === false ? { resourceMentions: false } : {}),
 		// Without a UI (tau -p, pipes) an unavailable server still gets reported.
 		reportUnavailable: (message) => process.stderr.write(`${message}\n`),
 		createTransport: (config) => {

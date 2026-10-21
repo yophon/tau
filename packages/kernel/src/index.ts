@@ -102,6 +102,10 @@ export {
 	type AgentSettledEvent,
 	type AgentSpawnOptions,
 	type AgentStartEvent,
+	type AutocompleteItem,
+	type AutocompleteProvider,
+	type AutocompleteProviderFactory,
+	type AutocompleteSuggestions,
 	type AutoRetryEndEvent,
 	type AutoRetryStartEvent,
 	type BeforeAgentStartEvent,
@@ -118,6 +122,7 @@ export {
 	type ContextEventResult,
 	type ContextWithSystemEvent,
 	type CustomMessageInput,
+	commandPromptContent,
 	type EventBus,
 	type Extension,
 	type ExtensionAPI,
@@ -403,5 +408,20 @@ export {
 	validateToolArgs,
 } from "./tools.ts";
 export { type TransformTarget, transformMessages } from "./transform.ts";
+export {
+	askFormStepByStep,
+	formErrors,
+	formFieldError,
+	formFieldTitle,
+	formValueText,
+	hasFormValue,
+	initialFormValues,
+	parseFormText,
+	type UiForm,
+	type UiFormField,
+	type UiFormOption,
+	type UiFormResult,
+	type UiFormValue,
+} from "./ui-form.ts";
 export { createIncrementalUtf8Decoder, utf8ByteLength, utf8CodePointLength } from "./utf8.ts";
 export { uuidv7 } from "./uuid.ts";

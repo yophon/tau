@@ -19,6 +19,21 @@ export interface Completion {
 	tokenStart: number;
 	token: string;
 	items: CompletionItem[];
+	/** How accepting an item changes the input, when an extension's provider decides (P44, pi applyCompletion). */
+	apply?: (item: CompletionItem) => { text: string; cursor: number };
+}
+
+/** The input as pi's providers see it: lines and the cursor's line and column. */
+export function toLines(text: string, cursor: number): { lines: string[]; line: number; col: number } {
+	const before = text.slice(0, cursor).split("\n");
+	return { lines: text.split("\n"), line: before.length - 1, col: (before[before.length - 1] ?? "").length };
+}
+
+/** Back from lines and a line/column cursor. */
+export function fromLines(lines: readonly string[], line: number, col: number): { text: string; cursor: number } {
+	let cursor = col;
+	for (let index = 0; index < line; index++) cursor += (lines[index] ?? "").length + 1;
+	return { text: lines.join("\n"), cursor };
 }
 
 /** `@` file matches listed at most (a project can hold tens of thousands of files); typing narrows the rest. */

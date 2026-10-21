@@ -4,7 +4,7 @@
  * plain TypeScript with no Ink, so tests drive it directly and the Ink tree
  * stays a thin view (the logic the P8 TUI kept in one closure).
  */
-import { spawn, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -13,22 +13,37 @@ import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
+	type AutocompleteProvider,
+	type AutocompleteProviderFactory,
 	type CustomMessage,
+	commandPromptContent,
 	type ExtensionRegistry,
+	formErrors,
+	formFieldError,
+	formFieldTitle,
+	formValueText,
+	hasFormValue,
+	initialFormValues,
 	type PermissionMode,
+	parseFormText,
 	restoreSession,
 	type SessionMetadata,
 	SessionRecorder,
 	type SessionStore,
+	type TauAbortSignal,
 	TauError,
 	type ThinkingLevel,
 	type UiCapability,
+	type UiForm,
+	type UiFormResult,
+	type UiFormValue,
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
 import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
+import { openUrl } from "../open-url.ts";
 import { autoTitle } from "../session-title.ts";
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -42,8 +57,10 @@ import {
 	type CompletionItem,
 	type CompletionSources,
 	computeCompletion,
+	fromLines,
 	fuzzyScore,
 	listFiles,
+	toLines,
 } from "./input/completion.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
@@ -263,6 +280,9 @@ export class TuiController {
 					values.map((value) => ({ label: value, value })),
 				);
 			},
+			form: (form, options) => this.form(form, options?.signal),
+			// pi ui.addAutocompleteProvider: stacked on the built-in completion, in order.
+			addAutocompleteProvider: (factory) => this.addAutocompleteProvider(factory),
 			notify: (message, level) => {
 				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message);
 				// What a widget shows may follow what the extension just did (ask_user's waiting question).
@@ -1513,7 +1533,8 @@ export class TuiController {
 		) {
 			return last.result;
 		}
-		const result = computeCompletion(text, cursor, this.completionSources());
+		const builtin = computeCompletion(text, cursor, this.completionSources());
+		const result = this.providerCompletion(text, cursor, builtin);
 		this.rawCache = {
 			text,
 			cursor,
@@ -1537,6 +1558,116 @@ export class TuiController {
 		| undefined;
 	/** Bumped when argument completions settle (their results feed the completion). */
 	private completionVersion = 0;
+
+	/** Extension autocomplete providers (P44, pi ui.addAutocompleteProvider), for the registry that added them. */
+	private autocompleteFactories: AutocompleteProviderFactory[] = [];
+	/** Bumped when the `@` file list loads: the providers see the new files. */
+	private filesEpoch = 0;
+	private autocompleteOwner: unknown;
+	private autocompleteChain: AutocompleteProvider | undefined;
+	/** The providers' answer for one input state; pending while `result` is absent. */
+	private providerAnswer: { key: string; result?: Completion | null; abort: AbortController } | undefined;
+
+	addAutocompleteProvider(factory: AutocompleteProviderFactory): void {
+		// /reload loads the extensions again: their providers start over.
+		if (this.autocompleteOwner !== this.extensions) {
+			this.autocompleteFactories = [];
+			this.autocompleteOwner = this.extensions;
+		}
+		this.autocompleteFactories.push(factory);
+		this.autocompleteChain = undefined;
+		this.providerAnswer = undefined;
+		this.rawCache = undefined;
+		this.menuCache = undefined;
+	}
+
+	/** The built-in completion as pi's provider shape, the bottom of the chain. */
+	private builtinProvider(): AutocompleteProvider {
+		return {
+			getSuggestions: async (lines, line, col) => {
+				const { text, cursor } = fromLines(lines, line, col);
+				const completion = computeCompletion(text, cursor, this.completionSources());
+				if (!completion) return null;
+				return {
+					items: completion.items.map((item) => ({
+						value: item.value,
+						label: item.label,
+						...(item.hint !== undefined ? { description: item.hint } : {}),
+					})),
+					prefix: completion.token,
+				};
+			},
+			applyCompletion: (lines, line, col, item, prefix) => {
+				const { text, cursor } = fromLines(lines, line, col);
+				const completion = computeCompletion(text, cursor, this.completionSources()) ?? {
+					kind: "file" as const,
+					tokenStart: cursor - prefix.length,
+					token: prefix,
+					items: [],
+				};
+				const next = acceptCompletion(text, completion, { value: item.value, label: item.label });
+				const back = toLines(next.text, next.cursor);
+				return { lines: back.lines, cursorLine: back.line, cursorCol: back.col };
+			},
+		};
+	}
+
+	/**
+	 * With extension providers, their answer for this input once it settles (the built-in
+	 * completion shows meanwhile); without any, the built-in completion.
+	 */
+	private providerCompletion(text: string, cursor: number, builtin: Completion | undefined): Completion | undefined {
+		if (this.autocompleteFactories.length === 0 || this.autocompleteOwner !== this.extensions) return builtin;
+		this.autocompleteChain ??= this.autocompleteFactories.reduce<AutocompleteProvider>(
+			(current, factory) => factory(current),
+			this.builtinProvider(),
+		);
+		const chain = this.autocompleteChain;
+		const key = `${cursor}\u0000${this.completionVersion}\u0000${this.filesEpoch}\u0000${text}`;
+		const answer = this.providerAnswer;
+		if (answer?.key === key) return answer.result === undefined ? builtin : (answer.result ?? undefined);
+		answer?.abort.abort();
+		const abort = new AbortController();
+		const pending: { key: string; result?: Completion | null; abort: AbortController } = { key, abort };
+		this.providerAnswer = pending;
+		const { lines, line, col } = toLines(text, cursor);
+		void chain.getSuggestions(lines, line, col, { signal: abort.signal }).then(
+			(suggestions) => {
+				if (abort.signal.aborted || this.providerAnswer !== pending) return;
+				pending.result =
+					suggestions && suggestions.items.length > 0
+						? {
+								kind: builtin?.kind ?? "file",
+								tokenStart: cursor - suggestions.prefix.length,
+								token: suggestions.prefix,
+								items: suggestions.items.map((item) => ({
+									value: item.value,
+									label: item.label,
+									...(item.description !== undefined ? { hint: item.description } : {}),
+								})),
+								apply: (item) => {
+									const applied = chain.applyCompletion(
+										lines,
+										line,
+										col,
+										{ value: item.value, label: item.label },
+										suggestions.prefix,
+									);
+									return fromLines(applied.lines, applied.cursorLine, applied.cursorCol);
+								},
+							}
+						: null;
+				this.rawCache = undefined;
+				this.menuCache = undefined;
+				this.dispatch({ type: "menu-refresh" });
+				this.store.flush();
+			},
+			() => {
+				if (this.providerAnswer === pending) pending.result = builtin ?? null;
+			},
+		);
+		return builtin;
+	}
 
 	private completionSources(): CompletionSources {
 		return {
@@ -1597,6 +1728,7 @@ export class TuiController {
 				.catch(() => [] as string[])
 				.then((files) => {
 					this.files = files;
+					this.filesEpoch++;
 					this.filesLoading = false;
 					this.menuCache = undefined;
 					this.dispatch({ type: "menu-select", index: this.state.menu.selected });
@@ -1825,7 +1957,7 @@ export class TuiController {
 					this.submit();
 					return;
 				}
-				const next = acceptCompletion(state.editor.text, completion, item);
+				const next = completion.apply ? completion.apply(item) : acceptCompletion(state.editor.text, completion, item);
 				this.pushUndo();
 				this.leaveHistory();
 				this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
@@ -2276,7 +2408,7 @@ export class TuiController {
 	}
 
 	/** A prompt an extension command or shortcut asked for: now, or once the running task ends. */
-	async promptWhenFree(text: string): Promise<void> {
+	async promptWhenFree(text: UserContent): Promise<void> {
 		if (this.state.task === undefined) await this.runPrompt(text);
 		else this.pendingStarts.push(text);
 	}
@@ -2504,7 +2636,7 @@ export class TuiController {
 			await this.renderNewMessages(start);
 			await this.refreshSurfaces();
 			if (typeof output === "string") this.notice("info", output);
-			else if (output?.action === "prompt") await this.promptWhenFree(output.text);
+			else if (output?.action === "prompt") await this.promptWhenFree(commandPromptContent(output));
 		} catch (error) {
 			this.notice("error", `Shortcut ${name} failed: ${errorText(error)}`);
 		}
@@ -3003,11 +3135,11 @@ export class TuiController {
 	}
 
 	/** A multi-select list (P35, ctx.ui.selectMany): the checked values, undefined when cancelled. */
-	pickMany(title: string, items: PickerItem[]): Promise<string[] | undefined> {
+	pickMany(title: string, items: PickerItem[], checked: number[] = []): Promise<string[] | undefined> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.multiPickers.set(id, resolve);
-			this.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0, checked: [] } });
+			this.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0, checked } });
 			this.store.flush();
 		});
 	}
@@ -3076,13 +3208,120 @@ export class TuiController {
 		});
 	}
 
-	ask(kind: "input", title: string, placeholder?: string): Promise<string | undefined> {
+	ask(kind: "input", title: string, placeholder?: string, prefill?: string): Promise<string | undefined> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.prompts.set(id, resolve);
 			this.openPrompt({ id, kind, title, ...(placeholder !== undefined ? { placeholder } : {}) });
+			if (prefill !== undefined && prefill !== "") this.setEditor(ed.fromText(prefill));
 			this.store.flush();
 		});
+	}
+
+	/**
+	 * A form (P44, ctx.ui.form; MCP elicitation): the fields with their values in one
+	 * list, so everything can be checked and changed before sending. Enter edits a field
+	 * (typed in the input box, or picked from its choices; a yes/no field flips), Submit
+	 * checks every field and stops at the first error, Decline declines, Esc cancels.
+	 * `signal` closes the form (the server cancelled).
+	 */
+	async form(form: UiForm, signal?: TauAbortSignal): Promise<UiFormResult | undefined> {
+		this.attention("question", form.message ?? form.title);
+		const values = initialFormValues(form);
+		const errors: Record<string, string> = {};
+		let selected = 0;
+		// The dialog open for this form, closed when the server cancels.
+		let open: number | undefined;
+		const onAbort = () => {
+			if (open === undefined) return;
+			if (this.state.picker?.id === open) {
+				this.dispatch({ type: "picker-close", id: open });
+				this.settlePicker(open, undefined);
+				this.settleMany(open, undefined);
+			} else if (this.state.prompt?.id === open) this.cancelPrompt();
+		};
+		signal?.addEventListener("abort", onAbort);
+		const title = `${form.title}${form.message ? ` — ${form.message}` : ""}`;
+		try {
+			for (;;) {
+				if (signal?.aborted) return undefined;
+				const items: PickerItem[] = form.fields.map((field, index) => {
+					const value = formValueText(field, values[field.name]);
+					const hint = errors[field.name] ? `! ${errors[field.name]}` : field.description;
+					return {
+						label: `${field.title}${field.required ? " *" : ""}: ${value === "" ? "—" : value}`,
+						value: `field:${index}`,
+						...(hint ? { hint } : {}),
+					};
+				});
+				items.push({ label: "Submit", value: "submit" }, { label: "Decline", value: "decline" });
+				open = this.nextDialogId;
+				const picked = await this.pick(title, items, selected);
+				open = undefined;
+				if (picked === undefined || signal?.aborted) return undefined;
+				if (picked === "decline") return { action: "decline" };
+				if (picked === "submit") {
+					const found = formErrors(form, values);
+					for (const key of Object.keys(errors)) delete errors[key];
+					Object.assign(errors, found);
+					const first = form.fields.findIndex((field) => found[field.name] !== undefined);
+					if (first === -1) return { action: "submit", values };
+					selected = first;
+					continue;
+				}
+				const index = Number(picked.slice("field:".length));
+				const field = form.fields[index];
+				if (!field) continue;
+				selected = index;
+				const current = values[field.name];
+				let next: UiFormValue | undefined = current;
+				const fieldTitle = formFieldTitle(field);
+				open = this.nextDialogId;
+				if (field.type === "boolean") next = current !== true;
+				else if (field.type === "select") {
+					const options = (field.options ?? []).map((option) => ({ label: option.label, value: option.value }));
+					if (!field.required) options.push({ label: "(none)", value: "\u0000none" });
+					const choice = await this.pick(
+						fieldTitle,
+						options,
+						Math.max(
+							0,
+							options.findIndex((option) => option.value === current),
+						),
+					);
+					if (choice !== undefined) next = choice === "\u0000none" ? undefined : choice;
+				} else if (field.type === "multiselect") {
+					const options = (field.options ?? []).map((option) => ({ label: option.label, value: option.value }));
+					const checked = Array.isArray(current)
+						? options.flatMap((option, at) => (current.includes(option.value) ? [at] : []))
+						: [];
+					const chosen = await this.pickMany(fieldTitle, options, checked);
+					if (chosen !== undefined) next = chosen;
+				} else {
+					const text = await this.ask("input", fieldTitle, field.format, hasFormValue(current) ? String(current) : "");
+					if (text !== undefined) {
+						const parsed = parseFormText(field, text);
+						if ("error" in parsed) {
+							errors[field.name] = parsed.error;
+							open = undefined;
+							continue;
+						}
+						next = parsed.value;
+					}
+				}
+				open = undefined;
+				if (signal?.aborted) return undefined;
+				if (next === undefined) delete values[field.name];
+				else values[field.name] = next;
+				const error = hasFormValue(next) ? formFieldError(field, next) : undefined;
+				if (error) errors[field.name] = error;
+				else delete errors[field.name];
+				// After a field is set, the next one is where the selection waits.
+				if (!error && index + 1 < form.fields.length + 1) selected = index + 1;
+			}
+		} finally {
+			signal?.removeEventListener("abort", onAbort);
+		}
 	}
 
 	private cancelPrompt(): void {
@@ -3324,22 +3563,7 @@ export function readGitBranch(cwd: string): string | undefined {
 	return readBranchFromGit(cwd);
 }
 
-/** Open a URL in the browser (the URL handler on Windows, open on macOS, xdg-open elsewhere), detached. */
-export function openUrl(url: string): void {
-	if (!/^https?:\/\//i.test(url) && !/^file:/i.test(url)) return;
-	// rundll32 takes the URL as one argument: no cmd.exe quoting of & and spaces.
-	const [command, args] =
-		process.platform === "win32"
-			? ["rundll32", ["url.dll,FileProtocolHandler", url]]
-			: process.platform === "darwin"
-				? ["open", [url]]
-				: ["xdg-open", [url]];
-	try {
-		spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true }).unref();
-	} catch {
-		// No browser to open: nothing to do.
-	}
-}
+export { openUrl };
 
 /** Write the text to a temp file, run the editor on it in the foreground, read it back. `command` = settings' externalEditor (pi). */
 export function editInExternalEditor(text: string, command?: string): string | undefined {
