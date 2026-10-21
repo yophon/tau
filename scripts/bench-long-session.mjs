@@ -120,10 +120,18 @@ for (const entries of sizes) {
 		const store = await repo.create();
 		const recorder = await SessionRecorder.open(store);
 		const messages = [];
+		const ids = [];
 		for (const message of syntheticMessages(entries)) {
-			await recorder.recordMessage(message);
+			ids.push((await recorder.recordMessage(message)).id);
 			messages.push(message);
 		}
+		// A long session has been compacted: the model sees a summary and the last 200 entries,
+		// while the log (and everything that scales with it) keeps all of them.
+		await recorder.recordCompaction({
+			summary: words(40),
+			firstKeptEntryId: ids[Math.max(0, ids.length - 200)],
+			tokensBefore: entries * 300,
+		});
 		// Kernel: a ten-tool turn with and without the per-request check (two requests each).
 		const turnWithCheck = await toolTurn(store, true);
 		const turnWithoutCheck = await toolTurn(store, false);

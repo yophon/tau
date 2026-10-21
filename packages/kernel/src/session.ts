@@ -206,6 +206,12 @@ class EntryTree {
 	readonly entries: SessionEntry[] = [];
 	readonly byId = new Map<string, SessionEntry>();
 	leafId: string | null = null;
+	/** P42c: what getMetadata reports, kept as entries are added instead of scanned each time. */
+	messageCount = 0;
+	firstMessage: string | undefined;
+	/** The latest session_info entry's name; `named` says whether there was one (a name can be cleared). */
+	name: string | undefined;
+	named = false;
 
 	/**
 	 * Entries are append-only and deep-frozen on the way in (P22): the agent's
@@ -218,6 +224,24 @@ class EntryTree {
 		this.byId.set(entry.id, entry);
 		if (entry.type === "leaf") this.leafId = entry.leafId;
 		else this.leafId = entry.id;
+		if (entry.type === "session_info") {
+			this.name = entry.name;
+			this.named = true;
+		} else if (entry.type === "message") {
+			this.messageCount++;
+			if (this.firstMessage === undefined && entry.message.role === "user") {
+				const text = messageText(entry.message.content);
+				if (text !== "") this.firstMessage = text.slice(0, 500);
+			}
+		}
+	}
+
+	/** messageCount and firstMessage, as messageSummary reported them. */
+	summary(): { firstMessage?: string; messageCount: number } {
+		return {
+			...(this.firstMessage !== undefined ? { firstMessage: this.firstMessage } : {}),
+			messageCount: this.messageCount,
+		};
 	}
 
 	pathToRoot(leafId: string | null): SessionEntry[] {
@@ -246,8 +270,8 @@ export class InMemorySessionStore implements SessionStore {
 	async getMetadata(): Promise<SessionMetadata> {
 		return {
 			...this.metadata,
-			name: lastSessionName(this.tree.entries) ?? this.metadata.name,
-			...messageSummary(this.tree.entries),
+			name: (this.tree.named ? this.tree.name : undefined) ?? this.metadata.name,
+			...this.tree.summary(),
 		};
 	}
 
@@ -392,33 +416,24 @@ function parseEntryLine(line: string, filePath: string, lineNumber: number): Ses
 }
 
 /** First user message text and message count over all entries, as pi's session list reads them. */
-function messageSummary(entries: readonly SessionEntry[]): { firstMessage?: string; messageCount: number } {
-	let firstMessage: string | undefined;
-	let messageCount = 0;
-	for (const entry of entries) {
-		if (entry.type !== "message") continue;
-		messageCount++;
-		if (firstMessage !== undefined || entry.message.role !== "user") continue;
-		const content = entry.message.content;
-		const text = (
-			typeof content === "string"
-				? content
-				: content
-						.filter((part): part is { type: "text"; text: string } => part.type === "text")
-						.map((part) => part.text)
-						.join(" ")
-		).trim();
-		if (text !== "") firstMessage = text.slice(0, 500);
-	}
-	return { ...(firstMessage !== undefined ? { firstMessage } : {}), messageCount };
-}
-
-function lastSessionName(entries: SessionEntry[]): string | undefined {
+function lastSessionName(entries: readonly SessionEntry[]): string | undefined {
 	for (let i = entries.length - 1; i >= 0; i--) {
 		const entry = entries[i];
 		if (entry.type === "session_info") return entry.name;
 	}
 	return undefined;
+}
+
+/** A user message's text for the session list: its text parts joined, trimmed. */
+function messageText(content: string | readonly { type: string; text?: string }[]): string {
+	return (
+		typeof content === "string"
+			? content
+			: content
+					.filter((part): part is { type: "text"; text: string } => part.type === "text")
+					.map((part) => part.text)
+					.join(" ")
+	).trim();
 }
 
 class JsonlSessionStore implements SessionStore {
@@ -461,9 +476,9 @@ class JsonlSessionStore implements SessionStore {
 			timestamp: this.header.timestamp,
 			modified: this.tree.entries.at(-1)?.timestamp ?? this.header.timestamp,
 			filePath: this.filePath,
-			name: lastSessionName(this.tree.entries),
+			name: this.tree.named ? this.tree.name : undefined,
 			parentSession: this.header.parentSession,
-			...messageSummary(this.tree.entries),
+			...this.tree.summary(),
 		};
 	}
 

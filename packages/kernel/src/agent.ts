@@ -77,7 +77,9 @@ import {
 	getCurrentTools,
 	getToolStateChanges,
 	normalizeMessageContent,
+	type ProjectedEntry,
 	type SessionProjection,
+	sessionEntryToContextMessages,
 	sumSessionUsage,
 	toToolDeclaration,
 } from "./projection.ts";
@@ -836,6 +838,11 @@ export class Agent {
 
 	/** Rebuild `messages` from the log's active path (pi _refreshFinalizedContext). */
 	private async refresh(): Promise<void> {
+		const entries = await this.session.store.getEntries();
+		if (this.appendInPlace(entries)) {
+			this.sessionMetadata = await this.session.store.getMetadata();
+			return;
+		}
 		const path = await this.session.store.getPathToRoot(this.session.currentLeafId);
 		const projection = buildSessionProjection(path);
 		const entryIds = new WeakMap<AgentMessage, string>();
@@ -846,11 +853,53 @@ export class Agent {
 		this.activePath = path;
 		this.activeProjection = projection;
 		this.projection = Object.freeze(projection.messages);
-		const entries = await this.session.store.getEntries();
 		this.allEntries = entries;
 		this.entriesById = new Map(entries.map((entry) => [entry.id, entry]));
 		this.sessionUsage = sumSessionUsage(entries);
 		this.sessionMetadata = await this.session.store.getMetadata();
+	}
+
+	/**
+	 * P42b (tech debt #17): when the log only grew by entries that continue the active path
+	 * (the usual write), extend the path, projection, entry index and usage in place instead
+	 * of rebuilding them. A compaction or context edit (they change earlier context), a move
+	 * (the new entries do not hang under the old leaf) or anything else falls back to the full
+	 * rebuild. Returns whether it applied.
+	 */
+	private appendInPlace(entries: readonly SessionEntry[]): boolean {
+		const previous = this.allEntries;
+		const path = this.activePath;
+		const projection = this.activeProjection;
+		if (!path || !projection || previous.length === 0 || entries.length <= previous.length) return false;
+		// The same log, grown at its end (a session switch replaces the store, and its entries).
+		if (entries[previous.length - 1] !== previous[previous.length - 1]) return false;
+		const added = entries.slice(previous.length);
+		let parentId = path.length > 0 ? path[path.length - 1].id : null;
+		for (const entry of added) {
+			if (entry.type === "compaction" || entry.type === "context_edit" || entry.parentId !== parentId) return false;
+			parentId = entry.id;
+		}
+		if (parentId !== this.session.currentLeafId) return false;
+		const projected = added.map(
+			(sourceEntry): ProjectedEntry => ({
+				sourceEntry,
+				messages: sessionEntryToContextMessages(sourceEntry),
+			}),
+		);
+		const messages = projected.flatMap((entry) => entry.messages);
+		for (const entry of projected) {
+			for (const message of entry.messages) this.entryIds.set(message, entry.sourceEntry.id);
+		}
+		this.activePath = [...path, ...added];
+		this.activeProjection = {
+			entries: [...projection.entries, ...projected],
+			messages: [...projection.messages, ...messages],
+		};
+		this.projection = Object.freeze(this.activeProjection.messages);
+		this.allEntries = entries;
+		for (const entry of added) this.entriesById.set(entry.id, entry);
+		this.sessionUsage = combineUsage(this.sessionUsage, sumSessionUsage(added));
+		return true;
 	}
 
 	/** Append a message to the log and refresh the projection; returns its entry id. Call inside the writer. */
@@ -908,16 +957,40 @@ export class Agent {
 		await this.record(update);
 	}
 
-	/** The verifyTranscript check: projection of a JSON replay of the log === `messages`. */
+	/**
+	 * The verifyTranscript check: the projection rebuilt from the logged path equals
+	 * `messages`. Logged entries are deep-frozen (P22), so the messages they hold are the very
+	 * objects the projection uses: those compare by identity; a message a projection derives
+	 * anew (a summary, an edited one) compares by its JSON, worked out once per object (P42b:
+	 * this used to serialize the whole log on every request).
+	 */
 	private async assertTranscriptMatchesLog(): Promise<void> {
 		const path = await this.session.store.getPathToRoot(this.session.currentLeafId);
-		const replayed = buildSessionProjection(JSON.parse(JSON.stringify(path)) as typeof path).messages;
-		if (JSON.stringify(replayed) !== JSON.stringify(this.messages)) {
+		const expected = buildSessionProjection(path).messages;
+		const actual = this.messages;
+		const same =
+			expected.length === actual.length &&
+			expected.every(
+				(message, index) => message === actual[index] || this.messageJson(message) === this.messageJson(actual[index]),
+			);
+		if (!same) {
 			throw new TauError(
 				"invalid_state",
 				"Model context diverged from the session log: the request would contain something the log does not (kernel bug)",
 			);
 		}
+	}
+
+	private readonly messageJsonCache = new WeakMap<object, string>();
+
+	/** A message's JSON, once per message object (they do not change once made). */
+	private messageJson(message: AgentMessage): string {
+		let json = this.messageJsonCache.get(message);
+		if (json === undefined) {
+			json = JSON.stringify(message);
+			this.messageJsonCache.set(message, json);
+		}
+		return json;
 	}
 
 	/** The read-only session view handed to extensions as ctx.sessionManager (pi ReadonlySessionManager). */
