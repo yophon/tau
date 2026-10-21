@@ -392,6 +392,86 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	return parsed as unknown as SessionHeader;
 }
 
+/** The entry type at the start of a line as tau and pi write them: `{"type":"message",…`. */
+const LEADING_TYPE = /^\{"type":"([a-z_]+)"/;
+
+/**
+ * A session file's list entry without building its entry tree (P42c; pi buildSessionInfo also
+ * reads the file line by line): the header, the latest name, the last entry's time, the message
+ * count and the first user message, as JsonlSessionStore.getMetadata reports them. Lines that
+ * start with their type are counted without parsing; names, the first user message, the last
+ * line (a crash can leave it half written) and lines in another shape are parsed.
+ */
+async function readSessionMetadata(fs: FileSystem, filePath: string): Promise<SessionMetadata> {
+	const text = await fs.readTextFile(filePath);
+	const lines = text.split("\n");
+	let first = 0;
+	while (first < lines.length && lines[first] === "") first++;
+	if (first >= lines.length) throw new SessionError("invalid_session", `Invalid session file ${filePath}: empty`);
+	const header = parseHeaderLine(lines[first], filePath);
+	let last = lines.length - 1;
+	while (last > first && lines[last] === "") last--;
+	let messageCount = 0;
+	let firstMessage: string | undefined;
+	let name: string | undefined;
+	let modified: string | undefined;
+	for (let i = first + 1; i <= last; i++) {
+		const line = lines[i];
+		if (line === "") continue;
+		const leading = i < last ? LEADING_TYPE.exec(line)?.[1] : undefined;
+		const needsEntry =
+			leading === undefined || leading === "session_info" || (leading === "message" && firstMessage === undefined);
+		const entry = needsEntry ? parseEntryLine(line, filePath, i + 1) : undefined;
+		if (needsEntry && !entry) continue;
+		const type = entry?.type ?? leading;
+		if (type === "session_info" && entry?.type === "session_info") name = entry.name;
+		if (type === "message") {
+			messageCount++;
+			if (firstMessage === undefined && entry?.type === "message" && entry.message.role === "user") {
+				const text = messageText(entry.message.content);
+				if (text !== "") firstMessage = text.slice(0, 500);
+			}
+		}
+		if (i === last && entry) modified = entry.timestamp;
+		else if (i === last) modified = undefined;
+	}
+	if (modified === undefined) {
+		// The last line did not parse (a crash mid-write): the latest whole entry's time.
+		for (let i = last - 1; i > first && modified === undefined; i--) {
+			if (lines[i] !== "") modified = parseEntryLine(lines[i], filePath, i + 1)?.timestamp;
+		}
+	}
+	return {
+		id: header.id,
+		cwd: header.cwd,
+		timestamp: header.timestamp,
+		modified: modified ?? header.timestamp,
+		filePath,
+		name,
+		parentSession: header.parentSession,
+		...(firstMessage !== undefined ? { firstMessage } : {}),
+		messageCount,
+	};
+}
+
+/** Run `map` over `items`, at most `limit` at a time, keeping the order (pi mapWithConcurrency). */
+async function mapWithConcurrency<T, R>(
+	items: readonly T[],
+	limit: number,
+	map: (item: T) => Promise<R>,
+): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	const worker = async (): Promise<void> => {
+		while (next < items.length) {
+			const index = next++;
+			results[index] = await map(items[index] as T);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
+	return results;
+}
+
 function parseEntryLine(line: string, filePath: string, lineNumber: number): SessionEntry | undefined {
 	let parsed: unknown;
 	try {
@@ -598,15 +678,20 @@ export class JsonlSessionRepo implements SessionRepo {
 		} catch {
 			return [];
 		}
-		const sessions: SessionMetadata[] = [];
-		for (const file of files) {
-			if (!file.name.endsWith(".jsonl")) continue;
-			try {
-				sessions.push(await (await this.loadStore(file.path)).getMetadata());
-			} catch {
-				// Unreadable session files are skipped in listings.
-			}
-		}
+		// P42c (pi): ten files at a time, each read for its list entry only.
+		const found = await mapWithConcurrency(
+			files.filter((file) => file.name.endsWith(".jsonl")),
+			10,
+			async (file) => {
+				try {
+					return await readSessionMetadata(this.fs, file.path);
+				} catch {
+					// Unreadable session files are skipped in listings.
+					return undefined;
+				}
+			},
+		);
+		const sessions = found.filter((meta): meta is SessionMetadata => meta !== undefined);
 		// Most recently active first, as pi lists sessions (not by creation time).
 		return sessions.sort((a, b) => (b.modified ?? b.timestamp).localeCompare(a.modified ?? a.timestamp));
 	}

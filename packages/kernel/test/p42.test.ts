@@ -123,3 +123,69 @@ describe("P42b: the per-request check", () => {
 		);
 	});
 });
+
+describe("P42c: listing reads each file for its list entry only", () => {
+	it("reports what a full load reports: plain, renamed, assistant-first, reordered keys, a half-written last line", async () => {
+		const { mkdtempSync, writeFileSync, readFileSync, appendFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { NodeFileSystem } = await import("../../host-node/src/index.ts");
+		const { JsonlSessionRepo } = await import("../src/index.ts");
+		const { defaultPlatform } = await import("../src/platform.ts");
+		const dir = mkdtempSync(join(tmpdir(), "tau-p42-list-"));
+		const repo = new JsonlSessionRepo(new NodeFileSystem("/"), defaultPlatform(), dir, dir);
+		const files: string[] = [];
+		// 1: a plain conversation. 2: named, then renamed. 3: an assistant message first.
+		for (let n = 0; n < 3; n++) {
+			const store = await repo.create();
+			const recorder = await SessionRecorder.open(store);
+			if (n === 2) {
+				await recorder.recordMessage({
+					role: "assistant",
+					content: [{ type: "text", text: "hello first" }],
+					api: "x",
+					provider: "y",
+					model: "m",
+					usage: {
+						input: 0,
+						output: 0,
+						cacheRead: 0,
+						cacheWrite: 0,
+						totalTokens: 0,
+						cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+					},
+					stopReason: "stop",
+					timestamp: 1,
+				});
+			}
+			await recorder.recordMessage({
+				role: "user",
+				content: [{ type: "text", text: `  first question ${n}  ` }],
+				timestamp: 2,
+			});
+			if (n === 1) {
+				await recorder.setName("a name");
+				await recorder.setName("another name");
+			}
+			await recorder.recordMessage({ role: "user", content: "second", timestamp: 3 });
+			files.push((await store.getMetadata()).filePath as string);
+		}
+		// 4: keys in another order (an imported file), and a half-written last line.
+		const reordered = files[0].replace(/\.jsonl$/, "-reordered.jsonl");
+		const lines = readFileSync(files[0], "utf8").trim().split("\n");
+		const rewritten = lines.map((line, index) => {
+			if (index === 0) return line;
+			const entry = JSON.parse(line) as Record<string, unknown>;
+			const { type, ...rest } = entry;
+			return JSON.stringify({ ...rest, type });
+		});
+		writeFileSync(reordered, `${rewritten.join("\n")}\n{"type":"message","id":"broken","parentId`);
+		appendFileSync(files[1], "");
+		const listed = await repo.list();
+		assert.equal(listed.length, 4);
+		for (const meta of listed) {
+			const full = await (await repo.open(meta)).getMetadata();
+			assert.deepEqual({ ...meta, filePath: undefined }, { ...full, filePath: undefined }, `${meta.filePath}`);
+		}
+	});
+});
