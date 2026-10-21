@@ -40,6 +40,10 @@ export interface TauSettings {
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37d: worktree.baseRef ("fresh" default | "head") and worktree.symlinkDirectories (Claude Code). */
 	worktree?: { baseRef?: "fresh" | "head"; symlinkDirectories?: string[] };
+	/** P40a (pi): the default for HTTP_PROXY and HTTPS_PROXY (user settings only). */
+	httpProxy?: string;
+	/** P40a (pi): how long a request may wait for headers or the next body chunk, in ms (0 = no limit; user settings only). */
+	httpIdleTimeoutMs?: number;
 }
 
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -131,6 +135,14 @@ export function readSettings(path: string): TauSettings {
 					}
 				: {}),
 		};
+	}
+	if (typeof raw.httpProxy === "string" && raw.httpProxy.trim() !== "") settings.httpProxy = raw.httpProxy.trim();
+	if (
+		typeof raw.httpIdleTimeoutMs === "number" &&
+		Number.isFinite(raw.httpIdleTimeoutMs) &&
+		raw.httpIdleTimeoutMs >= 0
+	) {
+		settings.httpIdleTimeoutMs = Math.floor(raw.httpIdleTimeoutMs);
 	}
 	const audit = raw.audit;
 	if (typeof audit === "object" && audit !== null) {

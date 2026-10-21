@@ -1145,6 +1145,16 @@ function modelEnvironment(): Record<string, string> {
 }
 
 async function main(): Promise<void> {
+	// P40a (pi): HTTP_PROXY / HTTPS_PROXY / NO_PROXY and settings.json httpProxy apply to every
+	// request, subcommands included. The gateway is parked and stays as it was.
+	if (process.argv[2] !== "gateway") {
+		const { applyHttpProxySettings, configureHttpDispatcher, DEFAULT_HTTP_IDLE_TIMEOUT_MS } = await import(
+			"./http-dispatcher.ts"
+		);
+		const network = readSettings(join(userHome(), ".tau", "settings.json"));
+		applyHttpProxySettings(network.httpProxy);
+		configureHttpDispatcher(network.httpIdleTimeoutMs ?? DEFAULT_HTTP_IDLE_TIMEOUT_MS);
+	}
 	// `tau credentials …`, `tau mcp …` (P32b) and `tau audit …` (P32c) need neither a model nor the usual options.
 	const subcommand = process.argv[2];
 	if (subcommand === "credentials" || subcommand === "mcp" || subcommand === "audit") {

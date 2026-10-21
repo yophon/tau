@@ -300,10 +300,12 @@ describe("P39e keybindings.json (pi)", () => {
 describe("P39f session tree (pi's tree selector)", () => {
 	const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 	let clock = 0;
+	// Today at noon: a label from today shows only its time (a fixed date failed from the next day on).
+	const now = new Date();
 	const base = (id: string, parentId: string | null) => ({
 		id,
 		parentId,
-		timestamp: new Date(2026, 9, 20, 12, 0, clock++).toISOString(),
+		timestamp: new Date(now.getFullYear(), now.getMonth(), now.getDate(), 12, 0, clock++).toISOString(),
 	});
 	const user = (id: string, parentId: string | null, text: string): SessionEntry => ({
 		...base(id, parentId),
