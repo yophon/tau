@@ -12,6 +12,7 @@ import type {
 	UiCapability,
 	UserContent,
 } from "@yophon/tau-kernel";
+import type { TauSettings } from "../settings.ts";
 import type { StatusLineFacts } from "../statusline-input.ts";
 import type { ClipboardContent } from "./clipboard-read.ts";
 import type { ApprovalPromptRequest } from "./model.ts";
@@ -66,6 +67,8 @@ export interface RunTuiOptions {
 	background?: { readonly foregroundCount: number; moveToBackground(): number };
 	/** P39e: ~/.tau/keybindings.json (pi), read at start and on /reload; absent = the default keys. */
 	keybindingsPath?: string;
+	/** P40c: settings in force (treeFilterMode, branchSummary.skipPrompt, externalEditor), read again after /reload. */
+	settings?: () => Pick<TauSettings, "treeFilterMode" | "branchSummary" | "externalEditor">;
 	/** Install the TUI approval prompt into the host's approval loop (P15). */
 	setApprovalPrompt?(prompt: (request: ApprovalPromptRequest) => Promise<ApprovalAnswer>): void;
 	buildAgent(

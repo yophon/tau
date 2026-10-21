@@ -5,17 +5,17 @@
 // (P26b) the subagent tool, and (P28) web_fetch / web_search.
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
 import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
-import { type Agent, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
+import { type Agent, type AgentMessage, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
 import { mainCheckoutOf } from "./git-paths.ts";
 import { createMemoryExtension, type MemoryScope } from "./memory.ts";
 import { resolveConfigValue } from "./models.ts";
 import { createSecretGuard } from "./secret-guard.ts";
-import { readSettings } from "./settings.ts";
+import { loadSettings, readSettings } from "./settings.ts";
 import { todoExtension } from "./todo.ts";
 
 /** The `codemode` section of settings.json, with pi's key names. */
@@ -38,6 +38,11 @@ const state: {
 	home: string;
 	/** settings.json shell.envAllow (P32b). */
 	envAllow: string[];
+	/** P40c (pi): settings.json skills and prompts, offered through resources_discover. */
+	skillPaths: string[];
+	promptPaths: string[];
+	/** P40c (pi): images.blockImages, no image reaches the model. */
+	blockImages: boolean;
 } = {
 	codemode: {},
 	agent: undefined,
@@ -46,6 +51,9 @@ const state: {
 	webSearch: undefined,
 	home: homedir(),
 	envAllow: [],
+	skillPaths: [],
+	promptPaths: [],
+	blockImages: false,
 };
 
 /** Environment keys that pick a search provider when settings name none (P28), in this order. */
@@ -118,9 +126,26 @@ export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
  * Read the codemode settings: ~/.tau/settings.json, then the project's
  * .tau/settings.json when the directory is trusted (P23c trust gate).
  */
-export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
+export function configureBuiltins(options: {
+	cwd: string;
+	projectTrusted: boolean;
+	home?: string;
+	/** P40c: false leaves out the settings keys P40 added (the gateway). */
+	extendedSettings?: boolean;
+}): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	state.memory = defaultMemoryScope(home, options.cwd);
+	const layered =
+		options.extendedSettings === false
+			? {}
+			: loadSettings({ home, cwd: options.cwd, projectTrusted: options.projectTrusted });
+	state.skillPaths = layered.skills ?? [];
+	state.promptPaths = layered.prompts ?? [];
+	state.blockImages = layered.images?.blockImages === true;
+	// P40c: sessions kept in settings' sessionDir are searched too.
+	if (layered.sessionDir !== undefined) {
+		state.memory.sessions = [...state.memory.sessions, { dir: resolve(options.cwd, layered.sessionDir) }];
+	}
 	state.home = home;
 	state.envAllow = readSettings(join(home, ".tau", "settings.json")).shellEnvAllow ?? [];
 	// User settings only: the search endpoint and key are never chosen by a repository.
@@ -175,6 +200,46 @@ const toolPrompt: Extension = (api) => {
 	});
 };
 
+/** pi's images.blockImages placeholder (sdk.ts convertToLlmWithBlockImages). */
+const IMAGES_DISABLED = "Image reading is disabled.";
+
+/** Replace image blocks with pi's placeholder, one placeholder for a run of images. */
+function withoutImages(content: unknown): unknown {
+	if (!Array.isArray(content) || !content.some((block) => block?.type === "image")) return content;
+	const out: unknown[] = [];
+	for (const block of content) {
+		const replacement = block?.type === "image" ? { type: "text", text: IMAGES_DISABLED } : block;
+		const previous = out[out.length - 1] as { type?: string; text?: string } | undefined;
+		const isPlaceholder = (value: unknown) =>
+			(value as { type?: string; text?: string }).type === "text" &&
+			(value as { text?: string }).text === IMAGES_DISABLED;
+		if (isPlaceholder(replacement) && previous && isPlaceholder(previous)) continue;
+		out.push(replacement);
+	}
+	return out;
+}
+
+/**
+ * settings.json skills/prompts (pi) as extra resource paths, for the skills and prompt
+ * templates package; images.blockImages (pi) keeps every image from the model (P40c).
+ */
+const settingsResources: Extension = (api) => {
+	api.on("resources_discover", () =>
+		state.skillPaths.length > 0 || state.promptPaths.length > 0
+			? { skillPaths: [...state.skillPaths], promptPaths: [...state.promptPaths] }
+			: undefined,
+	);
+	api.on("context", (event) => {
+		if (!state.blockImages) return undefined;
+		const messages = event.messages.map((message) => {
+			if (message.role !== "user" && message.role !== "toolResult") return message;
+			const content = withoutImages(message.content);
+			return content === message.content ? message : ({ ...message, content } as AgentMessage);
+		});
+		return { messages };
+	});
+};
+
 /**
  * The built-ins for one workspace. `memory` overrides its memory scope (P32a: a
  * gateway guest gets only their own, never the owner's).
@@ -184,6 +249,7 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		// P32b: first, so a blocked read never reaches another extension and results are masked early.
 		createSecretGuard({ home: state.home, envAllow: state.envAllow }),
 		toolPrompt,
+		settingsResources,
 		createToolSearchExtension(),
 		createNodeCodemodeExtension({
 			getMode: () => state.codemode.mode,

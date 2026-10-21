@@ -44,6 +44,7 @@ import {
 	type Extension,
 	ExtensionRegistry,
 	type FileSystem,
+	type InlineExtension,
 	JsonlSessionRepo,
 	loadProjectContextFiles,
 	type ModelPricing,
@@ -116,6 +117,7 @@ import {
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
 import {
+	agentOptionsFromSettings,
 	loadSettings,
 	readSettings,
 	type TauSettings,
@@ -214,6 +216,7 @@ Options:
                          ("fresh" = origin's default branch, "head"), worktree.symlinkDirectories
   -c, --continue         Resume the most recent session for this directory
       --session <path>   Resume a specific session file
+      --session-dir <dir>  Keep sessions in this directory (settings.json sessionDir)
       --no-session       Do not persist this conversation
   -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
   -t,  --tools <list>    Active tools, comma-separated: names pick built-ins ("*" = all),
@@ -261,6 +264,8 @@ interface CliOptions {
 	permissionMode?: PermissionMode;
 	toolExecution?: ToolExecutionMode;
 	sessionPath?: string;
+	/** P40c (pi): --session-dir, where sessions are kept. */
+	sessionDir?: string;
 	noSession: boolean;
 	noContextFiles?: boolean;
 	listModels?: boolean;
@@ -445,6 +450,9 @@ function parseArgs(argv: string[]): CliOptions {
 			case "--session":
 				options.sessionPath = next();
 				break;
+			case "--session-dir":
+				options.sessionDir = next();
+				break;
 			case "--no-session":
 				options.noSession = true;
 				break;
@@ -521,6 +529,20 @@ function envInt(name: string, min: number): number | undefined {
  * Choosing built-ins never drops active extension tools implicitly — only "-name"
  * or --no-tools does. Inactive ones (tool_search, codemode) need "+name" (P24e).
  */
+/**
+ * The tool list from settings' defaultTools and --tools (P40c, pi): a --tools list of only
+ * +name/-name changes the settings' list; one with a plain name replaces it.
+ */
+function toolSelection(
+	settings: readonly string[] | undefined,
+	flag: readonly string[] | undefined,
+): string[] | undefined {
+	if (flag === undefined || flag.length === 0) return settings ? [...settings] : undefined;
+	if (settings === undefined) return [...flag];
+	const modifiers = flag.every((entry) => entry.startsWith("+") || entry.startsWith("-"));
+	return modifiers ? [...settings, ...flag] : [...flag];
+}
+
 function selectActiveTools(
 	all: readonly { name: string; source: "builtin" | "extension" }[],
 	active: readonly string[],
@@ -837,6 +859,21 @@ interface LoadedExtensions {
 	projectTrusted: boolean;
 }
 
+/** settings.json extensions (P40c, pi): extension files and directories; a missing one is reported and skipped. */
+async function loadSettingsExtensions(paths: readonly string[]): Promise<InlineExtension[]> {
+	const loaded: InlineExtension[] = [];
+	for (const path of paths) {
+		if (!existsSync(path)) {
+			console.log(dim(`Extension path not found: ${path}`));
+			continue;
+		}
+		loaded.push(
+			...(statSync(path).isDirectory() ? await loadExtensionsFromDir(path) : await importExtensionFiles([path])),
+		);
+	}
+	return loaded;
+}
+
 async function loadExtensionRegistry(
 	cwd: string,
 	ui: UiCapability | undefined,
@@ -845,16 +882,22 @@ async function loadExtensionRegistry(
 	mcp = true,
 	audit?: Extension,
 	hooks?: HookRunner,
+	/** P40: false leaves out the settings keys P40 added (the gateway). */
+	extendedSettings = true,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
-	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
+	configureBuiltins({ cwd, projectTrusted: false, home: userHome(), extendedSettings });
+	const userSettingsExtensions = extendedSettings
+		? (readSettings(join(userHome(), ".tau", "settings.json")).extensions ?? [])
+		: [];
 	const registry = await ExtensionRegistry.load([
 		// P32c: the audit first, so it sees every call, including ones the guard blocks.
 		...(audit ? [audit] : []),
 		...builtinExtensions(memory !== undefined ? { memory } : {}),
 		...hostExtensions,
 		...(await loadExtensionsFromDir(join(userHome(), ".tau", "extensions"))),
+		...(await loadSettingsExtensions(userSettingsExtensions)),
 	]);
 	// A failing notification handler (an unreachable MCP server in session_start, a
 	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
@@ -875,6 +918,9 @@ async function loadExtensionRegistry(
 		projectTrusted = await isProjectTrusted(registry, cwd, ui, present);
 		if (projectTrusted) {
 			if (projectFiles.length > 0) await registry.add(await importExtensionFiles(projectFiles));
+			// P40c: the project's settings.json extensions, resolved against its .tau directory.
+			const listed = extendedSettings ? (readSettings(join(cwd, ".tau", "settings.json")).extensions ?? []) : [];
+			if (listed.length > 0) await registry.add(await loadSettingsExtensions(listed));
 		} else {
 			if (projectFiles.length > 0) {
 				console.log(dim(`Skipped ${projectFiles.length} project extension(s): directory not trusted.`));
@@ -884,7 +930,7 @@ async function loadExtensionRegistry(
 		}
 	}
 	// Project codemode settings count only for a trusted directory.
-	configureBuiltins({ cwd, projectTrusted, home: userHome() });
+	configureBuiltins({ cwd, projectTrusted, home: userHome(), extendedSettings });
 	// Connectors (P32b): MCP servers from ~/.tau/mcp.json and, when trusted, the project's.
 	if (mcp) {
 		const { loadMcpConfig, withOAuth } = await import("./mcp-config.ts");
@@ -939,8 +985,6 @@ function firstLine(text: string, max = 120): string {
 	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
-/** P36d: converts and shrinks images for read, `@file` and pasted screenshots (pi). */
-const imageProcessor = new NodeImageProcessor();
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
 /** A REPL command holding the agent outside a turn (P23e): extension prompts are refused meanwhile. */
@@ -1214,6 +1258,7 @@ async function main(): Promise<void> {
 	}
 	options.files = options.files.map((file) => resolve(file));
 	if (options.sessionPath) options.sessionPath = resolve(options.sessionPath);
+	if (options.sessionDir) options.sessionDir = resolve(options.sessionDir);
 	const userSettings = readSettings(userSettingsPath);
 	const valueResolver: ValueResolver = { env: process.env };
 	const configuredModels = availableModels(modelsConfig, valueResolver);
@@ -1697,7 +1742,7 @@ async function main(): Promise<void> {
 		const askUser =
 			spec.ui !== undefined && spec.askUser !== false
 				? createAskUserExtension({
-						wait: () => readSettings(join(userHome(), ".tau", "settings.json")).askUserWait === true,
+						wait: () => workspaceSettings.askUserWait === true,
 						freeAnswer: spec.askUser?.freeAnswer ?? true,
 						...(spec.askUser?.unavailable ? { unavailable: spec.askUser.unavailable } : {}),
 						onAsk: () => hookRunner.notify("Tau has a question for you", "elicitation_dialog"),
@@ -1722,6 +1767,7 @@ async function main(): Promise<void> {
 			spec.mcp ?? true,
 			auditExtension,
 			hookRunner,
+			spec.extendedSettings !== false,
 		);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
@@ -1802,6 +1848,7 @@ async function main(): Promise<void> {
 				spec.mcp ?? true,
 				auditExtension,
 				hookRunner,
+				spec.extendedSettings !== false,
 			);
 			projectTrusted = next.projectTrusted;
 			workspaceSettings = readWorkspaceSettings();
@@ -1814,6 +1861,10 @@ async function main(): Promise<void> {
 		};
 
 		const fs: FileSystem = spec.fs ?? new NodeFileSystem(cwd);
+		/** P36d: converts and shrinks images for read and `@file` (pi); P40c: settings' images.autoResize. */
+		const imageProcessor = new NodeImageProcessor({
+			autoResize: () => workspaceSettings.images?.autoResize !== false,
+		});
 		// The user's own `!` commands get the full environment; the tools the model calls get it
 		// without secret-looking variables (P32b). Secrets are registered first so their values go too.
 		const shell = new NodeShell(cwd);
@@ -1860,7 +1911,12 @@ async function main(): Promise<void> {
 		const sessionRepo = new JsonlSessionRepo(
 			new NodeFileSystem("/"),
 			platform,
-			spec.sessionDir ?? join(userHome(), ".tau", "sessions", sessionDirSlug(cwd)),
+			// P40c (pi): --session-dir, then settings' sessionDir (relative to the working directory).
+			spec.sessionDir ??
+				options.sessionDir ??
+				(workspaceSettings.sessionDir !== undefined
+					? resolve(cwd, workspaceSettings.sessionDir)
+					: join(userHome(), ".tau", "sessions", sessionDirSlug(cwd))),
 			cwd,
 		);
 		const buildAgent = (
@@ -1918,21 +1974,21 @@ async function main(): Promise<void> {
 				isProjectTrusted: () => projectTrusted,
 				initialMessages: messages,
 				session,
-				retry,
+				// P40c (pi): settings' retry, compaction, branch summary, queue modes and turn cap; the env wins for retries.
+				...agentOptionsFromSettings(workspaceSettings, retry),
 				pricing,
 				thinkingLevel,
 				permissionMode: mode,
 				toolExecution,
 				onApproval: onWorkspaceApproval,
 				...(policy ? { policy } : {}),
-				// No cap unless settings.json sets one (P34 follow-up: pi does not cap a prompt).
-				...(userSettings.maxTurnsPerPrompt !== undefined ? { maxTurnsPerPrompt: userSettings.maxTurnsPerPrompt } : {}),
 			});
 			// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
 			const active = selectActiveTools(
 				built.getAllTools(),
 				built.getActiveTools(),
-				options.tools,
+				// P40c (pi): settings' defaultTools, then --tools on top of it.
+				toolSelection(workspaceSettings.defaultTools, options.tools),
 				options.noTools === true,
 			);
 			if (active) built.setActiveTools(active);
@@ -1950,6 +2006,10 @@ async function main(): Promise<void> {
 			reloadExtensions,
 			/** P36a: this workspace's background commands. */
 			background,
+			/** P40c: the settings in force (the user's, then a trusted project's), read again on /reload. */
+			settings: (): TauSettings => workspaceSettings,
+			/** P36d: images for `@file` arguments, as read converts them. */
+			images: imageProcessor,
 			/** P37a: this workspace's permission rules (undefined in the gateway). */
 			permissions,
 			/** P37a: settings' permissions.defaultMode, unless --permission-mode or the env chose (ACP applies it per session). */
@@ -2047,7 +2107,7 @@ async function main(): Promise<void> {
 	let files: ProcessedFiles = { text: "", images: [] };
 	if (options.files.length > 0) {
 		try {
-			files = await processFileArguments(options.files, cwd, imageProcessor);
+			files = await processFileArguments(options.files, cwd, workspace.images);
 		} catch (error) {
 			console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
 			process.exit(1);
@@ -2155,7 +2215,7 @@ async function main(): Promise<void> {
 			...(firstPrompt !== undefined ? { initialPrompts: [firstPrompt, ...messages.slice(1)] } : {}),
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
-			dirtyRepoGuard: userSettings.dirtyRepoGuard === true,
+			dirtyRepoGuard: workspace.settings().dirtyRepoGuard === true,
 			// P37c: Claude Code's statusLine, the user's own environment like hooks.
 			statusLine: (onLines) =>
 				new StatusLineRunner({
@@ -2186,7 +2246,7 @@ async function main(): Promise<void> {
 			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
 			showReasoning: userSettings.showReasoning ?? false,
 			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),
-			autoTitle: autoTitleOn(userSettings.autoTitle),
+			autoTitle: autoTitleOn(workspace.settings().autoTitle),
 			notify: userSettings.tuiNotify ?? "auto",
 			terminalTitle: userSettings.tuiTitle !== false,
 			model: activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model,
@@ -2229,6 +2289,8 @@ async function main(): Promise<void> {
 			background: workspace.background,
 			// P39e: pi's keybindings.json.
 			keybindingsPath: join(home, ".tau", "keybindings.json"),
+			// P40c: settings' treeFilterMode, branchSummary.skipPrompt and externalEditor.
+			settings: workspace.settings,
 			setApprovalPrompt: (prompt) => {
 				approvalPromptRef.current = prompt;
 			},
@@ -2427,7 +2489,7 @@ async function main(): Promise<void> {
 				}
 				const arg = input.slice("/fork".length).trim();
 				// pi's dirty-repo-guard (P37b), when session.dirtyRepoGuard turns it on.
-				if (userSettings.dirtyRepoGuard === true && ui) {
+				if (workspace.settings().dirtyRepoGuard === true && ui) {
 					const count = await uncommittedFiles(cwd);
 					if (count) {
 						const question = dirtyRepoQuestion(count, "fork");
@@ -2480,7 +2542,7 @@ async function main(): Promise<void> {
 		}
 		await runTurn(agent, input, readline);
 		// P34f: name the session after its first turn (in the background; failures are silent).
-		if (recorder && autoTitleOn(userSettings.autoTitle)) void autoTitle(agent, recorder, titled);
+		if (recorder && autoTitleOn(workspace.settings().autoTitle)) void autoTitle(agent, recorder, titled);
 	}
 	await extensions.notifySessionShutdown("quit", agent.extensionContext());
 	readline.close();

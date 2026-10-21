@@ -188,7 +188,7 @@ const SUPPORTED = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]
 export async function processImageInProcess(
 	bytes: Uint8Array,
 	mimeType: string,
-	options?: ImageResizeOptions,
+	options?: ImageResizeOptions & { autoResize?: boolean },
 ): Promise<ProcessedImage> {
 	let normalized = bytes;
 	let normalizedType = mimeType === "image/jpg" ? "image/jpeg" : mimeType;
@@ -201,6 +201,14 @@ export async function processImageInProcess(
 		convertedFrom = normalizedType;
 		normalized = png;
 		normalizedType = "image/png";
+	}
+	// pi's images.autoResize false (P40c): converted when it must be, never shrunk.
+	if (options?.autoResize === false) {
+		const hints =
+			convertedFrom && convertedFrom !== normalizedType
+				? [`[Image converted from ${convertedFrom} to ${normalizedType}.]`]
+				: [];
+		return { ok: true, data: Buffer.from(normalized).toString("base64"), mimeType: normalizedType, hints };
 	}
 	const resized = await resizeImageInProcess(normalized, normalizedType, options);
 	if (!resized) {

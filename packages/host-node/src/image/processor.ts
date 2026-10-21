@@ -4,7 +4,7 @@ import { processImageInProcess } from "./resize.ts";
 
 const RESPONSE_TYPE = "tau:image-process-response";
 
-function processInWorker(bytes: Uint8Array, mimeType: string): Promise<ProcessedImage> {
+function processInWorker(bytes: Uint8Array, mimeType: string, autoResize: boolean): Promise<ProcessedImage> {
 	const isTypeScript = import.meta.url.endsWith(".ts");
 	const worker = new Worker(new URL(isTypeScript ? "./worker.ts" : "./worker.js", import.meta.url));
 	// Transfer a copy: transferring detaches the buffer and the caller keeps its bytes.
@@ -25,7 +25,7 @@ function processInWorker(bytes: Uint8Array, mimeType: string): Promise<Processed
 		});
 		worker.once("error", (error) => settle(() => reject(error)));
 		worker.once("exit", (code) => settle(() => reject(new Error(`Image worker exited with code ${code}`))));
-		worker.postMessage({ bytes: copy, mimeType }, [copy.buffer]);
+		worker.postMessage({ bytes: copy, mimeType, autoResize }, [copy.buffer]);
 	});
 }
 
@@ -35,11 +35,19 @@ function processInWorker(bytes: Uint8Array, mimeType: string): Promise<Processed
  * Runs in a worker; falls back to this thread when a worker cannot start (pi).
  */
 export class NodeImageProcessor implements ImageProcessor {
+	/** pi's images.autoResize (P40c): read on every image, so a /reload of the settings applies. */
+	private readonly autoResize: () => boolean;
+
+	constructor(options: { autoResize?: () => boolean } = {}) {
+		this.autoResize = options.autoResize ?? (() => true);
+	}
+
 	async process(bytes: Uint8Array, mimeType: string): Promise<ProcessedImage> {
+		const autoResize = this.autoResize();
 		try {
-			return await processInWorker(bytes, mimeType);
+			return await processInWorker(bytes, mimeType, autoResize);
 		} catch {
-			return processImageInProcess(bytes, mimeType);
+			return processImageInProcess(bytes, mimeType, { autoResize });
 		}
 	}
 }

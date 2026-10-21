@@ -271,7 +271,10 @@ export class TuiController {
 			editor: async (_title, prefill) => {
 				try {
 					// The terminal is handed over as for Ctrl+G (key reports off, main screen, cooked mode).
-					const edit = () => (this.deps.editText ?? editInExternalEditor)(prefill ?? "");
+					const edit = () =>
+						(this.deps.editText ?? ((value) => editInExternalEditor(value, this.settings.externalEditor)))(
+							prefill ?? "",
+						);
 					const edited = this.deps.handOverScreen ? this.deps.handOverScreen(edit) : edit();
 					return edited?.replace(/\r\n/g, "\n");
 				} catch (error) {
@@ -619,6 +622,11 @@ export class TuiController {
 		return tree && this.state.picker?.tree && this.state.picker.id === tree.id ? tree : undefined;
 	}
 
+	/** P40c: the settings the TUI follows (tree filter, branch summary question, editor), as of the last /reload. */
+	get settings(): ReturnType<NonNullable<RunTuiOptions["settings"]>> {
+		return this.options.settings?.() ?? {};
+	}
+
 	/**
 	 * /tree (P39f, pi's tree selector): the whole session as a tree in the picker; resolves
 	 * with the chosen entry's id, undefined when cancelled.
@@ -626,6 +634,9 @@ export class TuiController {
 	pickTree(roots: TreeNode[], leafId: string | null): Promise<string | undefined> {
 		const id = this.nextDialogId++;
 		const view = new SessionTreeView(roots, leafId);
+		// P40c (pi): settings' treeFilterMode is the filter the tree opens with.
+		const initial = this.settings.treeFilterMode;
+		if (initial !== undefined && initial !== "default") view.setFilter(initial);
 		this.tree = { id, view };
 		return new Promise((resolve) => {
 			this.pickers.set(id, (value) => {
@@ -1966,7 +1977,8 @@ export class TuiController {
 		const text = expandPastes(this.pastes, this.state.editor.text);
 		let edited: string | undefined;
 		try {
-			const edit = () => (this.deps.editText ?? editInExternalEditor)(text);
+			const edit = () =>
+				(this.deps.editText ?? ((value) => editInExternalEditor(value, this.settings.externalEditor)))(text);
 			edited = this.deps.handOverScreen ? this.deps.handOverScreen(edit) : edit();
 		} catch (error) {
 			this.notice("error", `External editor failed: ${errorText(error)}`);
@@ -3303,9 +3315,10 @@ export function openUrl(url: string): void {
 	}
 }
 
-/** Write the text to a temp file, run the editor on it in the foreground, read it back. */
-export function editInExternalEditor(text: string): string | undefined {
-	const editor = process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "nano");
+/** Write the text to a temp file, run the editor on it in the foreground, read it back. `command` = settings' externalEditor (pi). */
+export function editInExternalEditor(text: string, command?: string): string | undefined {
+	const editor =
+		command || process.env.VISUAL || process.env.EDITOR || (process.platform === "win32" ? "notepad" : "nano");
 	const dir = mkdtempSync(join(tmpdir(), "tau-edit-"));
 	const file = join(dir, "prompt.md");
 	try {

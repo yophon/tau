@@ -203,6 +203,8 @@ export interface AgentOptions {
 	followUpMode?: QueueMode;
 	/** Compaction thresholds; auto-compaction also requires config.contextWindow. */
 	compaction?: Partial<CompactionSettings>;
+	/** pi's branchSummary.reserveTokens (P40c): tokens kept free when a branch is summarized; default compaction's. */
+	branchSummary?: { reserveTokens?: number };
 	/** Auto-retry policy for failed LLM requests (pi defaults: enabled, 3 attempts, 2s base). Requires Platform.sleep. */
 	retry?: Partial<RetrySettings>;
 	/**
@@ -358,6 +360,7 @@ export class Agent {
 	private readonly followUpQueue: PendingMessageQueue;
 	private readonly session: SessionRecorder;
 	private readonly compactionSettings: CompactionSettings;
+	private readonly branchSummaryReserveTokens: number | undefined;
 	private readonly retrySettings: RetrySettings;
 	private readonly pricing: AgentOptions["pricing"];
 	/** Model of this agent's requests (Agent.setModel; starts as config.model). */
@@ -452,6 +455,7 @@ export class Agent {
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
+		this.branchSummaryReserveTokens = options.branchSummary?.reserveTokens;
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		this.pricing = options.pricing;
 		this.currentModel = options.config.model;
@@ -1739,7 +1743,7 @@ export class Agent {
 				const generated = await generateBranchSummary(this.summaryTransport(), entries, {
 					customInstructions: hook.customInstructions ?? options?.customInstructions,
 					contextWindow: this.config.contextWindow,
-					reserveTokens: this.effectiveCompactionSettings().reserveTokens,
+					reserveTokens: this.branchSummaryReserveTokens ?? this.effectiveCompactionSettings().reserveTokens,
 					signal,
 					retry: this.summarizationRetry({ source: "branchSummary" }, options?.onEvent),
 				});

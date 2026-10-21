@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import type { BackgroundTaskInfo } from "@yophon/tau-kernel";
 import { NodeBackgroundShell } from "../src/background.ts";
+import { NodeImageProcessor } from "../src/image/processor.ts";
+import { loadPhoton } from "../src/image/resize.ts";
 import { findPowerShell, findShell, NodeShell, shellInvocation } from "../src/shell.ts";
 
 const windows = process.platform === "win32";
@@ -123,5 +125,31 @@ describe("P40b: PowerShell (pi's powershell tool)", () => {
 		);
 		const outcome = await shell.forPowerShell().run?.("Write-Output fg", { timeoutSeconds: 60 });
 		assert.equal(outcome?.kind === "exited" ? outcome.result.stdout.trim() : outcome?.kind, "fg");
+	});
+});
+
+describe("P40c: images.autoResize (pi)", () => {
+	it("false keeps a large image's size; the setting is read for every image", async () => {
+		const photon = await loadPhoton();
+		assert.ok(photon, "photon loads");
+		const image = new photon.PhotonImage(new Uint8Array(2400 * 100 * 4).fill(180), 2400, 100);
+		const png = image.get_bytes();
+		image.free();
+		let autoResize = false;
+		const processor = new NodeImageProcessor({ autoResize: () => autoResize });
+		const kept = await processor.process(png, "image/png");
+		assert.ok(kept.ok);
+		if (!kept.ok) return;
+		assert.deepEqual(kept.hints, []);
+		const keptImage = photon.PhotonImage.new_from_byteslice(Buffer.from(kept.data, "base64"));
+		assert.deepEqual([keptImage.get_width(), keptImage.get_height()], [2400, 100]);
+		keptImage.free();
+		autoResize = true;
+		const shrunk = await processor.process(png, "image/png");
+		assert.ok(shrunk.ok);
+		if (!shrunk.ok) return;
+		const shrunkImage = photon.PhotonImage.new_from_byteslice(Buffer.from(shrunk.data, "base64"));
+		assert.equal(shrunkImage.get_width(), 2000);
+		shrunkImage.free();
 	});
 });

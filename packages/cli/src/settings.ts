@@ -4,7 +4,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { ThinkingLevel } from "@yophon/tau-kernel";
+import type { AgentOptions, RetrySettings, ThinkingLevel } from "@yophon/tau-kernel";
 
 export interface WebSearchSettings {
 	provider: "brave" | "tavily" | "exa" | "searxng";
@@ -218,6 +218,30 @@ export function loadSettings(options: { home: string; cwd: string; projectTruste
 	const user = readSettings(join(options.home, ".tau", "settings.json"), options.home);
 	if (!options.projectTrusted) return user;
 	return mergeSettings(user, readSettings(join(options.cwd, ".tau", "settings.json"), options.home));
+}
+
+/**
+ * The Agent options settings choose (P40c, pi): retries (`envRetry`, from TAU_MAX_RETRIES and
+ * TAU_RETRY_BASE_DELAY_MS, wins), compaction, the branch summary's reserve, the queue modes, and
+ * the optional turn cap (no cap unless set: pi does not cap a prompt).
+ */
+export function agentOptionsFromSettings(
+	settings: TauSettings,
+	envRetry: Partial<RetrySettings> = {},
+): Pick<
+	AgentOptions,
+	"retry" | "compaction" | "branchSummary" | "steeringMode" | "followUpMode" | "maxTurnsPerPrompt"
+> {
+	return {
+		retry: { ...settings.retry, ...envRetry },
+		...(settings.compaction ? { compaction: { ...settings.compaction } } : {}),
+		...(settings.branchSummary?.reserveTokens !== undefined
+			? { branchSummary: { reserveTokens: settings.branchSummary.reserveTokens } }
+			: {}),
+		...(settings.steeringMode ? { steeringMode: settings.steeringMode } : {}),
+		...(settings.followUpMode ? { followUpMode: settings.followUpMode } : {}),
+		...(settings.maxTurnsPerPrompt !== undefined ? { maxTurnsPerPrompt: settings.maxTurnsPerPrompt } : {}),
+	};
 }
 
 const P40_KEYS = [

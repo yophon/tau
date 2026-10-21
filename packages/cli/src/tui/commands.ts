@@ -259,7 +259,12 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.flash("Already at this point.");
 				return;
 			}
-			// pi: whether to summarize the branch being left, no summary first.
+			// pi: whether to summarize the branch being left, no summary first; settings'
+			// branchSummary.skipPrompt (P40c) takes no summary without asking.
+			if (tui.settings.branchSummary?.skipPrompt === true) {
+				await tui.navigate(picked, { summarize: false });
+				return;
+			}
 			const choice = await tui.pick("Summarize branch?", [
 				{ label: "No summary", value: "none" },
 				{ label: "Summarize", value: "summarize" },
