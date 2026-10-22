@@ -103,7 +103,8 @@ inject a small adapter instead of polyfilling globals.
   and `.agents/skills`). The CLI reads MCP servers from
   `~/.tau/mcp.json` (pi's format) with secrets kept in `tau credentials` and
   referenced as `${cred:name}`, out of the model's reach (see
-  [docs/connectors.md](docs/connectors.md)); as in Claude Code, server prompts
+  [docs/connectors.md](docs/connectors.md)); as in Claude Code, servers are
+  asked for MCP 2026-07-28 first and fall back to the 2025 handshake, and server prompts
   are `/mcp__server__prompt` commands, `@server:uri` attaches a resource,
   servers can ask you for input in a form or a browser link, and long calls
   show their progress.
@@ -407,7 +408,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D49)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D50)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins

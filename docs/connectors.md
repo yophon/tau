@@ -56,7 +56,7 @@ tau credentials audit                           # 找配置文件里直接写着
 
 ```bash
 tau mcp list            # 服务器、来自哪个文件、用了哪些凭据
-tau mcp list --check    # 顺便连一次，报告工具数，有资源的标 resources
+tau mcp list --check    # 顺便连一次，报告协议版本和工具数，有资源的标 resources
 ```
 
 ### 资源、图片与工作目录（P43，照 pi 1.2）
@@ -86,6 +86,17 @@ tau mcp list --check    # 顺便连一次，报告工具数，有资源的标 re
   - 钩子 `Elicitation`、`ElicitationResult` 可以替你回答、改你的回答或拦下（见 [hooks.md](hooks.md)）。没有界面（`-p` 且没有钩子回答）时回「取消」。
 - **进度与取消**：服务器报告进度时，进度显示在工具那一行（`Progress 3/10 · …`）。按 Esc 中止调用时，服务器会收到取消通知。
 - 网关照旧：不向服务器声明能要信息，不注册提示命令，没有 `@` 引用。
+
+### 协议版本：2026-07-28 与旧握手（P47，照 Claude Code）
+
+MCP 2026-07-28 是无状态的新版本：没有握手，每个请求自带版本和能力。tau 两代都支持，不用配置：
+
+- **先问再连**：连每个服务器时先发 `server/discover`。服务器支持 2026-07-28 就用它，否则照旧握手（2025-11-25 及更早）。`/mcp` 和 `tau mcp list --check` 显示每个服务器用的版本。
+- **探测的代价**：正常的旧服务器只多一个来回。完全不回应的旧 stdio 服务器要等满握手超时（缺省 10 秒，`timeoutMs` 可改）才回退；连接在后台进行，不挡输入。收到探测就退出的服务器会被重启一次再握手。同一次运行里重连不再探测。
+- **关掉探测**：`TAU_MCP_PROTOCOL_NEGOTIATION=legacy` 让所有服务器照旧握手（对应 Claude Code 的 `MCP_PROTOCOL_NEGOTIATION`）。
+- **新协议下照常可用**：工具、资源、提示命令、`@` 引用、进度、取消；服务器要你补充信息时（表单或网页）同样弹对话框，钩子照样能代答，答完 tau 自动带着答案重发请求，最多 10 轮。工具和提示列表变了，服务器经一条常开的订阅流告诉 tau，tau 重新列出；流断了自动重开。
+- **工具参数镜像成请求头**：HTTP 服务器在工具参数上标了 `x-mcp-header` 的，tau 把参数值放进 `Mcp-Param-…` 请求头；标注不合法的工具不注册，并提示是哪个工具、为什么。
+- 网关照旧：只用旧握手。
 
 ### 项目里的 `.tau/mcp.json`
 
@@ -178,6 +189,7 @@ tau mcp logout linear
 - 支持动态客户端注册；服务器不支持时，在 `oauth` 里写预先注册的客户端：`{ "clientId": "…", "clientSecret": "${cred:linear-secret}", "scopes": ["read"], "callbackPort": 8765 }`。
 - token 存在 `~/.tau/mcp-auth.json`（0600）。连接时带上 token，快过期或收到 401 时用 refresh token 刷新；刷新不了就提示重新 `tau mcp login`，连接时永远不会自己弹浏览器。
 - 流程照抄 pi 1.2（授权码加 PKCE），代码移植自 pi-mcp。
+- 客户端注册信息记着签发它的授权服务器（MCP 2026-07-28，P47）：服务器换了授权服务器，tau 不再用旧的注册信息和 token，重新注册、重新登录。
 
 ## 密钥不给模型看
 

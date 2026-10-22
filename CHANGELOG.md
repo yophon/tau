@@ -4,6 +4,40 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P47)
+- ext-mcp-http, ext-mcp: MCP 2026-07-28 next to the initialize handshake.
+  `protocolNegotiation: "auto"` (the official SDK's versionNegotiation; the
+  default stays `"legacy"`) sends `server/discover` first and falls back to
+  `initialize` on anything that is not modern evidence; on stdio a silent
+  server is legacy and one that exits on the probe is started again
+  (`McpProbeExitedError`); the era is remembered per server for the run.
+  Modern requests carry the `_meta` envelope; over HTTP they add
+  `MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name` (Base64 sentinel) and the
+  `Mcp-Param-*` headers of `x-mcp-header` parameters, have no session, are
+  cancelled by closing their stream and are reissued once when the stream
+  breaks. `input_required` results are answered through the elicitation and
+  roots handlers and retried with `inputResponses` and the `requestState`
+  (10 rounds at most). `McpClient.listen()` opens `subscriptions/listen`;
+  servers keep one open for list changes and reopen it when it drops. Tools
+  with invalid `x-mcp-header` marks are left out and reported; `-32020`
+  re-lists the tools before one retry. `MCP_ERROR_CODES`, `MCP_META` and the
+  header helpers are exported.
+- ext-mcp OAuth: client credentials are keyed by the authorization server
+  that issued them (SEP-2352); a different one drops the client and its
+  tokens and registers again, and a 401 challenge or a sign-in discovers the
+  authorization server again.
+- CLI: sessions, ACP and `tau mcp list --check` ask MCP servers for
+  2026-07-28 first (Claude Code); `TAU_MCP_PROTOCOL_NEGOTIATION=legacy`
+  keeps the handshake. `/mcp` and `tau mcp list --check` show the protocol
+  version. The gateway keeps the handshake.
+
+### Fixed (P47)
+- ext-mcp-http: an SSE reply's reader cancel could reject unhandled once the
+  request was aborted, ending `tau -p` with an unhandled rejection.
+- ext-mcp-http: the first prompt's wait for connecting MCP servers left its
+  10 s timer running, so `tau -p` with MCP servers stayed up to 10 s after
+  finishing.
+
 ### Added (P46)
 - ext-subagents: every subagent (foreground, background, each parallel or
   chain step) gets an agent ID `sub-N`, written at the end of its result,
