@@ -272,7 +272,7 @@ test("re-entering prompt() while running throws busy", async () => {
 	}
 });
 
-test("malformed tool-call arguments degrade to an empty object", async () => {
+test("malformed tool-call arguments fail validation with the text the model sent (pi 1.3)", async () => {
 	let received: Record<string, unknown> | undefined;
 	const captureTool: Tool = {
 		name: "capture_tool",
@@ -302,7 +302,12 @@ test("malformed tool-call arguments degrade to an empty object", async () => {
 	});
 	const { text } = await collect(agent, "hi");
 	assert.equal(text, "ok");
-	assert.deepEqual(received, {});
+	// The tool never ran on a partial parse; the model saw why and what it sent.
+	assert.equal(received, undefined);
+	const result = agent.messages.find((message) => message.role === "toolResult");
+	const resultText = result?.role === "toolResult" ? (result.content[0] as { text?: string }).text : "";
+	assert.match(resultText ?? "", /^Invalid arguments for tool "capture_tool": .+\n\nReceived arguments:\n\{not-json$/s);
+	assert.equal(result?.role === "toolResult" && result.isError, true);
 });
 
 test("a stream without the [DONE] sentinel still completes normally", async () => {

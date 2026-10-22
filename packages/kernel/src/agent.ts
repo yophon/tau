@@ -175,6 +175,8 @@ export interface SetModelOptions {
 	api?: string;
 	/** The new model's context window (auto-compaction, context %); present-but-undefined clears it. */
 	contextWindow?: number | undefined;
+	/** The new model's output limit (summary requests); present-but-undefined clears it. */
+	maxOutputTokens?: number | undefined;
 }
 
 export interface AgentOptions {
@@ -1369,7 +1371,8 @@ export class Agent {
 			options.transport !== undefined ||
 			(options.provider !== undefined && options.provider !== this.config.provider) ||
 			(options.api !== undefined && options.api !== this.config.api) ||
-			("contextWindow" in options && options.contextWindow !== this.config.contextWindow);
+			("contextWindow" in options && options.contextWindow !== this.config.contextWindow) ||
+			("maxOutputTokens" in options && options.maxOutputTokens !== this.config.maxOutputTokens);
 		if (model === this.currentModel && !switchesProvider) return;
 		if (switchesProvider) {
 			const next: OpenAICompatConfig = { ...this.config, model };
@@ -1378,6 +1381,10 @@ export class Agent {
 			if ("contextWindow" in options) {
 				if (options.contextWindow === undefined) delete next.contextWindow;
 				else next.contextWindow = options.contextWindow;
+			}
+			if ("maxOutputTokens" in options) {
+				if (options.maxOutputTokens === undefined) delete next.maxOutputTokens;
+				else next.maxOutputTokens = options.maxOutputTokens;
 			}
 			this.config = next;
 			if (options.transport) this.transport = options.transport;
@@ -1782,6 +1789,7 @@ export class Agent {
 					customInstructions,
 					signal,
 					this.summarizationRetry({ source: "compaction", reason }, onEvent),
+					this.config.maxOutputTokens,
 				));
 			throwIfAborted(signal);
 			if (result.usage) result.usage = this.priced(result.usage);
@@ -2023,6 +2031,7 @@ export class Agent {
 					customInstructions: hook.customInstructions ?? options?.customInstructions,
 					...(replaceInstructions !== undefined ? { replaceInstructions } : {}),
 					contextWindow: this.config.contextWindow,
+					...(this.config.maxOutputTokens !== undefined ? { maxTokens: this.config.maxOutputTokens } : {}),
 					reserveTokens: this.branchSummaryReserveTokens ?? this.effectiveCompactionSettings().reserveTokens,
 					signal,
 					retry: this.summarizationRetry({ source: "branchSummary" }, options?.onEvent),

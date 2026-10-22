@@ -327,6 +327,33 @@ const stopReasonScript = (reason: string) => [
 	messageStop,
 ];
 
+test("malformed tool input reaches the tool call as argumentsError with the text sent (pi 1.3)", async () => {
+	const platform = fakePlatform([
+		sseResponse([
+			messageStart({ input_tokens: 5 }),
+			{
+				event: "content_block_start",
+				data: {
+					type: "content_block_start",
+					index: 0,
+					content_block: { type: "tool_use", id: "toolu_1", name: "echo_tool", input: {} },
+				},
+			},
+			{
+				event: "content_block_delta",
+				data: { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "[1, 2]" } },
+			},
+			{ event: "content_block_stop", data: { type: "content_block_stop", index: 0 } },
+			{ event: "message_delta", data: { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: {} } },
+			messageStop,
+		]),
+	]);
+	const { final } = await drain(createAnthropicTransport(CONFIG, platform), [user("call the tool")]);
+	const toolCall = final.content[0] as ToolCall;
+	assert.deepEqual(toolCall.arguments, {});
+	assert.equal(toolCall.argumentsError, "Tool arguments must be a JSON object\n\nReceived arguments:\n[1, 2]");
+});
+
 test("maps every documented stop reason onto the pi enum", async () => {
 	for (const [wire, expected] of [
 		["end_turn", "stop"],
@@ -598,7 +625,7 @@ test("errored/aborted turns are dropped and orphaned tool calls get synthetic re
 	assert.equal(synthetic.content[0].text, "No result provided");
 });
 
-test("cross-model content degrades: unsigned thinking to text, ids normalized, redacted dropped", () => {
+test("cross-model content: thinking of another model dropped (pi 1.3), ids normalized", () => {
 	const foreign: AssistantMessage = assistantOf(
 		[
 			{ type: "thinking", thinking: "openai reasoning" },
@@ -621,9 +648,9 @@ test("cross-model content degrades: unsigned thinking to text, ids normalized, r
 	];
 	const transformed = transformMessagesForAnthropic(messages, { provider: "anthropic", model: CONFIG.model });
 	const assistant = transformed[1] as AssistantMessage;
-	// Redacted thinking from another model is dropped; unsigned thinking becomes text.
-	assert.deepEqual(assistant.content[0], { type: "text", text: "openai reasoning" });
-	const toolCall = assistant.content[1] as ToolCall;
+	// Thinking from another model is dropped, redacted or not (pi 1.3: sent as text, the model took it for its reply).
+	assert.equal(assistant.content.length, 1);
+	const toolCall = assistant.content[0] as ToolCall;
 	assert.equal(toolCall.type, "toolCall");
 	assert.equal(toolCall.id, "call_weird_id_");
 	const toolResult = transformed[2] as ToolResultMessageLike;

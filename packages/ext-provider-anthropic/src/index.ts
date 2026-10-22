@@ -30,7 +30,7 @@ import {
 	type JsonObject,
 	type Platform,
 	type PlatformResponse,
-	parseJsonWithRepair,
+	parseToolCallArguments,
 	resolveTranscript,
 	responseHeaders,
 	SseParser,
@@ -70,6 +70,18 @@ export function defaultMaxTokens(model: string): number {
 		/claude-(?:opus|sonnet|haiku)-(\d+)/.exec(id) ?? /claude-(\d+)(?:-\d+)?-(?:opus|sonnet|haiku)/.exec(id);
 	return family && Number(family[1]) >= 4 ? MODERN_CLAUDE_MAX_TOKENS : DEFAULT_MAX_TOKENS;
 }
+/** Claude models that accept `thinking: {type: "disabled"}` (pi 1.3 generate-models). */
+const DISABLED_THINKING_MODELS = new Set(["claude-opus-5", "claude-haiku-5-5", "claude-haiku-5.5"]);
+
+/** Whether a model id (an OpenRouter-style `anthropic/` prefix and a dated suffix allowed) can turn thinking off. */
+export function acceptsDisabledThinking(model: string): boolean {
+	const id = model
+		.toLowerCase()
+		.replace(/^~?anthropic\//, "")
+		.replace(/-\d{8}$/, "");
+	return DISABLED_THINKING_MODELS.has(id);
+}
+
 /** pi's floor for output tokens when clamping a thinking budget into max_tokens. */
 const MIN_OUTPUT_TOKENS = 1024;
 
@@ -86,19 +98,25 @@ const THINKING_BUDGETS = { minimal: 1024, low: 2048, medium: 8192, high: 16384, 
  * Map a shared thinking level (tau ThinkingLevel strings) onto transport config,
  * mirroring pi v0.80.3 anthropic-messages (forceAdaptiveThinking +
  * mapThinkingLevelToEffort). `undefined` clears the override. In adaptive mode
- * "none" requests no thinking and the lowest effort instead of
- * `{type: "disabled"}`, which current models (Opus 5.5, Sonnet 5.5, Fable) reject.
+ * "none" sends `{type: "disabled"}` without effort on the models that accept it (Opus 5,
+ * Haiku 5.5; pi 1.3), and no thinking with the lowest effort on the others (Opus 5.5,
+ * Sonnet 5.5, Fable reject disabled thinking).
  */
 export function anthropicThinkingForLevel(
 	level: string | undefined,
 	mode: AnthropicThinkingMode = "adaptive",
+	model?: string,
 ): Pick<AnthropicTransportConfig, "thinking" | "effort"> {
 	if (level === undefined) return { thinking: undefined, effort: undefined };
 	if (mode === "budget") {
 		const budget = THINKING_BUDGETS[level as keyof typeof THINKING_BUDGETS];
 		return { thinking: budget === undefined ? undefined : { budgetTokens: budget }, effort: undefined };
 	}
-	if (level === "none") return { thinking: undefined, effort: "low" };
+	if (level === "none") {
+		return model !== undefined && acceptsDisabledThinking(model)
+			? { thinking: "disabled", effort: undefined }
+			: { thinking: undefined, effort: "low" };
+	}
 	const effort: AnthropicEffort =
 		level === "minimal" || level === "low"
 			? "low"
@@ -125,7 +143,7 @@ export interface AnthropicTransportConfig {
 	 * "adaptive" for current models (Claude 4.6+; 4.7+/5.x reject budget_tokens
 	 * with a 400). Omitted = thinking not requested (5.x still think adaptively).
 	 */
-	thinking?: { budgetTokens: number } | "adaptive";
+	thinking?: { budgetTokens: number } | "adaptive" | "disabled";
 	/**
 	 * Reasoning effort, sent as `output_config.effort` (GA, no beta). The depth
 	 * control for adaptive thinking and for models whose thinking is always on.
@@ -224,12 +242,12 @@ export function transformMessagesForAnthropic(
 			msg.provider === target.provider && msg.api === ANTHROPIC_MESSAGES_API && msg.model === target.model;
 		const content = msg.content.flatMap((block): AssistantMessage["content"] => {
 			if (block.type === "thinking") {
-				// Redacted thinking is opaque encrypted content, valid only for the same model.
-				if (block.redacted) return isSameModel ? [block] : [];
-				if (isSameModel && block.thinkingSignature) return [block];
+				// Thinking of another model is dropped: sent as text, the new model took it for part
+				// of its reply (pi 1.3). Redacted and signed blocks of this model are kept for replay.
+				if (!isSameModel) return [];
+				if (block.redacted || block.thinkingSignature) return [block];
 				if (!block.thinking || block.thinking.trim() === "") return [];
-				if (isSameModel) return [block];
-				return [{ type: "text", text: block.thinking }];
+				return [block];
 			}
 			if (block.type === "toolCall" && !isSameModel) {
 				const normalizedId = normalizeToolCallId(block.id);
@@ -325,6 +343,24 @@ function userContentToWire(content: string | (TextContent | ImageContent)[]): st
 }
 
 /** pi's convertContentBlocks: text-only results stay a string; images force a block array. */
+const ERROR_TOOL_IMAGE_PLACEHOLDER = "(image attached after the tool results)";
+
+/** The content with each run of images replaced by one note (pi replaceImagesWithPlaceholder). */
+function withoutImages(content: (TextContent | ImageContent)[], note: string): TextContent[] {
+	const result: TextContent[] = [];
+	let previousWasImage = false;
+	for (const block of content) {
+		if (block.type === "image") {
+			if (!previousWasImage) result.push({ type: "text", text: note });
+			previousWasImage = true;
+		} else {
+			result.push(block);
+			previousWasImage = false;
+		}
+	}
+	return result;
+}
+
 function toolResultContentToWire(content: (TextContent | ImageContent)[]): string | WireBlock[] {
 	const hasImages = content.some((block) => block.type === "image");
 	if (!hasImages) {
@@ -401,20 +437,31 @@ export function messagesToWire(messages: AgentMessage[]): WireMessage[] {
 				// Fold consecutive tool results into one user turn, as in pi (required
 				// by some Anthropic-compatible endpoints).
 				const results: WireBlock[] = [];
+				// Anthropic rejects images in an error result: they follow the turn's results (pi 1.3).
+				const afterResults: WireBlock[] = [];
 				let j = i;
 				while (j < messages.length) {
 					const candidate = messages[j];
 					if (candidate.role !== "toolResult") break;
+					const images = candidate.isError ? candidate.content.filter((block) => block.type === "image") : [];
 					results.push({
 						type: "tool_result",
 						tool_use_id: candidate.toolCallId,
-						content: toolResultContentToWire(candidate.content),
+						content: toolResultContentToWire(
+							images.length > 0 ? withoutImages(candidate.content, ERROR_TOOL_IMAGE_PLACEHOLDER) : candidate.content,
+						),
 						is_error: candidate.isError,
 					});
+					if (images.length > 0) {
+						afterResults.push(
+							textBlock(`Images from the error result of tool call ${candidate.toolCallId} (${candidate.toolName}):`),
+							...images.map((image) => imageBlock(image as ImageContent)),
+						);
+					}
 					j++;
 				}
 				i = j - 1;
-				wire.push({ role: "user", content: results });
+				wire.push({ role: "user", content: [...results, ...afterResults] });
 				break;
 			}
 		}
@@ -467,13 +514,10 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 	// The request's thinking level, when it has one, decides thinking and effort (P23d).
 	const thinkingConfig =
 		request.thinkingLevel !== undefined
-			? anthropicThinkingForLevel(request.thinkingLevel, config.thinkingMode ?? "adaptive")
+			? anthropicThinkingForLevel(request.thinkingLevel, config.thinkingMode ?? "adaptive", model)
 			: { thinking: config.thinking, effort: config.effort };
 	let maxTokens = request.maxTokens ?? config.maxTokens ?? defaultMaxTokens(model);
-	const budgetThinking =
-		thinkingConfig.thinking !== undefined && thinkingConfig.thinking !== "adaptive"
-			? thinkingConfig.thinking
-			: undefined;
+	const budgetThinking = typeof thinkingConfig.thinking === "object" ? thinkingConfig.thinking : undefined;
 	if (budgetThinking && request.maxTokens !== undefined) {
 		// pi adjustMaxTokensForThinking: an explicit output cap (summaries) gets the thinking
 		// budget on top, so reasoning cannot eat the answer; config.maxTokens bounds it.
@@ -501,7 +545,9 @@ export function buildRequestBody(config: AnthropicTransportConfig, request: Tran
 	if (transcript.tools.length > 0) {
 		body.tools = toolsToWire(transcript.tools, cacheControl);
 	}
-	if (thinkingConfig.thinking === "adaptive") {
+	if (thinkingConfig.thinking === "disabled") {
+		body.thinking = { type: "disabled" };
+	} else if (thinkingConfig.thinking === "adaptive") {
 		body.thinking = { type: "adaptive", display: config.thinkingDisplay ?? "summarized" };
 	} else if (budgetThinking) {
 		// pi's clamp: the budget must leave room for output inside max_tokens;
@@ -769,14 +815,10 @@ export function createAnthropicTransport(config: AnthropicTransportConfig, platf
 					if (block?.type === "toolCall") {
 						// Arguments parse once, when the block completes (accumulate-then-parse).
 						if (block.partialJson && block.partialJson !== "") {
-							try {
-								const parsed: unknown = parseJsonWithRepair(block.partialJson);
-								if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-									block.arguments = parsed as JsonObject;
-								}
-							} catch {
-								// Malformed arguments stay {}; tool-side validation reports the miss.
-							}
+							// Malformed arguments fail validation with the text the model sent (pi 1.3).
+							const parsed = parseToolCallArguments(block.partialJson);
+							block.arguments = parsed.arguments as JsonObject;
+							if (parsed.argumentsError !== undefined) block.argumentsError = parsed.argumentsError;
 						}
 						delete block.partialJson;
 						pendingEvents.push({ type: "tool_call", toolCall: block });

@@ -4,7 +4,8 @@
 // strings or invalid escapes such as `\d` in regexes; a plain JSON.parse turned those
 // tool calls into `{}` arguments.
 
-const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t", "u"]);
+// `u` is handled on its own: valid only with four hex digits, so `\usepackage` gets its backslash doubled (pi 1.3).
+const VALID_JSON_ESCAPES = new Set(['"', "\\", "/", "b", "f", "n", "r", "t"]);
 
 function isControlCharacter(char: string): boolean {
 	const codePoint = char.codePointAt(0);
@@ -78,6 +79,30 @@ export function repairJson(json: string): string {
 	}
 
 	return repaired;
+}
+
+/**
+ * The complete arguments text of a finished tool call (pi 1.3 parseToolCallArguments): text that
+ * is not a JSON object leaves `arguments` empty and `argumentsError` says why, with the text the
+ * model sent, so validation reports it back instead of running the call on a partial parse.
+ */
+export function parseToolCallArguments(json: string | undefined): {
+	arguments: Record<string, unknown>;
+	argumentsError?: string;
+} {
+	if (!json?.trim()) return { arguments: {} };
+	try {
+		const parsed = parseJsonWithRepair<unknown>(json);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error("Tool arguments must be a JSON object");
+		}
+		return { arguments: parsed as Record<string, unknown> };
+	} catch (error) {
+		return {
+			arguments: {},
+			argumentsError: `${error instanceof Error ? error.message : String(error)}\n\nReceived arguments:\n${json}`,
+		};
+	}
 }
 
 /** JSON.parse, retried once on the repaired text when the original does not parse. */

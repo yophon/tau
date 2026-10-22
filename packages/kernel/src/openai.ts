@@ -1,7 +1,7 @@
 import { AbortHandle } from "./abort.ts";
 import { describeError, HttpError, TauError } from "./errors.ts";
 import type { ThinkingLevel } from "./extensions.ts";
-import { parseJsonWithRepair } from "./json.ts";
+import { parseToolCallArguments } from "./json.ts";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -49,6 +49,11 @@ export interface OpenAICompatConfig {
 	model: string;
 	/** Model context window in tokens; enables automatic compaction (tau has no model database). */
 	contextWindow?: number;
+	/**
+	 * The model's output limit, when the host knows it (models.json `maxTokens`, a protocol's
+	 * default): summary requests use it, as pi uses model.maxTokens (pi 1.4). Not sent on turns.
+	 */
+	maxOutputTokens?: number;
 	/** Provider label recorded on assistant messages (pi's `provider` field). Defaults to "openai-compat". */
 	provider?: string;
 	/**
@@ -192,7 +197,8 @@ function toolResultContentToWire(content: (TextContent | ImageContent)[]): strin
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
 		.join("\n");
-	if (text !== "") return sanitizeSurrogates(text);
+	// Whitespace-only output counts as none: some providers reject it (pi 1.4).
+	if (text.trim() !== "") return sanitizeSurrogates(text);
 	return content.some((block) => block.type === "image") ? "(see attached image)" : "(no tool output)";
 }
 
@@ -608,10 +614,8 @@ export async function* streamChatCompletion(
 		}
 		const delta = choice.delta;
 		if (!delta) return;
-		if (typeof delta.content === "string" && delta.content !== "") {
-			appendText(delta.content);
-			pendingEvents.push({ type: "text_delta", delta: delta.content });
-		}
+		// Reasoning before content: proxies such as LiteLLM put both in one delta, and the
+		// thinking must come before the answer (pi 1.3).
 		// First non-empty reasoning field wins (`??` used to pick an empty
 		// reasoning_content over a populated reasoning field).
 		const field = REASONING_FIELDS.find((name) => typeof delta[name] === "string" && delta[name] !== "");
@@ -620,6 +624,10 @@ export async function* streamChatCompletion(
 			reasoningField ??= field;
 			appendThinking(reasoningDelta, reasoningField);
 			pendingEvents.push({ type: "reasoning_delta", delta: reasoningDelta });
+		}
+		if (typeof delta.content === "string" && delta.content !== "") {
+			appendText(delta.content);
+			pendingEvents.push({ type: "text_delta", delta: delta.content });
 		}
 		for (const wireToolCall of delta.tool_calls ?? []) {
 			const index = typeof wireToolCall.index === "number" ? wireToolCall.index : undefined;
@@ -706,21 +714,20 @@ export async function* streamChatCompletion(
 	const toolCalls: ToolCall[] = rawToolCalls
 		.filter((raw) => raw.name !== "")
 		.map((raw) => {
-			let parsedArguments: JsonObject = {};
-			try {
-				const parsed: unknown = raw.argumentsText === "" ? {} : parseJsonWithRepair(raw.argumentsText);
-				if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
-					parsedArguments = parsed as JsonObject;
-				}
-			} catch {
-				// Malformed arguments become {}; tool-side validation reports the miss.
-			}
+			// Malformed arguments fail validation with the text the model sent (pi 1.3).
+			const parsed = parseToolCallArguments(raw.argumentsText);
 			// A missing or repeated id gets a fresh one: `call_<index>` repeated across turns,
 			// and protocols such as Anthropic's require unique tool_use ids.
 			let id = raw.id;
 			if (id === "" || seenIds.has(id)) id = `call_${uuidv7(platform.randomBytes).replace(/-/g, "").slice(-12)}`;
 			seenIds.add(id);
-			return { type: "toolCall" as const, id, name: raw.name, arguments: parsedArguments };
+			return {
+				type: "toolCall" as const,
+				id,
+				name: raw.name,
+				arguments: parsed.arguments as JsonObject,
+				...(parsed.argumentsError !== undefined ? { argumentsError: parsed.argumentsError } : {}),
+			};
 		});
 
 	for (const toolCall of toolCalls) {

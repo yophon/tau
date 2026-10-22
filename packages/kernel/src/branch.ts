@@ -71,6 +71,8 @@ export interface GenerateBranchSummaryOptions {
 	replaceInstructions?: boolean;
 	/** Tokens reserved for prompt and model output. Defaults to 16384. */
 	reserveTokens?: number;
+	/** The model's output limit (pi 1.4); unknown keeps 4096. */
+	maxTokens?: number;
 	/**
 	 * Context window bounding the message-selection budget. Previously read off
 	 * the OpenAI config; explicit since the transport seam (P16). Defaults to
@@ -252,13 +254,13 @@ export async function generateBranchSummary(
 	}
 	const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${instructions}`;
 
-	// 4096 as in pi 0.85.0 (#8845: reasoning used up 2048 and left an empty summary);
-	// pi also clamps to model.maxTokens, which tau has no registry for (D21).
+	// The model's output limit when the host knows it (pi 1.4 drops the cap); otherwise 4096 as
+	// in pi 0.85.0 (#8845: reasoning used up 2048 and left an empty summary).
 	const generated = await completeText(
 		transport,
 		SUMMARIZATION_SYSTEM_PROMPT,
 		promptText,
-		BRANCH_SUMMARY_MAX_TOKENS,
+		options?.maxTokens ?? BRANCH_SUMMARY_MAX_TOKENS,
 		options?.signal,
 		{ label: "Branch summarization", retry: options?.retry },
 	);

@@ -49,6 +49,11 @@ export interface ToolCall {
 	id: string;
 	name: string;
 	arguments: JsonObject;
+	/**
+	 * The model sent arguments that are not a JSON object (pi 1.3): what went wrong and the text
+	 * it sent. `arguments` is then `{}` and the call fails validation with this, so the model sees it.
+	 */
+	argumentsError?: string;
 }
 
 export interface UsageCost {

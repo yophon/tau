@@ -56,8 +56,8 @@ function downgradeUnsupportedImages(messages: AgentMessage[], target: TransformT
  * transports (the vision downgrade follows a host-declared `input`, tau has no model registry):
  *
  * - thinking from a different model (api/provider/model mismatch) is not replayable —
- *   its signature or field name belongs to another protocol. Non-empty foreign
- *   thinking degrades to a text block, empty/redacted foreign thinking is dropped;
+ *   its signature or field name belongs to another protocol — and is dropped: sent as
+ *   text, the new model took it for part of its reply (pi 1.3);
  * - errored/aborted assistant turns are skipped (dangling tool calls, partial
  *   thinking) so the model resumes from the last valid state;
  * - every tool call gets a result: orphaned calls receive a synthetic
@@ -89,9 +89,8 @@ export function transformMessages(messages: AgentMessage[], target: TransformTar
 				}
 				return [block];
 			}
-			if (block.type !== "thinking") return [block];
-			if (block.redacted || block.thinking.trim() === "") return [];
-			return [{ type: "text", text: block.thinking }];
+			// Thinking of another model is dropped (pi 1.3).
+			return block.type === "thinking" ? [] : [block];
 		});
 		return { ...msg, content };
 	});

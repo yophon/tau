@@ -833,13 +833,15 @@ export async function generateSummaryWithUsage(
 	messages: readonly AgentMessage[],
 	options: {
 		reserveTokens: number;
+		/** The model's output limit (pi 1.4: summaries are not capped below it); unknown keeps 0.8 × reserveTokens. */
+		maxTokens?: number;
 		customInstructions?: string;
 		previousSummary?: string;
 		signal?: TauAbortSignal;
 		retry?: SummarizationRetry;
 	},
 ): Promise<{ text: string; usage: Usage }> {
-	const maxTokens = Math.floor(0.8 * options.reserveTokens);
+	const maxTokens = options.maxTokens ?? Math.floor(0.8 * options.reserveTokens);
 	let basePrompt = options.previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
 	if (options.customInstructions) {
 		basePrompt = `${basePrompt}\n\nAdditional focus: ${options.customInstructions}`;
@@ -881,6 +883,8 @@ export async function runCompaction(
 	customInstructions?: string,
 	signal?: TauAbortSignal,
 	retry?: SummarizationRetry,
+	/** The model's output limit for every summary request (pi 1.4); unknown keeps the reserveTokens shares. */
+	summaryMaxTokens?: number,
 ): Promise<CompactionResult> {
 	const { settings, previousSummary } = preparation;
 	let summary: string;
@@ -891,6 +895,7 @@ export async function runCompaction(
 		if (preparation.messagesToSummarize.length > 0) {
 			const history = await generateSummaryWithUsage(transport, preparation.messagesToSummarize, {
 				reserveTokens: settings.reserveTokens,
+				...(summaryMaxTokens !== undefined ? { maxTokens: summaryMaxTokens } : {}),
 				customInstructions,
 				previousSummary,
 				signal,
@@ -899,12 +904,14 @@ export async function runCompaction(
 			historyText = history.text;
 			historyUsage = history.usage;
 		}
-		const prefixPrompt = `# Conversation\n${serializeConversation(preparation.turnPrefixMessages)}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+		let prefixPrompt = `# Conversation\n${serializeConversation(preparation.turnPrefixMessages)}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+		// /compact's instructions reach the split turn's prefix too (pi 1.4, #11058).
+		if (customInstructions) prefixPrompt = `${prefixPrompt}\n\nAdditional focus: ${customInstructions}`;
 		const turnPrefix = await completeText(
 			transport,
 			SUMMARIZATION_SYSTEM_PROMPT,
 			prefixPrompt,
-			Math.floor(0.5 * settings.reserveTokens),
+			summaryMaxTokens ?? Math.floor(0.5 * settings.reserveTokens),
 			signal,
 			{ label: "Turn prefix summarization", retry },
 		);
@@ -913,6 +920,7 @@ export async function runCompaction(
 	} else {
 		const result = await generateSummaryWithUsage(transport, preparation.messagesToSummarize, {
 			reserveTokens: settings.reserveTokens,
+			...(summaryMaxTokens !== undefined ? { maxTokens: summaryMaxTokens } : {}),
 			customInstructions,
 			previousSummary,
 			signal,

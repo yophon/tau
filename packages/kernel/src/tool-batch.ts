@@ -288,6 +288,14 @@ export class ToolBatchRunner {
 		if (!tool) {
 			return { kind: "immediate", toolCall, result: errorResult(`Unknown tool: ${toolCall.name}`) };
 		}
+		// Arguments that did not parse fail before hooks or approval see `{}` (pi 1.3 validateToolArguments).
+		if (toolCall.argumentsError) {
+			return {
+				kind: "immediate",
+				toolCall,
+				result: errorResult(`Invalid arguments for tool "${toolCall.name}": ${toolCall.argumentsError}`),
+			};
+		}
 		// Execution works on a copy so tool_call handlers can rewrite arguments
 		// without mutating the stored assistant message.
 		// Deep copy: a handler rewriting nested arguments in place must not reach the

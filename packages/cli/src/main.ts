@@ -20,6 +20,7 @@ import {
 	ANTHROPIC_MESSAGES_API,
 	type AnthropicTransportConfig,
 	createAnthropicTransport,
+	defaultMaxTokens,
 } from "@yophon/tau-ext-provider-anthropic";
 import { SUBAGENT_STOP_CHANNEL, type SubagentStopRequest } from "@yophon/tau-ext-subagents";
 import {
@@ -1644,6 +1645,10 @@ async function main(): Promise<void> {
 			apiKey: spec.apiKey,
 			model: spec.model,
 			contextWindow: spec.contextWindow,
+			// Summary requests use the model's output limit when it is known (P48): models.json
+			// `maxTokens`, else on Anthropic the cap its turns use; unknown keeps reserveTokens shares.
+			maxOutputTokens:
+				spec.kind === "anthropic" ? (spec.maxTokens ?? envMaxTokens ?? defaultMaxTokens(spec.model)) : spec.maxTokens,
 			...(spec.kind === "anthropic"
 				? { provider: spec.label ?? "anthropic", api: ANTHROPIC_MESSAGES_API }
 				: spec.label !== undefined
@@ -1862,6 +1867,7 @@ async function main(): Promise<void> {
 				provider: endpoint.config.provider ?? "openai-compat",
 				api: endpoint.config.api ?? "openai-completions",
 				contextWindow: window,
+				maxOutputTokens: endpoint.config.maxOutputTokens,
 			},
 			// Agents built later (/reload, /resume) start from the switched endpoint.
 			commit: () => {

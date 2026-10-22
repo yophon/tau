@@ -76,7 +76,7 @@ test("first non-empty reasoning field wins and its name is replayed with the sam
 	assert.equal(replayed?.reasoning_content, undefined);
 });
 
-test("foreign thinking (another protocol's signature) degrades to text, never to a wire field", async () => {
+test("foreign thinking (another protocol's signature) is dropped, never sent as text or a wire field (pi 1.3)", async () => {
 	const requests: unknown[] = [];
 	const history: AgentMessage[] = [
 		{ role: "user", content: "hi", timestamp: 1 },
@@ -101,7 +101,8 @@ test("foreign thinking (another protocol's signature) degrades to text, never to
 	const wire = wireMessages(requests[0]);
 	const replayed = wire.find((m) => m.role === "assistant") as Record<string, unknown>;
 	assert.deepEqual(Object.keys(replayed).sort(), ["content", "role"]);
-	assert.equal(replayed.content, "signed reasoninganswer");
+	assert.equal(replayed.content, "answer");
+	assert.ok(!JSON.stringify(wire).includes("signed reasoning"));
 	assert.ok(!JSON.stringify(wire).includes("EqQBCkgIBhABGAIqQK"));
 });
 

@@ -218,7 +218,7 @@ export {
 	type UserBashEventResult,
 	type WidgetPlacement,
 } from "./extensions.ts";
-export { parseJsonWithRepair, repairJson } from "./json.ts";
+export { parseJsonWithRepair, parseToolCallArguments, repairJson } from "./json.ts";
 export type { UserContent } from "./messages.ts";
 export {
 	type AgentMessage,

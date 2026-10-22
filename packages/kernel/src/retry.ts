@@ -22,6 +22,7 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"billing",
 	// ChatGPT subscription login (D2 excludes it; kept so the table diffs cleanly against pi).
 	"subscription_sharing_usage_limit_exceeded",
+	"subscription_sharing_workplace_individual_usage_limit_exceeded",
 ]);
 
 // Verbatim from pi ai/utils/retry.ts: transient provider/transport failures.
@@ -33,24 +34,28 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"model is at capacity",
 	"rate.?limit",
 	"too many requests",
-	"429",
-	"500",
-	"502",
-	"503",
-	"504",
-	"520",
-	"524",
-	"service.?unavailable",
+	// A status code, not digits inside a request id or a byte count (pi 1.4, #11057).
+	"(?<![a-z0-9])(?:429|500|502|503|504|520|524)(?![a-z0-9])",
+	// Also "The service is temporarily unavailable" (#10965).
+	"service.?(?:is.?)?(?:temporarily.?)?unavailable",
 	"server.?error",
 	"internal.?error",
 	"provider.?returned.?(?:an.?)?error",
 	"exceeded request buffer limit while retrying upstream",
+	// Gateway failures relaying the upstream (pi 1.3/1.4, #10920).
+	"unable to forward upstream",
+	"upstream.?request.?failed",
+	"upstream_stream_read_error",
+	"stream was interrupted",
+	"http/?2 stream failed",
 	"network.?error",
 	"connection.?error",
 	"connection.?refused",
 	"connection.?lost",
 	"other side closed",
 	"fetch failed",
+	// node-fetch system errors, e.g. an OAuth token refresh; the reason is often empty (#10996).
+	"request to \\S+ failed, reason:",
 	"getaddrinfo",
 	"ENOTFOUND",
 	"EAI_AGAIN",
@@ -67,6 +72,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 	"stream ended before message_stop",
 	"stream ended before a terminal response event",
 	"http2 request did not get a response",
+	// Codex CLI mid-stream disconnect relayed by proxies (#11057).
+	"stream disconnected before completion",
 	"pending stream has been canceled",
 	"retry delay",
 	"you can retry your request",
@@ -113,6 +120,9 @@ const OVERFLOW_PATTERNS = [
 	/context[_ ]length[_ ]exceeded/i,
 	/too many tokens/i,
 	/token limit exceeded/i,
+	// HTTP 413 is a request-size overflow whatever the body says (pi 1.4); tau's own HTTP errors read
+	// "HTTP 413: …", provider SDK errors "<name> API error (413): …".
+	/^(?:[\w -]+ API error \(413\):|(?:HTTP )?413(?:\s|:|$))/i,
 ];
 
 // Verbatim from pi ai/utils/overflow.ts: throttling that also matches an overflow pattern.

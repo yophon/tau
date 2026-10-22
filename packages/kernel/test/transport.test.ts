@@ -242,7 +242,7 @@ test("setModel with a transport switches provider between requests; model_change
 	);
 });
 
-test("an OpenAI-compatible transport replays another provider's signed thinking as text and keeps tool pairs (P28)", async () => {
+test("an OpenAI-compatible transport drops another provider's thinking and keeps tool pairs (P28, pi 1.3)", async () => {
 	const requests: unknown[] = [];
 	const transport = createOpenAICompatTransport(fakePlatform([makeSseResponse(textTurn("ok"))], requests), {
 		baseUrl: "https://fake.test/v1",
@@ -281,7 +281,7 @@ test("an OpenAI-compatible transport replays another provider's signed thinking 
 	}
 	const body = requests[0] as { messages: Array<Record<string, unknown>> };
 	const assistant = body.messages.find((message) => message.role === "assistant") as Record<string, unknown>;
-	assert.equal(assistant.content, "Plan: list files.");
+	assert.equal(JSON.stringify(body).includes("Plan: list files."), false);
 	assert.equal(assistant.reasoning_content, undefined);
 	assert.equal(JSON.stringify(body).includes("sig-abc"), false);
 	assert.equal(JSON.stringify(body).includes("opaque"), false);
