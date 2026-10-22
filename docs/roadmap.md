@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-22（P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P46**）
+> 最后更新：2026-10-22（P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P47（规格书未写）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -395,9 +395,16 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 收尾时修掉：`-p` 退出前多等 5 秒（等诊断的计时器没随赛跑取消）；P18 的并发 e2e 改成看等待轮数（总时长被新测试的并发负载拉长）。
 - 决策记为 D48（推翻 D38 里「改完自动诊断不做」），偏差见规格书「实施记录」。真机验收待用户执行。
 
-## Phase 46 🚧 工具补齐（照 Claude Code）
+## Phase 46 ✅ 工具补齐（照 Claude Code）（2026-10-22）
 
 规格书（2026-10-22 确认；用户：「可以，做吧」）：[specs/phase-46-tool-gaps.md](specs/phase-46-tool-gaps.md)。EnterWorktree / ExitWorktree（对话中途进出 git worktree，子 agent 可以在独立的 worktree 里跑）、WaitForMcpServers（等后台还没连上的 MCP 服务器）、PushNotification（桌面通知）、SendMessage（让已经结束的子 agent 接着干）。
+
+**完成记录**：
+- 46a `send_message`、子 agent 的编号与名字、`task_stop` 停子 agent、子 agent 记录存盘；46b `push_notification`、`wait_for_mcp_servers`；46c `enter_worktree`/`exit_worktree`、会话中途搬目录、子 agent 的 worktree 隔离。网关都不开。使用说明见 [subagents.md](subagents.md)（新）与 [worktrees.md](worktrees.md) 的「对话中途进出」。
+- 测试：全量 1281 个，1276 通过、5 跳过（另有一遍里 P38 的 `/resume` 重命名测试在满负载下等确认框超时，单独跑和重跑都通过）。check、pack smoke、浏览器 bundle、浏览器 runtime 通过。smoke-tui 新增 p46 场景（模型新建 worktree、在里面写文件、`exit_worktree keep`，主检出里没有这个文件，TUI 重载；用 `send_message` 续接一个子 agent），全屏与 inline 下 36 个场景各一遍全过（inline 那遍跑在隔离修复之后）。
+- 真 DeepSeek（临时仓库）：worktree 新建、写文件、提交、保留退出；进入 worktree 后结束，`-c` 恢复时回到 worktree；续接子 agent（同一次运行里一次，重启进程后从会话目录读回再一次）；隔离子 agent 改文件不碰主检出，续接时回到它保留的 worktree；REPL 里刚打完字时通知不发，关掉检测后发出。
+- 验收中发现并修掉：隔离子 agent 的 PowerShell 和 `monitor` 用的是父会话的（在主检出里跑）；新会话的 `sub-1` 重开旧会话保留的 `agent-sub-1`，续接隔离子 agent 没回到它的 worktree；REPL 在提示符下打字不算「人在终端前」；REPL 在提示符下输入结束时退出码 13（Node 的 `question()` 在 readline 关闭时不 settle，P25 起就有）。
+- 决策记为 D49，偏差见规格书「实施记录」。真机验收待用户执行（TUI 里中途进出 worktree、Windows 上终端在后台时的桌面弹窗）。
 
 ## Phase 47 ⬜ MCP 2026-07-28 新规范
 

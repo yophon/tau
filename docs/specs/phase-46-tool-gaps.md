@@ -1,6 +1,6 @@
 # Phase 46：工具补齐（照 Claude Code）规格书
 
-> 状态：已确认（2026-10-22）。「需要确认」六条用户都按建议定（「可以，做吧」）。
+> 状态：已完成（2026-10-22）。「需要确认」六条用户都按建议定（「可以，做吧」）。实现与偏差见文末「实施记录」。
 > 对应 roadmap 阶段：Phase 46
 > 起因：P44 后用户把「工具补齐」纳入计划（「2、3、4都可以纳入计划」），P45 完成后用户：「做下一阶段」。四样都是 Claude Code 有、tau 还没有的工具。
 
@@ -157,27 +157,27 @@ class NodeBackgroundShell { moveTo(cwd: string): void }
 
 ## 验收清单
 
-- [ ] 46a：
-  - [ ] 前台、后台、并行、链式的每个子 agent 都有 ID，结果里写着；名字可以用，同名新 agent 占用后按名字发送被拒并说明。
-  - [ ] 续接已结束的子 agent：带着完整历史在后台续跑，结果作为后续消息送回，工具集、模型、权限模式同第一次。
-  - [ ] 给运行中的后台子 agent 发消息：进入它当前的运行，它据此调整。
-  - [ ] `task_stop` 停后台子 agent；被模型停掉的能续，`/tasks` 里停掉的被拒；找不到时列出可发对象。
-  - [ ] 存盘与恢复：子 agent 的记录写进会话目录；`--resume` 后续接成功，编号接着排。
-  - [ ] 子 agent 没有 `send_message`；网关里没有。
-- [ ] 46b：
-  - [ ] `push_notification`：终端在后台时发出；终端在前台或 60 秒内有按键时不发（`user_present`）；`tui.notify: "off"` 时不发（`config_off`）；环境变量关掉检测后照发；只在 TUI 和 REPL 里有。
-  - [ ] `wait_for_mcp_servers`：等到慢服务器连上后返回工具数，失败的写原因，超时返回仍在连接的；只在有服务器连接时注册。
-- [ ] 46c：
-  - [ ] `enter_worktree` 新建：worktree 与分支照 `--worktree` 的规则建出；之后的文件工具、bash、后台命令、权限、钩子都在新目录；这一轮结束后 AGENTS.md 与项目设置换成新目录的。
-  - [ ] `enter_worktree` 进入已有的：`.tau/worktrees/` 下的不问，以外的问且规则免不了、bypass 不问、没有界面时拒绝；已在 worktree 里时只能用 `path`。
-  - [ ] `exit_worktree`：`keep` 留下、`remove` 删掉；有改动时不带 `discard_changes` 被拒并给出数目；回到原目录。
-  - [ ] 恢复会话回到 worktree；worktree 已删时留在启动目录并说明。
-  - [ ] 子 agent 隔离：在临时 worktree 里改文件不影响主检出；没有改动时自动删，有改动时保留并在结果里写明。
-  - [ ] 只读模式里没有这两个工具；网关里没有。
-- [ ] smoke-tui 新场景（全屏与 inline）：模型新建 worktree、在里面写文件、`exit_worktree keep`，主检出里没有这个文件；续接一个后台子 agent。
-- [ ] 真 DeepSeek：续接子 agent（先让它读一个文件，再问它刚才读到什么）；新建 worktree、改文件、提交后保留退出；隔离的子 agent 改文件；终端在后台时收到桌面通知。
-- [ ] 全量测试、check、pack smoke、浏览器打包与运行、smoke-tui 全屏与 inline 通过；push 后 CI 通过。
-- [ ] DoD 通用项；D49；文档更新。
+- [x] 46a：
+  - [x] 前台、后台、并行、链式的每个子 agent 都有 ID，结果里写着；名字可以用，同名新 agent 占用后按名字发送被拒并说明。
+  - [x] 续接已结束的子 agent：带着完整历史在后台续跑，结果作为后续消息送回，工具集、模型、权限模式同第一次。
+  - [x] 给运行中的后台子 agent 发消息：进入它当前的运行，它据此调整。
+  - [x] `task_stop` 停后台子 agent；被模型停掉的能续，`/tasks` 里停掉的被拒；找不到时列出可发对象。
+  - [x] 存盘与恢复：子 agent 的记录写进会话目录；`--resume` 后续接成功，编号接着排。
+  - [x] 子 agent 没有 `send_message`；网关里没有。
+- [x] 46b：
+  - [x] `push_notification`：终端在后台时发出；终端在前台或 60 秒内有按键时不发（`user_present`）；`tui.notify: "off"` 时不发（`config_off`）；环境变量关掉检测后照发；只在 TUI 和 REPL 里有。
+  - [x] `wait_for_mcp_servers`：等到慢服务器连上后返回工具数，失败的写原因，超时返回仍在连接的；只在有服务器连接时注册。
+- [x] 46c：
+  - [x] `enter_worktree` 新建：worktree 与分支照 `--worktree` 的规则建出；之后的文件工具、bash、后台命令、权限、钩子都在新目录；这一轮结束后 AGENTS.md 与项目设置换成新目录的。
+  - [x] `enter_worktree` 进入已有的：`.tau/worktrees/` 下的不问，以外的问且规则免不了、bypass 不问、没有界面时拒绝；已在 worktree 里时只能用 `path`。
+  - [x] `exit_worktree`：`keep` 留下、`remove` 删掉；有改动时不带 `discard_changes` 被拒并给出数目；回到原目录。
+  - [x] 恢复会话回到 worktree；worktree 已删时留在启动目录并说明。
+  - [x] 子 agent 隔离：在临时 worktree 里改文件不影响主检出；没有改动时自动删，有改动时保留并在结果里写明。
+  - [x] 只读模式里没有这两个工具；网关里没有。
+- [x] smoke-tui 新场景（全屏与 inline）：模型新建 worktree、在里面写文件、`exit_worktree keep`，主检出里没有这个文件；续接一个后台子 agent。
+- [x] 真 DeepSeek：续接子 agent（先让它读一个文件，再问它刚才读到什么）；新建 worktree、改文件、提交后保留退出；隔离的子 agent 改文件；终端在后台时收到桌面通知。（续接换成让它选一个水果再追问；桌面通知在 REPL 里验到发出的通知序列，Windows 上弹窗待真机验收。）
+- [x] 全量测试、check、pack smoke、浏览器打包与运行、smoke-tui 全屏与 inline 通过；push 后 CI 通过。
+- [x] DoD 通用项；D49；文档更新。
 
 ## 风险与开放问题
 
@@ -185,3 +185,34 @@ class NodeBackgroundShell { moveTo(cwd: string): void }
 - **搬目录的遗漏**：工作目录在 tau 里被很多地方在启动时记住（例如 MCP 的 roots、会话目录名）。实现时逐个排查；照旧不变的写进偏差（例如 MCP roots 仍报启动目录，会话文件不搬）。
 - **子 agent 记录的体积**：子 agent 的工具输出可能很大，存成单独的文件，不进主会话文件（Claude Code 也是分开存）。
 - **开放问题**：无（「需要确认」六条已按建议确认）。
+
+## 实施记录（2026-10-22）
+
+提交：cde5983（规格书）、d92749d（46a）、c826bc1（46b）、b5f3892（46c）、614c637 与 2224718（验收中发现的问题）、文档提交。
+
+### 偏差
+
+- **搬目录后的重载只在 TUI 里做**：这一轮结束时（以及启动时按 `tau.worktree` 搬回 worktree 之后）重载设置、AGENTS.md 与扩展。REPL 和 `-p` 只做「立刻跟过去」那部分，设置与扩展保持启动目录的。
+- **MCP 的 roots 仍报启动目录**；会话文件不搬（规格已写）。
+- **隔离的子 agent 没有后台命令**，因此也没有 `monitor`（`IsolatedWorkspace.unavailable`）。规格写的是「后台命令都在那里」；后台任务挂在父会话的 `/tasks` 和退出清理上，worktree 却在子 agent 结束时可能被删，就没带。
+- **隔离 worktree 的名字**：`agent-<编号>`，名字被占用时加编号（`agent-sub-1-2`）。子 agent 编号每个会话从 `sub-1` 起，不加编号会重开上一次会话保留下来的 worktree。Claude Code 用随机 ID，不会撞名。续接时用记录里存的、上次保留的 worktree。
+- **`wait_for_mcp_servers` 只在有「直接暴露工具」的服务器还在连接时注册**。deferred 和 codemode 的服务器由 tool_search 等（P24），不需要它。
+- **`exit_worktree` 的风险**：工具注册为 low；`remove` 加 `discard_changes: true` 由 `tool_call` 处理器逐次要求确认（bypass 不问，没有界面时拒绝）。效果同 high，区别是 allow 规则也免不了这一问。
+- **ext-subagents 的选项**：存盘是 `persist?: boolean`（存到会话旁边），不是草案里的 `store`；`isolate(agentId, kept?)` 多一个参数；`IsolatedWorkspace.capabilities` 是 Partial，多一个 `unavailable`。
+- **内核比草案多**：`AgentSpawnOptions.toolOverrides`（用宿主按 worktree 建的同名工具替换父会话的）；`onSpawn` 的句柄多一个 `messages()`；工具批次的 `cwd` 改成读当前文件系统，accept-edits 的判断跟着搬过去的目录走。
+
+### 验收中发现并修掉
+
+- 隔离子 agent 的 PowerShell 是父会话的，命令在主检出里跑；`monitor` 同样用父会话的后台 shell。现在 PowerShell 绑在子 agent 的 worktree 上，`monitor` 不给；它的 bash 也带上父会话的 `shellPath`、`shellCommandPrefix`。
+- 新会话的 `sub-1` 重开上一次会话保留的 `agent-sub-1`；续接一个隔离子 agent 时没有回到它保留的 worktree。
+- REPL 里在 `tau> ` 打字不算「人在终端前」：readline 回答 `question()` 的那一行不触发 `line` 事件。现在 stdin 有任何输入就算。
+- REPL 在提示符下输入结束（Ctrl+D、空闲时 Ctrl+C、管道关闭）时退出码 13，并报 unsettled top-level await：Node 的 `question()` 在 readline 关闭时永远不 settle，P25 起就有。加 `ask()`，关闭时按取消或缺省处理。
+- pack smoke 的 TUI 消费者补上 `push-notification.js`。
+
+### 真 DeepSeek（deepseek-flash，临时 git 仓库）
+
+- worktree：模型 `enter_worktree feat`，写 hello.txt、git 提交，`exit_worktree keep`；worktree 里有文件和提交，主检出没有。
+- 恢复：进入 worktree `bound` 后结束，`-c` 续接后 bash 的 `pwd` 在 `.tau/worktrees/bound`。
+- 续接子 agent：子 agent（模型给它起名 fruit）回答 Pear，`send_message` 后答 PEAR；重启进程用 `-c` 再发，答 pear，记录从会话目录的 `subagents/sub-1.jsonl` 与 `.meta.json` 读回。
+- 隔离子 agent：在 `.tau/worktrees/agent-sub-1` 写出 iso.txt，主检出没有，结果写明 worktree 保留；`send_message` 让它再写 iso2.txt，两个文件都在同一个 worktree 里。
+- `push_notification`（REPL）：刚打完字时不发（`user_present`）；`TAU_DISABLE_NOTIFICATION_PRESENCE_CHECK=1` 时发出 OSC 777 通知序列。Windows 上终端在后台时的弹窗待真机验收。

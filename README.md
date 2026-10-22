@@ -44,7 +44,9 @@ inject a small adapter instead of polyfilling globals.
   tasks fire between turns and come back with `--resume`; `TAU_DISABLE_CRON=1`
   turns this off). The `monitor`
   tool runs a command in the background and hands the model each line it
-  prints, e.g. errors in a log as they appear.
+  prints, e.g. errors in a log as they appear. `push_notification` sends a
+  desktop notification when a long task ends and you are away from the
+  terminal.
 - **Code intelligence** — as in Claude Code: language servers listed in
   `~/.tau/lsp.json` (Claude Code's `.lsp.json` format) report the errors an
   edit introduced, right after the edit, and give the model an `lsp` tool
@@ -78,14 +80,18 @@ inject a small adapter instead of polyfilling globals.
 - **Subagents** — the `subagent` tool delegates to child agents with their
   own context: one, several in parallel, a chain, or in the background (the
   result comes back as a follow-up). Agents are Markdown definitions (pi's
-  format): scout, planner, reviewer and worker ship built in.
+  format): scout, planner, reviewer and worker ship built in. As in Claude
+  Code, `send_message` continues a finished subagent with its whole history
+  (also after `--resume`) or steers a running one, and `isolation: "worktree"`
+  gives one a git worktree of its own (see [docs/subagents.md](docs/subagents.md)).
 - **Sessions** — pi v3 JSONL format on disk: resume (`--continue`), in-place
   tree navigation (`/tree`, or Esc twice), forking (`/fork`), automatic
   context compaction with pi's exact algorithm and prompts, and `/handoff
   <goal>` (pi) to start a new session with a prompt that carries over what
   matters. `tau --worktree [name]` (Claude Code) runs the session in its own
-  git worktree so several can work on one repository at once (see
-  [docs/worktrees.md](docs/worktrees.md)); a custom status line (Claude Code's
+  git worktree so several can work on one repository at once, and the model
+  can enter and leave one mid-conversation (`enter_worktree` /
+  `exit_worktree`; see [docs/worktrees.md](docs/worktrees.md)); a custom status line (Claude Code's
   `statusLine`, [docs/statusline.md](docs/statusline.md)) shows what you want
   under the input box.
 - **Extensions** — pi-mirrored API: 25+ lifecycle events, tools, slash
@@ -125,7 +131,7 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-host-weapp` | WeChat mini-program `Platform` adapter: `wx.request` chunked streaming → `PlatformFetch` | Yes |
 | `@yophon/tau-host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
 | `@yophon/tau-cli` | Terminal frontend: REPL, TUI, one-shot mode | Yes |
-| `@yophon/tau-ext-subagents` | The `subagent` tool: single, parallel, chain and background subagents over Markdown agent definitions | No direct runtime API |
+| `@yophon/tau-ext-subagents` | The `subagent` tool: single, parallel, chain and background subagents over Markdown agent definitions; `send_message` to continue them; worktree isolation through the host | No direct runtime API |
 | `@yophon/tau-ext-mcp` | MCP extension for Node: the ext-mcp-http core plus a stdio transport for local servers (no MCP SDK) | Yes — child processes |
 | `@yophon/tau-ext-mcp-http` | Pure-ES MCP client and extension core (Streamable HTTP) written entirely on the `Platform` seam — zero dependencies, runs on bare engines | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
@@ -399,9 +405,9 @@ Living docs under [docs/](docs/) — start here when picking up development:
 
 - [docs/development.md](docs/development.md) — process source of truth: commands, hard rules, spec-first phase workflow, Definition of Done
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
-- [docs/roadmap.md](docs/roadmap.md) — phased plan (P0–P20) with status, dependencies, and tech-debt register
+- [docs/roadmap.md](docs/roadmap.md) — phased plan with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D40)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D49)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
@@ -411,7 +417,8 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/hooks.md](docs/hooks.md) — user hooks: shell commands at fixed points of a run (Claude Code's format)
 - [docs/permissions.md](docs/permissions.md) — permission rules, "always allow", working directories (Claude Code's format)
 - [docs/statusline.md](docs/statusline.md) — a custom status line (Claude Code's `statusLine`)
-- [docs/worktrees.md](docs/worktrees.md) — `tau --worktree`: a session in its own git worktree
+- [docs/worktrees.md](docs/worktrees.md) — `tau --worktree` and `enter_worktree` / `exit_worktree`: a session in its own git worktree
+- [docs/subagents.md](docs/subagents.md) — subagents: modes, agent definitions, `send_message`, worktree isolation
 - [docs/pi-parity.md](docs/pi-parity.md) — pi lifecycle/hook parity checklist
 
 ## License

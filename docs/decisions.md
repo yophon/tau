@@ -239,6 +239,28 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D49：工具补齐照 Claude Code（2026-10-22，P46，用户确认）
+
+- **续接子 agent 照 Claude Code 的 SendMessage**：`send_message {to, message, summary?}`。
+  - 每个子 agent（前台、后台、并行、链式的每一步）都有 `sub-N` 编号，写在结果末尾。名字放在子 agent 工具上，因为 tau 没有 agent teams。
+  - 已结束的带着全部消息在后台续跑，结果作为后续消息送回；运行中的收到插话。
+  - `/tasks` 里被你停掉的不续，被模型 `task_stop` 停掉的能续（Claude Code）。
+  - 记录存在会话旁边（`<会话>/subagents/<编号>.jsonl` 加 `.meta.json`），恢复会话后还能续。
+- **内核加 `AgentSpawnOptions.onSpawn`、`capabilities`、`toolOverrides`**：插话和独立 worktree 都要宿主插手子 agent 的创建。工具批次的 `cwd` 读当前文件系统。
+- **会话中途搬目录分两步**：
+  - 文件工具、shell、后台命令、权限、钩子、语言服务器立刻跟过去（host-node 的 `moveTo`）；
+  - 设置、AGENTS.md、扩展在 TUI 这一轮结束时重载，因为正在执行这个工具的就是扩展。
+  - 会话文件不搬，会话里记一条 `tau.worktree`，恢复时回到 worktree。REPL 和 `-p` 只做第一步。
+- **隔离子 agent**：
+  - `isolation: "worktree"`（子 agent 工具的一步或 agent 的 frontmatter）。宿主经 ext-subagents 的 `isolate(agentId, kept?)` 建 worktree，按它重建文件、bash、PowerShell 工具（不带后台命令，也就没有 `monitor`）。
+  - 没有改动就删，有改动留着并写进结果；续接时回到上次保留的 worktree。
+  - worktree 名 `agent-<编号>`，被占用时加编号，因为编号每个会话重新从 `sub-1` 起。
+- **worktree 的隔离检查不做**（备选）：Claude Code 在 worktree 会话里拦下对主检出的写和命令；`--worktree` 也没做，工作量在解析命令里 git 的去向。
+- **`wait_for_mcp_servers {servers?, timeout_seconds?}`**：Claude Code 没公开参数，形状是 tau 定的（缺省 60 秒、最多 300 秒）。只在有直接暴露工具的服务器还在连接时注册，其余的由 tool_search 等。
+- **`push_notification {message, status}`** 照 Claude Code 的输入输出字段。「人在终端前」是终端在前台或 60 秒内有按键（Claude Code 没给秒数）。只在 TUI 和 REPL 里有，没有手机推送。
+- **`exit_worktree` 删掉未提交的工作要确认**：规格定为 high 风险，做法是 `remove` 加 `discard_changes: true` 时逐次要确认（bypass 不问）。
+- **网关**（搁置中）：`send_message`、子 agent 隔离、两个 worktree 工具、`push_notification`、`wait_for_mcp_servers` 都不开。
+
 ## D48：LSP 照 Claude Code，推翻「改完自动诊断不做」（2026-10-22，P45，用户确认）
 
 - **推翻 P35 与 D38 里「改完自动诊断不做（钩子里配类型检查即可）」那一项**：Claude Code 已经把改完就报错做成标准内置功能，跳定义、找引用这类导航也不是钩子能做的。D38 的其余裁决不变。

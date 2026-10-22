@@ -4,6 +4,48 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P46)
+- ext-subagents: every subagent (foreground, background, each parallel or
+  chain step) gets an agent ID `sub-N`, written at the end of its result,
+  and an optional `name`. The `send_message {to, message, summary?}` tool
+  (Claude Code's SendMessage) resumes a finished subagent in the background
+  with its whole history, steers one running in the background, and refuses
+  one you stopped in `/tasks`. Subagents are saved next to the session
+  (`<session>/subagents/<id>.jsonl` and `.meta.json`) and can be continued
+  after `--resume`. `isolation: "worktree"` (a step, or agent frontmatter)
+  runs a subagent in a git worktree of its own through the host's
+  `isolate(agentId, kept?)`: removed when it changed nothing, kept and
+  named in the result otherwise, reopened when the subagent is resumed.
+  `SUBAGENT_STOP_CHANNEL` lets the host stop one by ID or name.
+- CLI: `enter_worktree {name?, path?}` and `exit_worktree {action,
+  discard_changes?}` (Claude Code's EnterWorktree / ExitWorktree) move the
+  session into a new or listed git worktree and back mid-conversation: file
+  tools, shells, background commands, permissions, hooks and language servers
+  at once; settings, AGENTS.md and extensions when the TUI's turn ends. A
+  resumed session goes back to its worktree. `task_stop` also stops a
+  background subagent by ID or name. `push_notification {message, status}`
+  (Claude Code's PushNotification) sends a desktop notification from the TUI
+  or REPL, unless you are at the terminal (focused, or a key in the last
+  60 s; `TAU_DISABLE_NOTIFICATION_PRESENCE_CHECK=1` skips the check) or
+  `tui.notify` is off.
+- ext-mcp-http, ext-mcp: `wait_for_mcp_servers {servers?, timeout_seconds?}`
+  waits for servers still connecting in the background (default 60 s, at
+  most 300 s); registered while a server with directly exposed tools is
+  connecting.
+- kernel: `AgentSpawnOptions.onSpawn(handle)` (`steer`, `messages`),
+  `capabilities` and `toolOverrides`, for a child with its own file system
+  and tools. host-node: `moveTo(cwd)` on `NodeFileSystem`, `NodeShell` and
+  `NodeBackgroundShell`.
+
+### Changed (P46)
+- kernel: the tool batch reads the working directory from the current file
+  system, so accept-edits follows a session that moved.
+
+### Fixed (P46)
+- CLI REPL: the input ending at a prompt (Ctrl+D, Ctrl+C when idle, a closed
+  pipe) quits cleanly instead of exiting with code 13 and an unsettled
+  top-level await warning.
+
 ### Added (P45)
 - New package `@yophon/tau-ext-lsp`: language servers per Claude Code's code
   intelligence. Servers come from Claude Code's `.lsp.json` format (strict,

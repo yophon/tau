@@ -51,10 +51,10 @@ tau 读两份设置文件，键名尽量照 pi：
 | `session.autoTitle` | 第一轮之后让模型给会话起标题（P34） | true | 是 | 启动 |
 | `session.dirtyRepoGuard` | 有未提交改动时切换会话前先问（P37b，pi 的扩展） | false | 是 | 启动 |
 | `tui.mode` | TUI 用全屏还是 inline（P33） | `fullscreen` | 否 | 启动 |
-| `tui.notify`、`tui.title` | 窗口在后台时发桌面通知；终端标题显示转圈和进度（P34） | `auto`、true | 否 | 启动 |
+| `tui.notify`、`tui.title` | 窗口在后台时发桌面通知（`off` 也关掉 `push_notification`，P46）；终端标题显示转圈和进度（P34） | `auto`、true | 否 | 启动 |
 | `tui.showReasoning` | 推理全文显示，不折叠成一行（P38，Claude Code） | false | 否 | 启动 |
 | `tui.doubleEscapeAction` | 输入框为空时连按两次 Esc：`tree`、`fork`、`none`（P37b，pi） | `tree` | 否 | 启动 |
-| `worktree.baseRef`、`worktree.symlinkDirectories` | `tau --worktree` 从哪里开分支、链接哪些目录（P37d），见 [worktrees.md](worktrees.md) | `fresh`、无 | 否 | 启动 |
+| `worktree.baseRef`、`worktree.symlinkDirectories` | `tau --worktree`、`enter_worktree`、隔离的子 agent 从哪里开分支、链接哪些目录（P37d、P46），见 [worktrees.md](worktrees.md) | `fresh`、无 | 否 | 启动 |
 | `shell.envAllow` | 名字像密钥、但仍要留给命令的环境变量（P32b） | 无 | 否 | 启动 |
 | `audit.details` | 审计账本里记工具参数的摘要还是不记（P32c） | `summary` | 否 | 启动 |
 

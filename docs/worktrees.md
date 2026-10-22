@@ -1,6 +1,6 @@
 # 在 worktree 里工作
 
-`tau --worktree [名字]` 新建一个 git worktree，会话在里面跑（P37d）。同一个仓库可以同时开几个 tau 各干各的，互不踩文件。做法照抄 Claude Code 的 `--worktree`。
+`tau --worktree [名字]` 新建一个 git worktree，会话在里面跑（P37d）。同一个仓库可以同时开几个 tau 各干各的，互不踩文件。做法照抄 Claude Code 的 `--worktree`。对话中途也能进出 worktree，见「对话中途进出」。
 
 ```bash
 tau --worktree fix-login              # 名字自己定
@@ -64,6 +64,18 @@ tau 会往仓库的 `info/exclude` 加一行 `/.tau/worktrees/`，主仓库的 `
 
 `-p`、`--mode json` 不清理；被信号结束、终端被关掉时也不清理。刚建好、还没开始会话 tau 就因为参数错误退出时，自动起名且没有改动的 worktree 会被删掉。之后要删就用 `git worktree remove <路径>` 和 `git branch -D worktree-<名字>`。
 
+## 对话中途进出
+
+模型也能在对话中途建一个 worktree、把会话搬进去，做完再搬回来（P46，照 Claude Code 的 EnterWorktree / ExitWorktree）。直接说「开个 worktree 改这个」就行。
+
+- **`enter_worktree {name?}`**：按上面的规则新建（不给名字就自动起名，名字已存在就重新打开）。
+- **`enter_worktree {path}`**：进入本仓库已有的 worktree（`git worktree list` 里有的）。`.tau/worktrees/` 下的不问；以外的路径要你确认一次，权限规则和「总是允许」都免不了，只有 bypass 模式不问，没有界面（`-p`）时拒绝。已经在 worktree 里（包括 `--worktree` 启动的）时只能用 `path`，而且必须在本仓库的 `.tau/worktrees/` 下。
+- **搬进去之后**：工作目录、文件工具、bash 和 PowerShell、后台命令、权限的工作目录（`/add-dir` 加的保留）、钩子、语言服务器、底栏马上跟过去；这一轮结束时 TUI 重载项目设置、AGENTS.md、项目扩展与技能（同 `/reload`）。REPL 和 `-p` 里设置与扩展保持启动目录的。MCP 服务器的 roots 仍报启动目录。
+- **`exit_worktree {action: "keep" | "remove", discard_changes?}`**：回到进入前的目录。`keep` 留下 worktree 和分支；`remove` 一起删掉。有改动或新提交时，`remove` 必须带 `discard_changes: true`，否则报错并写明几个文件、几个提交；带了也要你确认（bypass 不问，没有界面时拒绝）。`--worktree` 启动的会话也能用。
+- **恢复**：会话文件留在原来的目录，里面记着当前所在的 worktree。`--continue`、`--resume` 恢复时回到那里；它已经被删掉，就留在启动目录并说明。
+- 退出 TUI 或 REPL 时还在 worktree 里，按「退出时」的规则处理。
+- 只读模式和网关里没有这两个工具，子 agent 也没有。子 agent 自己的 worktree 见 [subagents.md](subagents.md) 的「在自己的 worktree 里跑」。
+
 ## 不做
 
-`WorktreeCreate`/`WorktreeRemove` 钩子（非 git 版本控制）、`--tmux`、用 PR 号建 worktree、子代理的 worktree 隔离、`/resume` 跨 worktree 列出会话、在 worktree 里禁止写主仓库。
+`WorktreeCreate`/`WorktreeRemove` 钩子（非 git 版本控制）、`--tmux`、用 PR 号建 worktree、`/resume` 跨 worktree 列出会话、在 worktree 里拦下对主仓库的写和命令（Claude Code 有，记作备选）。
