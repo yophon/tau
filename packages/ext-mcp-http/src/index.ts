@@ -31,6 +31,10 @@ export {
 	type McpResourceContents,
 	type McpResourceTemplate,
 	type McpRoot,
+	type McpSubscription,
+	type McpSubscriptionEnd,
+	McpSubscriptionError,
+	type McpSubscriptionFilter,
 	type McpToolInfo,
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "./client.ts";
@@ -199,6 +203,8 @@ export function createHttpMcpExtension(options: HttpMcpOptions): HttpMcpHandle {
 				openGetStream: options.serverNotifications === true,
 			});
 		},
+		// The same switch holds a 2026-07-28 server's subscriptions/listen stream open (P47).
+		listChanged: () => options.serverNotifications === true,
 	});
 	return {
 		extension: handle.extension,

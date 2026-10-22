@@ -21,7 +21,14 @@ export const URL_ELICITATION_REQUIRED = -32042;
 
 export type McpElicitation =
 	| { mode: "form"; server: string; message: string; requestedSchema: Record<string, unknown>; form: UiForm }
-	| { mode: "url"; server: string; message: string; url: string; elicitationId: string };
+	| {
+			mode: "url";
+			server: string;
+			message: string;
+			url: string;
+			/** 2025-11-25 only; a 2026-07-28 server learns the outcome when the call is retried. */
+			elicitationId?: string;
+	  };
 
 export interface McpElicitResult {
 	action: "accept" | "decline" | "cancel";
@@ -134,8 +141,11 @@ export function elicitationForm(server: string, message: string, schema: Record<
 	};
 }
 
-/** Check elicitation/create params (MCP 2025-11-25); invalid params throw McpError -32602. */
-export function parseElicitation(server: string, params: unknown): McpElicitation {
+/**
+ * Check elicitation/create params (MCP 2025-11-25); invalid params throw McpError -32602.
+ * `modern` (2026-07-28, inside input_required): URL requests carry no elicitationId.
+ */
+export function parseElicitation(server: string, params: unknown, options: { modern?: boolean } = {}): McpElicitation {
 	if (!isObject(params) || typeof params.message !== "string") throw invalidParams("Elicitation needs a message");
 	const mode = params.mode ?? "form";
 	if (mode === "form") {
@@ -152,6 +162,7 @@ export function parseElicitation(server: string, params: unknown): McpElicitatio
 		if (typeof params.url !== "string" || !/^[A-Za-z][A-Za-z0-9+.-]*:/.test(params.url)) {
 			throw invalidParams("URL elicitation needs a valid url");
 		}
+		if (options.modern) return { mode: "url", server, message: params.message, url: params.url };
 		if (typeof params.elicitationId !== "string" || params.elicitationId === "") {
 			throw invalidParams("URL elicitation needs an elicitationId");
 		}

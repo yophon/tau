@@ -12,7 +12,11 @@ export function createElicitHandler(hooks: HookRunner | undefined, openUrl: (url
 		const fields =
 			request.mode === "form"
 				? { mode: "form", requested_schema: request.requestedSchema }
-				: { mode: "url", url: request.url, elicitation_id: request.elicitationId };
+				: {
+						mode: "url",
+						url: request.url,
+						...(request.elicitationId ? { elicitation_id: request.elicitationId } : {}),
+					};
 		if (hooks?.has("Elicitation", server)) {
 			const outcomes = await hooks.run(
 				"Elicitation",
@@ -32,7 +36,7 @@ export function createElicitHandler(hooks: HookRunner | undefined, openUrl: (url
 					mcp_server_name: server,
 					action: result.action,
 					mode: request.mode,
-					...(request.mode === "url" ? { elicitation_id: request.elicitationId } : {}),
+					...(request.mode === "url" && request.elicitationId ? { elicitation_id: request.elicitationId } : {}),
 					...(result.content ? { content: result.content } : {}),
 				},
 				{ match: server, signal },

@@ -14,7 +14,14 @@
 // a broken HTTP stream is reissued once under a new id, and the server sends no
 // requests. Anything that is not modern evidence falls back to initialize; on stdio a
 // silent server is legacy, on HTTP silence is an outage (SDK).
+//
+// 47b: an input_required result (tools/call, prompts/get, resources/read) is answered
+// through the handlers set for elicitation/create, roots/list and sampling, and the call
+// is retried with inputResponses and the echoed requestState (10 rounds at most, SDK);
+// listen() opens subscriptions/listen; over HTTP, tool parameters marked x-mcp-header
+// are mirrored as Mcp-Param-* headers and tools with invalid marks are left out.
 import { AbortHandle, type Platform, type TauAbortSignal } from "@yophon/tau-kernel";
+import { type McpParamHeader, mirroredParams, paramHeaders } from "./headers.ts";
 import {
 	isJsonRpcNotification,
 	isJsonRpcRequest,
@@ -46,6 +53,12 @@ export type McpProtocolEra = "modern" | "legacy";
 /** "legacy" shakes hands as before; "auto" asks with server/discover first (SDK versionNegotiation). */
 export type McpProtocolNegotiation = "auto" | "legacy";
 const MODERN_ERROR_CODES = new Set<number>(Object.values(MCP_ERROR_CODES));
+/** The requests a server may answer with input_required (MRTR). */
+const INPUT_REQUIRED_METHODS = new Set(["tools/call", "prompts/get", "resources/read"]);
+/** What an input_required result may ask the client for. */
+const INPUT_REQUEST_METHODS = new Set(["elicitation/create", "sampling/createMessage", "roots/list"]);
+/** Rounds of input one call may take (the official SDK's inputRequired.maxRounds default). */
+const DEFAULT_MAX_INPUT_ROUNDS = 10;
 /** Versions the server may select in `initialize`; any other closes the connection (pi). */
 export const SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
 	MCP_PROTOCOL_VERSION,
@@ -181,6 +194,41 @@ export interface McpClientOptions {
 	capabilities?: Record<string, unknown>;
 	/** P47: "legacy" (default, as the official SDK) skips the probe; "auto" probes for 2026-07-28. */
 	protocolNegotiation?: McpProtocolNegotiation;
+	/** Rounds of input_required one call may take (default 10, as the official SDK). */
+	maxInputRounds?: number;
+}
+
+/** subscriptions/listen: which change notifications to receive (MCP 2026-07-28). */
+export interface McpSubscriptionFilter {
+	toolsListChanged?: boolean;
+	promptsListChanged?: boolean;
+	resourcesListChanged?: boolean;
+	resourceSubscriptions?: string[];
+}
+
+/** How a subscription ended: closed here, ended by the server, or dropped. */
+export type McpSubscriptionEnd = "local" | "graceful" | "remote";
+
+export interface McpSubscription {
+	/** What the server agreed to send (notifications/subscriptions/acknowledged). */
+	honored: McpSubscriptionFilter;
+	/** Settles once, never rejects. */
+	closed: Promise<McpSubscriptionEnd>;
+	close(): void;
+}
+
+/** listen() failed before the acknowledgement: "graceful" (refused) or "remote" (dropped). */
+export class McpSubscriptionError extends Error {
+	readonly end: McpSubscriptionEnd;
+	constructor(end: McpSubscriptionEnd) {
+		super(
+			end === "graceful"
+				? "MCP server ended the subscription without acknowledging it"
+				: "MCP subscription stream closed before it was acknowledged",
+		);
+		this.name = "McpSubscriptionError";
+		this.end = end;
+	}
 }
 
 export interface McpConnectOptions extends McpRequestOptions {
@@ -202,6 +250,8 @@ interface RequestFlags {
 	headers?: Record<string, string>;
 	/** Learns the JSON-RPC id the request goes out with. */
 	onId?: (id: JsonRpcId) => void;
+	/** subscriptions/listen. */
+	listen?: boolean;
 }
 
 /** How long the probe waits when nothing else bounds it (the official SDK uses the request timeout). */
@@ -233,6 +283,8 @@ interface PendingRequest {
 	cancellable: boolean;
 	onProgress: ((progress: McpProgress) => void) | undefined;
 	progressToken: JsonRpcId | undefined;
+	/** subscriptions/listen: a server's notifications/cancelled for it ends it gracefully. */
+	listen: boolean;
 }
 
 function invalid(message: string): McpError {
@@ -339,6 +391,9 @@ export class McpClient {
 	private eraRejectedValue = false;
 	/** Requests given up on whose late answers are expected (the probe), dropped quietly. */
 	private ignoredResponses = new Set<JsonRpcId>();
+	/** x-mcp-header parameters by tool, from the last tools/list (2026-07-28 over HTTP). */
+	private paramHeaderMap = new Map<string, McpParamHeader[]>();
+	private excludedToolsValue: Array<{ name: string; reason: string }> = [];
 	private pending = new Map<JsonRpcId, PendingRequest>();
 	/** progressToken → request id of the requests that asked for progress. */
 	private progressRequests = new Map<JsonRpcId, JsonRpcId>();
@@ -383,6 +438,11 @@ export class McpClient {
 	/** The server's self-reported name and version (initialize, or the 2026-07-28 result `_meta`). */
 	get serverInfo(): { name: string; version?: string } | undefined {
 		return this.serverInfoValue;
+	}
+
+	/** Tools the last tools/list left out because their x-mcp-header marks are invalid (spec). */
+	get excludedTools(): ReadonlyArray<{ name: string; reason: string }> {
+		return this.excludedToolsValue;
 	}
 
 	/** A 2026-07-28 server stopped accepting the revision mid-connection: probe again next time. */
@@ -543,8 +603,17 @@ export class McpClient {
 		params?: Record<string, unknown>,
 		options: McpRequestOptions = {},
 	): Promise<Result> {
-		if (this.eraValue !== "modern") return this.requestInternal(method, params, options, {}) as Promise<Result>;
-		return this.requestModern(method, params, options) as Promise<Result>;
+		return this.send(method, params, options, {}) as Promise<Result>;
+	}
+
+	private send(
+		method: string,
+		params: Record<string, unknown> | undefined,
+		options: McpRequestOptions,
+		flags: RequestFlags,
+	): Promise<unknown> {
+		if (this.eraValue !== "modern") return this.requestInternal(method, params, options, flags);
+		return this.requestModern(method, params, options, flags);
 	}
 
 	/**
@@ -556,12 +625,65 @@ export class McpClient {
 		method: string,
 		params: Record<string, unknown> | undefined,
 		options: McpRequestOptions,
+		flags: RequestFlags,
 	): Promise<unknown> {
-		let result: unknown;
+		const maxRounds = this.options.maxInputRounds ?? DEFAULT_MAX_INPUT_ROUNDS;
+		let current = params;
+		for (let rounds = 0; ; rounds++) {
+			const result = await this.sendOnceModern(method, current, options, flags);
+			const resultType = isObject(result) ? result.resultType : undefined;
+			if (resultType === undefined || resultType === "complete") return result;
+			if (resultType !== "input_required" || !INPUT_REQUIRED_METHODS.has(method) || !isObject(result)) {
+				throw invalid(`Invalid MCP ${method} result: resultType ${JSON.stringify(resultType)}`);
+			}
+			const requests = isObject(result.inputRequests) ? result.inputRequests : undefined;
+			const state = typeof result.requestState === "string" ? result.requestState : undefined;
+			if (!requests && state === undefined)
+				throw invalid(`Invalid MCP ${method} result: input_required asks for nothing`);
+			if (rounds >= maxRounds) throw new Error(`MCP ${method} still needed input after ${maxRounds} rounds`);
+			const inputResponses = requests ? await this.fulfilInputs(requests, options.signal) : undefined;
+			if (options.signal?.aborted) throw new McpAbortError();
+			// The retry: the original params, the answers, the server's state byte for byte (spec).
+			const base = Object.fromEntries(
+				Object.entries(params ?? {}).filter(([key]) => key !== "inputResponses" && key !== "requestState"),
+			);
+			current = {
+				...base,
+				...(inputResponses ? { inputResponses } : {}),
+				...(state !== undefined ? { requestState: state } : {}),
+			};
+		}
+	}
+
+	/** Answer each input request through the handler set for its method (MRTR). */
+	private async fulfilInputs(
+		requests: Record<string, unknown>,
+		signal: TauAbortSignal | undefined,
+	): Promise<Record<string, unknown>> {
+		const responses: Record<string, unknown> = {};
+		for (const [key, request] of Object.entries(requests)) {
+			if (!isObject(request) || typeof request.method !== "string") throw invalid("Invalid MCP input request");
+			const handler = INPUT_REQUEST_METHODS.has(request.method) ? this.requestHandlers.get(request.method) : undefined;
+			if (!handler) throw new Error(`MCP server asked for ${request.method}, which this client does not offer`);
+			responses[key] = (await handler(request.params, { signal: signal ?? new AbortHandle().signal })) ?? {};
+		}
+		return responses;
+	}
+
+	/**
+	 * One 2026-07-28 round trip: reissued once under a new id when its HTTP stream broke
+	 * (spec). A -32022 means the server dropped the revision: the connection closes and the
+	 * next one probes again.
+	 */
+	private async sendOnceModern(
+		method: string,
+		params: Record<string, unknown> | undefined,
+		options: McpRequestOptions,
+		flags: RequestFlags,
+	): Promise<unknown> {
 		for (let attempt = 0; ; attempt++) {
 			try {
-				result = await this.requestInternal(method, params, options, { reportBrokenStream: true });
-				break;
+				return await this.requestInternal(method, params, options, { ...flags, reportBrokenStream: true });
 			} catch (error) {
 				if (error instanceof McpStreamBrokenError && attempt === 0 && !options.signal?.aborted) continue;
 				if (error instanceof McpError && error.code === MCP_ERROR_CODES.unsupportedProtocolVersion) {
@@ -571,9 +693,51 @@ export class McpClient {
 				throw error;
 			}
 		}
-		const resultType = isObject(result) ? result.resultType : undefined;
-		if (resultType === undefined || resultType === "complete") return result;
-		throw invalid(`Invalid MCP ${method} result: resultType ${JSON.stringify(resultType)}`);
+	}
+
+	/**
+	 * subscriptions/listen (2026-07-28): resolves once the server acknowledges the stream.
+	 * Its notifications reach onNotification listeners like unsolicited 2025 ones.
+	 */
+	async listen(filter: McpSubscriptionFilter): Promise<McpSubscription> {
+		if (this.eraValue !== "modern") throw new Error("subscriptions/listen needs MCP 2026-07-28");
+		const local = new AbortHandle();
+		let listenId: JsonRpcId | undefined;
+		let acknowledge: (honored: McpSubscriptionFilter) => void = () => {};
+		const acknowledged = new Promise<McpSubscriptionFilter>((resolve) => {
+			acknowledge = resolve;
+		});
+		const offAck = this.onNotification("notifications/subscriptions/acknowledged", (params) => {
+			const meta = isObject(params) && isObject(params._meta) ? params._meta : undefined;
+			if (listenId === undefined || meta?.[MCP_META.subscriptionId] !== listenId) return;
+			acknowledge(
+				isObject(params) && isObject(params.notifications) ? (params.notifications as McpSubscriptionFilter) : {},
+			);
+		});
+		const response = this.requestInternal(
+			"subscriptions/listen",
+			{ notifications: filter },
+			{ signal: local.signal, timeoutMs: 0 },
+			{
+				reportBrokenStream: true,
+				listen: true,
+				onId: (id) => {
+					listenId = id;
+				},
+			},
+		);
+		const closed = response.then(
+			(): McpSubscriptionEnd => "graceful",
+			(): McpSubscriptionEnd => (local.isAborted ? "local" : "remote"),
+		);
+		void closed.finally(offAck);
+		const honored = await Promise.race([
+			acknowledged,
+			closed.then((end): never => {
+				throw new McpSubscriptionError(end);
+			}),
+		]);
+		return { honored, closed, close: () => local.abort("closed") };
 	}
 
 	notify(method: string, params?: Record<string, unknown>): Promise<void> {
@@ -611,6 +775,26 @@ export class McpClient {
 
 	/** Every tool, following `nextCursor` through all pages. */
 	async listTools(options: McpRequestOptions = {}): Promise<McpToolInfo[]> {
+		const tools = await this.listAllTools(options);
+		if (this.eraValue !== "modern" || this.transport?.kind !== "http") return tools;
+		// x-mcp-header (SEP-2243): mirror valid marks; a tool with an invalid one is left out.
+		const headers = new Map<string, McpParamHeader[]>();
+		const excluded: Array<{ name: string; reason: string }> = [];
+		const kept = tools.filter((tool) => {
+			const params = paramHeaders(tool.inputSchema);
+			if (Array.isArray(params)) {
+				if (params.length > 0) headers.set(tool.name, params);
+				return true;
+			}
+			excluded.push({ name: tool.name, reason: params.error });
+			return false;
+		});
+		this.paramHeaderMap = headers;
+		this.excludedToolsValue = excluded;
+		return kept;
+	}
+
+	private async listAllTools(options: McpRequestOptions): Promise<McpToolInfo[]> {
 		const tools: McpToolInfo[] = [];
 		const cursors = new Set<string>();
 		let cursor: string | undefined;
@@ -732,9 +916,21 @@ export class McpClient {
 		args?: Record<string, unknown>,
 		options: McpRequestOptions = {},
 	): Promise<CallToolResult> {
-		return validateCallToolResult(
-			await this.request("tools/call", { name, ...(args === undefined ? {} : { arguments: args }) }, options),
-		);
+		const params = { name, ...(args === undefined ? {} : { arguments: args }) };
+		const mirrored = () => {
+			const marks = this.paramHeaderMap.get(name);
+			return marks ? { headers: mirroredParams(marks, args) } : {};
+		};
+		try {
+			return validateCallToolResult(await this.send("tools/call", params, options, mirrored()));
+		} catch (error) {
+			// The headers disagreed with the server: its tool list may have changed (spec), so list and retry once.
+			if (!(error instanceof McpError) || error.code !== MCP_ERROR_CODES.headerMismatch || this.eraValue !== "modern") {
+				throw error;
+			}
+			await this.listTools({ ...(options.signal ? { signal: options.signal } : {}) });
+			return validateCallToolResult(await this.send("tools/call", params, options, mirrored()));
+		}
 	}
 
 	async close(): Promise<void> {
@@ -802,6 +998,7 @@ export class McpClient {
 				cancellable,
 				onProgress: options.onProgress,
 				progressToken,
+				listen: flags.listen === true,
 			};
 			this.pending.set(id, entry);
 			if (progressToken !== undefined) this.progressRequests.set(progressToken, id);
@@ -926,6 +1123,12 @@ export class McpClient {
 		if (method === "notifications/progress") this.handleProgress(params);
 		else if (method === "notifications/cancelled" && isObject(params) && isJsonRpcIdValue(params.requestId)) {
 			this.incoming.get(params.requestId)?.abort(params.reason ?? "cancelled");
+			// A 2026-07-28 server tears a subscription down this way: it ended on purpose.
+			const entry = this.pending.get(params.requestId);
+			if (entry?.listen) {
+				this.removePending(params.requestId, entry);
+				entry.resolve(undefined);
+			}
 		}
 		for (const listener of this.notificationListeners.get(method) ?? []) {
 			try {

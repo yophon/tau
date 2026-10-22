@@ -22,7 +22,9 @@
 //
 // P47 (MCP 2026-07-28, Claude Code): with protocolNegotiation "auto" each server is probed
 // once per run and the era it answered with is kept for reconnects; a stdio server the
-// probe knocked over is started again on the legacy handshake.
+// probe knocked over is started again on the legacy handshake. A 2026-07-28 server's list
+// changes arrive on a subscriptions/listen stream, reopened when it drops; tools with
+// invalid x-mcp-header marks are left out and reported.
 import type {
 	Extension,
 	ExtensionAPI,
@@ -48,6 +50,8 @@ import {
 	type McpProtocolEra,
 	type McpProtocolNegotiation,
 	type McpRoot,
+	type McpSubscriptionEnd,
+	McpSubscriptionError,
 	type McpToolInfo,
 } from "./client.ts";
 import {
@@ -94,6 +98,10 @@ const WAIT_TOOL_MAX_S = 300;
 export const WAIT_FOR_MCP_SERVERS_TOOL = "wait_for_mcp_servers";
 /** Retries of a failed HTTP connect (pi CONNECT_RETRY_DELAYS_MS). */
 const CONNECT_RETRY_DELAYS_MS = [250, 1_000];
+/** Reopening a dropped subscriptions/listen stream (the GET stream's numbers, P47). */
+const LISTEN_INITIAL_DELAY_MS = 1_000;
+const LISTEN_MAX_DELAY_MS = 30_000;
+const LISTEN_MAX_FAILURES = 5;
 
 export interface McpServerConfig extends McpExposureConfig {
 	/** Server name: tools register as `mcp__<name>__<tool>`. Names differing only in `-`/`_` clash. */
@@ -211,6 +219,11 @@ export interface McpServersOptions {
 	 * handshake (P47, Claude Code); "legacy" (default, as the official SDK) only shakes hands.
 	 */
 	protocolNegotiation?: McpProtocolNegotiation;
+	/**
+	 * Hold a subscriptions/listen stream open to 2026-07-28 servers for list changes (default
+	 * true; P47, Claude Code). A host that keeps no idle connection (mobile) turns it off.
+	 */
+	listChanged?: (config: McpServerConfig) => boolean;
 }
 
 export interface McpServersHandle {
@@ -243,6 +256,8 @@ interface ServerState {
 	openedUrls: Set<string>;
 	/** The era the server answered with this run (P47): reconnects skip the probe. */
 	era?: McpProtocolEra;
+	/** Tools already reported as left out for invalid x-mcp-header marks (P47). */
+	excluded: Set<string>;
 }
 
 /** Progress as a line of the tool's live output (P44). */
@@ -289,6 +304,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			prompts: new Map(),
 			activeCalls: [],
 			openedUrls: new Set(),
+			excluded: new Set(),
 			...(clash ? { conflict: `server "${config.name}" conflicts with "${clash.config.name}"` } : {}),
 		});
 	}
@@ -367,7 +383,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			if (client.eraRejected) state.era = undefined;
 		});
 		if (options.elicit) {
-			client.setRequestHandler("elicitation/create", (params, { signal }) => elicit(state, params, signal));
+			client.setRequestHandler("elicitation/create", (params, { signal }) =>
+				elicit(state, params, signal, client.protocolEra === "modern"),
+			);
 			client.onNotification("notifications/elicitation/complete", (params) => {
 				const id =
 					typeof params === "object" && params !== null
@@ -395,6 +413,10 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			state.hasResources = client.serverCapabilities?.resources !== undefined;
 			// Servers without the tools capability (resources or prompts only) do not answer tools/list (pi).
 			const tools = list && client.serverCapabilities?.tools !== undefined ? await client.listTools({ timeoutMs }) : [];
+			reportExcluded(state, client);
+			if (client.protocolEra === "modern" && (options.listChanged?.(state.config) ?? true)) {
+				void keepListening(state, client);
+			}
 			return { client, tools };
 		} catch (error) {
 			await client.close().catch(() => {});
@@ -441,6 +463,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		try {
 			if (client.serverCapabilities?.tools === undefined) return;
 			const tools = await client.listTools({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS });
+			reportExcluded(state, client);
 			if (state.client === client) registerTools(api, state, tools);
 		} catch {
 			// A failed refresh keeps the tools registered so far.
@@ -452,13 +475,72 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		state.activeCalls[state.activeCalls.length - 1]?.ui ?? sessionCtx?.ui;
 
 	/** elicitation/create: check the request, then let the host ask (P44). */
-	const elicit = async (state: ServerState, params: unknown, signal: Parameters<McpElicitHandler>[1]["signal"]) => {
-		const request = parseElicitation(state.config.name, params);
+	const elicit = async (
+		state: ServerState,
+		params: unknown,
+		signal: Parameters<McpElicitHandler>[1]["signal"],
+		modern = false,
+	) => {
+		const request = parseElicitation(state.config.name, params, { modern });
 		const handler = options.elicit;
 		if (!handler) return { action: "cancel" } satisfies McpElicitResult;
 		const result = await handler(request, { ui: uiFor(state), signal });
-		if (request.mode === "url" && result.action === "accept") state.openedUrls.add(request.elicitationId);
+		if (request.mode === "url" && result.action === "accept" && request.elicitationId) {
+			state.openedUrls.add(request.elicitationId);
+		}
 		return result.action === "accept" && request.mode === "form" ? result : { action: result.action };
+	};
+
+	/** Tools left out for invalid x-mcp-header marks, reported once each (spec: log a warning). */
+	const reportExcluded = (state: ServerState, client: McpClient): void => {
+		for (const { name, reason } of client.excludedTools) {
+			if (state.excluded.has(name)) continue;
+			state.excluded.add(name);
+			const message = `MCP server "${state.config.name}": tool "${name}" left out: ${reason}`;
+			if (sessionCtx?.ui) sessionCtx.ui.notify(message, "warning");
+			else options.reportUnavailable?.(message);
+		}
+	};
+
+	/**
+	 * A 2026-07-28 server's list changes come on a subscriptions/listen stream: opened for the
+	 * lists it says change, reopened when it drops (Claude Code) with the GET stream's backoff
+	 * (1 s doubling to 30 s, 5 failures in a row); not when the server ended it or never
+	 * acknowledged it (the Inspector).
+	 */
+	const keepListening = async (state: ServerState, client: McpClient): Promise<void> => {
+		const capabilities = client.serverCapabilities ?? {};
+		const changes = (key: string) => {
+			const capability = capabilities[key];
+			return (
+				typeof capability === "object" &&
+				capability !== null &&
+				(capability as { listChanged?: unknown }).listChanged === true
+			);
+		};
+		const filter = {
+			...(changes("tools") ? { toolsListChanged: true } : {}),
+			...(changes("prompts") ? { promptsListChanged: true } : {}),
+			...(changes("resources") ? { resourcesListChanged: true } : {}),
+		};
+		if (Object.keys(filter).length === 0) return;
+		const sleep = options.platform.sleep;
+		for (let failures = 0; client.connectionState === "connected"; ) {
+			let end: McpSubscriptionEnd;
+			try {
+				const subscription = await client.listen(filter);
+				failures = 0;
+				end = await subscription.closed;
+			} catch (error) {
+				end = error instanceof McpSubscriptionError ? error.end : "remote";
+			}
+			if (end !== "remote" || client.connectionState !== "connected") return;
+			if (failures >= LISTEN_MAX_FAILURES || !sleep) {
+				uiFor(state)?.notify(`MCP server "${state.config.name}": the change notification stream dropped`, "warning");
+				return;
+			}
+			await sleep(Math.min(LISTEN_INITIAL_DELAY_MS * 2 ** failures++, LISTEN_MAX_DELAY_MS));
+		}
 	};
 
 	/** Names of the prompt commands registered so far, to hide the ones a server drops. */
@@ -742,7 +824,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		const lines = [`MCP server "${server}" needs the user to finish a step in the browser first: ${error.message}`];
 		for (const request of requests) {
 			const result = await options.elicit(request, { ui: uiFor(state), signal: signal ?? neverAborted });
-			if (request.mode === "url" && result.action === "accept") state.openedUrls.add(request.elicitationId);
+			if (request.mode === "url" && result.action === "accept" && request.elicitationId) {
+				state.openedUrls.add(request.elicitationId);
+			}
 			const outcome =
 				result.action === "accept"
 					? "the user opened the link"

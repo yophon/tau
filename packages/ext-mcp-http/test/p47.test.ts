@@ -20,6 +20,7 @@ import {
 	McpClient,
 	McpError,
 	McpProbeExitedError,
+	McpSubscriptionError,
 	type McpTransport,
 	mirroredParams,
 	paramHeaders,
@@ -27,7 +28,12 @@ import {
 	TransportEvents,
 } from "../src/index.ts";
 
-type Handler = (method: string, params: Record<string, unknown> | undefined, server: ScriptedTransport) => unknown;
+type Handler = (
+	method: string,
+	params: Record<string, unknown> | undefined,
+	server: ScriptedTransport,
+	id: number,
+) => unknown;
 /** Thrown by a handler: no reply at all (a silent server). */
 const SILENT = Symbol("silent");
 /** Thrown by a handler: the process exits. */
@@ -51,7 +57,7 @@ class ScriptedTransport extends TransportEvents implements McpTransport {
 		const params = record.params as Record<string, unknown> | undefined;
 		queueMicrotask(async () => {
 			try {
-				const result = await this.handle(method, params, this);
+				const result = await this.handle(method, params, this, id);
 				this.emitMessage({ jsonrpc: "2.0", id, result: result as Record<string, unknown> });
 			} catch (error) {
 				if (error === SILENT) return;
@@ -93,9 +99,9 @@ const discoverResult = (capabilities: Record<string, unknown> = { tools: {} }) =
 
 /** A 2026-07-28 server: discover, then tools. */
 function modern(methods: Record<string, Handler> = {}): Handler {
-	return (method, params, transport) => {
+	return (method, params, transport, id) => {
 		const handler = methods[method];
-		if (handler) return handler(method, params, transport);
+		if (handler) return handler(method, params, transport, id);
 		if (method === "initialize") throw rpcError(-32601, "Method not found: initialize");
 		if (method === "server/discover") return discoverResult();
 		if (method === "tools/list") return { resultType: "complete", tools: [{ name: "echo", inputSchema: {} }] };
@@ -231,11 +237,11 @@ describe("P47a probe and fallback", () => {
 
 	it("-32022 lists the versions: a 2025 one means the handshake, none tau speaks is an error", async () => {
 		const handshake = legacy();
-		const dual = new ScriptedTransport((method, params, transport): unknown => {
+		const dual = new ScriptedTransport((method, params, transport, id): unknown => {
 			if (method === "server/discover") {
 				throw rpcError(-32022, "Unsupported protocol version", { supported: ["2027-01-01", "2025-11-25"] });
 			}
-			return handshake(method, params, transport);
+			return handshake(method, params, transport, id);
 		});
 		const a = client();
 		await a.connect(dual, { timeoutMs: 2000 });
@@ -612,5 +618,317 @@ describe("P47a header rules (SEP-2243)", () => {
 			"mcp-param-count": "42",
 			"mcp-param-dry": "false",
 		});
+	});
+});
+
+// --- 47b ---------------------------------------------------------------------------------
+
+const inputRequired = (inputRequests?: Record<string, unknown>, requestState?: string) => ({
+	resultType: "input_required",
+	...(inputRequests ? { inputRequests } : {}),
+	...(requestState !== undefined ? { requestState } : {}),
+});
+const form = (message: string) => ({
+	method: "elicitation/create",
+	params: { mode: "form", message, requestedSchema: { type: "object", properties: { name: { type: "string" } } } },
+});
+const text = (value: string) => ({ resultType: "complete", content: [{ type: "text", text: value }] });
+
+describe("P47b multi round-trip requests", () => {
+	it("an elicitation round: the retry has a new id, the answers and the server's state byte for byte", async () => {
+		const seen: Array<Record<string, unknown> | undefined> = [];
+		const transport = new ScriptedTransport(
+			modern({
+				"tools/call": (_method, params) => {
+					seen.push(params);
+					if (!params?.inputResponses) return inputRequired({ who: form("Your name?") }, "opaque=1+2");
+					const answer = (params.inputResponses as Record<string, { content?: { name?: string } }>).who;
+					return text(`hello ${answer?.content?.name}`);
+				},
+			}),
+		);
+		const mcp = client({ capabilities: { elicitation: { form: {}, url: {} } } });
+		const asked: unknown[] = [];
+		mcp.setRequestHandler("elicitation/create", (params) => {
+			asked.push(params);
+			return { action: "accept", content: { name: "tau" } };
+		});
+		await mcp.connect(transport, { timeoutMs: 2000 });
+		const result = await mcp.callTool("greet", { loud: true });
+		assert.equal(result.content[0]?.text, "hello tau");
+		assert.equal((asked[0] as { message?: string }).message, "Your name?");
+		assert.deepEqual(seen[1]?.arguments, { loud: true });
+		assert.equal(seen[1]?.requestState, "opaque=1+2");
+		assert.deepEqual(seen[1]?.inputResponses, { who: { action: "accept", content: { name: "tau" } } });
+		const ids = transport.sent.filter((message) => message.method === "tools/call").map((message) => message.id);
+		assert.equal(new Set(ids).size, 2);
+		await mcp.close();
+	});
+
+	it("roots/list is answered from the roots; a state-only round retries at once; several rounds chain", async () => {
+		let round = 0;
+		const transport = new ScriptedTransport(
+			modern({
+				"resources/read": (_method, params) => {
+					round++;
+					if (round === 1) return inputRequired({ r: { method: "roots/list" } });
+					if (round === 2) {
+						assert.deepEqual(params?.inputResponses, { r: { roots: [{ uri: "file:///work", name: "work" }] } });
+						assert.equal("requestState" in (params ?? {}), false);
+						return inputRequired(undefined, "step-2");
+					}
+					assert.equal(params?.requestState, "step-2");
+					assert.equal("inputResponses" in (params ?? {}), false);
+					return { resultType: "complete", contents: [{ uri: "file:///work/a", text: "A" }] };
+				},
+			}),
+		);
+		const mcp = client({ roots: [{ uri: "file:///work", name: "work" }] });
+		await mcp.connect(transport, { timeoutMs: 2000 });
+		const read = await mcp.readResource("file:///work/a");
+		assert.equal(read.contents[0]?.text, "A");
+		assert.equal(round, 3);
+		await mcp.close();
+	});
+
+	it("gives up after the round limit, refuses sampling, and stops when the call is aborted", async () => {
+		const transport = new ScriptedTransport(
+			modern({
+				"tools/call": (_method, params) => {
+					if (params?.name === "loop") return inputRequired(undefined, "again");
+					if (params?.name === "sample") return inputRequired({ s: { method: "sampling/createMessage", params: {} } });
+					return inputRequired({ who: form("Name?") });
+				},
+				"prompts/get": () => ({ resultType: "input_required" }),
+			}),
+		);
+		const mcp = client({ maxInputRounds: 3 });
+		const abort = new AbortHandle();
+		mcp.setRequestHandler("elicitation/create", () => {
+			abort.abort("user");
+			return { action: "cancel" };
+		});
+		await mcp.connect(transport, { timeoutMs: 2000 });
+		await assert.rejects(mcp.callTool("loop"), /still needed input after 3 rounds/);
+		assert.equal(transport.sent.filter((message) => message.method === "tools/call").length, 4);
+		await assert.rejects(mcp.callTool("sample"), /asked for sampling\/createMessage, which this client does not offer/);
+		const before = transport.sent.length;
+		await assert.rejects(mcp.callTool("ask", {}, { signal: abort.signal }), /aborted/);
+		assert.equal(transport.sent.length, before + 1, "no retry after the abort");
+		await assert.rejects(mcp.getPrompt("p"), /input_required asks for nothing/);
+		await mcp.close();
+	});
+});
+
+describe("P47b subscriptions/listen", () => {
+	it("acknowledged, notifications reach listeners, closing here cancels it on stdio", async () => {
+		const transport = new ScriptedTransport(
+			modern({
+				"subscriptions/listen": (_method, params, server, id) => {
+					server.notify("notifications/subscriptions/acknowledged", {
+						_meta: { [MCP_META.subscriptionId]: id },
+						notifications: { toolsListChanged: true },
+					});
+					server.notify("notifications/tools/list_changed", { _meta: { [MCP_META.subscriptionId]: id } });
+					assert.deepEqual(params?.notifications, { toolsListChanged: true, resourceSubscriptions: ["x://y"] });
+					throw SILENT;
+				},
+			}),
+		);
+		const mcp = client();
+		await mcp.connect(transport, { timeoutMs: 2000 });
+		let changed = 0;
+		mcp.onNotification("notifications/tools/list_changed", () => changed++);
+		const subscription = await mcp.listen({ toolsListChanged: true, resourceSubscriptions: ["x://y"] });
+		assert.deepEqual(subscription.honored, { toolsListChanged: true });
+		await new Promise((resolve) => setTimeout(resolve, 5));
+		assert.equal(changed, 1);
+		subscription.close();
+		assert.equal(await subscription.closed, "local");
+		const listenId = transport.sent.find((message) => message.method === "subscriptions/listen")?.id;
+		const cancelled = transport.sent.find((message) => message.method === "notifications/cancelled");
+		assert.equal((cancelled?.params as { requestId?: unknown } | undefined)?.requestId, listenId);
+		await mcp.close();
+	});
+
+	it("a server ending it answers graceful; one that never acknowledges is refused", async () => {
+		let release: (() => void) | undefined;
+		const transport = new ScriptedTransport(
+			modern({
+				"subscriptions/listen": (_method, params, server, id) => {
+					if ((params?.notifications as { promptsListChanged?: boolean }).promptsListChanged) {
+						return { resultType: "complete" };
+					}
+					server.notify("notifications/subscriptions/acknowledged", { _meta: { [MCP_META.subscriptionId]: id } });
+					return new Promise((resolve) => {
+						release = () => resolve({ resultType: "complete" });
+					});
+				},
+			}),
+		);
+		const mcp = client();
+		await mcp.connect(transport, { timeoutMs: 2000 });
+		const subscription = await mcp.listen({ toolsListChanged: true });
+		release?.();
+		assert.equal(await subscription.closed, "graceful");
+		await assert.rejects(mcp.listen({ promptsListChanged: true }), (error: unknown) => {
+			assert.ok(error instanceof McpSubscriptionError);
+			assert.equal(error.end, "graceful");
+			return true;
+		});
+		await mcp.close();
+	});
+
+	it("servers: the stream follows the capabilities, a change re-lists the tools, a dropped stream reopens", async () => {
+		let listens = 0;
+		let tools = [{ name: "one", inputSchema: {} }];
+		const { platform, requests } = httpPlatform((request) => {
+			const method = String(request.body?.method);
+			if (method === "server/discover") {
+				return response(200, reply(request, discoverResult({ tools: { listChanged: true }, prompts: {} })));
+			}
+			if (method === "tools/list") return response(200, reply(request, { resultType: "complete", tools }));
+			if (method === "subscriptions/listen") {
+				listens++;
+				const id = request.body?.id;
+				const ack = {
+					jsonrpc: "2.0",
+					method: "notifications/subscriptions/acknowledged",
+					params: { _meta: { [MCP_META.subscriptionId]: id } },
+				};
+				if (listens === 1) {
+					tools = [...tools, { name: "two", inputSchema: {} }];
+					// Ends without a response: dropped.
+					return sse([
+						ack,
+						{
+							jsonrpc: "2.0",
+							method: "notifications/tools/list_changed",
+							params: { _meta: { [MCP_META.subscriptionId]: id } },
+						},
+					]);
+				}
+				return sse([ack, reply(request, { resultType: "complete" })]);
+			}
+			return response(404, "");
+		});
+		const handle = createMcpServers({
+			servers: [{ name: "live", url: "https://mcp.test/mcp" }],
+			platform,
+			clientInfo: { name: "tau", version: "test" },
+			protocolNegotiation: "auto",
+			createTransport: (config) => new StreamableHttpTransport({ url: config.url ?? "", platform }),
+		});
+		const registry = await ExtensionRegistry.load([handle.extension]);
+		await handle.connect();
+		for (let i = 0; i < 100 && listens < 2; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(listens, 2, "reopened once after the drop, not after the graceful end");
+		const listen = requests.find((request) => request.body?.method === "subscriptions/listen");
+		assert.deepEqual((listen?.body?.params as { notifications?: unknown }).notifications, { toolsListChanged: true });
+		assert.ok(registry.tools.has("mcp__live__two"), "re-listed after list_changed");
+		await handle.close();
+	});
+});
+
+describe("P47b x-mcp-header", () => {
+	it("mirrors marked arguments, leaves out invalid tools and reports them, re-lists after -32020", async () => {
+		let region = "Region";
+		const toolList = () => [
+			{
+				name: "sql",
+				inputSchema: {
+					type: "object",
+					properties: { region: { type: "string", "x-mcp-header": region }, q: { type: "string" } },
+				},
+			},
+			{ name: "broken", inputSchema: { type: "object", properties: { n: { type: "number", "x-mcp-header": "N" } } } },
+		];
+		let calls = 0;
+		const { platform, requests } = httpPlatform((request) => {
+			const method = String(request.body?.method);
+			if (method === "server/discover") return response(200, reply(request, discoverResult()));
+			if (method === "tools/list") return response(200, reply(request, { resultType: "complete", tools: toolList() }));
+			calls++;
+			if (calls === 1) {
+				region = "Zone";
+				return response(400, {
+					jsonrpc: "2.0",
+					id: request.body?.id,
+					error: { code: -32020, message: "Header mismatch" },
+				});
+			}
+			return response(200, reply(request, text("rows")));
+		});
+		const reported: string[] = [];
+		const handle = createMcpServers({
+			servers: [{ name: "db", url: "https://mcp.test/mcp" }],
+			platform,
+			clientInfo: { name: "tau", version: "test" },
+			protocolNegotiation: "auto",
+			reportUnavailable: (message) => reported.push(message),
+			createTransport: (config) => new StreamableHttpTransport({ url: config.url ?? "", platform }),
+		});
+		const registry = await ExtensionRegistry.load([handle.extension]);
+		const [status] = await handle.connect();
+		assert.equal(status?.toolCount, 1);
+		assert.equal(registry.tools.has("mcp__db__broken"), false);
+		assert.match(reported.join("\n"), /tool "broken" left out: x-mcp-header .* not a string, integer or boolean/);
+		const tool = registry.tools.get("mcp__db__sql");
+		assert.ok(tool);
+		const result = await tool.execute(
+			{ region: "us-west1", q: "select 1" },
+			new AbortHandle().signal,
+			undefined,
+			{} as never,
+		);
+		assert.match(JSON.stringify(result.content), /rows/);
+		const posts = requests.filter((request) => request.body?.method === "tools/call");
+		assert.equal(posts[0]?.headers["mcp-param-region"], "us-west1");
+		assert.equal(posts[1]?.headers["mcp-param-zone"], "us-west1", "the retry used the re-listed mark");
+		await handle.close();
+	});
+});
+
+describe("P47b elicitation in input_required", () => {
+	it("a URL request without an elicitationId reaches the host's handler; accepting retries at once", async () => {
+		const transport = new ScriptedTransport(
+			modern({
+				"tools/call": (_method, params) =>
+					params?.inputResponses
+						? text("linked")
+						: inputRequired(
+								{
+									link: {
+										method: "elicitation/create",
+										params: { mode: "url", message: "Connect", url: "https://auth.test/x" },
+									},
+								},
+								"s",
+							),
+			}),
+		);
+		const asked: unknown[] = [];
+		const handle = createMcpServers({
+			servers: [{ name: "svc", command: "svc" }],
+			platform: sleepPlatform,
+			clientInfo: { name: "tau", version: "test" },
+			protocolNegotiation: "auto",
+			elicit: async (request) => {
+				asked.push(request);
+				return { action: "accept" };
+			},
+			createTransport: () => transport,
+		});
+		const registry = await ExtensionRegistry.load([handle.extension]);
+		await handle.connect();
+		const tool = registry.tools.get("mcp__svc__echo");
+		assert.ok(tool);
+		const result = await tool.execute({}, new AbortHandle().signal, undefined, {} as never);
+		assert.match(JSON.stringify(result.content), /linked/);
+		assert.deepEqual(asked, [{ mode: "url", server: "svc", message: "Connect", url: "https://auth.test/x" }]);
+		const retry = transport.sent.filter((message) => message.method === "tools/call").at(-1);
+		assert.deepEqual((retry?.params as { inputResponses?: unknown }).inputResponses, { link: { action: "accept" } });
+		await handle.close();
 	});
 });
