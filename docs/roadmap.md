@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-22（P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**下一阶段 = P46，规格书未写**）
+> 最后更新：2026-10-22（P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P46**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -395,9 +395,9 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 收尾时修掉：`-p` 退出前多等 5 秒（等诊断的计时器没随赛跑取消）；P18 的并发 e2e 改成看等待轮数（总时长被新测试的并发负载拉长）。
 - 决策记为 D48（推翻 D38 里「改完自动诊断不做」），偏差见规格书「实施记录」。真机验收待用户执行。
 
-## Phase 46 ⬜ 工具补齐（照 Claude Code）
+## Phase 46 🚧 工具补齐（照 Claude Code）
 
-2026-10-22 用户同意纳入计划，规格书未写。EnterWorktree / ExitWorktree（对话中途进出 git worktree，子 agent 可以在独立的 worktree 里跑）、WaitForMcpServers（等后台还没连上的 MCP 服务器）、PushNotification（桌面通知）、SendMessage（让已经结束的子 agent 接着干）。
+规格书（2026-10-22 确认；用户：「可以，做吧」）：[specs/phase-46-tool-gaps.md](specs/phase-46-tool-gaps.md)。EnterWorktree / ExitWorktree（对话中途进出 git worktree，子 agent 可以在独立的 worktree 里跑）、WaitForMcpServers（等后台还没连上的 MCP 服务器）、PushNotification（桌面通知）、SendMessage（让已经结束的子 agent 接着干）。
 
 ## Phase 47 ⬜ MCP 2026-07-28 新规范
 
@@ -440,6 +440,8 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 
 对照 tau 现有内置扩展、pi 1.2 的示例扩展（`packages/coding-agent/examples/extensions/`）与 Claude Code、Codex 的功能整理。2026-10-19 用户裁决：提问工具与用户钩子进 P35；转交新会话、受保护路径（并入权限规则）、连按 Esc、自定义状态栏、worktree 进 P37；预设、提示里内联命令不做（用户：没什么应用场景）。
 
+- **worktree 的隔离检查**（照 Claude Code）：worktree 会话里拦下改主检出的文件、在主检出里跑命令、用 `git -C`/`GIT_DIR` 把 git 引到主检出、看不出 git 去向的命令。`--worktree`（P37）与 P46 的 `enter_worktree` 都没做；2026-10-22 P46 规格确认时定为备选。
+- **语言服务器冷启动等待**：服务器刚启动、还在建项目时查询结果不全（P45 验收发现，Claude Code #76870 同样）。可在启动后第一次查询前等服务器报告载入完成，超出 Claude Code 的做法；2026-10-22 定为备选。
 - **auto 权限模式**（照 Claude Code；v2.1.283 起是交互会话默认的起始模式）：规则和只读之外的调用交给一个分类模型判断，拦下时把原因告诉模型让它换做法，连续拦 3 次或累计 20 次退回逐条询问；分类模型只看用户消息和工具调用，不看工具结果。2026-10-22 用户：作为备选，现在还没有分类模型，背后的原理也不太清楚。
 - **Claude Code 的四样多 agent 与规划功能**（2026-10-22 用户：「都属于阶段性产物，记成备选吧先」）：
   - Task 四件套（TaskCreate / TaskGet / TaskList / TaskUpdate）：按编号逐项增改的待办，带依赖、存盘、压缩后还在、可跨会话共用；Claude Code v2.1.268 起只在较老的模型上默认提供（新模型不写清单也能跟住多步任务）。tau 现有 `todo_write` 相当于旧的 TodoWrite。
