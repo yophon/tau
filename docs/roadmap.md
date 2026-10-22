@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-22（P47 完成；P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P48**，P49 规格书已确认）
+> 最后更新：2026-10-22（P48 完成；P47 完成；P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P49**（规格书已确认））
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -418,9 +418,17 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 验收中发现并修掉：`-32022` 带着 tau 自己的版本时不重试；SEP-2352 沿用缓存的发现结果；P24 起读 SSE 回复后 `reader.cancel()` 的拒绝没人处理，`tau -p` 连用 SSE 回复的 HTTP 服务器时会退出；P24 起有 MCP 服务器时 `tau -p` 做完还要等满 10 秒。
 - 决策记为 D50，偏差见规格书「实施记录」。真机验收待用户执行。
 
-## Phase 48 🚧 跟进 pi 1.3 / 1.4，补齐 OAuth
+## Phase 48 ✅ 跟进 pi 1.3 / 1.4，补齐 OAuth（2026-10-22）
 
 规格书（2026-10-22 确认；用户：「都按你的建议来，搞吧」）：[specs/phase-48-pi-1-4.md](specs/phase-48-pi-1-4.md)。pi 1.3.0、1.4.0 里 tau 也有的 17 处问题照 pi 修掉（摘要输出上限、`/compact` 指令、空白工具输出、坏 JSON 参数、换模型的思考、重试与溢出、Anthropic 两处、恢复会话的工具集、对话框叠放、提示模板空参数、Windows 找 PowerShell、codemode 排队等）；技术债 #23（OAuth 登录带 challenge、403 升级授权）；参照改成 pi 1.4.0；smoke-tui 在 WSL 自己的文件系统里跑（技术债 #22）。
+
+**完成记录**：
+- 48a 内核与 Anthropic（摘要用模型输出上限 `maxOutputTokens`、`/compact` 指令进拆分轮次、空白工具输出、坏参数先失败、`\u` 修复、换模型丢掉旧思考、推理排在正文前、重试与溢出表、出错结果的图片、Claude 5 的 `none`）；48b CLI 与 TUI（恢复会话的工具集 `setDefaultTools`、对话框叠放、模板空参数、PowerShell 固定位置、`read` 标签、pi-codemode 1.4.0 与工作进程上限）；48c OAuth 登录带 challenge、403 升级授权（技术债 #23 还清）；48d 参照改为 pi 1.4.0（扩展接口 91 个成员不变）、`scripts/smoke-tui-wsl.sh`（技术债 #22 还清）。
+- 测试：全量 1349 个，1344 通过、5 跳过。check、pack smoke、浏览器 bundle、浏览器 runtime、QuickJS、QuickJS MCP 通过。smoke-tui 用新脚本在 WSL 自己的文件系统里跑，全屏与 inline 各 37 个场景各一遍全过，没有再卡在启动阶段。
+- 真 DeepSeek（OpenAI 兼容与 Anthropic 两个协议，经代理记录请求体）：`\usepackage` 原样写进文件；换协议后请求里没有前一个模型的思考；`/compact` 带指令时摘要请求 `max_tokens=8000`（models.json 的上限），摘要按指令保留了文件名与内容。
+- 官方一致性测试 2026-07-28：32 个计分的客户端场景全部通过（`auth/basic-cimd` 保留一条警告）。
+- 验收中发现并修掉：P41 起 `--mode rpc` 遇到项目信任问题时卡住后退出（读 stdin 晚于启动时的对话框）。
+- 决策记为 D51，偏差见规格书「实施记录」。技术债 #18 仍在：用 pi 的代码生成期望值要在 `../pi` 装依赖，这次没装。真机验收待用户执行（TUI 里两个对话框叠放）。
 
 ## Phase 49 ⬜ 补 Claude Code 新出的几个小功能
 
@@ -489,7 +497,5 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
 | 19 | 网关每个对话各加载一份扩展（P30） | MCP 服务器按对话各起一套 stdio 进程，对话多时进程数随之增长 | 现由驻留上限（缺省 16）与空闲卸载控制；出现实测瓶颈再做共享连接池 |
 | 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
-| 23 | OAuth 移植（P32b）与 pi 1.2 的两处差距，P47 跑官方一致性测试时发现：交互登录（`tau mcp login`）不带服务器 401 里的 challenge（资源元数据地址与作用域）；403 `insufficient_scope` 不触发升级授权，只报 HTTP 403 | 资源元数据只在 401 指定地址的服务器登录失败（`auth/metadata-var3`）；需要更大作用域时不会提示重新授权（`auth/scope-step-up`） | 登录前先发一次不带令牌的请求取 challenge 并传给授权流程；传输对 403 `insufficient_scope` 走 `onUnauthorized`，重新登录时合并作用域（flow.ts 已有 `stepUpScope`）。另立小阶段或并进下个 MCP 相关阶段 |
-| 22 | smoke-tui 在 WSL 上偶发首屏超时：某个场景启动后 40 秒屏幕一直空白（P43 收尾时 5 遍完整运行里出现 2 次，都是第 5 个场景；另有一次 inline 下首屏超时），单独重跑不复现，原因未查明。P44 加了现场记录：tau 往终端写的全部内容记成日志，场景超时时报告 tau 进程还在不在、写了多少字节，并把日志另存到 WSL 的 `/tmp/tau-smoke-failures`；之后 3 遍完整运行（共 99 个场景）没有再出现。P45 收尾时 inline 下出现一次（statusline 场景）：tau 进程活着、状态是 `D`（卡在不可中断的 I/O 等待里），45 秒里往终端写了 0 字节。说明它卡在启动阶段的文件读取上，很可能是 WSL 读 `/mnt/d`（9p 文件系统）偶发停顿，不是渲染问题；同一场景单独重跑通过。P47 收尾时 inline 下又出现 5 次（selector、models、p45、p46、p47），都是启动阶段 0 字节、进程状态 `D` 或 `R`，当时 Windows 只剩约 1.2 GB 空闲内存；逐个补跑全部通过，全屏模式同一时段一遍全过 | 收尾时可能要多跑几遍才能拿到一遍全过 | 看 CI（Linux 本地文件系统）上是否出现；不出现就说明是 WSL `/mnt/d` 的环境问题，可以考虑把 smoke 的仓库副本放进 WSL 自己的文件系统再跑 |
 
 （#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

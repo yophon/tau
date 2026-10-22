@@ -131,18 +131,18 @@ class McpOAuthAuthorizationRequiredError extends Error {
 
 ## 验收清单
 
-- [ ] 48a：十条各有回归测试（照 pi 的测试改写），其中：
-  - [ ] 摘要请求的 `max_tokens` 用模型的输出上限（models.json 写了 `maxTokens` 时）；`/compact 指令` 的拆分轮次摘要带上指令；
-  - [ ] 只有空白的工具输出发占位文字；坏 JSON 参数让校验失败并带原文；`\usepackage` 参数保留；
-  - [ ] 换模型后别家模型的思考不再出现在请求里；同一分块的思考排在正文前面；
-  - [ ] 重试模式与 pi 1.4 一致（逐条对表），413 算溢出；
-  - [ ] Anthropic：出错结果的图片在工具结果之后；Claude 5 的 `none` 发 `thinking: {type: "disabled"}`。
-- [ ] 48b：恢复会话的工具集（`+`/`-` 叠加、新装扩展默认启用）；对话框叠放（关掉回到上一个）；空参数保留；PowerShell 从固定位置找到；`read` 标签；codemode 排队（第 3 个脚本等前面的结束）。
-- [ ] 48c：官方一致性测试 2026-07-28 的 32 个客户端场景全部通过（装在 scratchpad，跑完删除）；`tau mcp login` 对资源元数据只在 401 地址的服务器能登录。
-- [ ] 48d：`../pi` 在 v1.4.0；文档版本号与头注释更新；`scripts/smoke-tui-wsl.sh` 在本机完整跑通全屏与 inline。
-- [ ] 真 DeepSeek：一次会话里压缩（含 `/compact 指令`）、坏参数的工具调用、换模型后继续对话。
-- [ ] 全量测试、check、pack smoke、浏览器打包与运行、QuickJS、smoke-tui 全屏与 inline 通过；push 后 CI 通过。
-- [ ] DoD 通用项；D51；文档更新。
+- [x] 48a：十条各有回归测试（照 pi 的测试改写），其中：
+  - [x] 摘要请求的 `max_tokens` 用模型的输出上限（models.json 写了 `maxTokens` 时）；`/compact 指令` 的拆分轮次摘要带上指令；
+  - [x] 只有空白的工具输出发占位文字；坏 JSON 参数让校验失败并带原文；`\usepackage` 参数保留；
+  - [x] 换模型后别家模型的思考不再出现在请求里；同一分块的思考排在正文前面；
+  - [x] 重试模式与 pi 1.4 一致（逐条对表），413 算溢出；
+  - [x] Anthropic：出错结果的图片在工具结果之后；Claude 5 的 `none` 发 `thinking: {type: "disabled"}`。
+- [x] 48b：恢复会话的工具集（`+`/`-` 叠加、新装扩展默认启用）；对话框叠放（关掉回到上一个）；空参数保留；PowerShell 从固定位置找到；`read` 标签；codemode 排队（第 3 个脚本等前面的结束）。
+- [x] 48c：官方一致性测试 2026-07-28 的 32 个客户端场景全部通过（装在 scratchpad，跑完删除）；`tau mcp login` 对资源元数据只在 401 地址的服务器能登录。
+- [x] 48d：`../pi` 在 v1.4.0；文档版本号与头注释更新；`scripts/smoke-tui-wsl.sh` 在本机完整跑通全屏与 inline。
+- [x] 真 DeepSeek：一次会话里压缩（含 `/compact 指令`）、坏参数的工具调用、换模型后继续对话。
+- [x] 全量测试、check、pack smoke、浏览器打包与运行、QuickJS、smoke-tui 全屏与 inline 通过；push 后 CI 通过。
+- [x] DoD 通用项；D51；文档更新。
 
 ## 风险与开放问题
 
@@ -150,3 +150,39 @@ class McpOAuthAuthorizationRequiredError extends Error {
 - **对话框叠放**会改动 TUI 控制器里所有弹框的入口（审批、提问、选择、表单），要逐个回归。
 - **工具集恢复**改的是内核与 CLI 之间的约定，`--tools` 的现有测试要全部过一遍。
 - **开放问题**：无（「需要确认」五条已按建议确认）。
+
+## 实施记录（2026-10-22）
+
+提交：aefd61e（规格书）、d736f93（48a）、fe0890b（48b）、2096b54（48c）、c8061c0（验收中发现的 RPC 启动问题）、bf4b8b6（48d）、文档提交。
+
+### 偏差
+
+- **输出上限放在模型配置上**：接口草案写的是 `CompactionSettings.summaryMaxTokens`，实现为 `OpenAICompatConfig.maxOutputTokens`（`SetModelOptions` 里同名，换模型时一起换）。它是模型的属性，放在压缩设置里换模型就会错。内核的 `runCompaction` 多一个参数 `summaryMaxTokens`，`generateSummaryWithUsage` 与 `generateBranchSummary` 多一个 `maxTokens` 选项。CLI 从 models.json 的 `maxTokens` 取；Anthropic 协议没写时用它每轮请求的缺省上限（`defaultMaxTokens`），OpenAI 兼容没写时不知道，按原比例（确认项 2）。
+- **探测用 `ping`**：确认项 5 写的是新协议发 `server/discover`、旧协议发 `initialize`。登录前还不知道服务器的协议版本，`initialize` 在不要授权的旧服务器上会建一个用不上的会话；JSON-RPC `ping` 在任何版本上都没有副作用，需要授权的服务器照样回 401。
+- **只用了 `acquireWorker`**：确认项 3 提到 `onWorkerStarted`，pi 的 codemode 也只用 `acquireWorker`（名额在 worker 退出时归还），照 pi。工作进程池做在 Node 入口（`CodemodeSandboxFactory.reserve` 可选），纯 ES 入口的沙箱不开线程，不限。
+- **bash 的 WSL 旧启动器没做**：pi 认出 `%SystemRoot%\System32\bash.exe` 后改用 stdin 传命令；tau 没有这条路径（只认 Git Bash 和 PATH 上的 bash），这半条不适用。PowerShell 的两处固定位置与应用商店别名照做。
+- **pi 1.4 转录里按服务商声明工具变更**（`TranscriptToolSupport`，为 Kimi 等）不在 17 条里：tau 没有在消息原位声明工具的传输，核对后不适用。
+- **接口多出来的**：`applyToolModifiers`、`probeOAuthChallenge`、`McpOAuthState.requiredScope`、`locatePowerShell`、`shellPathExists`、`acceptsDisabledThinking`、`CodemodeSlot`、`CODEMODE_WORKER_WAIT_MS`、`RpcUiBridge.listen`/`takeCommands`。
+
+### 验收中发现并修掉
+
+- **P41 起就有**：`--mode rpc` 启动时要问项目信任（当前目录或上级目录有 `.agents/skills` 等受信任门管的资源）就卡住：问题经 RPC 发出，但读 stdin 的循环要等工作区打开后才开始，没人读回答；没有别的事情让进程活着，Node 随即以退出码 13 退出。真 DeepSeek 验收时发现（P47 的验收用 `-p`，无界面时直接拒绝，没撞上）。改为桥一建好就读 stdin，对话框的回答立即交给它，命令排队等循环。
+
+### 真 DeepSeek（deepseek-flash，OpenAI 兼容与 Anthropic 两个协议）
+
+经本地转发代理记录请求体；models.json 两个服务商指向同一模型，`maxTokens: 8000`；RPC 会话，思考级别 high。
+
+- 写 `notes.tex`（`\usepackage{amsmath}`、`\section{Intro}`）并读回：文件内容逐字正确，没有工具错误。
+- 换到 Anthropic 协议后提问：回答正确；发出的请求里没有前一个模型的思考（OpenAI 兼容那边产生了思考块，请求里既没有它们的文字，也没有 thinking 块）。
+- `/compact 保留文件名与两行内容`（保留预算调小以便真的压缩）：摘要请求 `max_tokens=8000`；摘要写了文件名与 `\usepackage`；压缩后模型答对文件名和第二行。
+- 坏参数的工具调用无法让真实模型稳定地发出，由单测覆盖（OpenAI 兼容与 Anthropic 各一条）。
+
+### 官方一致性测试（`@modelcontextprotocol/conformance@0.2.0-alpha.12 client --requirements 2026-07-28`，装在 scratchpad，跑完删除）
+
+被测客户端与 P47 相同（tau 自己的客户端，登录不传 challenge，走 `tau mcp login` 的探测路径）。计分的 32 个客户端场景全部 0 失败，`auth/metadata-var3`（20 项）、`auth/scope-step-up`（29 项）这次通过；`auth/basic-cimd` 保留一条警告（tau 没有公开的 CIMD 文档）。不计分的 7 个（扩展场景与发布后新增的场景）照旧失败。
+
+### 测试
+
+- 全量 1349 个，1344 通过、5 跳过。新增：内核 12、Anthropic 3、CLI 7、codemode 4、OAuth 3，另改写 5 条（换模型的思考、坏参数）。
+- check、pack smoke、浏览器 bundle、浏览器 runtime（Edge）、QuickJS、QuickJS MCP 通过。
+- smoke-tui 用新脚本在 WSL 自己的文件系统里跑：全屏、inline 各 37 个场景，各一遍全过，没有再卡在启动阶段（技术债 #22 还清）。

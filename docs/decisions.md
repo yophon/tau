@@ -239,6 +239,20 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D51：参照改为 pi 1.4.0，照搬 1.3 / 1.4 的修复（2026-10-22，P48，用户确认）
+
+- **重锚到 v1.4.0**：`../pi` 切到 v1.4.0。扩展接口的 91 个成员与 1.2.0 相同；pi 的 MCP 与 OAuth 代码 1.2 到 1.4 没变（只有 `mcp.json` 的 BOM，tau 早已处理），移植文件头写明「1.4.0，与 1.2.0 相同」。
+- **摘要用模型的输出上限**：pi 1.4 的摘要请求不再按 `reserveTokens` 的比例限长，用模型的输出上限。tau 没有模型目录，知道上限时（models.json 的 `maxTokens`；Anthropic 协议没写时用它每轮请求的缺省上限）发它，不知道时保留原来的比例（用户确认，不猜也不省略）。上限放在 `OpenAICompatConfig.maxOutputTokens` 上、随 `setModel` 更新，不放在规格草案写的 `CompactionSettings` 里：它属于模型，换模型就变。
+- **坏参数在执行前失败**：参数不是 JSON 对象时，工具调用带上 `argumentsError`（原因加模型发来的原文），在钩子与审批之前就以错误结果返回，不再拿 `{}` 去跑。
+- **别家模型的思考丢掉**：内核与 Anthropic 扩展都不再把它转成正文（pi 1.3：新模型会把它当成自己写过的话）。
+- **Anthropic 的 `none`**：Opus 5、Haiku 5.5 发 `{type: "disabled"}`；其余模型（Opus 5.5、Sonnet 5.5、Fable）拒绝它，照旧不带 thinking、effort 取 low。
+- **恢复会话的工具集**：内核加 `Agent.setDefaultTools(names, modifiers)`，表示宿主的缺省选择：会话里记下的工具集优先，`--tools +名字/-名字` 在其上增减，会话没记过工具时用缺省。写了工具名或 `--no-tools` 时 CLI 仍调 `setActiveTools`，完全按命令行。会话从没增减过的扩展工具按注册时的规则启用（`defaultActive: false` 的除外）。判断「提过没有」看分支上所有 system 消息，包括压缩之前的。
+- **对话框叠放**：选择框和输入框各一个栈，新的盖住旧的，关掉后旧的重新出现、照常给出结果；被盖住的输入框保留已输入的文字；被盖住的框因信号或超时关闭时只从栈里移除。
+- **codemode 工作进程上限**：缺省 2 个，`TAU_CODEMODE_MAX_WORKERS` 可调，满了按到达顺序排队、最多等 60 秒，等待计入脚本的时限；被取消的工作进程退出前仍占名额（pi-codemode 1.3 的 `acquireWorker`）。限制做在 Node 的 worker 沙箱上（`CodemodeSandboxFactory.reserve` 可选），纯 ES 入口的沙箱不开线程，不限。
+- **OAuth 的 challenge**：`tau mcp login` 与看到 401 的连接不在同一个进程，登录前先发一个不带令牌的 JSON-RPC `ping`，从 401 读资源元数据地址与作用域（pi 的运行时直接从连接拿）。用 `ping` 而不是规格写的 `server/discover`/`initialize`：任何协议版本上都没有副作用，也不建会话。403 `insufficient_scope` 与 401 一样交给授权处理：要求的作用域记进 OAuth 状态（`requiredScope`），报需要重新登录；下次登录把它和已授予的作用域合并、跳过刷新，成功后清掉。`McpOAuthAuthorizationRequiredError` 带上 challenge（pi 用 `onChallenge` 回调）。
+- **smoke-tui 在 WSL 自己的文件系统里跑**（技术债 #22）：`scripts/smoke-tui-wsl.sh` 先 rsync 到 `~/.cache/tau-smoke/tau`。
+- **没做的**：bash 的 WSL 旧启动器（pi 认出 `%SystemRoot%\System32\bash.exe` 后改用 stdin 传命令，tau 没有这条路径，规格里这半条不适用）；pi 1.4 转录里按服务商区分的工具变更声明（Kimi 等，tau 没有在消息原位声明工具的传输）。
+
 ## D50：MCP 2026-07-28 与旧握手并存，照 Claude Code 与官方 SDK 2.x（2026-10-22，P47，用户确认）
 
 - **连接时探测，不支持就照旧握手**：照 Claude Code（v2 运行时问 HTTP 和 stdio 服务器），CLI 缺省 `auto`，`TAU_MCP_PROTOCOL_NEGOTIATION=legacy` 关掉。纯 ES 包缺省 `legacy`，同官方 SDK 的 `versionNegotiation`。网关（搁置中）保持旧握手。

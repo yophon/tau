@@ -188,7 +188,9 @@ tau mcp logout linear
 - 运行网关的机器没有浏览器时，在自己电脑上打开链接、登录，把浏览器最后停在的地址（`http://127.0.0.1:…/callback?code=…`，打不开也没关系）粘贴回终端即可。
 - 支持动态客户端注册；服务器不支持时，在 `oauth` 里写预先注册的客户端：`{ "clientId": "…", "clientSecret": "${cred:linear-secret}", "scopes": ["read"], "callbackPort": 8765 }`。
 - token 存在 `~/.tau/mcp-auth.json`（0600）。连接时带上 token，快过期或收到 401 时用 refresh token 刷新；刷新不了就提示重新 `tau mcp login`，连接时永远不会自己弹浏览器。
-- 流程照抄 pi 1.2（授权码加 PKCE），代码移植自 pi-mcp。
+- 登录前先发一个不带 token 的请求，把服务器 401 里给的资源元数据地址和作用域交给授权流程（P48），资源元数据不在标准位置的服务器也能登录。
+- 服务器要求更大的作用域（403 `insufficient_scope`）时提示重新 `tau mcp login`；登录时把它要的作用域加在已授予的上面，不会丢掉原来的权限（P48）。
+- 流程照抄 pi 1.2（到 1.4 未变，授权码加 PKCE），代码移植自 pi-mcp。
 - 客户端注册信息记着签发它的授权服务器（MCP 2026-07-28，P47）：服务器换了授权服务器，tau 不再用旧的注册信息和 token，重新注册、重新登录。
 
 ## 密钥不给模型看

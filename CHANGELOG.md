@@ -4,6 +4,60 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P48: pi 1.3 / 1.4)
+- Reference re-pinned to pi v1.4.0 (D51). The extension surface is the same
+  91 members; the ported MCP and OAuth code did not change in pi.
+- kernel: summary requests (compaction, split-turn prefix, branch summaries)
+  use the model's output limit when the host knows it
+  (`OpenAICompatConfig.maxOutputTokens`, `SetModelOptions.maxOutputTokens`);
+  unknown keeps the `reserveTokens` shares. `runCompaction` takes it as a
+  6th argument, `generateBranchSummary` as `maxTokens`. CLI: models.json
+  `maxTokens`, else on Anthropic the turns' default.
+- kernel: thinking of another model is dropped instead of replayed as text
+  (also in ext-provider-anthropic).
+- kernel: the retry table follows pi 1.4 (status codes only as codes, gateway
+  and transport failures); HTTP 413 counts as a context overflow.
+- ext-provider-anthropic: thinking level `none` sends
+  `thinking: {type: "disabled"}` on Claude Opus 5 and Haiku 5.5
+  (`acceptsDisabledThinking`); `anthropicThinkingForLevel` takes the model.
+- ext-codemode: `@earendil-works/pi-codemode` 1.4.0. Node workers are capped
+  across sessions (2, `TAU_CODEMODE_MAX_WORKERS`); scripts wait up to 60 s for
+  one (`CodemodeSandboxFactory.reserve`, `CodemodeSlot`,
+  `CODEMODE_WORKER_WAIT_MS`).
+
+### Added (P48)
+- kernel: `ToolCall.argumentsError` and `parseToolCallArguments`: arguments
+  that are not a JSON object fail before hooks and approval, with the text
+  the model sent. `applyToolModifiers`.
+- kernel: `Agent.setDefaultTools(names, modifiers)`: a resumed session's tools
+  win over the host's default selection, with `+name`/`-name` applied to
+  them; extension tools the session never added or removed are active.
+- ext-mcp: `signInMcpServer` takes the server's `challenge` or probes it
+  (`probeOAuthChallenge`); a 403 `insufficient_scope` reaches the auth
+  provider like a 401 and the scope it asks for is added at the next sign-in
+  (`McpOAuthState.requiredScope`); `McpOAuthAuthorizationRequiredError.challenge`.
+  The official 2026-07-28 conformance suite passes all 32 scored client
+  scenarios.
+- host-node: `locatePowerShell`, `shellPathExists`.
+- `scripts/smoke-tui-wsl.sh`: smoke-tui in WSL's own filesystem.
+
+### Fixed (P48)
+- kernel: `\u` not followed by four hex digits (`\usepackage`) lost the field.
+- kernel: whitespace-only tool output went out as is; some endpoints reject it.
+- kernel: reasoning and content in one delta put the thinking after the text.
+- kernel: `/compact` instructions did not reach a split turn's prefix summary.
+- ext-provider-anthropic: images in an error tool result were rejected; they
+  now follow the turn's tool results with a caption.
+- CLI: resuming with `--tools +name` (or `defaultTools` in settings) dropped
+  the tools the session had enabled.
+- CLI TUI: a second picker or prompt replaced the first, whose promise never
+  settled; dialogs now stack.
+- ext-resources: prompt templates dropped empty quoted arguments.
+- host-node: PowerShell outside PATH and Microsoft Store aliases were not found.
+- CLI TUI: `read` line ranges given as numeric strings were not shown.
+- CLI: `--mode rpc` hung, then exited, when the project trust question came up
+  at startup: stdin was only read once the loop ran.
+
 ### Added (P47)
 - ext-mcp-http, ext-mcp: MCP 2026-07-28 next to the initialize handshake.
   `protocolNegotiation: "auto"` (the official SDK's versionNegotiation; the

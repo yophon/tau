@@ -43,7 +43,7 @@ tau 读两份设置文件，键名尽量照 pi：
 | `enableSkillCommands` | `false` 时 `/skill:名字` 不出现在斜杠菜单和 `/help` 里，手动输入照样可用（P41，pi） | true | 是 | 启动、重读 |
 | `images.autoResize` | 读图片时缩到 2000×2000 以内（P40c，pi） | true | 是 | 重读 |
 | `images.blockImages` | 不给模型发图片，换成「Image reading is disabled.」（P40c，pi） | false | 是 | 启动、重读 |
-| `codemode.mode`、`codemode.inlineBudget` | codemode 工具怎么列出其他工具（P24，pi） | `"on"`、3000 | 是 | 启动、重读 |
+| `codemode.mode`、`codemode.inlineBudget` | codemode 工具怎么列出其他工具（P24，pi）。脚本的工作进程同时最多 2 个，多的排队最多等 60 秒；环境变量 `TAU_CODEMODE_MAX_WORKERS` 改上限（P48，pi） | `"on"`、3000 | 是 | 启动、重读 |
 | `permissions` | 权限规则与缺省档位（P37，Claude Code），见 [permissions.md](permissions.md) | 无 | 是 | 每次调用 |
 | `hooks` | 用户钩子（P35，Claude Code），见 [hooks.md](hooks.md) | 无 | 是 | 启动、重读 |
 | `statusLine` | 自定义状态栏（P37c，Claude Code），见 [statusline.md](statusline.md) | 无 | 是 | 启动 |
