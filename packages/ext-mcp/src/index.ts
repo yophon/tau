@@ -73,6 +73,8 @@ export interface McpExtensionOptions {
 	promptCommands?: boolean;
 	/** `@server:uri` completion and attachments (default true; P44). */
 	resourceMentions?: boolean;
+	/** wait_for_mcp_servers while servers connect (default true; P46). */
+	waitTool?: boolean;
 }
 
 /**
@@ -96,6 +98,7 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		...(options.elicit ? { elicit: options.elicit } : {}),
 		...(options.promptCommands === false ? { promptCommands: false } : {}),
 		...(options.resourceMentions === false ? { resourceMentions: false } : {}),
+		...(options.waitTool === false ? { waitTool: false } : {}),
 		// Without a UI (tau -p, pipes) an unavailable server still gets reported.
 		reportUnavailable: (message) => process.stderr.write(`${message}\n`),
 		createTransport: (config) => {

@@ -17,6 +17,7 @@ import {
 	startMockOpenAI,
 } from "../../../test-fixtures/mock-openai.ts";
 import { builtinExtensions, configureBuiltins } from "../src/builtins.ts";
+import { createPushNotificationExtension, PRESENT_KEY_MS, presence } from "../src/push-notification.ts";
 import type { ToolBlock } from "../src/tui/model.ts";
 import { toolView } from "../src/tui/render/tool-views.ts";
 
@@ -132,4 +133,60 @@ test("the send_message row: the recipient, then the summary or the message's fir
 	assert.deepEqual(plain(withSummary.body), ["check the tests"]);
 	const noSummary = toolView(block({ to: "reviewer", message: "Look at the tests too.\nThen report." }), false);
 	assert.deepEqual(plain(noSummary.body), ["Look at the tests too."]);
+});
+
+test("push_notification: sent when you are away; not while you are at the terminal or notifications are off", async () => {
+	let clock = 1_000_000;
+	const sent: string[] = [];
+	const saved = { ...presence };
+	presence.send = (_heading, body) => sent.push(body);
+	const push = async (env: Record<string, string> = {}, message = "Build finished: 3 tests failed") => {
+		const registry = await ExtensionRegistry.load([createPushNotificationExtension({ env, now: () => clock })]);
+		const tool = registry.tools.get("push_notification");
+		assert.ok(tool);
+		const result = await tool.execute({ message, status: "proactive" });
+		return {
+			text: result.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+			details: result.details as Record<string, unknown>,
+		};
+	};
+	try {
+		presence.notifications = true;
+		presence.focused = undefined;
+		presence.keyAt = clock - 5_000;
+		const typing = await push();
+		assert.equal(typing.details.disabledReason, "user_present");
+		assert.equal(typing.details.localSent, false);
+		assert.equal(sent.length, 0);
+
+		presence.keyAt = clock - PRESENT_KEY_MS - 1;
+		presence.focused = true;
+		assert.equal((await push()).details.disabledReason, "user_present", "a focused terminal counts as present");
+
+		presence.focused = false;
+		const away = await push();
+		assert.equal(away.text, "Desktop notification sent (tau has no phone push).");
+		assert.deepEqual(
+			{ local: away.details.localSent, push: away.details.pushSent, reason: away.details.disabledReason },
+			{ local: true, push: false, reason: "no_transport" },
+		);
+		assert.deepEqual(sent, ["Build finished: 3 tests failed"]);
+
+		// The presence check can be switched off (Claude Code's CLAUDE_CODE_DISABLE_NOTIFICATION_PRESENCE_CHECK).
+		presence.focused = true;
+		assert.equal((await push({ TAU_DISABLE_NOTIFICATION_PRESENCE_CHECK: "1" })).details.localSent, true);
+
+		presence.notifications = false;
+		assert.equal((await push({ TAU_DISABLE_NOTIFICATION_PRESENCE_CHECK: "1" })).details.disabledReason, "config_off");
+
+		// Long messages are cut to 200 characters.
+		presence.notifications = true;
+		presence.focused = false;
+		const long = await push({}, "x".repeat(300));
+		assert.equal((long.details.message as string).length, 200);
+		assert.ok((long.details.message as string).endsWith("…"));
+		clock += 1;
+	} finally {
+		Object.assign(presence, saved);
+	}
 });

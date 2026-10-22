@@ -192,7 +192,8 @@ test("exposure: deferred tools are not declared, the mcp_servers section lists t
 	} finally {
 		await s.end();
 	}
-	assert.deepEqual(wireTools(s.requests[0]).sort(), ["mcp__docs__echo", "tool_search"]);
+	// P46: echo is a direct tool, so the model may need to wait for the server (wait_for_mcp_servers).
+	assert.deepEqual(wireTools(s.requests[0]).sort(), ["mcp__docs__echo", "tool_search", "wait_for_mcp_servers"]);
 	const system = (s.requests[0] as { messages: { role: string; content: string }[] }).messages[0];
 	assert.equal(system.role, "system");
 	assert.match(system.content, /MCP servers whose tools are not declared to you\./);

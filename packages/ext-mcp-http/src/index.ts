@@ -123,6 +123,7 @@ export {
 	type McpServersHandle,
 	type McpServersOptions,
 	progressLine,
+	WAIT_FOR_MCP_SERVERS_TOOL,
 } from "./servers.ts";
 export {
 	type McpTransport,

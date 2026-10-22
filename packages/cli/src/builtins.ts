@@ -353,7 +353,7 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		createSubagentsExtension({
 			tasksCommand: false,
 			// P44: scheduled tasks and monitors belong to the session, not to a child that ends.
-			parentOnlyTools: ["cron_create", "cron_list", "cron_delete", "schedule_wakeup", "monitor"],
+			parentOnlyTools: ["cron_create", "cron_list", "cron_delete", "schedule_wakeup", "monitor", "push_notification"],
 			// P46 (Claude Code's SendMessage): continue or steer subagents; the gateway keeps what it had.
 			sendMessage: state.extended,
 			persist: state.extended,

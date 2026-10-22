@@ -35,6 +35,7 @@ import type {
 	ToolResult,
 	UiCapability,
 } from "@yophon/tau-kernel";
+import { AbortHandle } from "@yophon/tau-kernel";
 import {
 	type CallToolResult,
 	McpClient,
@@ -74,6 +75,10 @@ const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** For calls made without a signal: an elicitation then waits for the user alone. */
 const neverAborted: TauAbortSignal = { aborted: false, addEventListener: () => {}, removeEventListener: () => {} };
 const DEFAULT_STARTUP_WAIT_MS = 10_000;
+/** wait_for_mcp_servers: how long it waits by default and at most (s; tau's numbers, Claude Code's are not public). */
+const WAIT_TOOL_DEFAULT_S = 60;
+const WAIT_TOOL_MAX_S = 300;
+export const WAIT_FOR_MCP_SERVERS_TOOL = "wait_for_mcp_servers";
 /** Retries of a failed HTTP connect (pi CONNECT_RETRY_DELAYS_MS). */
 const CONNECT_RETRY_DELAYS_MS = [250, 1_000];
 
@@ -181,6 +186,11 @@ export interface McpServersOptions {
 	promptCommands?: boolean;
 	/** Complete and attach `@server:uri` resource mentions (default true; P44, Claude Code). */
 	resourceMentions?: boolean;
+	/**
+	 * Register wait_for_mcp_servers while servers are connecting in the background (default
+	 * true; P46, Claude Code's WaitForMcpServers).
+	 */
+	waitTool?: boolean;
 }
 
 export interface McpServersHandle {
@@ -764,6 +774,81 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		await Promise.allSettled(closing.map((client) => client.close()));
 	};
 
+	/**
+	 * wait_for_mcp_servers (P46, Claude Code's WaitForMcpServers): registered once some server
+	 * is still connecting, then kept for the session (Claude Code keeps it listed).
+	 */
+	let waitToolRegistered = false;
+	const registerWaitTool = (target: ExtensionAPI): void => {
+		if (waitToolRegistered || options.waitTool === false) return;
+		waitToolRegistered = true;
+		target.registerTool(
+			{
+				name: WAIT_FOR_MCP_SERVERS_TOOL,
+				description:
+					"Wait for MCP servers that are still connecting in the background, so their tools become available in this conversation. Call it when a server you need is not connected yet. Returns each server's state and how many tools it offers.",
+				promptSnippet: "Wait for MCP servers still connecting",
+				parameters: {
+					type: "object",
+					properties: {
+						servers: {
+							type: "array",
+							items: { type: "string" },
+							description: "Server names to wait for; all servers still connecting when omitted",
+						},
+						timeout_seconds: {
+							type: "number",
+							description: `How long to wait at most (default ${WAIT_TOOL_DEFAULT_S}, at most ${WAIT_TOOL_MAX_S})`,
+						},
+					},
+				},
+				execute: async (args, signal) => {
+					const named = Array.isArray(args.servers)
+						? args.servers.filter((name): name is string => typeof name === "string" && name.trim() !== "")
+						: undefined;
+					const unknown = (named ?? []).filter((name) => !states.some((state) => state.config.name === name));
+					const targets = named
+						? states.filter((state) => named.includes(state.config.name))
+						: states.filter((state) => state.connecting);
+					const seconds = Math.min(
+						WAIT_TOOL_MAX_S,
+						Math.max(1, typeof args.timeout_seconds === "number" ? args.timeout_seconds : WAIT_TOOL_DEFAULT_S),
+					);
+					const pending = targets.flatMap((state) => (state.connecting ? [state.connecting] : []));
+					if (pending.length > 0) {
+						const timer = new AbortHandle();
+						const sleep = options.platform.sleep;
+						await Promise.race([
+							Promise.all(pending),
+							aborted(signal),
+							...(sleep ? [sleep(seconds * 1000, timer.signal).catch(() => undefined)] : []),
+						]);
+						timer.abort();
+					}
+					const line = (state: ServerState): string => {
+						const name = state.config.name;
+						if (state.connecting) return `${name}: still connecting`;
+						if (state.client?.connectionState === "connected") {
+							return `${name}: connected (${state.tools.size} tool${state.tools.size === 1 ? "" : "s"})`;
+						}
+						const status = lastStatus.get(name);
+						return `${name}: offline${status?.error ? ` — ${status.error}` : ""}`;
+					};
+					const lines = [
+						...(targets.length === 0 && !named ? ["No MCP server is connecting."] : []),
+						...targets.map(line),
+						...unknown.map(
+							(name) =>
+								`${name}: no such server (configured: ${states.map((state) => state.config.name).join(", ") || "none"})`,
+						),
+					];
+					return { content: [{ type: "text", text: lines.join("\n") }] };
+				},
+			},
+			{ risk: "low" },
+		);
+	};
+
 	/** Wait for these servers' connections in flight, until `signal` aborts. */
 	const waitFor = async (waiting: readonly ServerState[], signal: ExtensionContext["signal"]): Promise<void> => {
 		const pending = waiting.flatMap((state) => (state.connecting ? [state.connecting] : []));
@@ -786,6 +871,10 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			// active before the first request, not only once a slow server has connected.
 			for (const state of states) if (!state.conflict) activateReachingTools(extensionApi, state);
 			void connect();
+			// Servers reached through tool_search are waited for there (Claude Code: no WaitForMcpServers with tool search).
+			if (states.some((state) => state.connecting && configuredExposures(state.config).has("direct"))) {
+				registerWaitTool(extensionApi);
+			}
 		});
 
 		// The first prompt waits for servers whose tools are declared to the model, so they are

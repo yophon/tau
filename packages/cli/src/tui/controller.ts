@@ -44,6 +44,7 @@ import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty
 import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
 import { openUrl } from "../open-url.ts";
+import { markActivity, presence } from "../push-notification.ts";
 import { autoTitle } from "../session-title.ts";
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
@@ -217,6 +218,9 @@ export class TuiController {
 	constructor(options: RunTuiOptions, deps: TuiDeps = {}) {
 		this.options = options;
 		this.deps = deps;
+		// P46: push_notification asks whether you are here, and sends through the same notifier.
+		presence.notifications = options.notify !== "off";
+		presence.send = (heading, body) => (this.deps.notify ?? notifyDesktop)(heading, body);
 		this.agent = options.agent;
 		this.startedAt = (deps.now ?? Date.now)();
 		this.statusLineRunner = options.statusLine?.((lines, padding) =>
@@ -849,6 +853,9 @@ export class TuiController {
 	 * reports — so nothing is left for Ink, which only keeps the terminal in raw mode.
 	 */
 	filterInput(data: string): string {
+		// Keys and pastes count as you being here; mouse and focus reports do not (P46).
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: the reports start with ESC
+		if (!/^\x1b\[(?:I|O|<|M)/.test(data)) markActivity((this.deps.now ?? Date.now)());
 		if (this.splitTimer) clearTimeout(this.splitTimer);
 		this.splitTimer = undefined;
 		this.handleTokens(this.splitter.feed(data));
@@ -896,8 +903,10 @@ export class TuiController {
 	/** Mouse and focus reports; the kitty keyboard reply (pi). Other sequences are not input. */
 	private handleSequence(sequence: string): void {
 		const report = inputReport(sequence);
-		if (report?.kind === "focus") this.focused = report.focused;
-		else if (report) this.handlePointer(report);
+		if (report?.kind === "focus") {
+			this.focused = report.focused;
+			presence.focused = report.focused;
+		} else if (report) this.handlePointer(report);
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: the reply starts with ESC
 		else if (/^\x1b\[\?\d+u$/.test(sequence)) this.splitter.kittyActive = true;
 	}

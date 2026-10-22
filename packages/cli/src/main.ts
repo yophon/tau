@@ -117,6 +117,7 @@ import {
 	splitRuleList,
 	WorkspacePermissions,
 } from "./permissions.ts";
+import { createPushNotificationExtension, markActivity } from "./push-notification.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
 import {
@@ -1086,7 +1087,7 @@ async function loadExtensionRegistry(
 					// parked and keeps what it had.
 					...(extendedSettings
 						? { cwd, elicit: createElicitHandler(hooks, openUrl) }
-						: { resourceTools: false, images: false, promptCommands: false, resourceMentions: false }),
+						: { resourceTools: false, images: false, promptCommands: false, resourceMentions: false, waitTool: false }),
 				}),
 			]);
 		}
@@ -1759,6 +1760,8 @@ async function main(): Promise<void> {
 		useTui || options.mode !== undefined || options.gateway !== undefined
 			? undefined
 			: createInterface({ input: process.stdin, output: process.stdout });
+	// P46: push_notification is not sent while you are typing at the REPL.
+	readline?.on("line", () => markActivity());
 	const out = stdoutWriter();
 	const rpcBridge = options.mode === "rpc" ? new RpcUiBridge(out) : undefined;
 	// Before anything imports Ink: a shell exporting CI must not leave the TUI blank.
@@ -2012,6 +2015,8 @@ async function main(): Promise<void> {
 					: {}),
 			}),
 			...(scheduling ? [scheduling.extension] : []),
+			// P46 (Claude Code's PushNotification): where a terminal can show it.
+			...(extended && (workspaceHost === "tui" || workspaceHost === "repl") ? [createPushNotificationExtension()] : []),
 			...(spec.extensions ?? []),
 		];
 		const trustUi = spec.trustPrompt === false ? undefined : spec.ui;
