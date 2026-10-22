@@ -11,7 +11,6 @@
  * for the same reason. Committed blocks never change; /clear starts a new
  * epoch instead.
  */
-import { LSP_DIAGNOSTICS_TYPE } from "@yophon/tau-ext-lsp";
 import type { AgentEvent, AgentMessage, ApprovalRequest } from "@yophon/tau-kernel";
 import { estimateStringTokens, userContentText } from "@yophon/tau-kernel";
 import type { Tone } from "./format.ts";
@@ -351,9 +350,12 @@ function commitReady(state: UiState): UiState {
 	return { ...state, committed: [...state.committed, ...state.live.slice(0, n)], live: state.live.slice(n) };
 }
 
+/** @yophon/tau-ext-lsp's LSP_DIAGNOSTICS_TYPE, spelled out: the TUI does not load the package (pack smoke). */
+export const LSP_DIAGNOSTICS_CUSTOM_TYPE = "lsp_diagnostics";
+
 /** An LSP diagnostics message (P45) as a block: its summary and the list without the model's tags. */
 export function diagnosticsBlock(message: AgentMessage): { summary: string; text: string } | undefined {
-	if (message.role !== "custom" || message.customType !== LSP_DIAGNOSTICS_TYPE) return undefined;
+	if (message.role !== "custom" || message.customType !== LSP_DIAGNOSTICS_CUSTOM_TYPE) return undefined;
 	const summary = (message.details as { summary?: unknown } | undefined)?.summary;
 	if (typeof summary !== "string") return undefined;
 	const text = userContentText(message.content)

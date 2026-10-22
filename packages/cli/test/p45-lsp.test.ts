@@ -10,6 +10,7 @@ import { join } from "node:path";
 import process from "node:process";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { LSP_DIAGNOSTICS_TYPE } from "@yophon/tau-ext-lsp";
 import {
 	defaultPlatform,
 	type ExtensionContext,
@@ -30,7 +31,7 @@ import {
 	RECOMMENDATION_TIMEOUT_MS,
 	recommendationStatePath,
 } from "../src/lsp.ts";
-import { diagnosticsBlock } from "../src/tui/model.ts";
+import { diagnosticsBlock, LSP_DIAGNOSTICS_CUSTOM_TYPE } from "../src/tui/model.ts";
 import { blockLines } from "../src/tui/render/lines.ts";
 import { messagesToBlocks } from "../src/tui/replay.ts";
 
@@ -306,6 +307,7 @@ const DIAGNOSTICS_MESSAGE = {
 };
 
 test("TUI: the diagnostics line, opened by Ctrl+O, and the same after a resume", () => {
+	assert.equal(LSP_DIAGNOSTICS_CUSTOM_TYPE, LSP_DIAGNOSTICS_TYPE);
 	const block = diagnosticsBlock(DIAGNOSTICS_MESSAGE);
 	assert.deepEqual(block, {
 		summary: "Found 1 new diagnostic issue in 1 file",

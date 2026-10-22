@@ -125,7 +125,8 @@ export const LSP_CATALOG: readonly LspCatalogEntry[] = [
 				".cjs": "javascript",
 			},
 		},
-		install: "npm install -g typescript-language-server typescript",
+		// typescript@7 is the native compiler and ships no tsserver.js, which this server needs (checked 2026-10-22).
+		install: "npm install -g typescript-language-server typescript@6",
 	},
 ];
 

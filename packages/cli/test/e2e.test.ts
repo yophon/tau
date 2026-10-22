@@ -158,15 +158,15 @@ test("CLI runs a full tool round-trip against a mock provider", async () => {
 
 test("parallel tool batch executes concurrently and keeps wire order stable (P18)", async () => {
 	await withSandbox(async ({ cwd, home }) => {
-		// 并发判定用跨进程信号：call_1 轮询等 call_2 创建的 flag 文件（上限 5s 后放行），
-		// call_2 立即创建 flag。并行 → call_1 亚秒完成；串行 → call_1 空转满 5s。
-		// 断言总时长 < 4.5s（含 CLI 启动 1–2s），串行必然超过 6s——判据方向性强且余量足。
+		// 并发判定用跨进程信号：call_1 轮询等 call_2 创建的 flag 文件（最多 100 轮、每轮 50 ms），
+		// call_2 立即创建 flag。并行 → call_1 几轮就看到 flag；串行 → call_1 空转满 100 轮。
+		// 判据是 call_1 报出的轮数，不是总时长：总时长含 CLI 启动，全量并发跑测试时会被拉长（P45）。
 		const mock = await startMockOpenAI([
 			() =>
 				mockMultiToolCallTurn([
 					{
 						name: "bash",
-						args: { command: "for i in $(seq 1 100); do [ -f flag ] && break; sleep 0.05; done; echo t1" },
+						args: { command: "for i in $(seq 1 100); do [ -f flag ] && break; sleep 0.05; done; echo t1 $i" },
 					},
 					{ name: "bash", args: { command: "touch flag && echo t2" } },
 				]),
@@ -180,13 +180,12 @@ test("parallel tool batch executes concurrently and keeps wire order stable (P18
 			},
 		]);
 		try {
-			const started = Date.now();
 			const cli = startCli(["-p", "run them"], { cwd, home, baseUrl: mock.baseUrl });
 			await cli.waitForExit();
-			const elapsed = Date.now() - started;
-			assert.ok(elapsed < 4500, `expected concurrent execution, took ${elapsed}ms`);
 			// tool 消息按 assistant 源序上 wire（t1,t2），与完成序（t2 先）无关
-			assert.ok(cli.output().includes("tools: t1,t2"), cli.output());
+			const rounds = cli.output().match(/tools: t1 (\d+),t2/);
+			assert.ok(rounds, cli.output());
+			assert.ok(Number(rounds[1]) < 100, `expected concurrent execution, call_1 waited ${rounds[1]} rounds`);
 			assert.equal(mock.requests.length, 2);
 			const secondRequest = mock.requests[1] as { messages: { role: string; tool_call_id?: string }[] };
 			assert.deepEqual(
