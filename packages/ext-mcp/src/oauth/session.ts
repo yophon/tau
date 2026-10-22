@@ -3,6 +3,9 @@
 // start a browser flow: they send the stored access token and, after a 401 or
 // near expiry, refresh it; when that is not possible they fail with
 // McpOAuthAuthorizationRequiredError and the user runs `tau mcp login <server>`.
+// P48 (pi 1.2 challenge handling): a 403 `insufficient_scope` is remembered in the
+// store, and sign-in asks an unauthenticated request for the server's challenge (it
+// runs in another process than the connection that saw the 401).
 // Differences from pi: no Client ID Metadata Documents (dynamic registration or
 // a configured client only) and no cross-process refresh lock (pi uses
 // proper-lockfile): a refresh re-reads the store first, and the store is
@@ -14,7 +17,7 @@ import type { OAuthCallback } from "./callback.ts";
 import { OAuthCallbackServer } from "./callback.ts";
 import { parseWwwAuthenticate } from "./discovery.ts";
 import { McpOAuthAuthorizationRequiredError } from "./errors.ts";
-import { authorizeMcp } from "./flow.ts";
+import { authorizeMcp, stepUpScope } from "./flow.ts";
 import { McpOAuthProvider, type McpOAuthState, type McpOAuthStateStore } from "./provider.ts";
 import type { OAuthChallenge, OAuthClientInformationMixed } from "./types.ts";
 
@@ -111,6 +114,38 @@ function timedFetch(): typeof fetch {
 	};
 }
 
+/** The scopes of all arguments, each once, in order (pi mergeScopes). */
+function mergeScopes(...scopes: (string | undefined)[]): string | undefined {
+	const merged = [...new Set(scopes.flatMap((scope) => scope?.split(/\s+/).filter(Boolean) ?? []))];
+	return merged.length > 0 ? merged.join(" ") : undefined;
+}
+
+/**
+ * The server's challenge to a request without a token (P48): what a connection's 401 would carry —
+ * the resource metadata URL and scope. `tau mcp login` runs apart from the connection that saw it.
+ * A JSON-RPC ping has no effect on any protocol version; anything but a 401/403 means no challenge.
+ */
+export async function probeOAuthChallenge(
+	serverUrl: string,
+	options: { fetch?: typeof fetch; signal?: AbortSignal } = {},
+): Promise<OAuthChallenge | undefined> {
+	try {
+		const response = await (options.fetch ?? timedFetch())(serverUrl, {
+			method: "POST",
+			headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: "tau-oauth-probe", method: "ping" }),
+			...(options.signal ? { signal: options.signal } : {}),
+		});
+		await response.body?.cancel().catch(() => undefined);
+		if (response.status !== 401 && response.status !== 403) return undefined;
+		const header = response.headers.get("www-authenticate");
+		return header ? parseWwwAuthenticate(header) : undefined;
+	} catch {
+		// Unreachable now: the flow's own discovery reports it.
+		return undefined;
+	}
+}
+
 function registeredRedirectUrls(client: OAuthClientInformationMixed | undefined): string[] {
 	return client && "redirect_uris" in client ? client.redirect_uris : [];
 }
@@ -150,7 +185,7 @@ export function createMcpOAuth(options: {
 			const state = await store.load();
 			// Another request (or process) already replaced the token.
 			if (state?.tokens?.access_token !== staleToken) return;
-			if (!state?.tokens?.refresh_token) throw new McpOAuthAuthorizationRequiredError();
+			if (!state?.tokens?.refresh_token) throw new McpOAuthAuthorizationRequiredError(challenge);
 			const redirectUrl = registeredRedirectUrls(state.clientInformation)[0] ?? FALLBACK_REDIRECT_URL;
 			const provider = createProvider(serverUrl, store, settings, redirectUrl, () => {});
 			const result = await authorizeMcp(provider, {
@@ -159,7 +194,7 @@ export function createMcpOAuth(options: {
 				...(challenge?.scope ? { scope: challenge.scope } : {}),
 				fetch: timedFetch(),
 			});
-			if (result === "REDIRECT") throw new McpOAuthAuthorizationRequiredError();
+			if (result === "REDIRECT") throw new McpOAuthAuthorizationRequiredError(challenge);
 		})().finally(() => {
 			refreshing = undefined;
 		});
@@ -179,11 +214,27 @@ export function createMcpOAuth(options: {
 		},
 		onUnauthorized: async (context) => {
 			const challenge = parseWwwAuthenticate(context.response.headers?.get("www-authenticate") ?? null);
-			// A refresh keeps the granted scope, so more scope needs a new sign-in.
-			if (challenge.error === "insufficient_scope") throw new McpOAuthAuthorizationRequiredError();
+			// A refresh keeps the granted scope, so more scope needs a new sign-in. The scope asked for is
+			// remembered for it: `tau mcp login` runs in another process (P48).
+			if (challenge.error === "insufficient_scope") {
+				const state = await store.load();
+				if (state && challenge.scope) {
+					await store.save({ ...state, requiredScope: mergeScopes(state.requiredScope, challenge.scope) });
+				}
+				throw new McpOAuthAuthorizationRequiredError(challenge);
+			}
 			await refresh(context.token, challenge);
 		},
 	};
+}
+
+/** A sign-in got the scope a 403 asked for: forget it. */
+async function clearRequiredScope(store: McpOAuthStateStore): Promise<void> {
+	const state = await store.load();
+	if (state?.requiredScope === undefined) return;
+	const next = { ...state };
+	delete next.requiredScope;
+	await store.save(next);
 }
 
 export interface McpSignInPrompt {
@@ -254,12 +305,24 @@ export async function signInMcpServer(options: {
 	serverUrl: string;
 	store: McpOAuthStateStore;
 	settings: McpOAuthSettings;
+	/** The server's challenge (resource metadata URL, scope) when the caller has it; probed when absent (P48). */
+	challenge?: OAuthChallenge;
 	prompt: McpSignInPrompt;
 	signal?: AbortSignal;
 }): Promise<void> {
 	const { serverUrl, store, settings, signal } = options;
 	if (signal?.aborted) throw new McpSignInCancelledError();
 	const stored = await store.load();
+	const challenge = options.challenge ?? (await probeOAuthChallenge(serverUrl, signal ? { signal } : {}));
+	if (signal?.aborted) throw new McpSignInCancelledError();
+	// A server that asked for more scope (now, or in a connection's 403) gets it on top of the scope
+	// granted so far, since the challenge may list only the missing scopes (pi 1.2 step-up).
+	const required = stored?.requiredScope;
+	const stepUp = challenge?.error === "insufficient_scope" || required !== undefined;
+	const scope = mergeScopes(
+		settings.scope,
+		stepUp ? stepUpScope(stored?.tokens?.scope, mergeScopes(challenge?.scope, required)) : challenge?.scope,
+	);
 	// Reuse the port of the registered redirect URI so the registered client stays valid.
 	const registered = registeredRedirectUrls(stored?.clientInformation)[0];
 	const port = settings.callbackPort ?? (registered ? Number(new URL(registered).port) || undefined : undefined);
@@ -294,9 +357,14 @@ export async function signInMcpServer(options: {
 			serverUrl,
 			fetch: timedFetch(),
 			...(signal ? { signal } : {}),
-			...(settings.scope ? { scope: settings.scope } : {}),
+			...(challenge?.resourceMetadataUrl ? { resourceMetadataUrl: challenge.resourceMetadataUrl } : {}),
+			...(scope ? { scope } : {}),
 		};
-		if ((await authorizeMcp(provider, flow)) === "AUTHORIZED") return;
+		// A refresh keeps the granted scope; a server asking for more needs the browser flow.
+		if ((await authorizeMcp(provider, { ...flow, skipRefresh: stepUp })) === "AUTHORIZED") {
+			await clearRequiredScope(store);
+			return;
+		}
 		if (!authorizationUrl) throw new Error("OAuth flow did not produce an authorization URL");
 		const state = await provider.state();
 		const authorizationRedirectUrl = new URL(authorizationUrl.searchParams.get("redirect_uri") ?? redirectUrl);
@@ -309,6 +377,7 @@ export async function signInMcpServer(options: {
 			signal,
 		);
 		await authorizeMcp(provider, { ...flow, authorizationCode: code, ...(iss ? { iss } : {}) });
+		await clearRequiredScope(store);
 	} catch (error) {
 		if (signal?.aborted) throw new McpSignInCancelledError();
 		throw error;

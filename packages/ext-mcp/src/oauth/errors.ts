@@ -1,5 +1,9 @@
 // Ported from pi 1.2.0 packages/mcp/src/oauth/errors.ts (MIT, earendil-works/pi) for P32b; changes are
-// limited to imports. Keep in step with pi when the reference is re-pinned (D23).
+// limited to imports, except P48: McpOAuthAuthorizationRequiredError carries the server's challenge
+// (pi hands it to the auth provider's onChallenge callback instead). Keep in step with pi when the
+// reference is re-pinned (D23).
+import type { OAuthChallenge } from "./types.ts";
+
 export class OAuthError extends Error {
 	readonly code: string;
 	readonly errorUri: string | undefined;
@@ -50,8 +54,12 @@ export class OAuthRegistrationError extends Error {
 }
 
 export class McpOAuthAuthorizationRequiredError extends Error {
-	constructor() {
+	/** What the server asked for, a 401 or a 403 `insufficient_scope` (P48); sign-in can pass it on. */
+	readonly challenge?: OAuthChallenge;
+
+	constructor(challenge?: OAuthChallenge) {
 		super("MCP OAuth authorization requires user interaction");
 		this.name = "McpOAuthAuthorizationRequiredError";
+		if (challenge) this.challenge = challenge;
 	}
 }

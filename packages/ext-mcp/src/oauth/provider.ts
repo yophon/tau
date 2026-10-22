@@ -21,6 +21,11 @@ export interface McpOAuthState {
 	codeVerifier?: string;
 	oauthState?: string;
 	discovery?: OAuthDiscoveryState;
+	/**
+	 * Scope a server asked for in a 403 `insufficient_scope` (P48): the next sign-in asks for it on
+	 * top of the granted scope, then clears it.
+	 */
+	requiredScope?: string;
 }
 
 export interface McpOAuthStateStore {

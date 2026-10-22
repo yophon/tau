@@ -60,20 +60,30 @@ export interface StreamableHttpTransportOptions {
 	 * session is initialized; reopened with backoff when it drops (needs Platform.sleep).
 	 */
 	openGetStream?: boolean;
-	/** OAuth (P32b): a bearer token per request, and a refresh after a 401 before one retry (pi AuthProvider). */
+	/** OAuth (P32b): a bearer token per request, and a refresh after a 401 (or a 403 insufficient_scope) before one retry (pi AuthProvider). */
 	auth?: McpAuth;
 }
 
 /** Supplies bearer tokens and may refresh them after a 401 (pi's AuthProvider, without its fetch). */
 export interface McpAuth {
 	token(): Promise<string | undefined>;
-	/** Refresh after a 401, or throw (for example "sign in again"); the request is retried once when it returns. */
+	/**
+	 * Refresh after a 401, or a 403 whose challenge reports `insufficient_scope` (step-up, P48), or
+	 * throw (for example "sign in again"); the request is retried once when it returns.
+	 */
 	onUnauthorized?(context: {
 		response: { status: number; headers?: { get(name: string): string | null | undefined } };
 		serverUrl: string;
 		/** The token the rejected request carried. */
 		token?: string;
 	}): Promise<void>;
+}
+
+/** 401, or 403 with an `insufficient_scope` bearer challenge: step-up authorization (pi 1.2 needsAuthorization). */
+function needsAuthorization(response: PlatformResponse): boolean {
+	if (response.status === 401) return true;
+	if (response.status !== 403) return false;
+	return /(?:^|[\s,])error="?insufficient_scope"?/i.test(response.headers?.get("www-authenticate") ?? "");
 }
 
 /** Reconnecting a dropped SSE stream (pi's defaults): from 1 s doubling to 30 s, 5 failures in a row. */
@@ -200,7 +210,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			// A 2026-07-28 server explains a 4xx in a JSON-RPC error body (version, headers, method).
 			const body = modern !== undefined ? await response.text().catch(() => "") : undefined;
 			request.abort("settled");
-			if (response.status === 401 && !retried && this.options.auth?.onUnauthorized) {
+			if (needsAuthorization(response) && !retried && this.options.auth?.onUnauthorized) {
 				await this.options.auth.onUnauthorized({
 					response,
 					serverUrl: this.options.url,

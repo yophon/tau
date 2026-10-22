@@ -31,8 +31,10 @@ export {
 	type McpOAuthSettings,
 	McpSignInCancelledError,
 	type McpSignInPrompt,
+	probeOAuthChallenge,
 	signInMcpServer,
 } from "./oauth/session.ts";
+export type { OAuthChallenge } from "./oauth/types.ts";
 export { StdioTransport, type StdioTransportOptions } from "./stdio.ts";
 export type { McpServerConfig, McpServerStatus };
 

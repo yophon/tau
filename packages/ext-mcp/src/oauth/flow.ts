@@ -488,7 +488,7 @@ export function adaptOAuthProvider(provider: OAuthClientProvider): AuthProvider 
 					}),
 				)
 				.then((result) => {
-					if (result === "REDIRECT") throw new McpOAuthAuthorizationRequiredError();
+					if (result === "REDIRECT") throw new McpOAuthAuthorizationRequiredError(challenge);
 				})
 				.finally(() => {
 					inFlight = undefined;
