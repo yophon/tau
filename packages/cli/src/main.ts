@@ -13,7 +13,7 @@ function userHome(): string {
 	return home ? home : homedir();
 }
 
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
 	ANTHROPIC_DEFAULT_BASE_URL,
@@ -2209,26 +2209,40 @@ async function main(): Promise<void> {
 					})
 				: undefined;
 		const powershellBackground = powershellShell ? background.forPowerShell() : undefined;
-		// P46 (Claude Code's isolation: worktree): a subagent's own worktree, with file and shell tools bound
-		// there (no background commands); removed when it changed nothing. Not in the parked gateway.
+		// P46 (Claude Code's isolation: worktree): a subagent's own worktree, with file, bash and PowerShell
+		// tools bound there (no background commands, so no monitor); removed when it changed nothing. A
+		// resumed subagent reopens the worktree its last run kept. Not in the parked gateway.
 		setSubagentIsolation(
 			spec.extendedSettings === false
 				? undefined
-				: async (agentId) => {
-						// Ids restart in every session, so an earlier session's kept agent-sub-1 is never reopened.
-						const session = openWorktree({
-							cwd,
-							name: `agent-${agentId}`,
-							unique: true,
-							settings: userSettings.worktree ?? {},
-						});
+				: async (agentId, kept) => {
+						const settings = userSettings.worktree ?? {};
+						// Ids restart in every session, so an earlier session's kept agent-sub-1 is never reopened by a new sub-1.
+						const session =
+							kept !== undefined && existsSync(kept)
+								? openWorktree({ cwd, name: basename(kept), settings })
+								: openWorktree({ cwd, name: `agent-${agentId}`, unique: true, settings });
 						const childFs = new NodeFileSystem(session.path);
 						const childShell = new NodeShell(session.path, {
 							env: modelEnvironment(),
 							...(commandEnv ? { commandEnv } : {}),
 						});
+						childShell.options = toolShell.options;
+						const childPowershell =
+							powershellShell && powershellAllowed()
+								? new NodeShell(session.path, {
+										env: modelEnvironment(),
+										interpreter: "powershell",
+										...(commandEnv ? { commandEnv } : {}),
+									})
+								: undefined;
 						const tools = createCodingTools(
-							{ fs: childFs, shell: childShell, images: imageProcessor },
+							{
+								fs: childFs,
+								shell: childShell,
+								images: imageProcessor,
+								...(childPowershell ? { powershell: { shell: childPowershell } } : {}),
+							},
 							{ mode: workspaceMode ?? permissionMode ?? "supervised", supportsImages: modelTakesImages },
 						);
 						return {
@@ -2239,6 +2253,7 @@ async function main(): Promise<void> {
 								shell: childShell,
 								paths: { cwd: session.path, userTauDir: join(userHome(), ".tau") },
 							},
+							unavailable: ["monitor"],
 							finish: async () => {
 								const state = worktreeState(session);
 								if (state.unknown === undefined && state.changedFiles === 0 && state.newCommits === 0) {

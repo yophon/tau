@@ -69,9 +69,10 @@ export interface SubagentsOptions {
 	persist?: boolean;
 	/**
 	 * A temporary git worktree for a subagent with isolation "worktree" (P46, Claude Code).
-	 * Without it such a subagent fails to start. Called again when an isolated subagent resumes.
+	 * Without it such a subagent fails to start. Called again when an isolated subagent resumes,
+	 * with the worktree its last run kept, so it continues there.
 	 */
-	isolate?: (agentId: string) => Promise<IsolatedWorkspace>;
+	isolate?: (agentId: string, kept?: string) => Promise<IsolatedWorkspace>;
 }
 
 /** Where an isolated subagent works: its own file and shell tools, and what to do when it ends. */
@@ -80,6 +81,8 @@ export interface IsolatedWorkspace {
 	/** Replace the parent's tools of the same name (read, write, edit, bash, ...). */
 	tools: Tool[];
 	capabilities: Partial<Omit<ExtensionCapabilities, "platform">>;
+	/** The parent's tools it goes without, because they would act in the parent's directory. */
+	unavailable?: readonly string[];
 	/** The subagent ended: remove the worktree when nothing changed; say where it stays otherwise. */
 	finish(): Promise<{ kept: boolean; path: string; branch: string }>;
 }
@@ -136,6 +139,8 @@ interface SubagentRecord extends BackgroundTask {
 	stoppedBy?: "model" | "user";
 	/** P46: it runs in a worktree of its own. */
 	isolation?: "worktree";
+	/** The worktree its last run kept (a resumed run continues there). */
+	worktree?: string;
 }
 
 const NAME_RE = /^[A-Za-z0-9][\w.-]{0,63}$/;
@@ -298,6 +303,7 @@ interface StoredMeta {
 	model?: string;
 	mode?: PermissionMode;
 	isolation?: "worktree";
+	worktree?: string;
 }
 
 /** `<session file without .jsonl>/subagents` (Claude Code keeps `<session>/subagents/agent-<id>.jsonl`). */
@@ -349,6 +355,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				...(record.model !== undefined ? { model: record.model } : {}),
 				...(record.mode !== undefined ? { mode: record.mode } : {}),
 				...(record.isolation !== undefined ? { isolation: record.isolation } : {}),
+				...(record.worktree !== undefined ? { worktree: record.worktree } : {}),
 			};
 			try {
 				await store.fs.writeTextFile(
@@ -439,7 +446,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 			try {
 				if (record.isolation === "worktree") {
 					if (!options.isolate) throw new Error("This host cannot run a subagent in a worktree of its own.");
-					isolated = await options.isolate(record.id);
+					isolated = await options.isolate(record.id, record.worktree);
 				}
 				const result = await runSubagent(
 					prompt,
@@ -448,7 +455,9 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 							? `${record.systemPrompt}\n\nYou work in a git worktree of your own at ${isolated.cwd}; your file tools and commands run there.`
 							: record.systemPrompt,
 						...(isolated ? { capabilities: isolated.capabilities, toolOverrides: isolated.tools } : {}),
-						toolNames: record.toolNames,
+						toolNames: isolated?.unavailable
+							? record.toolNames.filter((name) => !isolated?.unavailable?.includes(name))
+							: record.toolNames,
 						label: record.agent,
 						...(record.background ? { detached: true } : {}),
 						...(record.model !== undefined ? { model: record.model } : {}),
@@ -481,6 +490,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				if (isolated) {
 					try {
 						const outcome = await isolated.finish();
+						record.worktree = outcome.kept ? outcome.path : undefined;
 						worktreeNote = outcome.kept
 							? `[worktree kept: ${outcome.path} on branch ${outcome.branch}]`
 							: "[worktree removed: no changes]";

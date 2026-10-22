@@ -368,4 +368,81 @@ describe("P46c through the CLI", () => {
 			await mock.close();
 		}
 	});
+
+	it("send_message to an isolated subagent continues in the worktree its first run kept", async () => {
+		const repo = repository();
+		const home = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+		made.push(home);
+		const systems: string[] = [];
+		const mock = await startMockOpenAI([
+			(raw) => {
+				const request = raw as { messages: { role: string; content: unknown }[] };
+				const system = JSON.stringify(request.messages[0]?.content ?? "");
+				const last = request.messages.at(-1);
+				if (system.includes("worker agent")) {
+					systems.push(system);
+					if (last?.role === "tool")
+						return mockTextTurn(String(last.content).includes("again.txt") ? "wrote again" : "wrote first");
+					const again = String(last?.content ?? "").includes("again");
+					return mockToolCallTurn("write", { path: again ? "again.txt" : "first.txt", content: "x\n" });
+				}
+				if (JSON.stringify(request.messages).includes("wrote again")) return mockTextTurn("DONE");
+				const tools = request.messages.filter((message) => message.role === "tool").length;
+				if (tools === 0) return mockToolCallTurn("subagent", { task: "write first", isolation: "worktree" });
+				if (tools === 1) return mockToolCallTurn("send_message", { to: "sub-1", message: "write again" });
+				// Slow, so the resumed child ends first and its result arrives in this run (-p does not wait for it).
+				return { ...mockTextTurn("WAITING"), chunkDelayMs: 2500 };
+			},
+		]);
+		try {
+			const output = await runCli(["-p", "go"], repo, home, mock.baseUrl);
+			assert.match(output, /DONE/);
+			const kept = join(repo, ".tau", "worktrees", "agent-sub-1");
+			assert.ok(existsSync(join(kept, "first.txt")) && existsSync(join(kept, "again.txt")), "both runs wrote there");
+			assert.equal(existsSync(join(repo, ".tau", "worktrees", "agent-sub-1-2")), false);
+			assert.ok(systems.every((system) => system.includes("agent-sub-1") && !system.includes("agent-sub-1-2")));
+		} finally {
+			await mock.close();
+		}
+	});
+
+	it(
+		"an isolated subagent's PowerShell runs in its worktree; it has no monitor",
+		{ skip: process.platform !== "win32" && "PowerShell is on by default only on Windows" },
+		async () => {
+			const repo = repository();
+			const home = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+			made.push(home);
+			const results: string[] = [];
+			let childTools: string[] = [];
+			const mock = await startMockOpenAI([
+				(raw) => {
+					const request = raw as {
+						messages: { role: string; content: unknown }[];
+						tools?: { function: { name: string } }[];
+					};
+					const system = JSON.stringify(request.messages[0]?.content ?? "");
+					const last = request.messages.at(-1);
+					if (system.includes("worker agent")) {
+						childTools = (request.tools ?? []).map((tool) => tool.function.name);
+						if (last?.role === "tool") {
+							results.push(String(last.content));
+							return mockTextTurn("looked");
+						}
+						return mockToolCallTurn("powershell", { command: "(Get-Location).Path" });
+					}
+					if (last?.role === "tool") return mockTextTurn("DONE");
+					return mockToolCallTurn("subagent", { task: "where are you", isolation: "worktree" });
+				},
+			]);
+			try {
+				const output = await runCli(["-p", "go"], repo, home, mock.baseUrl);
+				assert.match(output, /DONE/);
+				assert.ok(childTools.includes("powershell") && !childTools.includes("monitor"), childTools.join(","));
+				assert.match(results[0] ?? "", /agent-sub-1/);
+			} finally {
+				await mock.close();
+			}
+		},
+	);
 });

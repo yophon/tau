@@ -310,6 +310,46 @@ describe("P46c isolation: worktree", () => {
 		);
 	});
 
+	it("a resumed isolated subagent gets the worktree its last run kept; tools the host rules out are left out", async () => {
+		const kept: (string | undefined)[] = [];
+		const isolate = async (agentId: string, last?: string): Promise<IsolatedWorkspace> => {
+			kept.push(last);
+			return {
+				cwd: `/iso/${agentId}`,
+				tools: [],
+				capabilities: {},
+				unavailable: ["monitor"],
+				finish: async () => ({ kept: true, path: `/iso/${agentId}`, branch: `worktree-agent-${agentId}` }),
+			};
+		};
+		let parentStep = 0;
+		const { platform, requests } = platformFor((request) => {
+			if (isChild(request)) return textTurn(lastUser(request) === "more" ? "did more" : "did it");
+			parentStep++;
+			if (parentStep === 1) return toolCallTurn("subagent", { task: "refactor", isolation: "worktree" });
+			if (parentStep === 2) return toolCallTurn("send_message", { to: "sub-1", message: "more" });
+			return textTurn("ok");
+		});
+		const fs = new NodeFileSystem(tmpdir());
+		const registry = await ExtensionRegistry.load([
+			createSubagentsExtension({ directories: { user: [], project: [] }, isolate, persist: false }),
+		]);
+		const agent = new Agent({
+			config: { baseUrl: "https://fake.test/v1", model: "m" },
+			platform,
+			extensions: registry,
+			tools: [probe("read"), probe("monitor")],
+			capabilities: { fs, platform },
+		});
+		await drain(agent, "go");
+		await until(() => customs(agent).length > 0);
+		assert.deepEqual(kept, [undefined, "/iso/sub-1"]);
+		for (const child of requests.filter(isChild)) {
+			const names = (child.tools ?? []).map((tool) => tool.function.name);
+			assert.ok(names.includes("read") && !names.includes("monitor"), names.join(","));
+		}
+	});
+
 	it("without a host that isolates, an isolated subagent fails to start; frontmatter can ask for isolation", async () => {
 		const { agent } = await setup((request) =>
 			toolResults(request) > 0 ? textTurn("ok") : toolCallTurn("subagent", { task: "x", isolation: "worktree" }),

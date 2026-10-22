@@ -375,9 +375,9 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 			sendMessage: state.extended,
 			persist: state.extended,
 			// P46 (Claude Code's isolation: worktree): read when a subagent starts, so the workspace can set it later.
-			isolate: (agentId) =>
+			isolate: (agentId, kept) =>
 				state.isolate
-					? state.isolate(agentId)
+					? state.isolate(agentId, kept)
 					: Promise.reject(new Error("This host cannot run a subagent in a worktree of its own.")),
 		}),
 		// P26c: the todo list and long-term memory.

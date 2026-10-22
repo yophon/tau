@@ -253,7 +253,8 @@ try {
 	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, ...pinned], { cwd: tuiDir });
 	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
 	// The TUI also loads the CLI modules it shares with the REPL (P34f: session titles).
-	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON; P39: /diff; P44: opening links.
+	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON; P39: /diff; P44: opening links;
+	// P46: presence for push_notification.
 	for (const shared of [
 		"session-title.js",
 		"handoff.js",
@@ -262,6 +263,7 @@ try {
 		"statusline-input.js",
 		"git-diff.js",
 		"open-url.js",
+		"push-notification.js",
 	]) {
 		cpSync(join(packageDir("cli"), "dist", shared), join(tuiDir, shared));
 	}
