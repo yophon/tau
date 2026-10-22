@@ -17,6 +17,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-tool-search",
 	"ext-web",
 	"ext-codemode",
+	"ext-lsp",
 	"ext-provider-anthropic",
 	"ext-resources",
 	"ext-feishu",

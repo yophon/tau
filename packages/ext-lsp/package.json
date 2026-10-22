@@ -1,0 +1,27 @@
+{
+	"name": "@yophon/tau-ext-lsp",
+	"version": "0.2.0",
+	"description": "LSP code intelligence for tau: diagnostics after edits and an lsp navigation tool (Claude Code's .lsp.json servers)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-lsp"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./node": "./src/node.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0",
+		"cross-spawn": "7.0.6"
+	}
+}

@@ -20,6 +20,8 @@ const PURE_PACKAGES = [
 	{ dir: "ext-web", external: ["@yophon/tau-kernel"] },
 	// The pure entry only; ./node wires the worker-thread sandbox (D30).
 	{ dir: "ext-codemode", external: ["@yophon/tau-kernel", "@yophon/tau-ext-tool-search"], skip: ["node.ts"] },
+	// The pure entry only; ./node starts the server processes (P45).
+	{ dir: "ext-lsp", external: ["@yophon/tau-kernel"], skip: ["node.ts", "cross-spawn.d.ts"] },
 ];
 
 const BANNED_PATTERNS = [
