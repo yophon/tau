@@ -137,32 +137,50 @@ function trustedProject(home: string, cwd: string): boolean {
 }
 
 async function checkServer(server: LoadedMcpServer): Promise<string> {
-	const [{ McpClient, StreamableHttpTransport }, { StdioTransport }, { defaultPlatform }] = await Promise.all([
+	const [
+		{ McpClient, McpProbeExitedError, StreamableHttpTransport },
+		{ StdioTransport },
+		{ defaultPlatform },
+		{ mcpProtocolNegotiation },
+	] = await Promise.all([
 		import("@yophon/tau-ext-mcp-http"),
 		import("@yophon/tau-ext-mcp"),
 		import("@yophon/tau-kernel"),
+		import("./mcp-config.ts"),
 	]);
 	const platform = defaultPlatform();
-	const client = new McpClient({ name: "tau", version: "0.4.0", platform, requestTimeoutMs: 10_000 });
-	const transport = server.command
-		? new StdioTransport({
-				command: server.command,
-				args: server.args,
-				cwd: server.cwd,
-				env: server.env,
-				...(server.inheritEnv === false ? { inheritEnv: false } : {}),
-			})
-		: new StreamableHttpTransport({ url: server.url ?? "", platform, headers: server.headers });
+	// P47: the same negotiation as a session (2026-07-28 first unless TAU_MCP_PROTOCOL_NEGOTIATION=legacy).
+	const protocolNegotiation = mcpProtocolNegotiation(process.env);
+	let client: InstanceType<typeof McpClient> | undefined;
+	const connect = async (era?: "legacy") => {
+		client = new McpClient({ name: "tau", version: "0.4.0", platform, requestTimeoutMs: 10_000, protocolNegotiation });
+		const transport = server.command
+			? new StdioTransport({
+					command: server.command,
+					args: server.args,
+					cwd: server.cwd,
+					env: server.env,
+					...(server.inheritEnv === false ? { inheritEnv: false } : {}),
+				})
+			: new StreamableHttpTransport({ url: server.url ?? "", platform, headers: server.headers });
+		await client.connect(transport, era ? { era } : {});
+		return client;
+	};
 	try {
-		await client.connect(transport);
+		// A stdio server the probe knocked over gets a fresh process on the handshake.
+		const connected = await connect().catch((error) => {
+			if (error instanceof McpProbeExitedError) return connect("legacy");
+			throw error;
+		});
 		// Servers without the tools capability do not answer tools/list; resources are noted (P43, pi).
-		const capabilities = client.serverCapabilities ?? {};
-		const tools = capabilities.tools !== undefined ? await client.listTools() : [];
-		return `ok, ${tools.length} tool(s)${capabilities.resources !== undefined ? ", resources" : ""}`;
+		const capabilities = connected.serverCapabilities ?? {};
+		const tools = capabilities.tools !== undefined ? await connected.listTools() : [];
+		const version = connected.protocolVersion ? `MCP ${connected.protocolVersion}, ` : "";
+		return `ok, ${version}${tools.length} tool(s)${capabilities.resources !== undefined ? ", resources" : ""}`;
 	} catch (error) {
 		return `failed: ${maskSecrets(error instanceof Error ? error.message : String(error))}`;
 	} finally {
-		await client.close().catch(() => undefined);
+		await client?.close().catch(() => undefined);
 	}
 }
 

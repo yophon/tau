@@ -1099,7 +1099,7 @@ async function loadExtensionRegistry(
 	configureBuiltins({ cwd, projectTrusted, home: userHome(), extendedSettings });
 	// Connectors (P32b): MCP servers from ~/.tau/mcp.json and, when trusted, the project's.
 	if (mcp) {
-		const { loadMcpConfig, withOAuth } = await import("./mcp-config.ts");
+		const { loadMcpConfig, mcpProtocolNegotiation, withOAuth } = await import("./mcp-config.ts");
 		const loadedMcp = loadMcpConfig({
 			home: userHome(),
 			cwd,
@@ -1115,10 +1115,17 @@ async function loadExtensionRegistry(
 				createMcpExtension({
 					servers: withOAuth(loadedMcp.servers, userHome()),
 					// P43 (pi): the working directory as the root, resource tools, images to the model;
-					// P44 (Claude Code): elicitation, prompt commands, `@` resources. The gateway is
-					// parked and keeps what it had.
+					// P44 (Claude Code): elicitation, prompt commands, `@` resources; P47 (Claude Code):
+					// servers are asked for MCP 2026-07-28 first. The gateway is parked and keeps what it
+					// had (the handshake only).
 					...(extendedSettings
-						? { cwd, elicit: createElicitHandler(hooks, openUrl) }
+						? {
+								cwd,
+								elicit: createElicitHandler(hooks, openUrl),
+								protocolNegotiation: mcpProtocolNegotiation(process.env, (message) =>
+									console.error(dim(`mcp: ${message}`)),
+								),
+							}
 						: { resourceTools: false, images: false, promptCommands: false, resourceMentions: false, waitTool: false }),
 				}),
 			]);

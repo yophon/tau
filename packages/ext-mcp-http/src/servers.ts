@@ -1008,13 +1008,16 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				const direct = states.filter((state) => state.connecting && configuredExposures(state.config).has("direct"));
 				const sleep = options.platform.sleep;
 				if (direct.length > 0 && sleep) {
+					// Stopped once the servers are in: a pending timer would keep `tau -p` alive for the rest of it.
+					const timer = new AbortHandle();
 					const finished = await Promise.race([
 						Promise.all(direct.map((state) => state.connecting)).then(() => true),
-						sleep(options.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS).then(
+						sleep(options.startupWaitMs ?? DEFAULT_STARTUP_WAIT_MS, timer.signal).then(
 							() => false,
 							() => false,
 						),
 					]);
+					timer.abort("settled");
 					if (!finished) {
 						ctx.ui?.notify("MCP servers are still connecting; their tools become available once connected.", "info");
 					}

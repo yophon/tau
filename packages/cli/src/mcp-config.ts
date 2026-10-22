@@ -200,6 +200,22 @@ export function loadMcpConfig(options: {
 }
 
 /** ~/.tau/mcp-auth.json: OAuth client registrations and tokens per server (0600, protected from the model). */
+/**
+ * P47 (Claude Code's MCP_PROTOCOL_NEGOTIATION): "auto" (the default) asks every server for MCP
+ * 2026-07-28 first; TAU_MCP_PROTOCOL_NEGOTIATION=legacy keeps every server on the handshake.
+ * Any other value is ignored with a warning.
+ */
+export function mcpProtocolNegotiation(
+	env: Record<string, string | undefined>,
+	warn: (message: string) => void = () => {},
+): "auto" | "legacy" {
+	const value = env.TAU_MCP_PROTOCOL_NEGOTIATION;
+	if (value === undefined || value === "" || value === "auto") return "auto";
+	if (value === "legacy") return "legacy";
+	warn(`TAU_MCP_PROTOCOL_NEGOTIATION must be auto or legacy, not "${value}"; using auto`);
+	return "auto";
+}
+
 export function mcpAuthStore(home: string): McpOAuthFileStore {
 	return new McpOAuthFileStore(join(home, ".tau", "mcp-auth.json"));
 }

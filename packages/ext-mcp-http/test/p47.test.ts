@@ -932,3 +932,34 @@ describe("P47b elicitation in input_required", () => {
 		await handle.close();
 	});
 });
+
+describe("P47 startup wait", () => {
+	it("the first prompt's wait for servers stops its timer once they are in (tau -p no longer lingers)", async () => {
+		const timers: Array<{ ms: number; aborted: boolean }> = [];
+		const platform = {
+			sleep: (ms: number, signal?: { addEventListener(type: "abort", listener: () => void): void }) =>
+				new Promise<void>((_resolve, reject) => {
+					const timer = { ms, aborted: false };
+					timers.push(timer);
+					signal?.addEventListener("abort", () => {
+						timer.aborted = true;
+						reject(new Error("aborted"));
+					});
+				}),
+		} as Pick<Platform, "sleep">;
+		const handle = createMcpServers({
+			servers: [{ name: "quick", command: "quick" }],
+			platform,
+			clientInfo: { name: "tau", version: "test" },
+			createTransport: () => new ScriptedTransport(legacy()),
+		});
+		const registry = await ExtensionRegistry.load([handle.extension]);
+		const connecting = handle.connect();
+		await registry.runBeforeAgentStart("go", "system", {} as never);
+		await connecting;
+		const wait = timers.find((timer) => timer.ms === 10_000);
+		assert.ok(wait, "the startup wait ran");
+		assert.equal(wait.aborted, true);
+		await handle.close();
+	});
+});

@@ -26,6 +26,7 @@ import {
 	type UiCapability,
 	type UserContent,
 } from "@yophon/tau-kernel";
+import { mcpProtocolNegotiation } from "../mcp-config.ts";
 import { openAlwaysOptions } from "../permissions.ts";
 import { stdioServer } from "../secrets.ts";
 import { editPairs } from "../tui/render/tool-views.ts";
@@ -394,7 +395,12 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 			(server) => !names.has(server.name),
 		);
 		const servers = host.noMcp === true ? [] : [...editor, ...configured];
-		if (servers.length > 0) await ws.extensions.add([createMcpExtension({ servers })]);
+		// P47: servers are asked for MCP 2026-07-28 first, as in a session.
+		if (servers.length > 0) {
+			await ws.extensions.add([
+				createMcpExtension({ servers, protocolNegotiation: mcpProtocolNegotiation(process.env) }),
+			]);
+		}
 		const session = {
 			id: "",
 			headless: undefined as unknown as HeadlessSession,

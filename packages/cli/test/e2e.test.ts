@@ -617,8 +617,11 @@ async function connectorScenario(
 
 		const list = startCli(["mcp", "list", "--check"], { cwd, home, baseUrl: mock.baseUrl });
 		assert.equal(await list.waitForExit(), 1, list.output());
-		assert.match(list.output(), /web {2}http: .*credentials demo; toolRisk whoami=low\) {2}→ ok, 2 tool\(s\)/);
-		assert.match(list.output(), /local {2}stdio: .* {2}→ ok, \d+ tool\(s\)/);
+		assert.match(
+			list.output(),
+			/web {2}http: .*credentials demo; toolRisk whoami=low\) {2}→ ok, MCP [\d-]+, 2 tool\(s\)/,
+		);
+		assert.match(list.output(), /local {2}stdio: .* {2}→ ok, MCP [\d-]+, \d+ tool\(s\)/);
 		assert.match(list.output(), /! .*server "broken" skipped/);
 	} finally {
 		await mock.close();
