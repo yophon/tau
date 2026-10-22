@@ -1,5 +1,5 @@
 // P46 in the CLI: task_stop reaches background subagents, send_message stays out of the
-// gateway, the send_message tool row.
+// gateway, the send_message tool row, push_notification and the REPL's presence.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -188,5 +188,68 @@ test("push_notification: sent when you are away; not while you are at the termin
 		clock += 1;
 	} finally {
 		Object.assign(presence, saved);
+	}
+});
+
+test("the REPL: a line typed at the prompt counts as presence; the input ending at the prompt quits cleanly", async () => {
+	const { cwd, home } = await sandbox();
+	const results: string[] = [];
+	const mock = await startMockOpenAI([
+		(raw) => {
+			const request = raw as { messages: { role: string; content: unknown }[] };
+			const last = request.messages.at(-1);
+			if (last?.role === "tool") {
+				results.push(String(last.content));
+				return mockTextTurn("REPLY");
+			}
+			return mockToolCallTurn("push_notification", { message: "done", status: "proactive" });
+		},
+	]);
+	try {
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: home,
+			TAU_BASE_URL: mock.baseUrl,
+			TAU_MODEL: "mock-model",
+			TAU_API_KEY: "test",
+			TAU_PERMISSION_MODE: "autonomous",
+			TAU_AUTO_TITLE: "0",
+		};
+		delete env.TAU_DISABLE_NOTIFICATION_PRESENCE_CHECK;
+		const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", CLI_PATH, "--repl"], {
+			cwd,
+			env,
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		children.push(child);
+		let output = "";
+		let prompts = 0;
+		// Piped lines are read before the prompt, so each one waits for "tau> ".
+		child.stdout?.on("data", (chunk) => {
+			output += chunk;
+			const seen = output.split("tau> ").length - 1;
+			if (seen <= prompts) return;
+			prompts = seen;
+			if (prompts === 1) child.stdin?.write("go\n");
+			else child.stdin?.end();
+		});
+		child.stderr?.on("data", (chunk) => {
+			output += chunk;
+		});
+		const code = await new Promise<number | null>((resolve, reject) => {
+			const timer = setTimeout(() => {
+				child.kill("SIGKILL");
+				reject(new Error(`The REPL did not exit:\n${output}`));
+			}, 30_000);
+			child.on("close", (exitCode) => {
+				clearTimeout(timer);
+				resolve(exitCode);
+			});
+		});
+		assert.deepEqual(results, ["Not sent: the user is at the terminal and will see your reply."]);
+		assert.equal(code, 0, output);
+		assert.doesNotMatch(output, /unsettled top-level await/);
+	} finally {
+		await mock.close();
 	}
 });

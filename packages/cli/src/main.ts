@@ -765,30 +765,51 @@ const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
 
 type Readline = ReturnType<typeof createInterface>;
 
+/**
+ * A line from the terminal; undefined once the input has ended (Ctrl+D, a closed pipe), which
+ * readline's own question never reports (the promise stays pending and Node exits with 13).
+ */
+function ask(readline: Readline, prompt: string): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		const ended = () => resolve(undefined);
+		readline.once("close", ended);
+		readline.question(prompt).then(
+			(answer) => {
+				readline.off("close", ended);
+				resolve(answer);
+			},
+			() => {
+				readline.off("close", ended);
+				resolve(undefined);
+			},
+		);
+	});
+}
+
 function createUi(readline: Readline): UiCapability {
 	return {
 		confirm: async (title, message) => {
 			if (message) console.log(dim(message));
-			const answer = await readline.question(`${title} [y/N] `);
-			return /^y(es)?$/i.test(answer.trim());
+			const answer = await ask(readline, `${title} [y/N] `);
+			return /^y(es)?$/i.test(answer?.trim() ?? "");
 		},
 		input: async (title) => {
-			const answer = await readline.question(`${title}: `);
+			const answer = await ask(readline, `${title}: `);
 			return answer === "" ? undefined : answer;
 		},
 		select: async (title, options) => {
 			console.log(title);
 			for (const [i, option] of options.entries()) console.log(`  ${i + 1}. ${option}`);
-			const answer = await readline.question("> ");
-			const index = Number.parseInt(answer.trim(), 10) - 1;
+			const answer = await ask(readline, "> ");
+			const index = Number.parseInt(answer?.trim() ?? "", 10) - 1;
 			return options[index];
 		},
 		// P35: numbers separated by spaces or commas; nothing valid = cancelled.
 		selectMany: async (title, options) => {
 			console.log(title);
 			for (const [i, option] of options.entries()) console.log(`  ${i + 1}. ${option}`);
-			const answer = await readline.question("numbers, separated by spaces > ");
-			const picked = [...new Set(answer.split(/[\s,，、]+/).map((part) => Number.parseInt(part, 10) - 1))]
+			const answer = await ask(readline, "numbers, separated by spaces > ");
+			const picked = [...new Set((answer ?? "").split(/[\s,，、]+/).map((part) => Number.parseInt(part, 10) - 1))]
 				.filter((index) => index >= 0 && index < options.length)
 				.map((index) => options[index] as string);
 			return picked.length > 0 ? picked : undefined;
@@ -1769,8 +1790,9 @@ async function main(): Promise<void> {
 		useTui || options.mode !== undefined || options.gateway !== undefined
 			? undefined
 			: createInterface({ input: process.stdin, output: process.stdout });
-	// P46: push_notification is not sent while you are typing at the REPL.
-	readline?.on("line", () => markActivity());
+	// P46: push_notification is not sent while you are typing at the REPL (any key or pasted
+	// text; a line that answers a question emits no "line" event).
+	if (readline) process.stdin.on("data", () => markActivity());
 	const out = stdoutWriter();
 	const rpcBridge = options.mode === "rpc" ? new RpcUiBridge(out) : undefined;
 	// Before anything imports Ink: a shell exporting CI must not leave the TUI blank.
@@ -2193,7 +2215,13 @@ async function main(): Promise<void> {
 			spec.extendedSettings === false
 				? undefined
 				: async (agentId) => {
-						const session = openWorktree({ cwd, name: `agent-${agentId}`, settings: userSettings.worktree ?? {} });
+						// Ids restart in every session, so an earlier session's kept agent-sub-1 is never reopened.
+						const session = openWorktree({
+							cwd,
+							name: `agent-${agentId}`,
+							unique: true,
+							settings: userSettings.worktree ?? {},
+						});
 						const childFs = new NodeFileSystem(session.path);
 						const childShell = new NodeShell(session.path, {
 							env: modelEnvironment(),
@@ -2805,12 +2833,8 @@ async function main(): Promise<void> {
 		}
 	}
 	while (true) {
-		let line: string;
-		try {
-			line = await readline.question("tau> ");
-		} catch {
-			break;
-		}
+		const line = await ask(readline, "tau> ");
+		if (line === undefined) break;
 		const input = line.trim();
 		// A Feishu-triggered run can start while this outer question is pending.
 		// Its line listener (above) has already handled the line as steering (or
@@ -3017,7 +3041,8 @@ async function askLine(question: string): Promise<string> {
 	process.stdin.ref();
 	const rl = createInterface({ input: process.stdin, output: process.stdout });
 	try {
-		return await rl.question(question);
+		// An ended input answers with the default.
+		return (await ask(rl, question)) ?? "";
 	} finally {
 		rl.close();
 	}

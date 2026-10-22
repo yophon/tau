@@ -154,6 +154,8 @@ export function openWorktree(options: {
 	name?: string;
 	settings?: WorktreeSettings;
 	random?: () => number;
+	/** Always a new worktree: a taken name gets a number (a subagent's agent-sub-1 from an earlier session). */
+	unique?: boolean;
 }): WorktreeSession {
 	const top = tryGit(options.cwd, ["rev-parse", "--show-toplevel"]);
 	if (!top) throw new Error("--worktree needs a git repository");
@@ -175,7 +177,10 @@ export function openWorktree(options: {
 	const taken = (candidate: string) =>
 		existsSync(join(worktreesDir, candidate)) ||
 		tryGit(mainRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/worktree-${candidate}`]) !== undefined;
-	const name = options.name ?? generateWorktreeName(taken, options.random);
+	let name = options.name ?? generateWorktreeName(taken, options.random);
+	if (options.unique && options.name !== undefined) {
+		for (let n = 2; taken(name); n++) name = `${options.name}-${n}`;
+	}
 	if (!isWorktreeName(name)) throw new Error(`Not a valid worktree name: ${name}`);
 	const path = join(worktreesDir, name);
 	if (isSymlink(path)) throw new Error(`${path} is a symlink; refusing to use it`);

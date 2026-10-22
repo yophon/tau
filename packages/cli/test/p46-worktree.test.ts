@@ -360,6 +360,10 @@ describe("P46c through the CLI", () => {
 			);
 			assert.match(results[1] ?? "", /looked, changed nothing\n\n\[worktree removed: no changes\]/);
 			assert.equal(existsSync(join(repo, ".tau", "worktrees", "agent-sub-2")), false);
+			// A later session's sub-1 gets a worktree of its own, not the kept one.
+			await runCli(["-p", "go"], repo, home, mock.baseUrl);
+			assert.match(results[2] ?? "", /\[worktree kept: .*agent-sub-1-2 on branch worktree-agent-sub-1-2\]/);
+			assert.equal(git(join(repo, ".tau", "worktrees", "agent-sub-1-2"), "log", "-1", "--format=%s"), "first");
 		} finally {
 			await mock.close();
 		}
