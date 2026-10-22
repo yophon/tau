@@ -3183,7 +3183,8 @@ export class TuiController {
 		const answer = this.pick(seconds ? `${title} (closes in ${seconds}s)` : title, items);
 		const dismiss = () => {
 			if (!this.pickers.has(id)) return;
-			if (this.state.picker?.id === id) this.dispatch({ type: "picker-close", id });
+			// Shown or covered by a newer dialog (#11166): either way it closes.
+			this.dispatch({ type: "picker-close", id });
 			this.settlePicker(id, undefined);
 		};
 		const timer = dialog.timeout ? setTimeout(dismiss, dialog.timeout) : undefined;
@@ -3295,11 +3296,15 @@ export class TuiController {
 		let open: number | undefined;
 		const onAbort = () => {
 			if (open === undefined) return;
-			if (this.state.picker?.id === open) {
+			// Shown or covered by a newer dialog (#11166).
+			if (this.pickers.has(open) || this.multiPickers.has(open)) {
 				this.dispatch({ type: "picker-close", id: open });
 				this.settlePicker(open, undefined);
 				this.settleMany(open, undefined);
-			} else if (this.state.prompt?.id === open) this.cancelPrompt();
+			} else if (this.prompts.has(open)) {
+				this.closePrompt(open);
+				this.settlePrompt(open, undefined);
+			}
 		};
 		signal?.addEventListener("abort", onAbort);
 		const title = `${form.title}${form.message ? ` — ${form.message}` : ""}`;
@@ -3434,16 +3439,26 @@ export class TuiController {
 		}
 	}
 
-	/** The input box answers a prompt: the draft in it waits aside until the prompt closes. */
+	/**
+	 * The input box answers a prompt: the draft in it waits aside until the prompt closes. A
+	 * prompt opened over another covers it with what was typed into it (pi 1.4, #11166).
+	 */
 	private openPrompt(prompt: PromptView): void {
 		if (this.state.prompt === undefined) this.promptDraft = this.state.editor;
+		this.dispatch({ type: "prompt-open", prompt, editor: this.state.editor });
 		this.setEditor(ed.EMPTY);
-		this.dispatch({ type: "prompt-open", prompt });
 	}
 
 	private closePrompt(id: number): void {
+		const shown = this.state.prompt?.id === id;
 		this.dispatch({ type: "prompt-close", id });
-		if (this.state.prompt !== undefined) return;
+		// A covered prompt closed: the input box keeps the shown prompt's text.
+		if (!shown) return;
+		const previous = this.state.prompt;
+		if (previous !== undefined) {
+			this.setEditor(previous.draft ?? ed.EMPTY);
+			return;
+		}
 		this.setEditor(this.promptDraft ?? ed.EMPTY);
 		this.promptDraft = undefined;
 	}

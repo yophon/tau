@@ -181,6 +181,22 @@ export function isActivatedOnRegistration(tool: Pick<Tool, "exposure" | "default
 	return isDeclarable(tool) && tool.defaultActive !== false;
 }
 
+/**
+ * Apply the `+name` and `-name` entries of `entries` to `base` in order (pi applyToolModifiers):
+ * `+name` adds a tool and `-name` removes one. Other entries are ignored.
+ */
+export function applyToolModifiers(base: readonly string[], entries: readonly string[]): string[] {
+	const tools = [...base];
+	for (const entry of entries) {
+		if (!entry.startsWith("+") && !entry.startsWith("-")) continue;
+		const name = entry.slice(1);
+		const index = tools.indexOf(name);
+		if (entry.startsWith("+") && index === -1 && name) tools.push(name);
+		else if (entry.startsWith("-") && index !== -1) tools.splice(index, 1);
+	}
+	return tools;
+}
+
 /** Tool information without `execute` (a copy: extensions cannot mutate the registered tool through it). */
 export function toToolInfo(tool: Tool, source: ToolInfo["source"]): ToolInfo {
 	return {

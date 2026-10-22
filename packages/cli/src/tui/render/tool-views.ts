@@ -5,7 +5,7 @@
  * (Ctrl+O). Unknown tools get the generic view; `mcp__server__tool` shows as
  * `server:tool`. Pure.
  */
-import { firstLine } from "../format.ts";
+import { firstLine, readLineNumber } from "../format.ts";
 import type { Block } from "../model.ts";
 import { renderDiff, renderNumberedDiff } from "./diff.ts";
 import { highlightCode, languageOf } from "./highlight.ts";
@@ -140,10 +140,11 @@ function shellView(name: string, tool: ToolBlock, verbose: boolean): ToolView {
 
 const RENDERERS: Record<string, Renderer> = {
 	read: (tool, verbose) => {
+		// Numbers or numeric strings (pi 1.3, #9887).
+		const offset = readLineNumber(tool.args.offset);
+		const limit = readLineNumber(tool.args.limit);
 		const range =
-			typeof tool.args.offset === "number" || typeof tool.args.limit === "number"
-				? `:${typeof tool.args.offset === "number" ? tool.args.offset : 1}${typeof tool.args.limit === "number" ? `+${tool.args.limit}` : ""}`
-				: "";
+			offset !== undefined || limit !== undefined ? `:${offset ?? 1}${limit !== undefined ? `+${limit}` : ""}` : "";
 		const view = { head: `read(${str(tool.args, "path")}${range})`, body: [] as StyledLine[] };
 		if (tool.status === "error") return { ...view, body: errorBody(tool, verbose) };
 		if (tool.status !== "ok") return view;

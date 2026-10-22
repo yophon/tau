@@ -391,6 +391,7 @@ export { type SseEvent, SseParser, type SseParserOptions } from "./sse.ts";
 export { PreflightLock } from "./tool-batch.ts";
 export { normalizeToolResultImages } from "./tool-result-images.ts";
 export {
+	applyToolModifiers,
 	assertToolSchema,
 	errorResult,
 	hasToolSchema,

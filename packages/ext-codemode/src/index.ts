@@ -72,13 +72,35 @@ export interface CodemodeSandboxInstance {
  * (`ok: false`, kind `sandbox`), never hang or crash the host.
  */
 export interface CodemodeSandboxFactory {
+	/**
+	 * Wait for room to start one sandbox, in arrival order (pi 1.4 worker admission, #11184): a
+	 * slot, or why there is none — the signal aborted, or `timeoutMs` passed. A host whose
+	 * sandboxes cost nothing to start leaves it out and every script starts at once.
+	 */
+	reserve?(signal: TauAbortSignal | undefined, timeoutMs: number): Promise<CodemodeSlot | "aborted" | "timeout">;
+	/** How many sandboxes `reserve` lets run at once, for the error when none frees up. */
+	maxConcurrent?(): number;
 	create(options: {
 		tools: CodemodeTool[];
 		globals: CodemodeTool[];
 		timeoutMs: number;
 		memoryLimitBytes: number;
+		/** The slot `reserve` gave this script; the sandbox takes it when it starts a worker. */
+		slot?: CodemodeSlot;
 	}): CodemodeSandboxInstance | Promise<CodemodeSandboxInstance>;
 }
+
+/** Room for one sandbox from CodemodeSandboxFactory.reserve. */
+export interface CodemodeSlot {
+	/** Give the slot back unless a worker took it (a taken slot is freed when the worker exits). */
+	release(): void;
+}
+
+/**
+ * How long a script waits for a free sandbox before failing (pi 1.4). Bounds the wait when every
+ * one is held by a script that waits on another script, such as a subagent that uses codemode.
+ */
+export const CODEMODE_WORKER_WAIT_MS = 60_000;
 
 export interface CodemodeExtensionOptions {
 	sandbox: CodemodeSandboxFactory;
@@ -637,18 +659,50 @@ export async function executeCodemode(
 		},
 	}));
 
-	const sandbox = await options.sandbox.create({
-		tools: sandboxTools,
-		globals: createDiscoveryGlobals(callable, samples),
-		timeoutMs: sourceOptions.timeoutMs ?? Number.POSITIVE_INFINITY,
-		memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES,
-	});
+	// The wait for a sandbox counts toward the script's deadline (pi 1.4).
+	const deadline = sourceOptions.timeoutMs ?? Number.POSITIVE_INFINITY;
+	let slot: CodemodeSlot | undefined;
+	let waitedMs = 0;
+	if (options.sandbox.reserve) {
+		const waitStartedAt = Date.now();
+		const admission = await options.sandbox.reserve(signal, Math.min(deadline, CODEMODE_WORKER_WAIT_MS));
+		waitedMs = Date.now() - waitStartedAt;
+		if (admission === "aborted" || admission === "timeout") {
+			const waited = ((Date.now() - startedAt) / 1000).toFixed(1);
+			const reason = signal?.reason;
+			const error =
+				admission === "aborted"
+					? `Script aborted: ${reason instanceof Error ? reason.message : "Execution aborted"}`
+					: deadline <= CODEMODE_WORKER_WAIT_MS
+						? `Script timed out: Execution timed out after ${deadline} ms while waiting for a free codemode worker`
+						: `No codemode worker became free within ${CODEMODE_WORKER_WAIT_MS / 1000} seconds. All ${options.sandbox.maxConcurrent?.() ?? "the"} workers, shared by every session in this process, are held by other scripts. Retry after they finish.`;
+			return {
+				content: [
+					{ type: "text", text: `Script failed\nWall time ${waited} seconds\nOutput:\n` },
+					{ type: "text", text: `Script error:\n${error}\n\nThe script did not start.` },
+				],
+				details: { calls: [] } as unknown as JsonValue,
+				isError: true,
+			};
+		}
+		slot = admission;
+	}
+	let sandbox: CodemodeSandboxInstance | undefined;
 	let result: CodemodeResult;
 	try {
+		sandbox = await options.sandbox.create({
+			tools: sandboxTools,
+			globals: createDiscoveryGlobals(callable, samples),
+			timeoutMs: Math.max(1, Math.round(deadline - waitedMs)),
+			memoryLimitBytes: CODEMODE_MEMORY_LIMIT_BYTES,
+			...(slot ? { slot } : {}),
+		});
 		const store = readCodemodeStore(ctx?.sessionManager?.getBranch() ?? []);
 		result = await sandbox.execute(source, { signal, store });
 	} finally {
-		await sandbox.close();
+		await sandbox?.close();
+		// A script that never started a worker gives its slot back here.
+		slot?.release();
 	}
 	// Calls still marked running were cut off by the script ending, a timeout, or an abort.
 	for (const call of calls) {

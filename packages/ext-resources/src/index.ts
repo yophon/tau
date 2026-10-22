@@ -432,9 +432,12 @@ function escapeXml(value: string): string {
 		.replace(/'/g, "&apos;");
 }
 
+/** Split a command's arguments like a shell (pi 1.4 prompt-templates.ts): quoted empty strings ("" or '') are kept (#10867). */
 export function parseCommandArgs(argsString: string): string[] {
 	const args: string[] = [];
 	let current = "";
+	// Whether a token has started, so quoted empty strings are kept as arguments.
+	let hasToken = false;
 	let inQuote: string | null = null;
 
 	for (let i = 0; i < argsString.length; i++) {
@@ -444,16 +447,19 @@ export function parseCommandArgs(argsString: string): string[] {
 			else current += char;
 		} else if (char === '"' || char === "'") {
 			inQuote = char;
-		} else if (char === " " || char === "\t") {
-			if (current) {
+			hasToken = true;
+		} else if (/\s/.test(char)) {
+			if (hasToken) {
 				args.push(current);
 				current = "";
+				hasToken = false;
 			}
 		} else {
 			current += char;
+			hasToken = true;
 		}
 	}
-	if (current) args.push(current);
+	if (hasToken) args.push(current);
 	return args;
 }
 

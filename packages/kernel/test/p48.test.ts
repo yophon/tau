@@ -9,8 +9,12 @@ import {
 	type AssistantMessage,
 	type ChatTransport,
 	createOpenAICompatTransport,
+	type Extension,
+	ExtensionRegistry,
 	emptyUsage,
 	generateBranchSummary,
+	InMemorySessionRepo,
+	type InMemorySessionStore,
 	isContextOverflowError,
 	isRetryableAssistantError,
 	parseJsonWithRepair,
@@ -19,8 +23,11 @@ import {
 	repairJson,
 	runCompaction,
 	type SessionEntry,
+	SessionRecorder,
 	SUMMARIZATION_SYSTEM_PROMPT,
+	type Tool,
 	type TransportRequest,
+	textResult,
 } from "../src/index.ts";
 import { fakePlatform, makeSseResponse, textTurn } from "./helpers.ts";
 
@@ -272,4 +279,90 @@ test("HTTP 413 is a context overflow whatever the body says (pi 1.4)", () => {
 	assert.equal(isContextOverflowError(failed("Anthropic API error (413): request_too_large")), true);
 	assert.equal(isContextOverflowError(failed("HTTP 400: 4130 bytes over the limit of the field")), false);
 	assert.equal(isRetryableAssistantError(failed("HTTP 413: Payload Too Large")), false);
+});
+
+// --- tools on resume (pi 1.4 #10785, #11062) ---
+
+function namedTool(name: string, extra: Partial<Tool> = {}): Tool {
+	return {
+		name,
+		description: `${name} tool`,
+		parameters: { type: "object", properties: {} },
+		execute: async () => textResult(`${name} ran`),
+		...extra,
+	};
+}
+
+async function openAgent(store: InMemorySessionStore, extensions: Extension[], responses = 0): Promise<Agent> {
+	return new Agent({
+		config: { baseUrl: "https://fake.test/v1", model: "m" },
+		platform: fakePlatform(Array.from({ length: responses }, () => makeSseResponse(textTurn("ok")))),
+		session: await SessionRecorder.open(store),
+		extensions: await ExtensionRegistry.load(extensions),
+	});
+}
+
+async function run(agent: Agent, text: string): Promise<void> {
+	for await (const _event of agent.prompt(text)) {
+		// drain
+	}
+}
+
+test("default tools yield to a resumed session's tools, with +name/-name applied to them (#10785)", async () => {
+	const store = (await new InMemorySessionRepo(fakePlatform([]), "/test").create()) as InMemorySessionStore;
+	const tools: Extension = (api) => {
+		api.registerTool(namedTool("a"));
+		api.registerTool(namedTool("b"));
+		api.registerTool(namedTool("lazy", { defaultActive: false }));
+	};
+	const first = await openAgent(store, [tools], 2);
+	await run(first, "one");
+	// Activated during the session: the resume keeps it.
+	first.setActiveTools(["a", "b", "lazy"]);
+	await run(first, "two");
+
+	const resumed = await openAgent(store, [tools]);
+	resumed.setDefaultTools(["a", "b"], ["-b"]);
+	await resumed.flush();
+	assert.deepEqual(resumed.getActiveTools(), ["a", "lazy"]);
+
+	// Tool names choose outright (the host calls setActiveTools).
+	const explicit = await openAgent(store, [tools]);
+	explicit.setActiveTools(["b"]);
+	await explicit.flush();
+	assert.deepEqual(explicit.getActiveTools(), ["b"]);
+
+	// After the restore ran, setDefaultTools still lets the session's tools win.
+	const late = await openAgent(store, [tools]);
+	await late.flush();
+	late.setDefaultTools(["b"], []);
+	assert.deepEqual(late.getActiveTools(), ["a", "b", "lazy"]);
+});
+
+test("extension tools the session never added or removed are active on resume (#11062)", async () => {
+	const store = (await new InMemorySessionRepo(fakePlatform([]), "/test").create()) as InMemorySessionStore;
+	const first = await openAgent(
+		store,
+		[
+			(api) => {
+				api.registerTool(namedTool("a"));
+				api.registerTool(namedTool("dropped"));
+			},
+		],
+		2,
+	);
+	await run(first, "one");
+	first.setActiveTools(["a"]);
+	await run(first, "two");
+
+	const resumed = await openAgent(store, [
+		(api) => {
+			api.registerTool(namedTool("a"));
+			api.registerTool(namedTool("dropped"));
+			api.registerTool(namedTool("installed-later"));
+			api.registerTool(namedTool("opt-in", { defaultActive: false }));
+		},
+	]);
+	await resumed.flush();
+	assert.deepEqual(resumed.getActiveTools(), ["a", "installed-later"]);
 });

@@ -102,6 +102,7 @@ import {
 	type ToolOutcome,
 } from "./tool-batch.ts";
 import {
+	applyToolModifiers,
 	assertToolSchema,
 	errorResult,
 	hasToolSchema,
@@ -431,6 +432,10 @@ export class Agent {
 	private pendingTools = new Set<string>();
 	/** Set once a host or extension chose the active tools; the initial transcript restore then yields to it. */
 	private toolsChosen = false;
+	/** `+name`/`-name` entries the first restore applies to the transcript's tools (pi defaultToolModifiers). */
+	private defaultToolModifiers: readonly string[] = [];
+	/** Whether the initial transcript restore ran (setDefaultTools after it restores again). */
+	private initialToolsRestored = false;
 	/** Declared tools that prepareLoadout hooks leave out of requests (pi _hiddenDeclarations). */
 	private hiddenDeclarations: ReadonlySet<string> = new Set();
 	/**
@@ -748,6 +753,17 @@ export class Agent {
 		if (previous.some((name) => !active.has(name))) this.pendingTools.clear();
 	}
 
+	/**
+	 * Set the host's default tools (pi usesDefaultTools, 1.4 #10785): unlike setActiveTools, the
+	 * tools a resumed session recorded still win, with `modifiers` (`--tools +name`/`-name`)
+	 * applied to them. A session that recorded none keeps these.
+	 */
+	setDefaultTools(toolNames: readonly string[], modifiers: readonly string[] = []): void {
+		this.applyActiveTools(toolNames);
+		this.defaultToolModifiers = [...modifiers];
+		if (this.initialToolsRestored) this.restoreToolsFromTranscript({ initial: true });
+	}
+
 	private applyActiveTools(toolNames: readonly string[]): void {
 		const tools = this.syncRegistrations();
 		const wanted = new Set(toolNames);
@@ -760,17 +776,37 @@ export class Agent {
 	}
 
 	/**
-	 * Restore the active tools the transcript declares, if it declares any (pi
+	 * Restore the active tools the transcript declares, if it declares any (pi 1.4
 	 * _restoreToolsFromTranscript). Names not registered yet stay pending until their
 	 * tool registers (MCP servers still connecting) or the next run starts.
 	 */
 	private restoreToolsFromTranscript(options: { initial?: boolean } = {}): void {
-		// A host that chose the tools before the log loaded (CLI --tools) keeps its choice.
+		if (options.initial) this.initialToolsRestored = true;
+		// A host that chose the tools before the log loaded (CLI --tools with names) keeps its choice.
 		if (options.initial && this.toolsChosen) return;
 		this.pendingTools.clear();
-		const current = getCurrentSystemMessage(this.messages);
-		if (!current) return;
-		const names = (current.toolsAdded ?? []).map((tool) => tool.name);
+		// Every system message on the branch, those before a compaction too (pi 1.4).
+		const systemMessages = this.activePath.flatMap((entry) =>
+			entry.type === "message" && entry.message.role === "system" ? [entry.message] : [],
+		);
+		// No recorded tools: keep the current ones.
+		if (systemMessages.length === 0) return;
+		// Tools the branch ever added or removed; removed ones stay inactive.
+		const mentioned = new Set(
+			systemMessages
+				.flatMap((message) => [...(message.toolsAdded ?? []), ...(message.toolsRemoved ?? [])])
+				.map((tool) => tool.name),
+		);
+		// Extension tools the branch never mentioned registered after it recorded its tools, so they
+		// activate like new registrations (pi 1.4, #11062). Built-in tools follow the host's defaults.
+		const baseNames = new Set(this.baseTools.map((tool) => tool.name));
+		const newTools = [...(this.extensions?.tools ?? [])]
+			.filter(([name, tool]) => !mentioned.has(name) && !baseNames.has(name) && isActivatedOnRegistration(tool))
+			.map(([name]) => name);
+		const names = applyToolModifiers(
+			[...getCurrentTools(systemMessages).map((tool) => tool.name), ...newTools],
+			options.initial ? this.defaultToolModifiers : [],
+		);
 		this.pendingTools = new Set(names);
 		this.applyActiveTools(names);
 	}

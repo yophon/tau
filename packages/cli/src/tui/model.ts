@@ -141,6 +141,8 @@ export interface PromptView {
 	kind: "input" | "tell";
 	title: string;
 	placeholder?: string;
+	/** What was typed into it, kept while another prompt covers it (pi 1.4, #11166). */
+	draft?: EditorState;
 }
 
 export type TaskKind = "turn" | "compaction" | "bash" | "navigate" | "reload" | "handoff";
@@ -181,7 +183,11 @@ export interface UiState {
 	approval?: ApprovalView;
 	approvalQueue: ApprovalView[];
 	picker?: PickerView;
+	/** Pickers a newer one covers, newest last; closing the shown one shows the previous (pi 1.4, #11166). */
+	pickerStack?: PickerView[];
 	prompt?: PromptView;
+	/** Prompts a newer one covers, newest last, each with what was typed into it. */
+	promptStack?: PromptView[];
 	editor: EditorState;
 	/** The completion menu: selection, first item shown (P34g), the token Esc closed it for. */
 	menu: { selected: number; start: number; suppressedToken?: string };
@@ -277,7 +283,8 @@ export type UiAction =
 	| { type: "picker-close"; id: number }
 	| { type: "picker-toggle"; id: number; index: number }
 	| { type: "picker-filter"; id: number; query: string; items: PickerItem[] }
-	| { type: "prompt-open"; prompt: PromptView }
+	/** `editor`: what the shown prompt holds, kept with it when the new one covers it. */
+	| { type: "prompt-open"; prompt: PromptView; editor?: EditorState }
 	| { type: "prompt-close"; id: number }
 	| { type: "editor"; editor: EditorState }
 	/** Without a start the window keeps its place, moving up only as far as the selection needs. */
@@ -631,13 +638,27 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			}
 			return { ...state, approvalQueue: state.approvalQueue.filter((view) => view.id !== action.id) };
 		}
-		case "picker-open":
-			return { ...state, picker: action.picker };
+		case "picker-open": {
+			// The same id refreshes a picker in place (the tree); a covered one stays covered.
+			const stack = state.pickerStack ?? [];
+			if (stack.some((view) => view.id === action.picker.id)) {
+				return { ...state, pickerStack: stack.map((view) => (view.id === action.picker.id ? action.picker : view)) };
+			}
+			// Another dialog covers the shown one instead of replacing it (pi 1.4, #11166).
+			const covered = state.picker && state.picker.id !== action.picker.id ? [...stack, state.picker] : stack;
+			return { ...state, picker: action.picker, pickerStack: covered };
+		}
 		case "picker-select":
 			if (!state.picker) return state;
 			return { ...state, picker: { ...state.picker, selected: action.index, start: action.start } };
-		case "picker-close":
-			return state.picker?.id === action.id ? { ...state, picker: undefined } : state;
+		case "picker-close": {
+			const stack = state.pickerStack ?? [];
+			if (state.picker?.id === action.id) return { ...state, picker: stack.at(-1), pickerStack: stack.slice(0, -1) };
+			// A covered picker closed (its signal or timeout): it just leaves the stack.
+			return stack.some((view) => view.id === action.id)
+				? { ...state, pickerStack: stack.filter((view) => view.id !== action.id) }
+				: state;
+		}
 		case "picker-filter":
 			if (state.picker?.id !== action.id) return state;
 			return { ...state, picker: { ...state.picker, query: action.query, items: action.items, selected: 0, start: 0 } };
@@ -649,10 +670,23 @@ export function reduce(state: UiState, action: UiAction): UiState {
 				: [...picker.checked, action.index].sort((a, b) => a - b);
 			return { ...state, picker: { ...picker, checked } };
 		}
-		case "prompt-open":
-			return { ...state, prompt: action.prompt };
-		case "prompt-close":
-			return state.prompt?.id === action.id ? promoteApproval({ ...state, prompt: undefined }) : state;
+		case "prompt-open": {
+			const stack = state.promptStack ?? [];
+			const covered =
+				state.prompt && state.prompt.id !== action.prompt.id
+					? [...stack, { ...state.prompt, ...(action.editor ? { draft: action.editor } : {}) }]
+					: stack;
+			return { ...state, prompt: action.prompt, promptStack: covered };
+		}
+		case "prompt-close": {
+			const stack = state.promptStack ?? [];
+			if (state.prompt?.id === action.id) {
+				return promoteApproval({ ...state, prompt: stack.at(-1), promptStack: stack.slice(0, -1) });
+			}
+			return stack.some((view) => view.id === action.id)
+				? { ...state, promptStack: stack.filter((view) => view.id !== action.id) }
+				: state;
+		}
 		case "editor":
 			return state.editor === action.editor ? state : { ...state, editor: action.editor };
 		case "menu-select": {

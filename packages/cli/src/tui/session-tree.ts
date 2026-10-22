@@ -10,6 +10,7 @@
  * no horizontal panning (rows are cut at the screen edge); colors are left out.
  */
 import type { SessionEntry } from "@yophon/tau-kernel";
+import { formatReadLineRange } from "./format.ts";
 
 export type FilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
@@ -105,17 +106,8 @@ function shortenPath(path: string): string {
 export function formatToolCall(name: string, args: Record<string, unknown>): string {
 	const path = shortenPath(String(args.path ?? args.file_path ?? ""));
 	switch (name) {
-		case "read": {
-			const offset = args.offset as number | undefined;
-			const limit = args.limit as number | undefined;
-			let display = path;
-			if (offset !== undefined || limit !== undefined) {
-				const start = offset ?? 1;
-				const end = limit !== undefined ? start + limit - 1 : "";
-				display += `:${start}${end ? `-${end}` : ""}`;
-			}
-			return `[read: ${display}]`;
-		}
+		case "read":
+			return `[read: ${path}${formatReadLineRange(args.offset, args.limit)}]`;
 		case "write":
 			return `[write: ${path}]`;
 		case "edit":

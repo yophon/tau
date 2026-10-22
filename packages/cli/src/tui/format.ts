@@ -53,3 +53,24 @@ export function errorText(error: unknown): string {
 }
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/** A line number given as a number or a numeric string (pi 1.3 parseLineNumber, #9887). */
+export function readLineNumber(value: unknown): number | undefined {
+	const number = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+	return typeof number === "number" && Number.isFinite(number) ? number : undefined;
+}
+
+/**
+ * A read call's line range, ":start-end" (pi 1.3 formatReadLineRange): numbers or numeric
+ * strings; null is an omitted argument (strict schemas); a malformed range is left out.
+ */
+export function formatReadLineRange(offset: unknown, limit: unknown): string {
+	if (offset == null && limit == null) return "";
+	const start = offset == null ? 1 : readLineNumber(offset);
+	if (start === undefined) return "";
+	if (limit == null) return `:${start}`;
+	const count = readLineNumber(limit);
+	if (count === undefined) return "";
+	const end = start + count - 1;
+	return `:${start}${end ? `-${end}` : ""}`;
+}

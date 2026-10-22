@@ -2477,7 +2477,14 @@ async function main(): Promise<void> {
 				toolSelection(workspaceSettings.defaultTools, options.tools),
 				options.noTools === true,
 			);
-			if (active) built.setActiveTools(active);
+			// pi 1.4 (#10785): tool names or --no-tools choose the tools outright; otherwise the
+			// selection is a default that a resumed session's tools win over, with --tools
+			// +name/-name applied to them.
+			const explicitTools =
+				options.noTools === true ||
+				(options.tools ?? []).some((entry) => !entry.startsWith("+") && !entry.startsWith("-"));
+			if (active && explicitTools) built.setActiveTools(active);
+			else if (active) built.setDefaultTools(active, options.tools ?? []);
 			attachPromptAgent(built, promptSources.system === undefined);
 			currentAgent = built;
 			sessionAgent = built;

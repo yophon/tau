@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { accessSync, existsSync, constants as fsConstants } from "node:fs";
 import { constants as osConstants } from "node:os";
-import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve, win32 } from "node:path";
 import { type Shell, ShellError, type ShellExecResult, type TauAbortSignal, toError } from "@yophon/tau-kernel";
 
 const MAX_TIMEOUT_MS = 2_147_483_647;
@@ -52,6 +52,19 @@ export function unwrapCmdWrapper(command: string): string {
 	if (!match) return command;
 	const inner = match[1].trim();
 	return inner.length >= 2 && inner.startsWith('"') && inner.endsWith('"') ? inner.slice(1, -1) : inner;
+}
+
+/**
+ * Whether a shell path exists (pi 1.3 shellPathExists, #9504): access(F_OK) rather than
+ * existsSync, whose extra stat rejects runnable Microsoft Store aliases on Windows.
+ */
+export function shellPathExists(path: string): boolean {
+	try {
+		accessSync(path, fsConstants.F_OK);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function addCandidate(candidates: string[], candidate: string | undefined): void {
@@ -108,7 +121,7 @@ function findGitBash(): string | undefined {
  * look for; Windows-native commands still go to cmd.exe.
  */
 export function findShell(command: string, shellPath?: string): ShellSpec {
-	if (shellPath !== undefined && !existsSync(shellPath)) {
+	if (shellPath !== undefined && !shellPathExists(shellPath)) {
 		throw new ShellError("spawn_error", `Custom shell path not found: ${shellPath}`);
 	}
 	if (process.platform !== "win32") {
@@ -137,19 +150,40 @@ function whereExecutable(name: string): string | undefined {
 		const result = spawnSync("where", [name], { encoding: "utf-8", timeout: 5000, windowsHide: true });
 		if (result.status !== 0 || !result.stdout) return undefined;
 		const first = result.stdout.trim().split(/\r?\n/)[0];
-		return first && existsSync(first) ? first : undefined;
+		return first && shellPathExists(first) ? first : undefined;
 	} catch {
 		return undefined;
 	}
 }
 
-/** PowerShell 7 (pwsh.exe), else Windows PowerShell; undefined off Windows or when neither is found (P40b, pi). */
+/**
+ * PowerShell 7 (pwsh.exe), else Windows PowerShell; undefined off Windows or when neither is
+ * found (P40b, pi). Each is also looked for where it installs when it is not on PATH (pi 1.3,
+ * #9501): %ProgramFiles%\PowerShell\7 and %SystemRoot%\System32\WindowsPowerShell\v1.0.
+ */
 export function findPowerShell(): string | undefined {
 	if (process.platform !== "win32") return undefined;
-	if (powerShellPath === undefined) {
-		powerShellPath = whereExecutable("pwsh.exe") ?? whereExecutable("powershell.exe") ?? null;
-	}
+	if (powerShellPath === undefined) powerShellPath = locatePowerShell(whereExecutable, process.env) ?? null;
 	return powerShellPath ?? undefined;
+}
+
+/** The PowerShell lookup order (pi getPowerShellConfig), with the PATH lookup and environment given. */
+export function locatePowerShell(
+	onPath: (name: string) => string | undefined,
+	env: Record<string, string | undefined>,
+	exists: (path: string) => boolean = shellPathExists,
+): string | undefined {
+	const installed = (root: string | undefined, ...parts: string[]) => {
+		if (!root) return undefined;
+		const candidate = win32.join(root, ...parts);
+		return exists(candidate) ? candidate : undefined;
+	};
+	return (
+		onPath("pwsh.exe") ??
+		installed(env.ProgramFiles, "PowerShell", "7", "pwsh.exe") ??
+		onPath("powershell.exe") ??
+		installed(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	);
 }
 
 /** How commands run: bash (the default) or PowerShell, a bash path, and a prefix for bash commands (P40b). */
