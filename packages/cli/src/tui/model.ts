@@ -11,8 +11,9 @@
  * for the same reason. Committed blocks never change; /clear starts a new
  * epoch instead.
  */
-import type { AgentEvent, ApprovalRequest } from "@yophon/tau-kernel";
-import { estimateStringTokens } from "@yophon/tau-kernel";
+import { LSP_DIAGNOSTICS_TYPE } from "@yophon/tau-ext-lsp";
+import type { AgentEvent, AgentMessage, ApprovalRequest } from "@yophon/tau-kernel";
+import { estimateStringTokens, userContentText } from "@yophon/tau-kernel";
 import type { Tone } from "./format.ts";
 import type { EditorState } from "./input/editor.ts";
 import { EMPTY } from "./input/editor.ts";
@@ -46,6 +47,8 @@ export type Block =
 	 */
 	| { kind: "group"; id: string; tools: ToolBlock[]; closed: boolean }
 	| { kind: "notice"; id: string; tone: Tone; text: string }
+	/** LSP diagnostics (P45, Claude Code): one summary line; Ctrl+O or a click shows the list. */
+	| { kind: "diagnostics"; id: string; summary: string; text: string }
 	/** Pre-styled lines: extension message/entry renderers, help text, the startup header. */
 	| { kind: "lines"; id: string; lines: StyledLine[]; done: boolean };
 
@@ -257,6 +260,7 @@ export type UiAction =
 	| { type: "task-end" }
 	| { type: "activity"; text: string }
 	| { type: "notice"; tone: Tone; text: string }
+	| { type: "diagnostics"; summary: string; text: string }
 	/** The prompt the user just submitted (the agent emits user_message only for queued input). */
 	| { type: "user"; text: string; images: number }
 	| { type: "lines"; lines: StyledLine[] }
@@ -345,6 +349,17 @@ function commitReady(state: UiState): UiState {
 	while (n < state.live.length && isDone(state.live[n] as Block)) n++;
 	if (n === 0) return state;
 	return { ...state, committed: [...state.committed, ...state.live.slice(0, n)], live: state.live.slice(n) };
+}
+
+/** An LSP diagnostics message (P45) as a block: its summary and the list without the model's tags. */
+export function diagnosticsBlock(message: AgentMessage): { summary: string; text: string } | undefined {
+	if (message.role !== "custom" || message.customType !== LSP_DIAGNOSTICS_TYPE) return undefined;
+	const summary = (message.details as { summary?: unknown } | undefined)?.summary;
+	if (typeof summary !== "string") return undefined;
+	const text = userContentText(message.content)
+		.replace(/^<new-diagnostics>The following new diagnostic issues were detected:\n\n/, "")
+		.replace(/\n<\/new-diagnostics>$/, "");
+	return { summary, text };
 }
 
 function pushLive(state: UiState, block: DistributiveOmit<Block, "id">): UiState {
@@ -564,6 +579,8 @@ export function reduce(state: UiState, action: UiAction): UiState {
 			return { ...state, activity: action.text };
 		case "notice":
 			return pushLive(state, { kind: "notice", tone: action.tone, text: action.text });
+		case "diagnostics":
+			return pushLive(state, { kind: "diagnostics", summary: action.summary, text: action.text });
 		case "user":
 			return pushLive(finishStreams(state), { kind: "user", text: action.text, images: action.images });
 		case "lines":

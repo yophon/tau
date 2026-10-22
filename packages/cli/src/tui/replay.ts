@@ -5,7 +5,14 @@
  * state) are skipped; summaries show as one line.
  */
 import { type AgentMessage, userContentText } from "@yophon/tau-kernel";
-import { GROUPED_TOOLS, type ReplayBlock, readableError, resultDiff, type ToolBlock } from "./model.ts";
+import {
+	diagnosticsBlock,
+	GROUPED_TOOLS,
+	type ReplayBlock,
+	readableError,
+	resultDiff,
+	type ToolBlock,
+} from "./model.ts";
 
 export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock[] {
 	const results = new Map<string, Extract<AgentMessage, { role: "toolResult" }>>();
@@ -58,9 +65,12 @@ export function messagesToBlocks(messages: readonly AgentMessage[]): ReplayBlock
 				}
 				break;
 			}
-			case "custom":
-				if (message.display) blocks.push({ kind: "notice", tone: "dim", text: userContentText(message.content) });
+			case "custom": {
+				const diagnostics = diagnosticsBlock(message);
+				if (diagnostics) blocks.push({ kind: "diagnostics", ...diagnostics });
+				else if (message.display) blocks.push({ kind: "notice", tone: "dim", text: userContentText(message.content) });
 				break;
+			}
 			case "compactionSummary":
 				blocks.push({ kind: "notice", tone: "dim", text: "Earlier conversation was compacted into a summary." });
 				break;

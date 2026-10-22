@@ -38,10 +38,17 @@ export type { ToolInfo };
  * it with readline/TUI, web hosts with dialogs; headless hosts omit it and
  * extensions must degrade gracefully.
  */
+/** pi ExtensionUIDialogOptions: dismiss a dialog from code, or after `timeout` ms (it then resolves undefined). */
+export interface UiDialogOptions {
+	signal?: TauAbortSignal;
+	timeout?: number;
+}
+
 export interface UiCapability {
 	confirm(title: string, message?: string): Promise<boolean>;
 	input(title: string, placeholder?: string): Promise<string | undefined>;
-	select(title: string, options: string[]): Promise<string | undefined>;
+	/** `options` (pi, P45): hosts that cannot dismiss a dialog ignore it. */
+	select(title: string, options: string[], dialog?: UiDialogOptions): Promise<string | undefined>;
 	notify(message: string, level?: "info" | "warning" | "error"): void;
 	/** Edit text in a full editor (pi ui.editor); undefined when cancelled. Hosts without one omit it. */
 	editor?(title: string, prefill?: string): Promise<string | undefined>;

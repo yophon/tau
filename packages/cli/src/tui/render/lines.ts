@@ -259,6 +259,16 @@ function blockOut(block: Block, options: LineOptions): Out {
 			});
 		case "lines":
 			return concat(block.lines.map((line) => wrapped(line, width, colors)));
+		case "diagnostics": {
+			// Claude Code's line under the edit; the list when opened (Ctrl+O or a click).
+			const head = options.verbose ? block.summary : `${block.summary} (ctrl+o to expand)`;
+			const rows = [
+				prefixedRows("  ⎿ ", { dim: true }, wrapped([{ text: head, dim: true }], width - 4, colors), colors),
+			];
+			if (options.verbose)
+				rows.push(prefixedRows("    ", {}, wrapped([{ text: block.text, dim: true }], width - 4, colors), colors));
+			return concat(rows);
+		}
 		case "tool":
 			return toolRows(block, width, options, colors);
 		case "group":

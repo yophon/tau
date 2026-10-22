@@ -212,6 +212,7 @@ export {
 	type UIPromptKind,
 	type UIPromptStartEvent,
 	type UiCapability,
+	type UiDialogOptions,
 	type UserBashEvent,
 	type UserBashEventResult,
 	type WidgetPlacement,

@@ -59,7 +59,8 @@ const TOOL_ALIASES: Record<string, readonly string[]> = {
 	bash: ["bash", "monitor"],
 	monitor: ["monitor"],
 	powershell: ["powershell"],
-	read: ["read", "grep", "find", "ls"],
+	// P45: Claude Code applies Read rules to its LSP tool.
+	read: ["read", "grep", "find", "ls", "lsp"],
 	edit: ["edit", "write"],
 	write: ["write"],
 	grep: ["grep"],
@@ -84,11 +85,11 @@ const UNCONSULTED_PATH_TOOLS: Record<string, string> = {
 const BASH_TOOLS = new Set(["bash", "monitor"]);
 /** P40b: Claude Code's PowerShell rules (same shape as Bash; aliases resolved; case ignored). */
 const POWERSHELL_TOOLS = new Set(["powershell"]);
-const READ_PATH_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const READ_PATH_TOOLS = new Set(["read", "grep", "find", "ls", "lsp"]);
 const EDIT_PATH_TOOLS = new Set(["edit", "write"]);
 /** Main content fields a parameter rule may not name (Claude Code). */
 const MAIN_FIELDS = new Set(["command", "file_path", "path", "notebook_path", "url"]);
-const PATH_KEYS = ["path", "file_path", "file", "filename", "dest", "target"] as const;
+const PATH_KEYS = ["path", "file_path", "filePath", "file", "filename", "dest", "target"] as const;
 
 /**
  * Parse one rule string. `kind` matters for validation: allow rules may not use an

@@ -1106,7 +1106,8 @@ export class Agent {
 		return {
 			confirm: (title, message) => around("confirm", title, () => ui.confirm(title, message)),
 			input: (title, placeholder) => around("input", title, () => ui.input(title, placeholder)),
-			select: (title, options) => around("select", title, () => ui.select(title, options)),
+			select: (title, options, dialog) =>
+				around("select", title, () => (dialog ? ui.select(title, options, dialog) : ui.select(title, options))),
 			notify: (message, level) => ui.notify(message, level),
 			...(editor ? { editor: (title, prefill) => around("editor", title, () => editor.call(ui, title, prefill)) } : {}),
 			...(selectMany
@@ -2156,6 +2157,7 @@ export class Agent {
 					? await this.extensions.runBeforeSettle(outcome, ctx)
 					: { entries: [], continue: false };
 				await this.commitBoundaryDrafts(settle.entries, "agent_before_settle", ctx);
+				for (const message of this.boundaryMessages.splice(0)) yield { type: "user_message", message };
 				if (signal?.aborted) break;
 				if (!settle.continue && !this.hasQueuedMessages()) break;
 				if (!this.canContinue()) {
@@ -2187,6 +2189,9 @@ export class Agent {
 		return (last !== undefined && last.role !== "assistant") || this.hasQueuedMessages();
 	}
 
+	/** Custom messages boundary handlers appended, for the run loop to announce as user_message events. */
+	private readonly boundaryMessages: CustomMessage[] = [];
+
 	/** Append a boundary handler's drafts in order (custom entries and custom messages). */
 	private async commitBoundaryDrafts(drafts: BoundaryDraft[], event: string, ctx: ExtensionContext): Promise<void> {
 		for (const draft of drafts) {
@@ -2196,7 +2201,7 @@ export class Agent {
 					await this.refresh();
 				});
 			} else if (draft.type === "custom_message") {
-				await this.commitMessage(
+				const committed = await this.commitMessage(
 					{
 						role: "custom",
 						customType: draft.customType,
@@ -2207,6 +2212,8 @@ export class Agent {
 					},
 					ctx,
 				);
+				// P45: hosts see them as they land (the TUI draws LSP diagnostics under the turn).
+				this.boundaryMessages.push(committed as CustomMessage);
 			} else {
 				this.extensions?.reportError(event, `Unsupported boundary draft type: ${(draft as { type: string }).type}`);
 			}
@@ -2418,6 +2425,7 @@ export class Agent {
 					// continue are ignored; drafts still land.
 					await this.finishTurn?.({ message: finalMessage, toolResults: [] }, signal);
 					await this.runTurnEndBoundary(turnIndex, finalMessage, failedEntryId, [], [], ctx);
+					for (const message of this.boundaryMessages.splice(0)) yield { type: "user_message", message };
 
 					// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff and
 					// an abortable sleep. The failed attempt stays in the log and leaves the
@@ -2566,6 +2574,7 @@ export class Agent {
 					toolResultEntryIds,
 					ctx,
 				);
+				for (const message of this.boundaryMessages.splice(0)) yield { type: "user_message", message };
 				state.turnIndex++;
 				// Custom messages sent with triggerTurn:false while the turn ran land now (pi 0.84.4).
 				for (const held of this.afterTurnMessages.splice(0)) await this.commitMessage(held, ctx);

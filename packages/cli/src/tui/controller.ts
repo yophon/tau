@@ -81,6 +81,7 @@ import {
 	type ApprovalPromptRequest,
 	type ApprovalView,
 	approvalOptions,
+	diagnosticsBlock,
 	initialState,
 	type PickerItem,
 	type PromptView,
@@ -262,16 +263,14 @@ export class TuiController {
 				return this.ask("input", title, placeholder);
 			},
 			// Numbered options: a digit picks one (P38c, Claude Code's numbered choices); longer lists filter.
-			select: (title, values) => {
+			select: (title, values, dialog) => {
 				this.attention("question", title);
-				return this.pick(
-					title,
-					values.map((value, index) =>
-						values.length <= 9
-							? { label: `${index + 1}. ${value}`, value, key: String(index + 1) }
-							: { label: value, value },
-					),
+				const items = values.map((value, index) =>
+					values.length <= 9
+						? { label: `${index + 1}. ${value}`, value, key: String(index + 1) }
+						: { label: value, value },
 				);
+				return dialog?.signal || dialog?.timeout ? this.pickDismissable(title, items, dialog) : this.pick(title, items);
 			},
 			selectMany: (title, values) => {
 				this.attention("question", title);
@@ -1056,7 +1055,8 @@ export class TuiController {
 			return;
 		}
 		const hit = blockAt(transcript, selection.anchor.row);
-		if ((hit?.block.kind === "tool" || hit?.block.kind === "group") && selection.anchor.row === hit.start + 1) {
+		const toggles = hit?.block.kind === "tool" || hit?.block.kind === "group" || hit?.block.kind === "diagnostics";
+		if (hit && toggles && selection.anchor.row === hit.start + 1) {
 			this.dispatch({ type: "toggle-block", id: hit.block.id, verbose: this.state.verbose });
 			this.lastClick.toggled = { id: hit.block.id, verbose: this.state.verbose };
 		} else if (hit?.block.kind === "reasoning") {
@@ -2541,6 +2541,11 @@ export class TuiController {
 	/** A custom message: an extension renderer's output, else its text when it is meant for display. */
 	private async showMessage(message: CustomMessage | AgentMessage): Promise<void> {
 		if (message.role === "custom") this.shownCustom.add(customKey(message));
+		const diagnostics = diagnosticsBlock(message);
+		if (diagnostics) {
+			this.dispatch({ type: "diagnostics", ...diagnostics });
+			return;
+		}
 		const lines = await this.renderMessage(message);
 		if (lines) this.lines(lines);
 		else if (message.role === "custom" && message.display) this.notice("dim", userContentText(message.content));
@@ -3133,6 +3138,32 @@ export class TuiController {
 				},
 			});
 			this.store.flush();
+		});
+	}
+
+	/**
+	 * A picker that its signal or a timeout closes (pi's dialog options, P45): undefined then,
+	 * as when the user dismisses it. The title says when it closes.
+	 */
+	private pickDismissable(
+		title: string,
+		items: PickerItem[],
+		dialog: { signal?: TauAbortSignal; timeout?: number },
+	): Promise<string | undefined> {
+		const id = this.nextDialogId;
+		const seconds = dialog.timeout ? Math.ceil(dialog.timeout / 1000) : undefined;
+		const answer = this.pick(seconds ? `${title} (closes in ${seconds}s)` : title, items);
+		const dismiss = () => {
+			if (!this.pickers.has(id)) return;
+			if (this.state.picker?.id === id) this.dispatch({ type: "picker-close", id });
+			this.settlePicker(id, undefined);
+		};
+		const timer = dialog.timeout ? setTimeout(dismiss, dialog.timeout) : undefined;
+		dialog.signal?.addEventListener("abort", dismiss, { once: true });
+		if (dialog.signal?.aborted) dismiss();
+		return answer.finally(() => {
+			if (timer) clearTimeout(timer);
+			dialog.signal?.removeEventListener("abort", dismiss);
 		});
 	}
 

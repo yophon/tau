@@ -58,6 +58,7 @@ async function main() {
 		await run("keys", runKeysSmoke);
 		await run("p39", runP39Smoke);
 		await run("p44", runP44Smoke);
+		await run("p45", runP45Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -1095,6 +1096,39 @@ async function runP44Smoke(root, baseUrl) {
 	}
 }
 
+// P45: a language server (the fake one from ext-lsp's tests) reports the error a write
+// introduced: the diagnostics line shows under the turn, Ctrl+O opens it (full screen; the
+// inline view keeps what it printed, D31), and the lsp tool answers.
+async function runP45Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p45", false);
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	const server = join(repoRoot, "packages", "ext-lsp", "test", "fake-lsp-server.mjs");
+	await writeFile(
+		join(dirs.home, ".tau", "lsp.json"),
+		`${JSON.stringify({ fake: { command: process.execPath, args: [server], extensionToLanguage: { ".ts": "typescript" } } })}\n`,
+		"utf8",
+	);
+	const session = await startTui("p45", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("lsp smoke", "Enter");
+		await session.waitFor("Found 1 new diagnostic issue in 1 file (ctrl+o to expand)", 20_000);
+		await session.waitFor("SMOKE_LSP_DONE", 15_000);
+		if (process.env.SMOKE_TUI_MODE !== "inline") {
+			await session.send("C-o");
+			await session.waitFor("[Line 2:1] SMOKE_LSP_ERROR [F1] (fake)", 10_000);
+			await session.send("C-o");
+		}
+		await session.send("/lsp", "Enter");
+		await session.waitFor("fake: running", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok p45");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P38a: tau reads keys itself — Home, Delete, Ctrl+Left and Alt+Backspace edit the line, a
 // burst of arrow keys in one write all count (tech debt #21), Shift+Enter (kitty CSI-u) is a
 // newline, Ctrl+R finds history, Ctrl+D on an empty input exits.
@@ -1526,6 +1560,7 @@ function responseFor(request) {
 		if (content.includes("Command running in background with ID: b2")) return textTurn("SMOKE_BG_SECOND");
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
 		if (content.includes("GOT_octo")) return textTurn("SMOKE_ELICIT_DONE");
+		if (content.includes("Document symbols:") && content.includes("smokeFn")) return textTurn("SMOKE_LSP_DONE");
 	}
 	if (String(messages[0]?.content ?? "").includes("You are a context transfer assistant")) {
 		return textTurn("## Context\nSmoke context.\n\n## Task\nSMOKE_HANDOFF_TASK");
@@ -1533,6 +1568,13 @@ function responseFor(request) {
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("<side-question>")) return textTurn("SMOKE_BTW_ANSWER");
+	// P45: the diagnostics message is the newest user-role message after the write.
+	if (content.includes("<new-diagnostics>") && content.includes("SMOKE_LSP_ERROR")) {
+		return toolCallTurn("lsp", { operation: "documentSymbol", filePath: "smoke.ts", line: 1, character: 1 });
+	}
+	if (content.includes("lsp smoke")) {
+		return toolCallTurn("write", { path: "smoke.ts", content: "function smokeFn() {}\nERROR: SMOKE_LSP_ERROR\n" });
+	}
 	if (content.includes("loop smoke")) return textTurn("SMOKE_LOOP_RAN");
 	if (content.includes("SMOKE_PROMPT_TEXT")) return textTurn("SMOKE_PROMPT_DONE");
 	if (content.includes("elicit smoke")) return toolCallTurn("mcp__smoke__ask", {});

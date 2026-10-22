@@ -833,6 +833,8 @@ const GATED_PROJECT_RESOURCES = [
 	".tau/settings.json",
 	// P37a: the project's MCP servers were read only when trusted but never asked about.
 	".tau/mcp.json",
+	// P45: language servers are programs the project would start.
+	".tau/lsp.json",
 	".tau/skills",
 	".tau/prompts",
 	".pi/settings.json",
@@ -1008,6 +1010,8 @@ async function loadExtensionRegistry(
 	hooks?: HookRunner,
 	/** P40: false leaves out the settings keys P40 added (the gateway). */
 	extendedSettings = true,
+	/** P45: offer catalog language servers (the TUI, as Claude Code offers them in the terminal). */
+	recommendLsp = false,
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
@@ -1084,6 +1088,21 @@ async function loadExtensionRegistry(
 				}),
 			]);
 		}
+	}
+	// Language servers (P45, Claude Code): ~/.tau/lsp.json and, when trusted, the project's.
+	// The gateway is parked and gets none.
+	if (extendedSettings) {
+		const { createLspHost } = await import("./lsp.ts");
+		const lsp = createLspHost({
+			home: userHome(),
+			cwd,
+			projectTrusted,
+			clientVersion: CLI_VERSION,
+			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
+			recommend: recommendLsp,
+		});
+		for (const error of lsp.errors) console.log(dim(`lsp: ${error}`));
+		await registry.add([lsp.extension]);
 	}
 	// User hooks (P35): ~/.tau/settings.json and, when trusted, the project's.
 	if (hooks) {
@@ -2003,6 +2022,7 @@ async function main(): Promise<void> {
 			auditExtension,
 			hookRunner,
 			spec.extendedSettings !== false,
+			workspaceHost === "tui",
 		);
 		const extensions = loaded.registry;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
@@ -2093,6 +2113,7 @@ async function main(): Promise<void> {
 				auditExtension,
 				hookRunner,
 				spec.extendedSettings !== false,
+				workspaceHost === "tui",
 			);
 			projectTrusted = next.projectTrusted;
 			workspaceSettings = readWorkspaceSettings();

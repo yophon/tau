@@ -390,8 +390,13 @@ if (input.to_model === "ask-model") process.stdout.write(JSON.stringify({ hookSp
 		const h = await setup({ DirectoryAdded: [group(added.command, "slash_command")] });
 		h.registry.events.emit(DIRECTORY_ADDED_CHANNEL, { directory: "/repo/other", source: "slash_command" });
 		await until(() => added.calls().length === 1, "DirectoryAdded ran");
-		await new Promise((resolve) => setTimeout(resolve, 50));
-		assert.match(await h.pendingContext(), /deps installed in \/repo\/other/);
+		// The hook's output is read after it exits; under load that takes longer than a fixed pause.
+		let context = "";
+		for (let attempt = 0; attempt < 100 && !/deps installed/.test(context); attempt++) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			context = await h.pendingContext();
+		}
+		assert.match(context, /deps installed in \/repo\/other/);
 		assert.deepEqual(h.notes, [], "not shown to the user");
 	});
 

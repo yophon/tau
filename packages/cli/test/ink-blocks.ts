@@ -87,6 +87,9 @@ export function renderBlock(block: Block, options: RenderOptions): React.ReactEl
 			);
 		case "lines":
 			return linesElement(block.lines, block.id);
+		// P45 diagnostics came after this oracle was frozen; it draws the summary only.
+		case "diagnostics":
+			return h(Box, { key: block.id, marginTop: 1 }, h(Text, { dimColor: true }, block.summary));
 		case "tool":
 			return toolElement(block, options);
 		case "group":
