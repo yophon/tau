@@ -1,6 +1,6 @@
 # Phase 45：LSP 代码智能（照 Claude Code）规格书
 
-> 状态：已确认（2026-10-22）。「需要确认」五条用户都按建议定（「可以，按你建议来」）；第 5 条的语言服务器装进 scratchpad 的临时目录，验收完删掉。
+> 状态：已完成（2026-10-22）。「需要确认」五条用户都按建议定（「可以，按你建议来」）；第 5 条的语言服务器装进 scratchpad 的临时目录，验收完删掉。
 > 对应 roadmap 阶段：Phase 45
 > 起因：P44 后用户把 LSP、工具补齐、MCP 新规范纳入计划（「2、3、4都可以纳入计划」），先做 LSP。P35 时裁决的「改完自动诊断不做（钩子里配类型检查即可）」这次推翻（记为 D48）：Claude Code 已经把它做成标准内置功能，而且跳定义、找引用这类导航钩子做不了。
 
@@ -276,24 +276,24 @@ export function nodeLspSpawn(options?: { env?: (config: LspServerConfig) => Reco
 
 ## 验收清单
 
-- [ ] 45a（单元测试，用假服务器：一个按 Content-Length 收发、能按脚本回诊断和查询结果的 Node 脚本）：
-  - [ ] 分帧：跨块拼接、多字节字符、头部 64 KiB 与正文 32 MiB 上限、stdout 非协议内容断开并算崩溃。
-  - [ ] 生命周期：懒启动、`initialize` 的参数、处理器先于握手挂好、启动超时、崩溃后下次使用时重启并重新打开文档、超过 `maxRestarts` 或 `restartOnCrash: false` 时停住、关闭时 `shutdown` → `exit` → 超时杀掉、找不到程序时报错且下次重试。
-  - [ ] 服务器请求：configuration 每项 null、registerCapability 与 workDoneProgress/create 回 null、applyEdit 回 `applied: false`、未知请求回 MethodNotFound。
-  - [ ] 同步：首次 `didOpen` 版本 1、之后整份 `didChange` 加 `didSave`、50 个上限关最久没用的、启动期间的编辑在握手后按磁盘内容打开。
-  - [ ] 诊断：去重、编辑时清记录、空发布跳过、四种级别、别的文件的诊断、`diagnostics: false`、等待（150 毫秒防抖、5 秒上限、并行批次等整批）、`turn_end` 与 `before_agent_start` 两个时机、子 agent 的编辑产生的诊断送到主会话、文本格式。
-  - [ ] 工具：参数校验、九种操作的方法与位置换算、`workspaceSymbol` 带 `query`、调用链两步、gitignore 过滤、各输出与报错文字、只在有服务器时注册。
-  - [ ] `./node`：Windows 上经 `.cmd` 外壳启动（测试里造一个带空格路径的 `.cmd`）、杀进程树、路径与 URI 互转（盘符、空格、中文、`#`、`%`）。
-- [ ] 45b：
-  - [ ] 配置：用户与受信任项目合并、未受信任项目不读、严格校验与整份文件不加载、扩展名冲突的提示、变量与 `${cred:}`、项目文件不许 `${cred:}`。
-  - [ ] 权限：`Read(路径)` 规则管住 `lsp`、deny `LSP` 去掉工具、只读模式下有、子 agent 有、钩子 matcher `LSP` 生效。
-  - [ ] TUI：诊断行的单复数、Ctrl+O 与点击展开、恢复会话后还原、`lsp` 工具行、`/lsp` 的各种状态、配置错误提示。
-  - [ ] 推荐：出现条件、每会话一次、四个选项、30 秒自动关闭算忽略、忽略 5 次停止、「启用」后马上生效。
-  - [ ] 网关里没有 `lsp` 工具，也不启动服务器。
-  - [ ] smoke-tui 新场景（全屏与 inline）：用假服务器，模型改出一个错误后出现诊断行、Ctrl+O 看到全文、调用一次 `lsp` 工具。
-- [ ] 真服务器与真 DeepSeek（「需要确认」5 同意后）：用 typescript-language-server，模型改出一个类型错误后收到诊断并自己改好；用 `lsp` 的 goToDefinition、findReferences 回答一个关于代码结构的问题；`/lsp` 显示运行中。
-- [ ] 全量测试、check、pack smoke（含新包）、浏览器打包与浏览器运行、smoke-tui 全屏与 inline 全部通过；push 后 CI 通过。
-- [ ] DoD 通用项（见 development.md）；D48；connectors.md 的 LSP 一节、architecture、README、CHANGELOG、roadmap 更新。
+- [x] 45a（单元测试，用假服务器：一个按 Content-Length 收发、能按脚本回诊断和查询结果的 Node 脚本）：
+  - [x] 分帧：跨块拼接、多字节字符、头部 64 KiB 与正文 32 MiB 上限、stdout 非协议内容断开并算崩溃。
+  - [x] 生命周期：懒启动、`initialize` 的参数、处理器先于握手挂好、启动超时、崩溃后下次使用时重启并重新打开文档、超过 `maxRestarts` 或 `restartOnCrash: false` 时停住、关闭时 `shutdown` → `exit` → 超时杀掉、找不到程序时报错且下次重试。
+  - [x] 服务器请求：configuration 每项 null、registerCapability 与 workDoneProgress/create 回 null、applyEdit 回 `applied: false`、未知请求回 MethodNotFound。
+  - [x] 同步：首次 `didOpen` 版本 1、之后整份 `didChange` 加 `didSave`、50 个上限关最久没用的、启动期间的编辑在握手后按磁盘内容打开。
+  - [x] 诊断：去重、编辑时清记录、空发布跳过、四种级别、别的文件的诊断、`diagnostics: false`、等待（150 毫秒防抖、5 秒上限、并行批次等整批）、`turn_end` 与 `before_agent_start` 两个时机、子 agent 的编辑产生的诊断送到主会话、文本格式。
+  - [x] 工具：参数校验、九种操作的方法与位置换算、`workspaceSymbol` 带 `query`、调用链两步、gitignore 过滤、各输出与报错文字、只在有服务器时注册。
+  - [x] `./node`：Windows 上经 `.cmd` 外壳启动（测试里造一个带空格路径的 `.cmd`）、杀进程树、路径与 URI 互转（盘符、空格、中文、`#`、`%`）。
+- [x] 45b：
+  - [x] 配置：用户与受信任项目合并、未受信任项目不读、严格校验与整份文件不加载、扩展名冲突的提示、变量与 `${cred:}`、项目文件不许 `${cred:}`。
+  - [x] 权限：`Read(路径)` 规则管住 `lsp`、deny `LSP` 去掉工具、只读模式下有、子 agent 有、钩子 matcher `LSP` 生效。
+  - [x] TUI：诊断行的单复数、Ctrl+O 与点击展开、恢复会话后还原、`lsp` 工具行、`/lsp` 的各种状态、配置错误提示。
+  - [x] 推荐：出现条件、每会话一次、四个选项、30 秒自动关闭算忽略、忽略 5 次停止、「启用」后马上生效。
+  - [x] 网关里没有 `lsp` 工具，也不启动服务器。
+  - [x] smoke-tui 新场景（全屏与 inline）：用假服务器，模型改出一个错误后出现诊断行、Ctrl+O 看到全文、调用一次 `lsp` 工具。
+- [x] 真服务器与真 DeepSeek（「需要确认」5 同意后；诊断一项通过，找引用在服务器刚启动时结果不全，`/lsp` 在 `-p` 里不是命令，见实施记录）：用 typescript-language-server，模型改出一个类型错误后收到诊断并自己改好；用 `lsp` 的 goToDefinition、findReferences 回答一个关于代码结构的问题；`/lsp` 显示运行中。
+- [x] 全量测试、check、pack smoke（含新包）、浏览器打包与浏览器运行、smoke-tui 全屏与 inline 全部通过；push 后 CI 通过。
+- [x] DoD 通用项（见 development.md）；D48；connectors.md 的 LSP 一节、architecture、README、CHANGELOG、roadmap 更新。
 
 ## 风险与开放问题
 
@@ -301,3 +301,37 @@ export function nodeLspSpawn(options?: { env?: (config: LspServerConfig) => Reco
 - **TypeScript 服务器第一次打开很慢**：大项目里 5 秒可能等不到，诊断会在下一轮或下一次提示时送到，和 Claude Code 一样不会丢。
 - **Windows 路径大小写**：服务器返回的 URI 盘符大小写可能和 tau 发出的不一样；所有比较前先规范化路径（opencode 在这里出过错）。
 - **开放问题**：无（「需要确认」五条已按建议确认）。
+
+## 实施记录（2026-10-22）
+
+### 提交
+
+- a680d9a 规格书（含 P46、P47 的计划）；2389a78 45a（ext-lsp 包）；07c44c3 45b（CLI、TUI、内核）；之后一个提交是 45c 文档与两处小修（TUI 不再为一个常量加载 ext-lsp；TypeScript 的安装提示改成 6.x）。
+
+### 验收
+
+- **测试**：全量 1258 个，1253 通过、5 跳过；check 通过。新增 ext-lsp 15 个（假语言服务器作为真实子进程跑）、CLI 8 个（含一条真 CLI 的 e2e）。
+- **smoke**：pack smoke（含新包）、浏览器 bundle、浏览器 runtime（无头 Edge）通过。smoke-tui 新增 p45 场景，全屏 35 个场景一遍全过；inline 本机两遍完整运行各撞上一次技术债 #22（不同场景，tau 卡在启动阶段、0 字节输出，一次进程处于 `D` 状态），没跑到和失败的场景单独补跑全部通过；CI（Linux，run 39720597501）上 smoke 的全屏与 inline 两遍都通过。
+- **真 DeepSeek 加真 typescript-language-server**（装在 scratchpad 临时目录，按官方插件的写法配置：命令名经 PATH 和 `.cmd` 外壳找到；验收后删除）：
+  - 模型把 `add(1, 2)` 改成 `add(1, "2")` 后，同一轮收到 `✘ [Line 3:30] Argument of type 'string' is not assignable to parameter of type 'number'. [2345] (typescript)`，随后改回；JSON 模式里这条消息有 `message_end` 事件。
+  - `lsp` 的 findReferences 在服务器刚启动时只返回声明本身；直接对服务器试，等 3 秒再查就返回全部 3 处（见偏差最后一条）。
+  - `-p "/lsp"` 被当成提示发给模型（`/lsp` 是 TUI 与 REPL 的命令，TUI 里由 smoke 验证）。
+- **收尾时修掉的问题**：
+  - `-p` 打印完结果后要再等约 5 秒才退出：等诊断时和同步赛跑的计时器没随赛跑取消，拖住了事件循环；
+  - TUI 画不出诊断行：内核的边界消息不发事件（见偏差第一条）；
+  - Windows 上找不到程序被当成崩溃：cross-spawn 事后才报 ENOENT，改为先自己找程序；
+  - pack smoke 里的 TUI 找不到 ext-lsp：改为不加载它；
+  - P18 的并发 e2e 量的是含 CLI 启动的总时长，被新测试的并发负载拉长到 4.5 秒以上，改成看 call_1 等待的轮数。
+
+### 与规格的偏差
+
+- **内核改了两处，规格没写**：
+  - `ui.select` 加上 pi 的对话框选项 `{ signal, timeout }`，推荐对话框靠它在 30 秒后自动关闭；
+  - 边界（`turn_end`、`agent_before_settle`）追加的自定义消息作为 `user_message` 事件发出。原来这类消息只进对话，TUI 画不出诊断那一行，是 smoke 发现的。
+- **找程序时跳过工作目录**：照 Claude Code 2.1.213 的解析。Windows 上 cross-spawn 找不到程序时不会在启动时报 ENOENT，而是先启动、退出后才补报，所以 tau 先按 PATH 和 PATHEXT 自己找，再用绝对路径启动。
+- **`LspSpawn` 是异步的**（返回 Promise，找不到程序时带 `code: "ENOENT"` 拒绝），规格草案里是同步的。
+- **找引用的结果按文件和位置排序**：服务器按自己的顺序返回，Claude Code 怎么排序查不到。调用链的结果照 Claude Code 不过 gitignore 过滤。
+- **`/lsp` 是 TUI 和 REPL 的命令**：`-p "/lsp"` 会当成提示发给模型。
+- **TUI 自己写出 `lsp_diagnostics` 这个常量**，不加载 ext-lsp：pack smoke 里的 TUI 只装了内核。测试保证两边的值相同。
+- **TypeScript 的安装提示写 `typescript@6`**：Claude Code 插件 README 写的是 `typescript`。npm 上现在的 7.x 是原生编译器，不带 typescript-language-server 需要的 tsserver，验收时照 README 装的服务器起不来。
+- **验收发现，未改**：服务器刚启动、还在建项目时查询，结果可能不全。真 typescript-language-server 上，打开文件后立刻找引用只返回声明本身，等 3 秒后再查才返回全部 3 处。Claude Code 有同样的问题（#76870），规格把「等 `$/progress` 再查」列在范围外，所以照旧，只在 connectors.md 里写明。

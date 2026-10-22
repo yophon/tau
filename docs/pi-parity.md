@@ -93,7 +93,7 @@
 
 | 成员 | 快照 | tau 状态 | 说明 |
 |---|---|---|---|
-| `ui` | 0.80 | ✅ P2 | 可选能力，headless 缺失（D10）。P44：`addAutocompleteProvider`（pi，TUI 实现，MCP 的 `@` 资源用它）；tau 另有可选的 `form`（MCP elicitation 的表单，没有的宿主用 `askFormStepByStep` 逐个字段问） |
+| `ui` | 0.80 | ✅ P2 | 可选能力，headless 缺失（D10）。P44：`addAutocompleteProvider`（pi，TUI 实现，MCP 的 `@` 资源用它）；tau 另有可选的 `form`（MCP elicitation 的表单，没有的宿主用 `askFormStepByStep` 逐个字段问）。P45：`select` 接受 pi 的对话框选项 `{ signal, timeout }`（TUI 实现；其他对话框尚未接） |
 | `mode` | 0.80 | ❌D10 | 宿主模式不进内核；扩展按 `ui` 能力是否存在降级 |
 | `hasUI` | 0.80 | ⚠D10 | 即 `ctx.ui !== undefined` |
 | `cwd` | 0.80 | ✅ P23c | 取 `capabilities.paths.cwd`（无则 `fs.cwd`），与能力门面同源 |

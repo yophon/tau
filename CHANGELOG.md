@@ -4,6 +4,33 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P45)
+- New package `@yophon/tau-ext-lsp`: language servers per Claude Code's code
+  intelligence. Servers come from Claude Code's `.lsp.json` format (strict,
+  all or nothing per file); edits and writes reach the file's server, and
+  the errors and warnings it reports since the edit go to the model as one
+  `lsp_diagnostics` message at the end of the turn (waiting up to 5 s for a
+  fresh publish, as opencode does) or with the next prompt; the read-only
+  `lsp` tool (Claude Code's definition: goToDefinition, findReferences,
+  hover, documentSymbol, workspaceSymbol, goToImplementation,
+  prepareCallHierarchy, incomingCalls, outgoingCalls) exists while a server
+  is configured; `/lsp` lists servers and their state. The entry is pure ES;
+  `./node` starts servers (`.cmd` shims on Windows, PATH lookup that skips
+  the working directory, tree kill).
+- CLI: `~/.tau/lsp.json` and a trusted project's `.tau/lsp.json`, expanded
+  like `mcp.json`; the TUI shows "Found N new diagnostic issues in M files"
+  (Ctrl+O or a click opens it) and offers an installed but unconfigured
+  server from Claude Code's twelve official language plugins once per session
+  (Claude Code's recommendation dialog).
+- kernel: `UiCapability.select` takes pi's dialog options (`signal`,
+  `timeout`); the TUI closes the picker.
+
+### Changed (P45)
+- kernel: custom messages appended at boundaries (`turn_end`,
+  `agent_before_settle`) are announced as `user_message` events. `Read(...)`
+  permission rules apply to the `lsp` tool, and `filePath` counts as a path
+  argument.
+
 ### Added (P44)
 - ext-mcp-http, ext-mcp: MCP prompts become `/mcp__<server>__<prompt>`
   commands (Claude Code), re-listed on `prompts/list_changed`; `@server:uri`

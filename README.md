@@ -45,6 +45,12 @@ inject a small adapter instead of polyfilling globals.
   turns this off). The `monitor`
   tool runs a command in the background and hands the model each line it
   prints, e.g. errors in a log as they appear.
+- **Code intelligence** — as in Claude Code: language servers listed in
+  `~/.tau/lsp.json` (Claude Code's `.lsp.json` format) report the errors an
+  edit introduced, right after the edit, and give the model an `lsp` tool
+  for definitions, references, hover, symbols and call hierarchy. You install
+  the servers; when one is on PATH but not configured, the TUI offers to
+  enable it. `/lsp` shows their state.
 - **Windows and networks** — on Windows a `powershell` tool sits next to
   `bash` (Git Bash), on by default as in Claude Code, with Claude Code's
   `PowerShell(...)` permission rules. `HTTP_PROXY` / `HTTPS_PROXY` /
@@ -125,6 +131,7 @@ older runtimes, paths that are code-present but not yet e2e-verified).
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport` written entirely on the `Platform` seam — native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
 | `@yophon/tau-ext-web` | `web_fetch` (HTML to markdown over `Platform.fetch`) and BYOK `web_search` (Brave, Tavily, Exa, SearXNG) | **No** — pure `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`: BM25 search over deferred tools (e.g. MCP tools), loading the matches for the next request | No — pure ES |
+| `@yophon/tau-ext-lsp` | Language servers (Claude Code's `.lsp.json`): diagnostics after edits and the `lsp` tool; pure-ES core, `./node` starts the servers | Yes — child processes (Node entry) |
 | `@yophon/tau-ext-codemode` | `codemode`: the model writes JavaScript that calls tools, run in pi's QuickJS sandbox (`./node`) | Yes — worker threads + wasm (Node entry) |
 | `@yophon/tau-ext-resources` | Extension package for pi-compatible skills and prompt templates | No direct runtime API |
 | `@yophon/tau-ext-feishu` | Feishu/Lark WebSocket bridge with media, reactions, progress cards, and outbound tools | Yes — Feishu SDK and Node filesystem |
@@ -399,7 +406,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
-- [docs/connectors.md](docs/connectors.md) — MCP connectors, credentials, OAuth, keeping secrets from the model
+- [docs/connectors.md](docs/connectors.md) — MCP connectors, language servers, credentials, OAuth, keeping secrets from the model
 - [docs/audit.md](docs/audit.md) — the audit ledger: what tau did, who approved it, what it cost (`tau audit`)
 - [docs/hooks.md](docs/hooks.md) — user hooks: shell commands at fixed points of a run (Claude Code's format)
 - [docs/permissions.md](docs/permissions.md) — permission rules, "always allow", working directories (Claude Code's format)

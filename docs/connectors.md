@@ -95,6 +95,76 @@ tau mcp list --check    # 顺便连一次，报告工具数，有资源的标 re
 - 不能写 `toolRisk` 和 `auth`。
 - 对 `~/.tau/mcp.json` 里同名的服务器，只能改 `enabled`、`exposure`、`toolExposure`。
 
+## 语言服务器：`~/.tau/lsp.json`（P45，照 Claude Code）
+
+配好语言服务器后，模型每次改完或写完一个文件，都会收到服务器报出的新错误和警告，不用跑编译。模型还多一个只读的 `lsp` 工具，能跳到定义、找引用、看类型、列出文件里的符号、按名字在工作区搜符号、找实现、看调用链。语言服务器要你自己安装，tau 只负责启动和通话。
+
+格式就是 Claude Code 插件里的 `.lsp.json`：服务器名对应一份配置。
+
+```json
+{
+  "typescript": {
+    "command": "typescript-language-server",
+    "args": ["--stdio"],
+    "extensionToLanguage": { ".ts": "typescript", ".tsx": "typescriptreact", ".js": "javascript", ".jsx": "javascriptreact" }
+  }
+}
+```
+
+- **必填**：`command`（从 PATH 找，也可以写绝对路径；参数放 `args`）和 `extensionToLanguage`（扩展名带点 → 语言 id）。
+- **可选**：
+  - `args`、`env`、`workspaceFolder`（服务器的根目录，缺省是会话的工作目录）；
+  - `initializationOptions`（随 `initialize` 发出）、`settings`（随 `workspace/didChangeConfiguration` 发出）；
+  - `startupTimeout`（毫秒，缺省 30000）、`requestTimeout`（缺省 60000）、`shutdownTimeout`（缺省 5000）；
+  - `restartOnCrash`（缺省 true）、`maxRestarts`（缺省 3）；
+  - `diagnostics`（false 时不收诊断，`lsp` 工具照常能用）；
+  - `transport`（只为兼容 Claude Code，一律走 stdio）。
+- **校验和 Claude Code 一样严格**：写错一个字段，整份文件都不加载，原因在启动时和 `/lsp` 里显示。
+- **一个扩展名只归一个服务器**，先写的生效。按扩展名找服务器时不分大小写。
+- **变量**：值里能用 `${VAR}`、`${VAR:-缺省}`、`${cred:名字}`，和 mcp.json 一样。服务器拿到的环境变量和 MCP 的 stdio 服务器一样，另加 `TAU_PROJECT_DIR`、`CLAUDE_PROJECT_DIR`。
+- **项目文件**：受信任项目的 `.tau/lsp.json` 也会读（和项目扩展同一个信任门），同名服务器替换用户文件里的；项目文件里不能用 `${cred:…}`。
+- **找程序时不看工作目录**：项目里放一个同名的 `.cmd` 不会被当成服务器执行。Windows 上 npm 装的 `.cmd` 外壳能直接启动。
+
+**什么时候启动、什么时候报错**
+
+- 第一次改、写匹配的文件，或第一次对它用 `lsp` 工具时才启动。找不到程序时报「Executable not found in PATH」，装好后下次编辑会再试。
+- 每轮工具调用结束时，tau 等刚改的文件的新诊断：最后一次发布后再等 150 毫秒，最多 5 秒。然后把新问题作为一条消息交给模型，TUI 里显示一行「Found N new diagnostic issues in M files」，按 Ctrl+O 或在全屏里点它看全文。来得晚的诊断随下一次提示送出。
+- 同样的问题在下次改这个文件之前不会重复报。错误、警告、信息、提示都会送。
+- 服务器崩溃后，下次用到时重启，并重新打开之前打开的文件；超过 `maxRestarts` 次就停下。会话结束时先请服务器关闭，等不到就连子进程一起杀掉。
+- bash 或 git 改的文件不会同步给服务器（Claude Code 也不同步），下次 tau 改它或查询它时才同步。
+- 服务器刚启动、还在建项目时，查询结果可能不全，比如找引用只返回声明本身。Claude Code 也一样（#76870）。等一会儿再查就好。
+
+**推荐与 `/lsp`**
+
+- TUI 里，模型编辑一个文件时，如果 Claude Code 官方的 12 个语言插件里有对应的服务器、程序已经在 PATH 上、而你还没配置，tau 会问一次要不要启用：
+  - 选「Yes, enable」：写进 `~/.tau/lsp.json`，马上生效；
+  - 「No, not now」或 Esc：以后的会话还会问；
+  - 「Never for this server」：以后不再推荐这一个；
+  - 「Disable all LSP recommendations」：以后都不推荐。
+
+  每个会话最多问一次。30 秒不选自动关闭，算忽略一次，忽略 5 次后不再推荐。状态记在 `~/.tau/lsp-recommendations.json`。
+- `/lsp` 列出每个服务器的状态（未启动、运行中、崩溃、已停止、找不到程序）、最近的错误和输出、配置错误、扩展名冲突，以及已经装了但还没配置的官方服务器。
+- 网关里没有语言服务器。
+
+官方 12 个语言插件的程序和安装方式：
+
+| 语言 | 服务器名 | 程序 | 安装 |
+|---|---|---|---|
+| C/C++ | clangd | `clangd --background-index` | 系统包管理器或 clangd.llvm.org |
+| C# | csharp-ls | `csharp-ls` | `dotnet tool install --global csharp-ls` |
+| Go | gopls | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| Java | jdtls | `jdtls` | JDK 17+ 加 Eclipse JDT LS，PATH 上要有 `jdtls` 启动脚本 |
+| Kotlin | kotlin-lsp | `kotlin-lsp --stdio` | JetBrains kotlin-lsp |
+| Lua | lua | `lua-language-server` | 系统包管理器 |
+| PHP | intelephense | `intelephense --stdio` | `npm install -g intelephense` |
+| Python | pyright | `pyright-langserver --stdio` | `npm install -g pyright` |
+| Ruby | ruby-lsp | `ruby-lsp` | `gem install ruby-lsp` |
+| Rust | rust-analyzer | `rust-analyzer` | `rustup component add rust-analyzer` |
+| Swift | sourcekit-lsp | `sourcekit-lsp` | 随 Swift 工具链 |
+| TypeScript/JavaScript | typescript | `typescript-language-server --stdio` | `npm install -g typescript-language-server typescript@6` |
+
+TypeScript 要装 6.x：npm 上现在的 `typescript` 7.x 是原生编译器，不带 typescript-language-server 需要的 tsserver（2026-10-22 实测）。
+
 ## OAuth 登录
 
 服务器写了 `"auth": "oauth"`（只能写在 `~/.tau/mcp.json`）时：
