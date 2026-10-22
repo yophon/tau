@@ -162,3 +162,57 @@ describe("P47c OAuth credentials keyed by issuer (SEP-2352)", () => {
 		}
 	});
 });
+
+describe("P47c a 401 challenge discovers again", () => {
+	it("cached discovery naming the old authorization server is not reused when the server challenges", async () => {
+		const SERVER = "https://mcp.test/mcp";
+		const metadataFor = (issuer: string) => ({
+			issuer,
+			authorization_endpoint: `${issuer}/authorize`,
+			token_endpoint: `${issuer}/token`,
+			registration_endpoint: `${issuer}/register`,
+			response_types_supported: ["code"],
+			code_challenge_methods_supported: ["S256"],
+			token_endpoint_auth_methods_supported: ["none"],
+		});
+		const registrations: string[] = [];
+		const fetch = async (input: string | URL) => {
+			const url = new URL(String(input));
+			if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+				return Response.json({ resource: SERVER, authorization_servers: ["https://new-as.test"] });
+			}
+			if (url.pathname.startsWith("/.well-known/oauth-authorization-server"))
+				return Response.json(metadataFor(url.origin));
+			if (url.pathname === "/register") {
+				registrations.push(url.origin);
+				return Response.json({ client_id: "new-client", redirect_uris: ["http://127.0.0.1:1/cb"] }, { status: 201 });
+			}
+			return new Response("", { status: 404 });
+		};
+		const store = new MemoryOAuthStateStore();
+		store.save({
+			serverUrl: SERVER,
+			clientInformation: { client_id: "old-client" },
+			clientIssuer: "https://old-as.test",
+			discovery: {
+				authorizationServerUrl: "https://old-as.test",
+				authorizationServerMetadata: metadataFor("https://old-as.test"),
+			},
+		} as McpOAuthState);
+		const provider = new McpOAuthProvider({
+			serverUrl: SERVER,
+			redirectUrl: "http://127.0.0.1:1/cb",
+			clientMetadata: { client_name: "tau" },
+			store,
+			onRedirect: () => {},
+		});
+		await authorizeMcp(provider, {
+			serverUrl: SERVER,
+			resourceMetadataUrl: new URL("https://mcp.test/.well-known/oauth-protected-resource/mcp"),
+			fetch,
+			skipRefresh: true,
+		});
+		assert.deepEqual(registrations, ["https://new-as.test"]);
+		assert.equal((store.load() as McpOAuthState).discovery?.authorizationServerUrl, "https://new-as.test");
+	});
+});

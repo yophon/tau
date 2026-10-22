@@ -963,3 +963,35 @@ describe("P47 startup wait", () => {
 		await handle.close();
 	});
 });
+
+describe("P47 -32022 that lists 2026-07-28", () => {
+	it("the probe and a modern request retry once with it instead of giving up", async () => {
+		let discovers = 0;
+		let calls = 0;
+		const transport = new ScriptedTransport(
+			modern({
+				"server/discover": () => {
+					discovers++;
+					if (discovers === 1) {
+						throw rpcError(-32022, "Unsupported protocol version", { supported: [MCP_MODERN_PROTOCOL_VERSION] });
+					}
+					return discoverResult();
+				},
+				"tools/call": () => {
+					calls++;
+					if (calls === 1) {
+						throw rpcError(-32022, "Unsupported protocol version", { supported: [MCP_MODERN_PROTOCOL_VERSION] });
+					}
+					return text("second try");
+				},
+			}),
+		);
+		const mcp = client();
+		await mcp.connect(transport, { timeoutMs: 2000 });
+		assert.equal(mcp.protocolEra, "modern");
+		assert.equal(discovers, 2);
+		assert.equal((await mcp.callTool("echo")).content[0]?.text, "second try");
+		assert.equal(mcp.eraRejected, false);
+		await mcp.close();
+	});
+});

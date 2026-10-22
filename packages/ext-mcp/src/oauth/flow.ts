@@ -327,8 +327,9 @@ export function stepUpScope(granted: string | undefined, challenged: string | un
 
 async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions): Promise<OAuthFlowResult> {
 	const metadataUrl = options.authorizationServerMetadataUrl && secureEndpoint(options.authorizationServerMetadataUrl);
-	// With a configured metadata URL, discovery is not cached, so changing the URL applies at once.
-	const cached = metadataUrl ? undefined : await provider.discoveryState?.();
+	// With a configured metadata URL, discovery is not cached, so changing the URL applies at once. A
+	// server's 401 challenge discovers again (P47): it may name another authorization server (SEP-2352).
+	const cached = metadataUrl || options.resourceMetadataUrl ? undefined : await provider.discoveryState?.();
 	const discovered = cached?.authorizationServerUrl
 		? {
 				authorizationServerUrl: cached.authorizationServerUrl,

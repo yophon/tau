@@ -275,6 +275,9 @@ export async function signInMcpServer(options: {
 		if (stored) {
 			const next: McpOAuthState = { ...stored };
 			delete next.oauthState;
+			// P47: a sign-in discovers again, as the server may name another authorization server now;
+			// the flow then drops a client registered with the old one (SEP-2352).
+			delete next.discovery;
 			// A registered client cannot use another redirect URI, and its tokens belong to it.
 			if (!settings.clientId && !registeredRedirectUrls(stored.clientInformation).includes(redirectUrl)) {
 				delete next.clientInformation;

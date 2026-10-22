@@ -254,6 +254,13 @@ interface RequestFlags {
 	listen?: boolean;
 }
 
+/** A -32022 whose supported versions include the one tau speaks. */
+function offersModern(error: unknown): boolean {
+	if (!(error instanceof McpError) || error.code !== MCP_ERROR_CODES.unsupportedProtocolVersion) return false;
+	const supported = isObject(error.data) && Array.isArray(error.data.supported) ? error.data.supported : [];
+	return supported.includes(MCP_MODERN_PROTOCOL_VERSION);
+}
+
 /** How long the probe waits when nothing else bounds it (the official SDK uses the request timeout). */
 const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
 
@@ -528,8 +535,8 @@ export class McpClient {
 		let value: unknown;
 		let probeId: JsonRpcId | undefined;
 		const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
-		try {
-			value = await this.requestInternal(
+		const ask = () =>
+			this.requestInternal(
 				"server/discover",
 				undefined,
 				{ ...options, timeoutMs },
@@ -542,6 +549,9 @@ export class McpClient {
 					},
 				},
 			);
+		try {
+			// A -32022 that lists 2026-07-28 after all: retry with it once (spec: pick a mutually supported version).
+			value = await ask().catch((error) => (offersModern(error) ? ask() : Promise.reject(error)));
 		} catch (error) {
 			// A slow server may still answer the abandoned probe.
 			if (probeId !== undefined) this.ignoredResponses.add(probeId);
@@ -686,6 +696,8 @@ export class McpClient {
 				return await this.requestInternal(method, params, options, { ...flags, reportBrokenStream: true });
 			} catch (error) {
 				if (error instanceof McpStreamBrokenError && attempt === 0 && !options.signal?.aborted) continue;
+				// Rejected, yet 2026-07-28 is among the versions the server lists: retry once (spec).
+				if (offersModern(error) && attempt === 0) continue;
 				if (error instanceof McpError && error.code === MCP_ERROR_CODES.unsupportedProtocolVersion) {
 					this.eraRejectedValue = true;
 					void this.close().catch(() => {});

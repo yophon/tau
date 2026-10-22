@@ -382,11 +382,11 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 				if (done) return;
 			}
 		} finally {
-			try {
-				reader.cancel("done");
-			} catch {
-				// cancel is best-effort
-			}
+			// Best-effort, sync or async (as ext-web does): the request's abort right after this can
+			// reject a pending cancel, and an unhandled rejection ends `tau -p`.
+			void Promise.resolve()
+				.then(() => reader.cancel("done"))
+				.catch(() => undefined);
 		}
 	}
 
