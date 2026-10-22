@@ -1,5 +1,6 @@
 // Ported from pi 1.2.0 packages/mcp/src/oauth/provider.ts (MIT, earendil-works/pi) for P32b; changes are
-// limited to imports. Keep in step with pi when the reference is re-pinned (D23).
+// limited to imports, except P47: the state records the issuer of the stored client (SEP-2352).
+// Keep in step with pi when the reference is re-pinned (D23).
 import type { OAuthClientMetadataDocument, OAuthClientProvider } from "./flow.ts";
 import type {
 	AuthorizationServerMetadata,
@@ -12,6 +13,8 @@ import type {
 export interface McpOAuthState {
 	serverUrl: string;
 	clientInformation?: OAuthClientInformationMixed;
+	/** The authorization server that registered clientInformation (SEP-2352, P47). */
+	clientIssuer?: string;
 	tokens?: OAuthTokens;
 	/** When the access token expires, in milliseconds since the epoch, from `expires_in` at the time it was saved. */
 	tokensExpireAt?: number;
@@ -95,9 +98,19 @@ export class McpOAuthProvider implements OAuthClientProvider {
 		return this.configuredClient ?? (await this.load()).clientInformation;
 	}
 
-	async saveClientInformation(information: OAuthClientInformationMixed): Promise<void> {
+	async saveClientInformation(information: OAuthClientInformationMixed, issuer?: string): Promise<void> {
 		if (this.configuredClient) return;
-		await this.update((value) => ({ ...value, clientInformation: information }));
+		await this.update((value) => {
+			const next: McpOAuthState = { ...value, clientInformation: information };
+			if (issuer === undefined) delete next.clientIssuer;
+			else next.clientIssuer = issuer;
+			return next;
+		});
+	}
+
+	async clientIssuer(): Promise<string | undefined> {
+		// A configured client is the user's choice for this server, whatever the authorization server.
+		return this.configuredClient ? undefined : (await this.load()).clientIssuer;
 	}
 
 	async tokens(): Promise<OAuthTokens | undefined> {
@@ -131,7 +144,10 @@ export class McpOAuthProvider implements OAuthClientProvider {
 	async invalidateCredentials(kind: "all" | "client" | "tokens" | "verifier" | "discovery"): Promise<void> {
 		await this.update((value) => {
 			const next = { ...value };
-			if (kind === "all" || kind === "client") delete next.clientInformation;
+			if (kind === "all" || kind === "client") {
+				delete next.clientInformation;
+				delete next.clientIssuer;
+			}
 			if (kind === "all" || kind === "tokens") {
 				delete next.tokens;
 				delete next.tokensExpireAt;

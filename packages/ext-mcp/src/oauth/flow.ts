@@ -1,5 +1,7 @@
 // Ported from pi 1.2.0 packages/mcp/src/oauth/flow.ts (MIT, earendil-works/pi) for P32b; changes are
-// limited to imports. Keep in step with pi when the reference is re-pinned (D23).
+// limited to imports, except P47: client credentials are keyed by the authorization server that
+// issued them (MCP 2026-07-28, SEP-2352; pi 1.4 does not do this yet). Keep in step with pi when
+// the reference is re-pinned (D23).
 /*
  * Adapted from modelcontextprotocol/typescript-sdk v1.29.0 src/client/auth.ts.
  * Copyright (c) 2024 Anthropic, PBC. Licensed under MIT; see LICENSES/.
@@ -57,7 +59,14 @@ export interface OAuthClientProvider {
 	clientMetadataDocument?(metadata: AuthorizationServerMetadata | undefined): OAuthClientMetadataDocument | undefined;
 	state?(): string | Promise<string>;
 	clientInformation(): OAuthClientInformationMixed | undefined | Promise<OAuthClientInformationMixed | undefined>;
-	saveClientInformation?(information: OAuthClientInformationMixed): void | Promise<void>;
+	/** `issuer`: the authorization server that registered the client (MCP 2026-07-28, SEP-2352). */
+	saveClientInformation?(information: OAuthClientInformationMixed, issuer?: string): void | Promise<void>;
+	/**
+	 * The authorization server the stored client information came from; undefined when unknown
+	 * (configured clients, registrations saved before it was recorded). A different one makes the
+	 * flow drop the client and its tokens and register again (SEP-2352).
+	 */
+	clientIssuer?(): string | undefined | Promise<string | undefined>;
 	tokens(): OAuthTokens | undefined | Promise<OAuthTokens | undefined>;
 	saveTokens(tokens: OAuthTokens): void | Promise<void>;
 	redirectToAuthorization(url: URL): void | Promise<void>;
@@ -350,7 +359,15 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 	// `||`, not `??`: an empty scope (for example from `scopes_supported: []`) falls through to the next source.
 	const scope =
 		options.scope || discovered.resourceMetadata?.scopes_supported?.join(" ") || provider.clientMetadata.scope;
-	const stored = await provider.clientInformation();
+	const issuer = String(discovered.authorizationServerUrl);
+	let stored = await provider.clientInformation();
+	// SEP-2352: credentials belong to the authorization server that issued them; never reuse them with another.
+	const storedIssuer = stored ? await provider.clientIssuer?.() : undefined;
+	if (stored && storedIssuer !== undefined && storedIssuer !== issuer && provider.invalidateCredentials) {
+		await provider.invalidateCredentials("client");
+		await provider.invalidateCredentials("tokens");
+		stored = await provider.clientInformation();
+	}
 	const clientDocument = stored ? undefined : provider.clientMetadataDocument?.(metadata);
 	if (clientDocument) {
 		const url = new URL(clientDocument.url);
@@ -367,7 +384,7 @@ async function runFlow(provider: OAuthClientProvider, options: OAuthFlowOptions)
 			fetch: options.fetch,
 			signal: options.signal,
 		});
-		await provider.saveClientInformation(client);
+		await provider.saveClientInformation(client, issuer);
 	}
 	// The document's redirect URI may differ from the provider's, for example by a server-specific path.
 	const redirectUrl = clientDocument?.redirectUrl ?? provider.redirectUrl;
