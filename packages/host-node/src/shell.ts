@@ -116,6 +116,11 @@ function findGitBash(): string | undefined {
 	return candidates.find((candidate) => existsSync(candidate));
 }
 
+/** Whether bash commands have a bash to run in (P49: Windows hooks fall back to PowerShell without one, Claude Code). */
+export function bashAvailable(shellPath?: string): boolean {
+	return process.platform !== "win32" || shellPath !== undefined || findGitBash() !== undefined;
+}
+
 /**
  * The shell for one command. `shellPath` (P40b, pi's setting) replaces the bash tau would
  * look for; Windows-native commands still go to cmd.exe.
@@ -303,6 +308,11 @@ export class NodeShell implements Shell {
 			onStderr?: (chunk: string) => void;
 			/** Written to the command's stdin, then closed (P35: hook commands read their event JSON). */
 			input?: string;
+			/**
+			 * P49 (a hook's exec form, Claude Code): start `command` itself with these arguments, no
+			 * shell; each one is passed exactly as written.
+			 */
+			argv?: readonly string[];
 		},
 	): Promise<ShellExecResult> {
 		if (options?.signal?.aborted) throw new ShellError("aborted", "aborted");
@@ -312,7 +322,9 @@ export class NodeShell implements Shell {
 		}
 		const timeoutMs = timeoutSeconds === undefined ? undefined : Math.min(timeoutSeconds * 1000, MAX_TIMEOUT_MS);
 		const cwd = options?.cwd ? (isAbsolute(options.cwd) ? options.cwd : resolve(this.cwd, options.cwd)) : this.cwd;
-		const { file, args, verbatim } = shellInvocation(command, this.options);
+		const { file, args, verbatim } = options?.argv
+			? { file: command, args: [...options.argv], verbatim: false }
+			: shellInvocation(command, this.options);
 
 		return await new Promise((resolvePromise, rejectPromise) => {
 			let stdout = "";

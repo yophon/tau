@@ -8,7 +8,7 @@
  * them (D38).
  */
 import { join } from "node:path";
-import { NodeShell } from "@yophon/tau-host-node";
+import { bashAvailable, NodeShell } from "@yophon/tau-host-node";
 import type {
 	ApprovalRequest,
 	AssistantMessage,
@@ -66,7 +66,19 @@ const MODEL_SWITCH_TIMEOUT_SECONDS = 30;
 const DEFAULT_TIMEOUT_SECONDS = 600;
 
 export interface HookHandler {
+	/** The command; for an HTTP hook its URL. */
 	command: string;
+	/** P49 (Claude Code): `"http"` POSTs the event to `command` (the URL); absent = a command hook. */
+	type?: "http";
+	/** P49 exec form: `command` is started directly with these arguments, no shell. */
+	args?: string[];
+	/** P49: the shell of a shell-form command hook. */
+	shell?: "bash" | "powershell";
+	/** P49 HTTP hooks: extra headers; `$VAR`/`${VAR}` resolve only for `allowedEnvVars`. */
+	headers?: Record<string, string>;
+	allowedEnvVars?: string[];
+	/** P49: `"block"` makes a failed hook block what triggered it, like exit 2. */
+	onFailure?: "continue" | "block";
 	/** Seconds; 0 = no limit. */
 	timeout?: number;
 	/** Run in the background: cannot block or rewrite anything; only failures are reported. */
@@ -111,6 +123,19 @@ export interface HookOutcome {
 	error?: string;
 	/** stdout parsed, when exit 0 and stdout is one JSON object. */
 	json?: HookOutput;
+	/**
+	 * P49 (Claude Code): the hook failed — could not start, exited with neither 0 nor 2, timed
+	 * out, printed JSON that does not parse, or (HTTP) could not connect or answered non-2xx.
+	 */
+	failure?: { reason: string; timedOut: boolean };
+}
+
+/** Events where onFailure does nothing: exit 2 there sends the agent back to work (Claude Code). */
+const ON_FAILURE_IGNORED: ReadonlySet<HookEventName> = new Set(["Stop", "SubagentStop"]);
+
+/** How a hook is named in messages: the command and its arguments as written, or the URL. */
+export function hookLabel(handler: HookHandler): string {
+	return handler.args ? [handler.command, ...handler.args].join(" ") : handler.command;
 }
 
 /** The hooks block of one settings file; unusable entries are reported and skipped. */
@@ -139,16 +164,57 @@ export function parseHooks(raw: unknown, source: string, diagnostics: string[]):
 				if (typeof hook !== "object" || hook === null) continue;
 				const entry = hook as Record<string, unknown>;
 				const type = entry.type ?? "command";
-				if (type !== "command") {
+				if (type !== "command" && type !== "http") {
 					diagnostics.push(`${source}: hooks.${event}: handler type "${String(type)}" is not supported (ignored)`);
 					continue;
 				}
+				const common = {
+					...(typeof entry.timeout === "number" && entry.timeout >= 0 ? { timeout: entry.timeout } : {}),
+					...(entry.statusMessage !== undefined && typeof entry.statusMessage === "string"
+						? { statusMessage: entry.statusMessage }
+						: {}),
+					...(entry.onFailure === "block" || entry.onFailure === "continue"
+						? { onFailure: entry.onFailure as "block" | "continue" }
+						: {}),
+				};
+				if (entry.onFailure !== undefined && entry.onFailure !== "block" && entry.onFailure !== "continue") {
+					diagnostics.push(`${source}: hooks.${event}: onFailure must be "continue" or "block" (ignored)`);
+				}
+				if (type === "http") {
+					if (typeof entry.url !== "string" || entry.url.trim() === "") continue;
+					const headers =
+						typeof entry.headers === "object" && entry.headers !== null && !Array.isArray(entry.headers)
+							? Object.fromEntries(
+									Object.entries(entry.headers as Record<string, unknown>).filter(
+										(pair): pair is [string, string] => typeof pair[1] === "string",
+									),
+								)
+							: undefined;
+					const allowed = Array.isArray(entry.allowedEnvVars)
+						? entry.allowedEnvVars.filter((name): name is string => typeof name === "string")
+						: undefined;
+					handlers.push({
+						type: "http",
+						command: entry.url,
+						...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+						...(allowed && allowed.length > 0 ? { allowedEnvVars: allowed } : {}),
+						...common,
+					});
+					continue;
+				}
 				if (typeof entry.command !== "string" || entry.command.trim() === "") continue;
+				const args = Array.isArray(entry.args)
+					? entry.args.filter((arg): arg is string => typeof arg === "string")
+					: undefined;
+				if (entry.shell !== undefined && entry.shell !== "bash" && entry.shell !== "powershell") {
+					diagnostics.push(`${source}: hooks.${event}: shell must be "bash" or "powershell" (ignored)`);
+				}
 				handlers.push({
 					command: entry.command,
-					...(typeof entry.timeout === "number" && entry.timeout >= 0 ? { timeout: entry.timeout } : {}),
+					...(args ? { args } : {}),
+					...(entry.shell === "bash" || entry.shell === "powershell" ? { shell: entry.shell } : {}),
+					...common,
 					...(entry.async === true ? { async: true } : {}),
-					...(typeof entry.statusMessage === "string" ? { statusMessage: entry.statusMessage } : {}),
 				});
 			}
 			if (handlers.length === 0) continue;
@@ -177,7 +243,7 @@ export function loadHookConfig(options: { home: string; cwd: string; projectTrus
 		for (const event of HOOK_EVENTS) {
 			for (const group of parsed[event] ?? []) {
 				const hooks = group.hooks.filter((hook) => {
-					const key = JSON.stringify([event, group.matcher ?? "", hook.command, hook.timeout, hook.async]);
+					const key = JSON.stringify([event, group.matcher ?? "", hook]);
 					if (seen.has(key)) return false;
 					seen.add(key);
 					return true;
@@ -230,11 +296,11 @@ const isBlock = (outcome: HookOutcome): boolean =>
 		(outcome.json?.decision === "block" || outcome.json?.hookSpecificOutput?.permissionDecision === "deny"));
 
 function blockReason(outcome: HookOutcome): string {
-	if (outcome.exitCode === 2) return outcome.stderr.trim() || `hook "${outcome.handler.command}" exited with 2`;
+	if (outcome.exitCode === 2) return outcome.stderr.trim() || `hook "${hookLabel(outcome.handler)}" exited with 2`;
 	return (
 		outcome.json?.hookSpecificOutput?.permissionDecisionReason?.trim() ||
 		outcome.json?.reason?.trim() ||
-		`blocked by hook "${outcome.handler.command}"`
+		`blocked by hook "${hookLabel(outcome.handler)}"`
 	);
 }
 
@@ -335,19 +401,25 @@ export class HookRunner {
 	diagnostics: string[] = [];
 	readonly options: HookRunnerOptions;
 	private shell: NodeShell;
+	/** P49: shell-form hooks with `shell: "powershell"` (and on Windows without bash). */
+	private powershell: NodeShell;
+	/** Where the session started: TAU_PROJECT_DIR and the exec form's path placeholders. */
+	private readonly projectDir: string;
+	private readonly env: Record<string, string>;
 	/** The session the last event came from (Notification has no context of its own). */
 	private session: { id?: string; file?: string } = {};
 
 	constructor(options: HookRunnerOptions) {
 		this.options = options;
-		this.shell = new NodeShell(options.cwd, {
-			env: {
-				...(options.env ?? (process.env as Record<string, string>)),
-				TAU_PROJECT_DIR: options.cwd,
-				// Existing Claude Code hook scripts read this (Cursor and Codex set it too).
-				CLAUDE_PROJECT_DIR: options.cwd,
-			},
-		});
+		this.projectDir = options.cwd;
+		this.env = {
+			...(options.env ?? (process.env as Record<string, string>)),
+			TAU_PROJECT_DIR: options.cwd,
+			// Existing Claude Code hook scripts read this (Cursor and Codex set it too).
+			CLAUDE_PROJECT_DIR: options.cwd,
+		};
+		this.shell = new NodeShell(options.cwd, { env: this.env });
+		this.powershell = new NodeShell(options.cwd, { env: this.env, interpreter: "powershell" });
 	}
 
 	/**
@@ -357,6 +429,7 @@ export class HookRunner {
 	moveTo(cwd: string): void {
 		this.options.cwd = cwd;
 		this.shell.moveTo(cwd);
+		this.powershell.moveTo(cwd);
 	}
 
 	/** P40b (pi's shellPath): the bash hook commands run with. */
@@ -365,7 +438,7 @@ export class HookRunner {
 	}
 
 	configure(loaded: { config: HookConfig; diagnostics: string[] }): void {
-		this.config = loaded.config;
+		this.config = this.options.legacy ? legacyConfig(loaded.config) : loaded.config;
 		this.diagnostics = loaded.diagnostics;
 	}
 
@@ -424,9 +497,9 @@ export class HookRunner {
 			void this.exec(handler, input).then((outcome) => this.report(event, outcome, warn));
 		}
 		const sync = handlers.filter((hook) => !hook.async);
-		const outcomes = await Promise.all(
-			sync.map((handler) => this.exec(handler, input, options.signal, options.timeoutSeconds)),
-		);
+		const outcomes = (
+			await Promise.all(sync.map((handler) => this.exec(handler, input, options.signal, options.timeoutSeconds)))
+		).map((outcome) => this.blockOnFailure(event, outcome, options.match));
 		for (const outcome of outcomes) {
 			this.report(event, outcome, warn);
 			const message = outcome.exitCode === 0 ? outcome.json?.systemMessage : undefined;
@@ -449,6 +522,32 @@ export class HookRunner {
 		this.fire("Notification", { message, notification_type: type }, ctx, type);
 	}
 
+	/**
+	 * P49 (Claude Code's onFailure): a failed hook that blocks does what exit 2 does on its event
+	 * (on PermissionRequest that is a denial). On Windows without bash a shell-form PreToolUse or
+	 * PermissionRequest hook with no `shell` and no onFailure blocks too: it ran in PowerShell.
+	 */
+	private blockOnFailure(event: HookEventName, outcome: HookOutcome, match: string | undefined): HookOutcome {
+		const failure = outcome.failure;
+		if (!failure || ON_FAILURE_IGNORED.has(event) || outcome.handler.async) return outcome;
+		const handler = outcome.handler;
+		const noBash =
+			handler.onFailure === undefined &&
+			handler.type === undefined &&
+			handler.args === undefined &&
+			handler.shell === undefined &&
+			(event === "PreToolUse" || event === "PermissionRequest") &&
+			!bashAvailable(this.shell.options.shellPath);
+		if (handler.onFailure !== "block" && !noBash) return outcome;
+		const because = noBash
+			? 'blocking because Git Bash wasn\'t found and this hook doesn\'t set "shell" to "powershell", so only exit code 0 or 2 counts as its verdict.'
+			: 'blocking because onFailure is "block"';
+		const name = match ? `${event}:${match}` : event;
+		const message = `${name} hook error: [${hookLabel(handler)}]: ${failure.timedOut ? "timed out" : "failed"}; ${because}`;
+		const detail = failure.reason.trim();
+		return { ...outcome, exitCode: 2, stderr: detail ? `${message}\n${detail}` : message, json: undefined };
+	}
+
 	private async exec(
 		handler: HookHandler,
 		input: string,
@@ -456,36 +555,140 @@ export class HookRunner {
 		defaultSeconds = DEFAULT_TIMEOUT_SECONDS,
 	): Promise<HookOutcome> {
 		const seconds = handler.async ? 0 : (handler.timeout ?? defaultSeconds);
+		if (handler.type === "http") return this.post(handler, input, signal, seconds);
 		try {
-			const result = await this.shell.exec(handler.command, {
+			const placeholders = (text: string) =>
+				text.replaceAll("${TAU_PROJECT_DIR}", this.projectDir).replaceAll("${CLAUDE_PROJECT_DIR}", this.projectDir);
+			// Exec form (Claude Code): no shell, so tau puts the path placeholders in itself.
+			const exec = handler.args
+				? { command: placeholders(handler.command), argv: handler.args.map(placeholders) }
+				: { command: handler.command };
+			const shell =
+				handler.args === undefined &&
+				(handler.shell === "powershell" ||
+					(handler.shell === undefined && !bashAvailable(this.shell.options.shellPath)))
+					? this.powershell
+					: this.shell;
+			const result = await shell.exec(exec.command, {
 				input,
+				...(exec.argv ? { argv: exec.argv } : {}),
 				...(seconds > 0 ? { timeoutSeconds: seconds } : {}),
 				...(signal ? { signal } : {}),
 			});
 			const json = result.exitCode === 0 ? parseOutput(result.stdout) : undefined;
+			const badJson = result.exitCode === 0 && json === undefined && result.stdout.trim().startsWith("{");
+			const failure =
+				result.exitCode !== 0 && result.exitCode !== 2
+					? { reason: result.stderr.trim() || `exit ${result.exitCode}`, timedOut: false }
+					: badJson
+						? { reason: "its output is not valid JSON", timedOut: false }
+						: undefined;
 			return {
 				handler,
 				exitCode: result.exitCode,
 				stdout: result.stdout,
 				stderr: result.stderr,
 				...(json ? { json } : {}),
+				...(failure ? { failure } : {}),
 			};
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			return { handler, stdout: "", stderr: "", error: message };
+			const code = (error as { code?: string }).code;
+			return {
+				handler,
+				stdout: "",
+				stderr: "",
+				error: message,
+				...(code === "aborted" ? {} : { failure: { reason: message, timedOut: code === "timeout" } }),
+			};
+		}
+	}
+
+	/**
+	 * An HTTP hook (P49, Claude Code): the event JSON POSTed to the URL. 2xx with an empty body
+	 * is exit 0 without output; with a JSON object it is that output; anything else, a non-2xx
+	 * status or no connection is a failure.
+	 */
+	private async post(
+		handler: HookHandler,
+		input: string,
+		signal: TauAbortSignal | undefined,
+		seconds: number,
+	): Promise<HookOutcome> {
+		const allowed = new Set(handler.allowedEnvVars ?? []);
+		const headers: Record<string, string> = { "content-type": "application/json" };
+		for (const [name, value] of Object.entries(handler.headers ?? {})) {
+			headers[name] = value.replace(
+				/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+				(_whole, braced, bare) => {
+					const variable = (braced ?? bare) as string;
+					return allowed.has(variable) ? (this.env[variable] ?? "") : "";
+				},
+			);
+		}
+		const controller = new AbortController();
+		let timedOut = false;
+		const timer =
+			seconds > 0
+				? setTimeout(() => {
+						timedOut = true;
+						controller.abort();
+					}, seconds * 1000)
+				: undefined;
+		const onAbort = () => controller.abort();
+		signal?.addEventListener("abort", onAbort, { once: true });
+		try {
+			const response = await fetch(handler.command, {
+				method: "POST",
+				headers,
+				body: input,
+				signal: controller.signal,
+			});
+			const body = await response.text();
+			if (!response.ok) {
+				return {
+					handler,
+					stdout: body,
+					stderr: "",
+					failure: {
+						reason: `HTTP ${response.status}${body.trim() ? `: ${body.trim().slice(0, 200)}` : ""}`,
+						timedOut: false,
+					},
+				};
+			}
+			if (body.trim() === "") return { handler, exitCode: 0, stdout: "", stderr: "" };
+			const json = parseOutput(body);
+			if (!json) {
+				return {
+					handler,
+					stdout: body,
+					stderr: "",
+					failure: { reason: "the response is not a JSON object", timedOut: false },
+				};
+			}
+			return { handler, exitCode: 0, stdout: body, stderr: "", json };
+		} catch (error) {
+			if (signal?.aborted && !timedOut) return { handler, stdout: "", stderr: "", error: "aborted" };
+			const message = timedOut ? `timed out after ${seconds}s` : error instanceof Error ? error.message : String(error);
+			return { handler, stdout: "", stderr: "", error: message, failure: { reason: message, timedOut } };
+		} finally {
+			if (timer) clearTimeout(timer);
+			signal?.removeEventListener("abort", onAbort);
 		}
 	}
 
 	private report(event: HookEventName, outcome: HookOutcome, warn: (text: string) => void): void {
-		const command =
-			outcome.handler.command.length > 60 ? `${outcome.handler.command.slice(0, 59)}…` : outcome.handler.command;
+		const label = hookLabel(outcome.handler);
+		const command = label.length > 60 ? `${label.slice(0, 59)}…` : label;
 		if (outcome.error !== undefined) {
 			if (outcome.error !== "aborted") warn(`hook ${event} (${command}) failed: ${outcome.error}`);
 			return;
 		}
-		if (outcome.exitCode !== 0 && outcome.exitCode !== 2) {
+		if (outcome.exitCode !== undefined && outcome.exitCode !== 0 && outcome.exitCode !== 2) {
 			const detail = outcome.stderr.trim().split("\n").slice(-1)[0] ?? "";
 			warn(`hook ${event} (${command}) failed: exit ${outcome.exitCode}${detail ? ` — ${detail}` : ""}`);
+		} else if (outcome.failure) {
+			warn(`hook ${event} (${command}) failed: ${outcome.failure.reason.split("\n")[0]}`);
 		}
 	}
 
@@ -506,10 +709,16 @@ export class HookRunner {
 			for (const group of this.config[event] ?? []) {
 				for (const hook of group.hooks) {
 					const matcher = this.matched(event) && group.matcher ? ` [${group.matcher}]` : "";
-					const flags = [hook.async ? "async" : "", hook.timeout !== undefined ? `timeout ${hook.timeout}s` : ""]
+					const flags = [
+						hook.type === "http" ? "http" : "",
+						hook.shell ? hook.shell : "",
+						hook.async ? "async" : "",
+						hook.timeout !== undefined ? `timeout ${hook.timeout}s` : "",
+						hook.onFailure === "block" ? "blocks on failure" : "",
+					]
 						.filter((flag) => flag !== "")
 						.join(", ");
-					lines.push(`${event}${matcher}: ${hook.command}${flags ? ` (${flags})` : ""} — ${group.source}`);
+					lines.push(`${event}${matcher}: ${hookLabel(hook)}${flags ? ` (${flags})` : ""} — ${group.source}`);
 				}
 			}
 		}
@@ -517,6 +726,31 @@ export class HookRunner {
 		for (const diagnostic of this.diagnostics) lines.push(`! ${diagnostic}`);
 		return lines.join("\n");
 	}
+}
+
+/**
+ * The hooks as they were before P49, for the parked gateway: no HTTP hooks, and command hooks
+ * without the exec form, shell choice or onFailure.
+ */
+function legacyConfig(config: HookConfig): HookConfig {
+	const legacy: HookConfig = {};
+	for (const event of HOOK_EVENTS) {
+		const groups = (config[event] ?? [])
+			.map((group) => ({
+				...group,
+				hooks: group.hooks
+					.filter((hook) => hook.type === undefined)
+					.map(({ command, timeout, async, statusMessage }) => ({
+						command,
+						...(timeout !== undefined ? { timeout } : {}),
+						...(async !== undefined ? { async } : {}),
+						...(statusMessage !== undefined ? { statusMessage } : {}),
+					})),
+			}))
+			.filter((group) => group.hooks.length > 0);
+		if (groups.length > 0) legacy[event] = groups;
+	}
+	return legacy;
 }
 
 const HOOK_CONTEXT = "hook_context";

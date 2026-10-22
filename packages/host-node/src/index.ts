@@ -5,6 +5,7 @@ export { NodeFileSystem } from "./fs.ts";
 export { NodeImageProcessor } from "./image/processor.ts";
 export { convertToPngInProcess as convertImageToPng } from "./image/resize.ts";
 export {
+	bashAvailable,
 	type CommandEnv,
 	commandEnvironment,
 	findPowerShell,

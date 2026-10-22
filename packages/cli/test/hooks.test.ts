@@ -104,7 +104,8 @@ describe("hook configuration", () => {
 						matcher: "bash",
 						hooks: [
 							{ type: "command", command: "a", timeout: 5 },
-							{ type: "http", url: "x" },
+							// P49 runs http hooks; prompt hooks stay out.
+							{ type: "prompt", prompt: "x" },
 						],
 					},
 				],
