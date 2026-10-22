@@ -61,6 +61,7 @@ async function main() {
 		await run("p45", runP45Smoke);
 		await run("p46", runP46Smoke);
 		await run("p47", runP47Smoke);
+		await run("p49", runP49Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -1088,6 +1089,43 @@ createInterface({ input: process.stdin }).on("line", (line) => {
 	}
 });
 `;
+
+// P49 (Claude Code): the terminal hears the run's state over OSC 7501 (working, then done, then
+// clear on exit), and ↑ in the empty input brings back a draft Ctrl+C cleared.
+async function runP49Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p49", false);
+	const session = await startTui("p49", dirs, baseUrl, ["--no-session"]);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		const raw = join(dirs.home, "p49-output.bin");
+		await session.pipe(raw);
+		await sleep(200);
+		await session.send("pricing smoke", "Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await sleep(400);
+		await session.send("-l", "half written draft");
+		await session.waitFor("half written draft", 5_000);
+		await session.send("C-c");
+		await sleep(300);
+		if ((await session.capture()).includes("half written draft")) throw new Error("Ctrl+C did not clear the draft");
+		await session.send("Up");
+		await session.waitFor("half written draft", 5_000);
+		await session.send("C-c");
+		await sleep(200);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		const written = await readFile(raw, "utf8").catch(() => "");
+		for (const state of ["working", "done", "idle", "clear"]) {
+			if (!written.includes(`\x1b]7501;state=${state}`)) {
+				throw new Error(`No OSC 7501 state=${state} in the raw output: ${JSON.stringify(written.slice(-400))}`);
+			}
+		}
+		if (!written.includes(":app=tau")) throw new Error("OSC 7501 reports carry no app=tau");
+		console.log("ok p49");
+	} finally {
+		await session.kill();
+	}
+}
 
 async function runP47Smoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "p47", false);

@@ -1,6 +1,8 @@
 // `@file` arguments (P36c), ported from pi 1.2 packages/coding-agent/src/cli/file-processor.ts:
 // text files go into the first message as <file> blocks, images ride along as image
-// blocks (converted and resized like read's), a missing file stops the CLI.
+// blocks (converted and resized like read's), a missing file stops the CLI. P49: with
+// TAU_DISABLE_FILE_MENTIONS=1 only the paths go in, for the model to read itself (Claude
+// Code's CLAUDE_CODE_DISABLE_FILE_MENTIONS).
 import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
@@ -29,6 +31,7 @@ export async function processFileArguments(
 	paths: readonly string[],
 	cwd: string,
 	images: ImageProcessor,
+	options: { pathsOnly?: boolean } = {},
 ): Promise<ProcessedFiles> {
 	let text = "";
 	const attachments: ImageContent[] = [];
@@ -39,6 +42,10 @@ export async function processFileArguments(
 			size = statSync(absolutePath).size;
 		} catch {
 			throw new Error(`File not found: ${absolutePath}`);
+		}
+		if (options.pathsOnly) {
+			text += `@${absolutePath}\n`;
+			continue;
 		}
 		// Empty files are skipped (pi).
 		if (size === 0) continue;

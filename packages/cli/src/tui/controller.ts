@@ -97,7 +97,7 @@ import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
 import { SessionTreeView, type TreeNode, type TreeRow } from "./session-tree.ts";
 import { TuiStore } from "./store.ts";
-import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
+import { type BlockedKind, notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
 import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "./types.ts";
 
@@ -167,6 +167,8 @@ export class TuiController {
 	private lastYank = "";
 	/** The draft put aside when ↑ starts browsing history, back past the newest entry (pi). */
 	private historyDraft: ed.EditorState | undefined;
+	/** The draft Ctrl+C cleared, for ↑ in an empty input before the history (P49, Claude Code); the last one only. */
+	private clearedDraft: ed.EditorState | undefined;
 	/** The draft put aside while the input box answers a prompt (deny-and-tell, ctx.ui.input). */
 	private promptDraft: ed.EditorState | undefined;
 	private readonly pastes = newPasteStore();
@@ -264,7 +266,7 @@ export class TuiController {
 			// An extension asking (ask_user, say) gets the window's attention like an approval (P35).
 			input: (title, placeholder) => {
 				this.attention("question", title);
-				return this.ask("input", title, placeholder);
+				return this.blocked(title, this.ask("input", title, placeholder));
 			},
 			// Numbered options: a digit picks one (P38c, Claude Code's numbered choices); longer lists filter.
 			select: (title, values, dialog) => {
@@ -274,16 +276,22 @@ export class TuiController {
 						? { label: `${index + 1}. ${value}`, value, key: String(index + 1) }
 						: { label: value, value },
 				);
-				return dialog?.signal || dialog?.timeout ? this.pickDismissable(title, items, dialog) : this.pick(title, items);
+				return this.blocked(
+					title,
+					dialog?.signal || dialog?.timeout ? this.pickDismissable(title, items, dialog) : this.pick(title, items),
+				);
 			},
 			selectMany: (title, values) => {
 				this.attention("question", title);
-				return this.pickMany(
+				return this.blocked(
 					title,
-					values.map((value) => ({ label: value, value })),
+					this.pickMany(
+						title,
+						values.map((value) => ({ label: value, value })),
+					),
 				);
 			},
-			form: (form, options) => this.form(form, options?.signal),
+			form: (form, options) => this.blocked(form.title, this.form(form, options?.signal)),
 			// pi ui.addAutocompleteProvider: stacked on the built-in completion, in order.
 			addAutocompleteProvider: (factory) => this.addAutocompleteProvider(factory),
 			notify: (message, level) => {
@@ -307,6 +315,8 @@ export class TuiController {
 				}
 			},
 		};
+		// P49: mcp-elicit marks a sign-in page before asking (OSC 7501 `auth`); not part of UiCapability.
+		Object.assign(this.ui, { expectSignIn: () => this.expectSignIn() });
 	}
 
 	get state() {
@@ -857,7 +867,11 @@ export class TuiController {
 	filterInput(data: string): string {
 		// Keys and pastes count as you being here; mouse and focus reports do not (P46).
 		// biome-ignore lint/suspicious/noControlCharactersInRegex: the reports start with ESC
-		if (!/^\x1b\[(?:I|O|<|M)/.test(data)) markActivity((this.deps.now ?? Date.now)());
+		if (!/^\x1b\[(?:I|O|<|M)/.test(data)) {
+			markActivity((this.deps.now ?? Date.now)());
+			// P49: typing after a run ends sets the terminal's status back to idle.
+			if (this.state.task === undefined) this.terminalStatus?.active?.();
+		}
 		if (this.splitTimer) clearTimeout(this.splitTimer);
 		this.splitTimer = undefined;
 		this.handleTokens(this.splitter.feed(data));
@@ -1433,8 +1447,10 @@ export class TuiController {
 
 	/** Clear the input; a draft goes into history so ↑ brings it back (Claude Code), blank lines just go. */
 	private clearDraft(): void {
-		const text = this.state.editor.text;
-		if (text.trim() !== "") this.history.push(text);
+		// Kept aside, not in the history (P49, Claude Code): ↑ in the empty input brings it back
+		// whole, paste markers included; the next ↑ is the history.
+		const current = this.state.editor;
+		if (current.text.trim() !== "") this.clearedDraft = current;
 		this.pushUndo();
 		this.leaveHistory();
 		this.lastEdit = undefined;
@@ -2175,6 +2191,14 @@ export class TuiController {
 			return;
 		}
 		const items = this.history.list();
+		if (this.clearedDraft && state.editor.text === "" && this.historyIndex >= items.length) {
+			const draft = this.clearedDraft;
+			this.clearedDraft = undefined;
+			this.pushUndo();
+			this.setEditor(draft);
+			this.lastEdit = undefined;
+			return;
+		}
 		if (this.historyIndex > 0) {
 			// Entering history keeps the draft for the way back (pi historyDraft).
 			if (this.historyIndex >= items.length) {
@@ -3052,7 +3076,7 @@ export class TuiController {
 			this.approvals.set(id, { resolve, detached: request.detached === true });
 			this.dispatch({ type: "approval-open", id, request });
 			this.store.flush();
-			this.terminalStatus?.waiting();
+			this.terminalStatus?.waiting("permission", approvalTitle(request));
 			const detail = approvalBody(request)[0]
 				?.map((part) => part.text)
 				.join("")
@@ -3063,11 +3087,32 @@ export class TuiController {
 
 	// ── telling you when you are not looking (P34e) ────────────────────────
 
-	private terminalStatus: Pick<TerminalStatus, "running" | "waiting" | "idle"> | undefined;
+	private terminalStatus:
+		| (Pick<TerminalStatus, "running" | "waiting" | "idle"> & Partial<Pick<TerminalStatus, "active">>)
+		| undefined;
 	private turnFailed = false;
+	/** P49: the next question is an MCP sign-in (a URL elicitation), not a question. */
+	private nextQuestionKind: BlockedKind | undefined;
 
-	setTerminalStatus(status: Pick<TerminalStatus, "running" | "waiting" | "idle">): void {
+	setTerminalStatus(
+		status: Pick<TerminalStatus, "running" | "waiting" | "idle"> & Partial<Pick<TerminalStatus, "active">>,
+	): void {
 		this.terminalStatus = status;
+	}
+
+	/** An MCP server asks you to open a sign-in page (P49: OSC 7501 says `auth`). */
+	expectSignIn(): void {
+		this.nextQuestionKind = "auth";
+	}
+
+	/** A question waits for you (P49, OSC 7501): blocked until it is answered, then working again. */
+	private blocked<T>(title: string, answer: Promise<T>): Promise<T> {
+		const kind = this.nextQuestionKind ?? "question";
+		this.nextQuestionKind = undefined;
+		this.terminalStatus?.waiting(kind, title);
+		return answer.finally(() => {
+			if (this.state.task !== undefined && this.approvals.size === 0) this.terminalStatus?.running();
+		});
 	}
 
 	/**

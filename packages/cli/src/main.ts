@@ -1190,6 +1190,8 @@ function firstLine(text: string, max = 120): string {
 
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
 const turnState: { controller: AbortController | null } = { controller: null };
+/** P49: the REPL's status for the terminal (OSC 7501); set only in an interactive REPL with tui.title on. */
+let replStatus: import("./tui/terminal-status.ts").ProgramStatus | undefined;
 /** A REPL command holding the agent outside a turn (P23e): extension prompts are refused meanwhile. */
 let hostTask: "compact" | "tree" | undefined;
 let hostTaskController: AbortController | undefined;
@@ -1252,6 +1254,7 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 	let sawReasoning = false;
 	let lastStop: string | undefined;
 	let threw = false;
+	replStatus?.set("working", { msg: "Working" });
 	try {
 		// input null = continuation without new user input (extension triggerTurn).
 		const stream = input === null ? agent.resume(controller.signal) : agent.prompt(input, controller.signal);
@@ -1339,6 +1342,9 @@ async function runTurn(agent: Agent, input: UserContent | null, readline: Readli
 		const message = error instanceof Error ? error.message : String(error);
 		process.stderr.write(`\n${red(`Error: ${message}`)}\n`);
 	} finally {
+		replStatus?.set(threw || lastStop === "error" ? "error" : "done", {
+			msg: threw || lastStop === "error" ? "Failed" : "Done",
+		});
 		cancelPendingApproval();
 		turnState.controller = null;
 		readline.removeListener("line", onLine);
@@ -1917,12 +1923,15 @@ async function main(): Promise<void> {
 			process.stdout.write(
 				request.always ? `\nAllow? [y]es once / [a] ${request.always.label} / [N]o ` : "\nAllow? [y]es once / [N]o ",
 			);
-			return await new Promise<ApprovalChoice>((resolve) => {
+			replStatus?.set("blocked", { kind: "permission", msg: `Approval: ${request.toolName}` });
+			const choice = await new Promise<ApprovalChoice>((resolve) => {
 				// Tool preflight is serial, but resolving a stale gate defensively keeps
 				// an aborted/closed turn from blocking the next one forever.
 				cancelPendingApproval();
 				pendingApproval = { resolve };
 			});
+			if (turnState.controller) replStatus?.set("working", { msg: "Working" });
+			return choice;
 		};
 	}
 	/** Whether the current model takes images (P36d: read says so when it does not). */
@@ -2611,7 +2620,9 @@ async function main(): Promise<void> {
 	let files: ProcessedFiles = { text: "", images: [] };
 	if (options.files.length > 0) {
 		try {
-			files = await processFileArguments(options.files, cwd, workspace.images);
+			files = await processFileArguments(options.files, cwd, workspace.images, {
+				pathsOnly: process.env.TAU_DISABLE_FILE_MENTIONS === "1",
+			});
 		} catch (error) {
 			console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
 			process.exit(1);
@@ -2808,6 +2819,11 @@ async function main(): Promise<void> {
 	}
 
 	if (!readline) throw new Error("interactive REPL requires readline");
+	// P49: the REPL tells the terminal it is working, waiting or done (OSC 7501), with tui.title.
+	if (process.stdout.isTTY && userSettings.tuiTitle !== false) {
+		const { ProgramStatus } = await import("./tui/terminal-status.ts");
+		replStatus = new ProgramStatus((data) => process.stdout.write(data));
+	}
 	if (contextWindow === undefined) {
 		console.log(dim("No --context-window configured: auto-compaction is off (use /compact manually)."));
 	}
@@ -2872,6 +2888,7 @@ async function main(): Promise<void> {
 	while (true) {
 		const line = await ask(readline, "tau> ");
 		if (line === undefined) break;
+		replStatus?.active();
 		const input = line.trim();
 		// A Feishu-triggered run can start while this outer question is pending.
 		// Its line listener (above) has already handled the line as steering (or
@@ -3046,6 +3063,7 @@ async function main(): Promise<void> {
 		if (recorder && autoTitleOn(workspace.settings().autoTitle)) void autoTitle(agent, recorder, titled);
 	}
 	await extensions.notifySessionShutdown("quit", agent.extensionContext());
+	replStatus?.set("clear");
 	readline.close();
 	if (worktreeSession && process.stdin.isTTY) await finishWorktree(worktreeSession, workspace.background);
 }

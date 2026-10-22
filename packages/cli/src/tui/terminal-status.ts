@@ -4,7 +4,8 @@
  * and taskbar progress (OSC 9;4), and a desktop notification when a run ends
  * or an approval waits while the window is in the background (pi's notify
  * example: a Windows toast under Windows Terminal, OSC 99 for Kitty, OSC 777
- * elsewhere).
+ * elsewhere). P49: the Program Status Protocol (OSC 7501) says working, blocked,
+ * done or error to terminals that show it (Ghostty, Rex); others ignore it.
  */
 import { spawn } from "node:child_process";
 
@@ -18,6 +19,50 @@ const progress = (state: 0 | 2 | 3 | 4) => `\x1b]9;4;${state};0\x07`;
 // Control characters would end the sequence early.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping control characters is the point
 const title = (text: string) => `\x1b]0;${text.replace(/[\x00-\x1f\x7f]/g, " ")}\x07`;
+
+/** Program Status Protocol states (OSC 7501, revision 0.4). */
+export type ProgramState = "idle" | "working" | "blocked" | "done" | "error" | "clear";
+/** What a blocked program waits for. */
+export type BlockedKind = "permission" | "question" | "auth";
+
+/**
+ * One OSC 7501 report (P49): `ESC ] 7501 ; key=value : … ESC \`, with `app=tau` and a
+ * one-line `msg` in base64 as the protocol asks. No query first: a terminal that does not
+ * know the sequence drops it.
+ */
+export function programStatusSequence(state: ProgramState, fields: { kind?: BlockedKind; msg?: string } = {}): string {
+	const parts = [`state=${state}`, ...(fields.kind ? [`kind=${fields.kind}`] : []), "app=tau"];
+	const msg = fields.msg?.replace(/\s+/g, " ").trim().slice(0, 200);
+	if (msg) parts.push(`msg=${Buffer.from(msg, "utf8").toString("base64")}`);
+	return `\x1b]7501;${parts.join(":")}\x1b\\`;
+}
+
+/**
+ * The program status as a terminal sees it, each change written once (P49). The REPL uses it
+ * on its own; the TUI through TerminalStatus.
+ */
+export class ProgramStatus {
+	private last = "";
+	private finished = false;
+	private readonly write: (data: string) => void;
+
+	constructor(write: (data: string) => void) {
+		this.write = write;
+	}
+
+	set(state: ProgramState, fields: { kind?: BlockedKind; msg?: string } = {}): void {
+		const key = `${state}:${fields.kind ?? ""}`;
+		this.finished = state === "done" || state === "error";
+		if (key === this.last) return;
+		this.last = key;
+		this.write(programStatusSequence(state, fields));
+	}
+
+	/** You started typing after a run ended: idle again. */
+	active(): void {
+		if (this.finished) this.set("idle");
+	}
+}
 
 /** Windows Terminal and ConEmu show OSC 9;4 progress; elsewhere it is not sent. */
 /** Terminals that show OSC 8 hyperlinks (pi's terminal capabilities); tmux only when configured, so not here. */
@@ -41,7 +86,7 @@ export function supportsProgress(env: NodeJS.ProcessEnv = process.env): boolean 
 }
 
 export interface StatusOptions {
-	/** Change the title (tui.title); false sends neither title nor progress. */
+	/** Change the title (tui.title); false sends neither title, progress nor OSC 7501. */
 	title: boolean;
 	progress: boolean;
 }
@@ -56,16 +101,19 @@ export class TerminalStatus {
 	private readonly write: (data: string) => void;
 	private readonly options: StatusOptions;
 	private readonly base: () => string;
+	private readonly program: ProgramStatus;
 
 	constructor(write: (data: string) => void, options: StatusOptions, base: () => string) {
 		this.write = write;
 		this.options = options;
 		this.base = base;
+		this.program = new ProgramStatus(write);
 		if (options.title) write(title(base()));
 	}
 
 	running(): void {
 		if (!this.options.title || this.disposed) return;
+		this.program.set("working", { msg: "Working" });
 		this.clearError();
 		if (this.options.progress) this.write(progress(3));
 		if (this.timer) return;
@@ -76,14 +124,22 @@ export class TerminalStatus {
 		this.timer.unref?.();
 	}
 
-	/** An approval or question waits for you. */
-	waiting(): void {
+	/** An approval, a question or a sign-in waits for you. */
+	waiting(kind: BlockedKind = "permission", msg?: string): void {
 		if (!this.options.title || this.disposed) return;
+		this.program.set("blocked", { kind, ...(msg ? { msg } : {}) });
 		if (this.options.progress) this.write(progress(4));
+	}
+
+	/** You started typing: a finished run's status goes back to idle. */
+	active(): void {
+		if (!this.options.title || this.disposed) return;
+		this.program.active();
 	}
 
 	idle(failed = false): void {
 		if (!this.options.title || this.disposed) return;
+		this.program.set(failed ? "error" : "done", { msg: failed ? "Failed" : "Done" });
 		if (this.timer) clearInterval(this.timer);
 		this.timer = undefined;
 		this.write(title(this.base()));
@@ -108,6 +164,7 @@ export class TerminalStatus {
 		this.clearError();
 		this.disposed = true;
 		if (!this.options.title) return;
+		this.program.set("clear");
 		if (this.options.progress) this.write(progress(0));
 		this.write(title(""));
 	}

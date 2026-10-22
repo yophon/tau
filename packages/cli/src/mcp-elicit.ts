@@ -28,6 +28,8 @@ export function createElicitHandler(hooks: HookRunner | undefined, openUrl: (url
 			if (decided) return asResult(decided);
 		}
 		hooks?.notify(`MCP server "${server}" needs your input`, "elicitation_dialog");
+		// P49: a page to open is a sign-in for the terminal's status (OSC 7501 `auth`).
+		if (request.mode === "url") (ui as { expectSignIn?: () => void } | undefined)?.expectSignIn?.();
 		let result = await elicitWithUi(request, ui, signal, openUrl);
 		if (hooks?.has("ElicitationResult", server)) {
 			const outcomes = await hooks.run(
