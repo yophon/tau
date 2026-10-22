@@ -287,6 +287,8 @@ test("server: lazy start, initialize, didOpen then didChange + didSave, diagnost
 		assert.equal(lsp.handles(join(cwd, "b.js")), false);
 		await lsp.syncAfterEdit(file);
 		assert.equal(lsp.status()[0].state, "running");
+		// The server's stderr is kept for /lsp (not checked where it is killed at once: it may not get to write).
+		await until(() => lsp.status()[0].log.includes("fake server ready"));
 		await lsp.waitForDiagnostics([file], { debounceMs: 50, timeoutMs: 3000 });
 		const delivered = lsp.diagnostics.take();
 		assert.equal(delivered.length, 1);
@@ -443,7 +445,6 @@ test("failures to start: missing program, a hung handshake, non-protocol stdout"
 	const noisy = manager(cwd, { fake: fakeConfig({ FAKE_LSP_MODE: "garbage" }, { maxRestarts: 0 }) });
 	await assert.rejects(noisy.syncAfterEdit(file), /non-protocol output/);
 	assert.equal(noisy.status()[0].state, "failed");
-	await until(() => noisy.status()[0].log.includes("fake server ready"));
 	await noisy.shutdown();
 	await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
