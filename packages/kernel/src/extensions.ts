@@ -141,6 +141,17 @@ export interface AgentSpawnOptions {
 	detached?: boolean;
 	/** Every event the child emits, for progress display. */
 	onEvent?: (event: AgentEvent) => void;
+	/**
+	 * Called once the child exists (P46, Claude Code's SendMessage): `steer` queues a message
+	 * into its current run, `messages` is its conversation so far (also after an abort).
+	 */
+	onSpawn?: (handle: SubagentHandle) => void;
+}
+
+/** What {@link AgentSpawnOptions.onSpawn} hands over. */
+export interface SubagentHandle {
+	steer(content: string): void;
+	messages(): AgentMessage[];
 }
 
 export interface AgentRunResult {

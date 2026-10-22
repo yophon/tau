@@ -41,6 +41,8 @@ const state: {
 	envAllow: string[];
 	/** P41a: the skills and prompt templates package is built in (not in the gateway, which stays as it was). */
 	resources: boolean;
+	/** P46: features after P40 are on (everywhere but the gateway, which stays as it was). */
+	extended: boolean;
 	/** P41a (pi): the conventional skill and prompt directories, in the order they are searched. */
 	defaultSkillPaths: string[];
 	defaultPromptPaths: string[];
@@ -62,6 +64,7 @@ const state: {
 	home: homedir(),
 	envAllow: [],
 	resources: false,
+	extended: true,
 	defaultSkillPaths: [],
 	defaultPromptPaths: [],
 	skillPaths: [],
@@ -207,6 +210,7 @@ export function configureBuiltins(options: {
 	state.skillCommands = layered.enableSkillCommands !== false;
 	// P41a (pi): the user's directories, then a trusted project's.
 	state.resources = options.extendedSettings !== false;
+	state.extended = options.extendedSettings !== false;
 	state.defaultSkillPaths = [
 		join(home, ".tau", "skills"),
 		join(home, ".agents", "skills"),
@@ -350,6 +354,9 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 			tasksCommand: false,
 			// P44: scheduled tasks and monitors belong to the session, not to a child that ends.
 			parentOnlyTools: ["cron_create", "cron_list", "cron_delete", "schedule_wakeup", "monitor"],
+			// P46 (Claude Code's SendMessage): continue or steer subagents; the gateway keeps what it had.
+			sendMessage: state.extended,
+			persist: state.extended,
 		}),
 		// P26c: the todo list and long-term memory.
 		todoExtension,

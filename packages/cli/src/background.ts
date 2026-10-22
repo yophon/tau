@@ -3,7 +3,12 @@
 // commands next to background subagents, and a line above the input box counts
 // the running ones.
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import { type BackgroundTask, SUBAGENT_TASK_CHANNEL } from "@yophon/tau-ext-subagents";
+import {
+	type BackgroundTask,
+	SUBAGENT_STOP_CHANNEL,
+	SUBAGENT_TASK_CHANNEL,
+	type SubagentStopRequest,
+} from "@yophon/tau-ext-subagents";
 import type { NodeBackgroundShell } from "@yophon/tau-host-node";
 import type { BackgroundTaskInfo, Extension, ExtensionAPI, ExtensionContext } from "@yophon/tau-kernel";
 import { formatRunTime } from "./run-time.ts";
@@ -187,6 +192,12 @@ export function createBackgroundExtension(
 		});
 
 		const stop = (id: string): Promise<string> => stopTask(shell, id);
+		/** P46: you stopping a background subagent (it cannot be resumed afterwards, Claude Code). */
+		const stopSubagent = (id: string): Promise<string> | undefined => {
+			const request: SubagentStopRequest = { id, by: "user", reply: {} };
+			api.events.emit(SUBAGENT_STOP_CHANNEL, request);
+			return request.reply.result;
+		};
 
 		/** /tasks: list, then look at or stop one (with a UI), or by arguments (`<id>`, `stop <id>`). */
 		const showTasks = async (args: string, ctx: ExtensionContext): Promise<string | undefined> => {
@@ -194,7 +205,7 @@ export function createBackgroundExtension(
 			const words = args.trim().split(/\s+/).filter(Boolean);
 			if (words[0] === "stop" && words[1]) {
 				if (options.scheduler?.get(words[1])) return options.scheduler.delete(words[1]) ? `Deleted ${words[1]}.` : "";
-				return stop(words[1]);
+				return stopSubagent(words[1]) ?? stop(words[1]);
 			}
 			if (words[0]) {
 				const command = commands.find((task) => task.id === words[0]);
@@ -224,7 +235,12 @@ export function createBackgroundExtension(
 			const picked = await ctx.ui.select("Background tasks", labels);
 			const row = picked === undefined ? undefined : rows[labels.indexOf(picked)];
 			if (!row) return undefined;
-			if (row.subagent) return subagentText(row.subagent);
+			if (row.subagent) {
+				if (row.subagent.status !== "running") return subagentText(row.subagent);
+				const action = await ctx.ui.select(`${row.subagent.id} · ${firstLine(row.subagent.task)}`, ["View", "Stop"]);
+				if (action === "Stop") return stopSubagent(row.subagent.id) ?? `${row.subagent.id} has already ended.`;
+				return action === "View" ? subagentText(row.subagent) : undefined;
+			}
 			if (row.job) {
 				const action = await ctx.ui.select(`Scheduled task ${row.job}`, ["Delete"]);
 				return action === "Delete" && options.scheduler?.delete(row.job) ? `Deleted ${row.job}.` : undefined;

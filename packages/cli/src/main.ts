@@ -21,6 +21,7 @@ import {
 	type AnthropicTransportConfig,
 	createAnthropicTransport,
 } from "@yophon/tau-ext-provider-anthropic";
+import { SUBAGENT_STOP_CHANNEL, type SubagentStopRequest } from "@yophon/tau-ext-subagents";
 import {
 	digestDirectory,
 	findPowerShell,
@@ -63,6 +64,7 @@ import {
 	type ThinkingLevel,
 	type ToolExecutionMode,
 	type ToolPolicy,
+	textResult,
 	thinkingText,
 	toolResultText,
 	type UiCapability,
@@ -2225,6 +2227,20 @@ async function main(): Promise<void> {
 				},
 				{ mode, supportsImages: modelTakesImages },
 			);
+			// P46 (Claude Code's TaskStop): task_stop also stops a background subagent by ID or name.
+			if (extended) {
+				const taskStop = codingTools.find((tool) => tool.name === "task_stop");
+				if (taskStop) {
+					const stopCommand = taskStop.execute.bind(taskStop);
+					taskStop.description = `${taskStop.description} Also stops a background subagent by its agent ID (sub-N) or name; send_message can resume it later.`;
+					taskStop.execute = async (args, signal, onUpdate, ctx) => {
+						const request: SubagentStopRequest = { id: String(args.task_id ?? ""), by: "model", reply: {} };
+						agentExtensions.events.emit(SUBAGENT_STOP_CHANNEL, request);
+						if (request.reply.result) return textResult(await request.reply.result);
+						return stopCommand(args, signal, onUpdate, ctx);
+					};
+				}
+			}
 			// P43 (pi bash/powershell guidelines): the commands see TAU_SESSION_*.
 			if (commandEnv) {
 				for (const tool of codingTools) {

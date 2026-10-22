@@ -190,6 +190,7 @@ export {
 	type SessionShutdownEvent,
 	type SessionStartEvent,
 	type SessionTreeEvent,
+	type SubagentHandle,
 	type SubagentStartEvent,
 	type SubagentStartEventResult,
 	type SubagentStopEvent,

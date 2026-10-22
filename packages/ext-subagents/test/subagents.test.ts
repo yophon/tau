@@ -112,7 +112,8 @@ describe("subagent tool", () => {
 			},
 		});
 		await drain(agent, "go");
-		assert.equal(toolResultText(agent), "child answer");
+		// P46: the answer carries the agent ID send_message continues it by.
+		assert.equal(toolResultText(agent), "child answer\n\n[agent id: sub-1]");
 		const child = requests.find((request) => systemText(request).includes("worker agent"));
 		assert.ok(child);
 		assert.equal(lastUser(child), "look around");
@@ -133,7 +134,9 @@ describe("subagent tool", () => {
 		});
 		await drain(agent, "go");
 		const text = toolResultText(agent);
-		for (let i = 0; i < 6; i++) assert.match(text, new RegExp(`## \\[${i + 1}/6\\] scout: T${i}\\nanswer T${i}`));
+		for (let i = 0; i < 6; i++) {
+			assert.match(text, new RegExp(`## \\[${i + 1}/6\\] scout \\(sub-${i + 1}\\): T${i}\\nanswer T${i}`));
+		}
 		assert.equal(maxInFlight(), 4);
 	});
 
@@ -164,7 +167,7 @@ describe("subagent tool", () => {
 		});
 		await drain(agent, "go");
 		assert.ok(requests.some((request) => lastUser(request) === "plan using: auth lives in src/auth.ts"));
-		assert.match(toolResultText(agent), /## Step 2\/2: planner\n1\. edit src\/auth\.ts/);
+		assert.match(toolResultText(agent), /## Step 2\/2: planner \(sub-2\)\n1\. edit src\/auth\.ts/);
 	});
 
 	it("an unknown agent is an error that lists the available ones", async () => {

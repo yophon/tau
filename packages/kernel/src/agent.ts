@@ -1252,6 +1252,12 @@ export class Agent {
 			...(this.imageProcessor ? { imageProcessor: this.imageProcessor } : {}),
 		});
 		if (options.model !== undefined) child.setModel(options.model);
+		options.onSpawn?.({
+			steer: (content) => {
+				void child.steer(content);
+			},
+			messages: () => [...child.messages],
+		});
 		let text = "";
 		let lastAssistantText = "";
 		let next: string | undefined = prompt;

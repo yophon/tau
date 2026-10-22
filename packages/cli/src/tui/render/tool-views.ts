@@ -317,6 +317,16 @@ const RENDERERS: Record<string, Renderer> = {
 		head: `tool_search(${firstLine(str(tool.args, "query"), 60)})`,
 		body: tool.status === "error" ? errorBody(tool, verbose) : tailOf(tool, verbose ? FULL : 3),
 	}),
+
+	// P46 (Claude Code's SendMessage): the recipient, and the summary (else the message's first line) as the preview.
+	send_message: (tool, verbose) => {
+		const summary = str(tool.args, "summary").trim() || firstLine(str(tool.args, "message"), 200);
+		const preview = summary.length > 200 ? `${summary.slice(0, 199)}…` : summary;
+		const body = preview === "" ? [] : [plainLine(preview, { dim: true })];
+		if (tool.status === "error") body.push(...errorBody(tool, verbose));
+		else if (verbose) body.push(...tailOf(tool, FULL));
+		return { head: `send_message(${str(tool.args, "to")})`, body };
+	},
 };
 
 /** `name(argument summary)`: the first string argument, else compact JSON. */
