@@ -1,4 +1,4 @@
-// Ported from pi 1.2.0 packages/mcp/src/oauth/provider.ts (MIT, earendil-works/pi) for P32b; changes are
+// Ported from pi 1.4.0 (unchanged since 1.2.0) packages/mcp/src/oauth/provider.ts (MIT, earendil-works/pi) for P32b; changes are
 // limited to imports, except P47: the state records the issuer of the stored client (SEP-2352).
 // Keep in step with pi when the reference is re-pinned (D23).
 import type { OAuthClientMetadataDocument, OAuthClientProvider } from "./flow.ts";

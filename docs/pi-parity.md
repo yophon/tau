@@ -1,7 +1,7 @@
 # pi 扩展面对照清单
 
 > 最后更新：2026-10-21（P44：`ui` 补上 `addAutocompleteProvider`，同一扩展重复注册命令改为替换；此前 2026-10-20 P40d：剩下的 7 行未排期全部完成，表里不再有 📍Backlog；此前 P22：会话日志为上下文唯一来源；context_with_system、setLabel、sessionManager、getSystemPrompt 落地）。
-> 行集合：pi tag v1.2.0 `packages/coding-agent/src/core/extensions/types.ts` 的 `on(event: "…")` 重载（41）、`ExtensionAPI` 成员（32）、`ExtensionContext` 成员（18），共 91 行（D23）。`node scripts/check-pi-parity.mjs` 从 `../pi` 抽取成员并与下面三张表比对，二者必须完全相等。
+> 行集合：pi tag v1.4.0（与 v1.2.0 相同，P48 核对）`packages/coding-agent/src/core/extensions/types.ts` 的 `on(event: "…")` 重载（41）、`ExtensionAPI` 成员（32）、`ExtensionContext` 成员（18），共 91 行（D23、D51）。`node scripts/check-pi-parity.mjs` 从 `../pi` 抽取成员并与下面三张表比对，二者必须完全相等。
 > 状态：✅ 已实现 · 📍Pn 已排入该阶段 · 📍Backlog 未排期 · ❌Dn 决策排除 · ⚠Dn 有意偏离（写明形状与理由）。
 > 「快照」列：0.80 表示 v0.80.3 就有的成员，1.2 表示之后新增的成员。
 > **维护规则**：实现、排除或偏离任何一项时改对应行；重锚时重跑脚本，新成员先补行再写阶段规格书。

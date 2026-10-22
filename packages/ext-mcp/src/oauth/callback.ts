@@ -1,4 +1,4 @@
-// Ported from pi 1.2.0 packages/mcp/src/oauth/callback.ts (MIT, earendil-works/pi) for P32b; changes are
+// Ported from pi 1.4.0 (unchanged since 1.2.0) packages/mcp/src/oauth/callback.ts (MIT, earendil-works/pi) for P32b; changes are
 // limited to imports. Keep in step with pi when the reference is re-pinned (D23).
 import { createServer, type Server, type ServerResponse } from "node:http";
 

@@ -1,4 +1,4 @@
-// Ported from pi 1.2.0 packages/mcp/src/auth-provider.ts (MIT, earendil-works/pi) for P32b; changes are
+// Ported from pi 1.4.0 (unchanged since 1.2.0) packages/mcp/src/auth-provider.ts (MIT, earendil-works/pi) for P32b; changes are
 // limited to imports. Keep in step with pi when the reference is re-pinned (D23).
 export type McpFetch = (input: string | URL, init?: RequestInit) => Promise<Response>;
 

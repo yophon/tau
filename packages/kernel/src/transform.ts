@@ -52,7 +52,7 @@ function downgradeUnsupportedImages(messages: AgentMessage[], target: TransformT
 }
 
 /**
- * Port of pi's transformMessages (packages/ai, v0.80.3 → v1.2.0 semantics) shared by
+ * Port of pi's transformMessages (packages/ai, v0.80.3 → v1.4.0 semantics) shared by
  * transports (the vision downgrade follows a host-declared `input`, tau has no model registry):
  *
  * - thinking from a different model (api/provider/model mismatch) is not replayable —

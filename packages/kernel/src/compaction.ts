@@ -20,7 +20,7 @@ import { type RetryCallbacks, type RetrySettings, retryAssistantCall } from "./r
 import type { SessionEntry } from "./session.ts";
 
 /**
- * Context compaction, ported from pi 1.2.0
+ * Context compaction, ported from pi 1.2.0, with pi 1.4's summary output limit (P48)
  * (packages/coding-agent/src/core/compaction/compaction.ts + utils.ts; the
  * harness copy lags behind it, P22): token estimation, cut-point selection over
  * the session projection, structured summarization prompts (verbatim),

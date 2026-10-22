@@ -1,4 +1,4 @@
-// OAuth sign-in and token use for MCP servers (P32b), adapted from pi 1.2.0
+// OAuth sign-in and token use for MCP servers (P32b), adapted from pi 1.4.0 (unchanged since 1.2.0)
 // packages/coding-agent/src/extensions/mcp/oauth.ts (MIT). Connections never
 // start a browser flow: they send the stored access token and, after a 401 or
 // near expiry, refresh it; when that is not possible they fail with

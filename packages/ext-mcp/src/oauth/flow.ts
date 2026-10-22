@@ -1,4 +1,4 @@
-// Ported from pi 1.2.0 packages/mcp/src/oauth/flow.ts (MIT, earendil-works/pi) for P32b; changes are
+// Ported from pi 1.4.0 (unchanged since 1.2.0) packages/mcp/src/oauth/flow.ts (MIT, earendil-works/pi) for P32b; changes are
 // limited to imports, except P47: client credentials are keyed by the authorization server that
 // issued them (MCP 2026-07-28, SEP-2352; pi 1.4 does not do this yet). Keep in step with pi when
 // the reference is re-pinned (D23).

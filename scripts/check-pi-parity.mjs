@@ -14,7 +14,7 @@ const parityPath = join(repoRoot, "docs", "pi-parity.md");
 
 if (!existsSync(typesPath)) {
 	console.error(`pi snapshot not found at ${typesPath}. Rebuild it (D23):`);
-	console.error("  git clone --depth 1 --branch v1.2.0 https://github.com/earendil-works/pi ../pi");
+	console.error("  git clone --depth 1 --branch v1.4.0 https://github.com/earendil-works/pi ../pi");
 	process.exit(1);
 }
 const source = readFileSync(typesPath, "utf8");

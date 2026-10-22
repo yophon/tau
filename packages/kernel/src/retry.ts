@@ -1,5 +1,5 @@
 // pi 移植:错误分类逐字照抄 pi 的 packages/ai/src/utils/retry.ts 与
-// utils/overflow.ts(tag v1.2.0,P23d 整表同步)。溢出只取文本模式(usage 启发式
+// utils/overflow.ts(tag v1.4.0,P23d 整表同步,P48 跟到 1.4)。溢出只取文本模式(usage 启发式
 // 检测不移植——tau 的压缩按阈值触发,不做溢出反应式压缩),并在分类函数内先排除
 // 溢出(pi 交给调用方)。策略(指数退避、次数、事件形状)照抄 pi 的
 // agent-session.ts,由 Agent 执行。
