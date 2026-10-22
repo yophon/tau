@@ -1807,6 +1807,8 @@ async function main(): Promise<void> {
 	if (readline) process.stdin.on("data", () => markActivity());
 	const out = stdoutWriter();
 	const rpcBridge = options.mode === "rpc" ? new RpcUiBridge(out) : undefined;
+	// Read stdin from the start: the project trust question below is asked through the bridge.
+	rpcBridge?.listen(process.stdin);
 	// Before anything imports Ink: a shell exporting CI must not leave the TUI blank.
 	if (useTui) await (await import("./tui/ink-env.ts")).loadInk();
 	// Headless stdin (pipes, CI) cannot answer prompts; omit the UI capability

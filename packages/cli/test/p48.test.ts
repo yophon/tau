@@ -1,6 +1,10 @@
 // P48b: pi 1.3/1.4 CLI and TUI fixes — dialogs stack instead of replacing each other,
 // empty quoted template arguments, PowerShell outside PATH, read ranges given as strings.
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { parseCommandArgs, substituteArgs } from "../../ext-resources/src/index.ts";
 import { locatePowerShell } from "../../host-node/src/shell.ts";
@@ -133,5 +137,75 @@ describe("P48 small fixes", () => {
 			false,
 		);
 		assert.equal(view.head, "read(a.ts:3+2)");
+	});
+});
+
+describe("P48 RPC startup", () => {
+	it("a dialog asked while tau starts (project trust) is answered; commands sent meanwhile run after", async () => {
+		const root = mkdtempSync(join(tmpdir(), "tau-p48-rpc-"));
+		const home = join(root, "home");
+		const cwd = join(root, "project", "app");
+		mkdirSync(join(root, "project", ".agents", "skills"), { recursive: true });
+		mkdirSync(home, { recursive: true });
+		mkdirSync(cwd, { recursive: true });
+		const env: Record<string, string | undefined> = {
+			...process.env,
+			HOME: home,
+			TAU_BASE_URL: "http://127.0.0.1:9/v1",
+			TAU_MODEL: "m",
+			TAU_API_KEY: "k",
+			TAU_AUTO_TITLE: "0",
+		};
+		const child = spawn(
+			process.execPath,
+			["--disable-warning=ExperimentalWarning", join(import.meta.dirname, "..", "src", "main.ts"), "--mode", "rpc"],
+			{ cwd, env, stdio: ["pipe", "pipe", "pipe"] },
+		);
+		try {
+			const seen: Record<string, unknown>[] = [];
+			const state = new Promise<Record<string, unknown>>((resolve, reject) => {
+				const timer = setTimeout(
+					() => reject(new Error(`no get_state response; seen ${JSON.stringify(seen)}`)),
+					20_000,
+				);
+				// Before the fix tau exited at once (code 13): nothing read the answer it waited for.
+				child.on("exit", (code) =>
+					reject(new Error(`tau exited (${code}) before answering; seen ${JSON.stringify(seen)}`)),
+				);
+				child.stdin.on("error", () => undefined);
+				let buffer = "";
+				child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+					buffer += chunk;
+					for (let newline = buffer.indexOf("\n"); newline !== -1; newline = buffer.indexOf("\n")) {
+						const record = JSON.parse(buffer.slice(0, newline)) as Record<string, unknown>;
+						buffer = buffer.slice(newline + 1);
+						seen.push(record);
+						if (record.type === "extension_ui_request" && record.method === "confirm") {
+							child.stdin.write(
+								`${JSON.stringify({ type: "extension_ui_response", id: record.id, confirmed: false })}\n`,
+							);
+						}
+						if (record.type === "response" && record.id === "s1") {
+							clearTimeout(timer);
+							resolve(record);
+						}
+					}
+				});
+			});
+			// Sent before the trust question is answered.
+			child.stdin.write(`${JSON.stringify({ id: "s1", type: "get_state" })}\n`);
+			const response = await state;
+			assert.equal(response.success, true);
+			assert.ok(
+				seen.some((record) => record.method === "confirm" && String(record.title).startsWith("Trust this directory")),
+			);
+		} finally {
+			child.stdin.end();
+			const closed = new Promise((resolve) => child.on("close", resolve));
+			// A tau stuck in startup never exits on its own.
+			const kill = setTimeout(() => child.kill(), 5000);
+			await closed;
+			clearTimeout(kill);
+		}
 	});
 });

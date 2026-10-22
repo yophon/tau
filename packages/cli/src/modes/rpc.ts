@@ -32,6 +32,14 @@ export class RpcUiBridge {
 	private readonly pending = new Map<string, (response: Record<string, unknown> | undefined) => void>();
 	private readonly out: RecordWriter;
 	readonly ui: UiCapability;
+	/** Whether stdin is being read (listen ran). */
+	listening = false;
+	/** stdin closed: dialogs are answered "cancelled" at once. */
+	private ended = false;
+	/** Commands read before the loop took them. */
+	private readonly queued: unknown[] = [];
+	private onCommand: ((value: unknown) => void) | undefined;
+	private onEnd: (() => void) | undefined;
 
 	constructor(out: RecordWriter) {
 		this.out = out;
@@ -107,6 +115,39 @@ export class RpcUiBridge {
 		return true;
 	}
 
+	/**
+	 * Read stdin from now on. Dialogs asked while tau starts (the project trust question,
+	 * session_start handlers) are answered right away; commands wait for takeCommands. Reading
+	 * only once the loop ran left a startup dialog waiting for an answer nobody read.
+	 */
+	listen(input: NodeJS.ReadableStream): void {
+		if (this.listening) return;
+		this.listening = true;
+		readRecords(
+			input,
+			(value) => {
+				const record = value as Record<string, unknown> | null;
+				if (typeof record === "object" && record !== null && record.type === "extension_ui_response") {
+					this.settle(record);
+				} else if (this.onCommand) this.onCommand(value);
+				else this.queued.push(value);
+			},
+			() => {
+				this.ended = true;
+				this.cancelAll();
+				this.onEnd?.();
+			},
+		);
+	}
+
+	/** Hand commands to the loop, those read so far first, and tell it when stdin closes. */
+	takeCommands(onCommand: (value: unknown) => void, onEnd: () => void): void {
+		this.onCommand = onCommand;
+		this.onEnd = onEnd;
+		for (const value of this.queued.splice(0)) onCommand(value);
+		if (this.ended) onEnd();
+	}
+
 	/** Answer every open dialog with "cancelled" (stdin closed). */
 	cancelAll(): void {
 		for (const [id, resolveRequest] of this.pending) {
@@ -116,6 +157,7 @@ export class RpcUiBridge {
 	}
 
 	private request(fields: Record<string, unknown>): Promise<Record<string, unknown> | undefined> {
+		if (this.ended) return Promise.resolve(undefined);
 		const id = `ui-${this.nextId++}`;
 		return new Promise((resolveRequest) => {
 			this.pending.set(id, resolveRequest);
@@ -443,11 +485,10 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 		if (record) out.write(record);
 	})(session.options.onEvent);
 
-	const input = options.input ?? process.stdin;
+	bridge.listen(options.input ?? process.stdin);
 	await new Promise<void>((done) => {
 		const inFlight = new Set<Promise<void>>();
-		readRecords(
-			input,
+		bridge.takeCommands(
 			(value) => {
 				if (value instanceof Error) {
 					out.write({
@@ -463,15 +504,10 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					return;
 				}
 				const record = value as Record<string, unknown>;
-				if (record.type === "extension_ui_response") {
-					bridge.settle(record);
-					return;
-				}
 				const task = handle(record).finally(() => inFlight.delete(task));
 				inFlight.add(task);
 			},
 			() => {
-				bridge.cancelAll();
 				void Promise.allSettled([...inFlight]).then(() => done());
 			},
 		);
