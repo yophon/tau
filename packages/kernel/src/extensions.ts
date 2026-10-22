@@ -126,6 +126,11 @@ export interface AgentSpawnOptions {
 	toolNames?: string[];
 	initialMessages?: AgentMessage[];
 	maxTurnsPerPrompt?: number;
+	/**
+	 * P49 (a subagent's autoCompactWindow, Claude Code): the window the child compacts against.
+	 * It applies when it is smaller than the parent's, or when the parent has none.
+	 */
+	contextWindow?: number;
 	/** Another model for the child (P26b). */
 	model?: string;
 	thinkingLevel?: ThinkingLevel;
@@ -171,7 +176,7 @@ export interface ExtensionContext {
 	messages: readonly AgentMessage[];
 	capabilities?: ExtensionCapabilities;
 	/** Current context-token estimate (present when an Agent backs this context). */
-	getContextUsage?: () => ContextUsageEstimate & { contextWindow?: number };
+	getContextUsage?: () => ContextUsageEstimate & { contextWindow?: number; reserveTokens?: number };
 	/** Request a compaction before the next LLM call. */
 	compact?: (customInstructions?: string) => void;
 	/** Run a child agent with a facade that does not expose the parent Agent internals. */

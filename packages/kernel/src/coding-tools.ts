@@ -1,5 +1,6 @@
 import { encodeBase64 } from "./base64.ts";
 import type { BackgroundShell, FileSystem, ImageProcessor, Shell } from "./capabilities.ts";
+import { estimateStringTokens } from "./compaction.ts";
 import { editDiff, type LocatedEdit } from "./edit-diff.ts";
 import { ShellError } from "./errors.ts";
 import type { PermissionMode } from "./policy.ts";
@@ -9,6 +10,13 @@ import { utf8CodePointLength } from "./utf8.ts";
 
 const MAX_READ_LINES = 2000;
 const MAX_OUTPUT_CHARS = 50_000;
+/**
+ * read's allow_large when the context window is unknown (P49, user ruling): Claude Code's
+ * whole-file limit, 256 KB, counted in characters like the other limits here.
+ */
+const ALLOW_LARGE_UNKNOWN_WINDOW_CHARS = 256 * 1024;
+/** The compaction reserve when the estimate does not say (DEFAULT_COMPACTION_SETTINGS). */
+const FALLBACK_RESERVE_TOKENS = 16_384;
 const DEFAULT_BASH_TIMEOUT_SECONDS = 120;
 
 /** The end of a long output (what a stopped command printed last matters most). */
@@ -248,6 +256,14 @@ export function cleanReadPath(path: string): string {
 	return cleaned.startsWith("@") ? cleaned.slice(1) : cleaned;
 }
 
+/** What allow_large may return: tokens left in the context window, else characters (window unknown). */
+function largeReadBudget(
+	usage: { tokens: number; contextWindow?: number; reserveTokens?: number } | undefined,
+): { tokens: number } | { chars: number } {
+	if (usage?.contextWindow === undefined) return { chars: ALLOW_LARGE_UNKNOWN_WINDOW_CHARS };
+	return { tokens: Math.max(0, usage.contextWindow - usage.tokens - (usage.reserveTokens ?? FALLBACK_RESERVE_TOKENS)) };
+}
+
 function createReadTool(fs: FileSystem, imageOptions: ImageOptions = {}): Tool {
 	return {
 		name: "read",
@@ -255,33 +271,81 @@ function createReadTool(fs: FileSystem, imageOptions: ImageOptions = {}): Tool {
 		promptGuidelines: ["Use read to examine files instead of cat or sed."],
 		description:
 			"Read a file. Text files return numbered lines; use offset/limit to page through files longer than " +
-			`${MAX_READ_LINES} lines. Images (png, jpg, gif, webp, bmp) are returned as attachments.`,
+			`${MAX_READ_LINES} lines. Images (png, jpg, gif, webp, bmp) are returned as attachments. ` +
+			"Set allow_large only when the whole file is needed at once (for example the user asks for all of it): " +
+			"the read is then limited by the room left in the context instead.",
 		parameters: {
 			type: "object",
 			properties: {
 				path: { type: "string", description: "File path, absolute or relative to the working directory" },
 				offset: { type: "number", description: "1-based line number to start from" },
 				limit: { type: "number", description: "Maximum number of lines to return" },
+				allow_large: {
+					type: "boolean",
+					description: `Read past ${MAX_READ_LINES} lines and ${MAX_OUTPUT_CHARS / 1000} KB, up to the room left in the context`,
+				},
 			},
 			required: ["path"],
 		},
-		execute: wrapExecute(async (args) => {
-			const path = cleanReadPath(requireString(args, "path"));
-			const extension = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
-			const imageType = IMAGE_TYPES[extension];
-			if (imageType) return readImage(fs, path, imageType, imageOptions);
-			const offset = optionalNumber(args, "offset") ?? 1;
-			const limit = optionalNumber(args, "limit") ?? MAX_READ_LINES;
-			const lines = (await fs.readTextFile(path)).split("\n");
-			const start = Math.max(1, Math.floor(offset));
-			const slice = lines.slice(start - 1, start - 1 + Math.max(1, Math.floor(limit)));
-			const width = String(start + slice.length - 1).length;
-			const numbered = slice.map((line, i) => `${String(start + i).padStart(width)}\t${line}`).join("\n");
-			const remaining = lines.length - (start - 1 + slice.length);
-			const note = remaining > 0 ? `\n[${remaining} more lines; continue with offset=${start + slice.length}]` : "";
-			return textResult(truncate(numbered) + note);
-		}),
+		execute: async (args, _signal, _onUpdate, ctx) => {
+			try {
+				const path = cleanReadPath(requireString(args, "path"));
+				const extension = /\.([A-Za-z0-9]+)$/.exec(path)?.[1]?.toLowerCase() ?? "";
+				const imageType = IMAGE_TYPES[extension];
+				if (imageType) return await readImage(fs, path, imageType, imageOptions);
+				const offset = optionalNumber(args, "offset") ?? 1;
+				const allowLarge = args.allow_large === true;
+				const limit = optionalNumber(args, "limit") ?? (allowLarge ? Number.POSITIVE_INFINITY : MAX_READ_LINES);
+				const lines = (await fs.readTextFile(path)).split("\n");
+				const start = Math.max(1, Math.floor(offset));
+				const slice = lines.slice(start - 1, start - 1 + Math.max(1, Math.floor(limit)));
+				if (allowLarge) return readLarge(lines, slice, start, largeReadBudget(ctx?.getContextUsage?.()));
+				const width = String(start + slice.length - 1).length;
+				const numbered = slice.map((line, i) => `${String(start + i).padStart(width)}\t${line}`).join("\n");
+				const remaining = lines.length - (start - 1 + slice.length);
+				const note = remaining > 0 ? `\n[${remaining} more lines; continue with offset=${start + slice.length}]` : "";
+				return textResult(truncate(numbered) + note);
+			} catch (cause) {
+				return errorResult(cause instanceof Error ? cause.message : String(cause));
+			}
+		},
 	};
+}
+
+/**
+ * read with allow_large (P49, Claude Code): as many of the asked lines as fit the budget —
+ * whole lines, numbered as usual — then where to continue when some did not fit.
+ */
+function readLarge(
+	lines: readonly string[],
+	slice: readonly string[],
+	start: number,
+	budget: { tokens: number } | { chars: number },
+): ToolResult {
+	const width = String(start + slice.length - 1).length;
+	const out: string[] = [];
+	let used = 0;
+	for (const [i, line] of slice.entries()) {
+		const numbered = `${String(start + i).padStart(width)}\t${line}`;
+		const cost = "tokens" in budget ? estimateStringTokens(`${numbered}\n`) : numbered.length + 1;
+		if (used + cost > ("tokens" in budget ? budget.tokens : budget.chars)) break;
+		used += cost;
+		out.push(numbered);
+	}
+	const next = start + out.length;
+	const unread = slice.length - out.length;
+	const remaining = lines.length - (start - 1 + out.length);
+	let note = "";
+	if (unread > 0) {
+		const room =
+			"tokens" in budget
+				? `about ${budget.tokens} tokens of room left in the context`
+				: `the ${ALLOW_LARGE_UNKNOWN_WINDOW_CHARS / 1024} KB limit for a model whose context window is unknown`;
+		note = `\n[Stopped at ${room}: ${remaining} more lines; continue with offset=${next}, or compact first]`;
+	} else if (remaining > 0) {
+		note = `\n[${remaining} more lines; continue with offset=${next}]`;
+	}
+	return textResult(out.join("\n") + note);
 }
 
 function createWriteTool(fs: FileSystem): Tool {

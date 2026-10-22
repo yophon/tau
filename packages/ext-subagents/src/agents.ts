@@ -3,14 +3,15 @@
  * (examples/extensions/subagent/agents.ts): a Markdown file whose frontmatter
  * has `name`, `description`, optional `tools` (comma list or [a, b]) and
  * `model`; the body is the agent's system prompt. tau adds an optional `mode`
- * that can only make the agent stricter than its parent.
+ * that can only make the agent stricter than its parent. P49 adds Claude Code's
+ * `effort`, `autoCompactWindow`, `disallowedTools`, `maxTurns` and `background`.
  *
  * Built-ins are pi's sample agents (MIT) without their Claude model pins
  * (tau is BYOK: an agent without `model` uses the parent's). Later sources
  * override earlier ones by name: built-in < user (~/.pi/agent/agents,
  * ~/.tau/agents) < project (.pi/agents, .tau/agents; trusted projects only).
  */
-import type { FileSystem, PermissionMode } from "@yophon/tau-kernel";
+import type { FileSystem, PermissionMode, ThinkingLevel } from "@yophon/tau-kernel";
 
 export type AgentSource = "builtin" | "user" | "project";
 
@@ -22,12 +23,36 @@ export interface AgentDefinition {
 	mode?: PermissionMode;
 	/** P46 (Claude Code's frontmatter): run in a temporary git worktree of its own. */
 	isolation?: "worktree";
+	/** P49 (Claude Code): the thinking level it runs at; a call's `effort` wins. */
+	effort?: AgentEffort;
+	/** P49 (Claude Code): compact against this window (100000–1000000 tokens) when smaller than the session's. */
+	autoCompactWindow?: number;
+	/** P49 (Claude Code): tools taken away after `tools` picked them. */
+	disallowedTools?: string[];
+	/** P49 (Claude Code): the most turns one run takes. */
+	maxTurns?: number;
+	/** P49 (Claude Code): always runs in the background. */
+	background?: boolean;
+	/** Frontmatter values that were ignored, and why (/agents shows them). */
+	warnings?: string[];
 	systemPrompt: string;
 	source: AgentSource;
 	filePath?: string;
 }
 
 const MODES: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
+
+/** Claude Code's effort levels, each a tau thinking level of the same name. */
+export type AgentEffort = Extract<ThinkingLevel, "low" | "medium" | "high" | "xhigh" | "max">;
+export const AGENT_EFFORTS: readonly AgentEffort[] = ["low", "medium", "high", "xhigh", "max"];
+/** Claude Code's range for autoCompactWindow. */
+export const AUTO_COMPACT_WINDOW_RANGE = { min: 100_000, max: 1_000_000 } as const;
+
+function list(value: string | string[] | undefined): string[] {
+	return (Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [])
+		.map((entry) => entry.trim())
+		.filter((entry) => entry !== "");
+}
 
 /** Minimal frontmatter: `key: value` lines between `---` fences; `[a, b]` lists; quotes stripped. */
 export function parseFrontmatter(text: string): { data: Record<string, string | string[]>; body: string } {
@@ -56,11 +81,30 @@ export function parseAgentFile(text: string, source: AgentSource, filePath?: str
 	const name = typeof data.name === "string" ? data.name.trim() : "";
 	const description = typeof data.description === "string" ? data.description.trim() : "";
 	if (name === "" || description === "") return undefined;
-	const toolsRaw = data.tools;
-	const tools = (Array.isArray(toolsRaw) ? toolsRaw : typeof toolsRaw === "string" ? toolsRaw.split(",") : [])
-		.map((tool) => tool.trim())
-		.filter((tool) => tool !== "");
+	const tools = list(data.tools);
+	const disallowedTools = list(data.disallowedTools);
 	const model = typeof data.model === "string" && data.model !== "" ? data.model : undefined;
+	const warnings: string[] = [];
+	const effort = typeof data.effort === "string" && data.effort !== "" ? data.effort : undefined;
+	if (effort !== undefined && !(AGENT_EFFORTS as readonly string[]).includes(effort)) {
+		warnings.push(`effort "${effort}" ignored (one of ${AGENT_EFFORTS.join(", ")})`);
+	}
+	const windowText = typeof data.autoCompactWindow === "string" ? data.autoCompactWindow : undefined;
+	const autoCompactWindow = windowText !== undefined ? Number(windowText) : undefined;
+	const windowOk =
+		autoCompactWindow !== undefined &&
+		Number.isInteger(autoCompactWindow) &&
+		autoCompactWindow >= AUTO_COMPACT_WINDOW_RANGE.min &&
+		autoCompactWindow <= AUTO_COMPACT_WINDOW_RANGE.max;
+	if (windowText !== undefined && !windowOk) {
+		warnings.push(
+			`autoCompactWindow "${windowText}" ignored (${AUTO_COMPACT_WINDOW_RANGE.min}–${AUTO_COMPACT_WINDOW_RANGE.max})`,
+		);
+	}
+	const turnsText = typeof data.maxTurns === "string" ? data.maxTurns : undefined;
+	const maxTurns = turnsText !== undefined ? Number(turnsText) : undefined;
+	const turnsOk = maxTurns !== undefined && Number.isInteger(maxTurns) && maxTurns > 0;
+	if (turnsText !== undefined && !turnsOk) warnings.push(`maxTurns "${turnsText}" ignored (a whole number above 0)`);
 	const mode =
 		typeof data.mode === "string" && (MODES as readonly string[]).includes(data.mode)
 			? (data.mode as PermissionMode)
@@ -72,6 +116,14 @@ export function parseAgentFile(text: string, source: AgentSource, filePath?: str
 		...(model !== undefined ? { model } : {}),
 		...(mode !== undefined ? { mode } : {}),
 		...(data.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
+		...(effort !== undefined && (AGENT_EFFORTS as readonly string[]).includes(effort)
+			? { effort: effort as AgentEffort }
+			: {}),
+		...(windowOk ? { autoCompactWindow } : {}),
+		...(disallowedTools.length > 0 ? { disallowedTools } : {}),
+		...(turnsOk ? { maxTurns } : {}),
+		...(data.background === "true" ? { background: true } : {}),
+		...(warnings.length > 0 ? { warnings } : {}),
 		systemPrompt: body,
 		source,
 		...(filePath !== undefined ? { filePath } : {}),

@@ -1264,11 +1264,15 @@ export class Agent {
 			...(label !== undefined ? { subagent: label } : {}),
 			...(options.detached ? { detached: true } : {}),
 		};
+		// P49: a smaller window (or one where the parent has none) makes the child compact earlier.
+		const window = options.contextWindow;
+		const narrower =
+			window !== undefined && (this.config.contextWindow === undefined || window < this.config.contextWindow);
 		const child = new Agent({
 			extensions: guards,
 			retry: this.retrySettings,
 			isProjectTrusted: this.isProjectTrusted,
-			config: this.config,
+			config: narrower ? { ...this.config, contextWindow: window } : this.config,
 			transport: this.transport,
 			platform: this.platform,
 			systemPrompt,
@@ -1560,11 +1564,18 @@ export class Agent {
 		return transport;
 	}
 
-	/** Current context-token estimate (pi semantics: last assistant usage + trailing heuristic). */
-	getContextUsage(): ContextUsageEstimate & { contextWindow?: number } {
+	/**
+	 * Current context-token estimate (pi semantics: last assistant usage + trailing heuristic).
+	 * With a window, `reserveTokens` is what compaction keeps free (P49: read's allow_large
+	 * reads what is left between them).
+	 */
+	getContextUsage(): ContextUsageEstimate & { contextWindow?: number; reserveTokens?: number } {
 		return {
 			...estimateProjectedContextTokens(this.activeProjection, this.activePath),
 			contextWindow: this.config.contextWindow,
+			...(this.config.contextWindow !== undefined
+				? { reserveTokens: this.effectiveCompactionSettings().reserveTokens }
+				: {}),
 		};
 	}
 

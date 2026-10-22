@@ -31,14 +31,25 @@ import type {
 	PermissionMode,
 	SubagentHandle,
 	TauAbortSignal,
+	ThinkingLevel,
 	Tool,
 	Usage,
 } from "@yophon/tau-kernel";
-import { type AgentDefinition, type AgentDirectories, DEFAULT_AGENT, discoverAgents } from "./agents.ts";
-
-export {
+import {
+	AGENT_EFFORTS,
 	type AgentDefinition,
 	type AgentDirectories,
+	type AgentEffort,
+	DEFAULT_AGENT,
+	discoverAgents,
+} from "./agents.ts";
+
+export {
+	AGENT_EFFORTS,
+	type AgentDefinition,
+	type AgentDirectories,
+	type AgentEffort,
+	AUTO_COMPACT_WINDOW_RANGE,
 	builtinAgents,
 	discoverAgents,
 	parseAgentFile,
@@ -108,6 +119,8 @@ interface Step {
 	task: string;
 	name?: string;
 	isolation?: "worktree";
+	/** P49: the thinking level for this run; wins over the agent's. */
+	effort?: AgentEffort;
 }
 
 export interface BackgroundTask {
@@ -141,6 +154,12 @@ interface SubagentRecord extends BackgroundTask {
 	isolation?: "worktree";
 	/** The worktree its last run kept (a resumed run continues there). */
 	worktree?: string;
+	/** P49: the thinking level of its first run; a resumed run keeps it (Claude Code). */
+	effort?: ThinkingLevel;
+	/** P49: the agent's autoCompactWindow. */
+	contextWindow?: number;
+	/** P49: the agent's maxTurns. */
+	maxTurns?: number;
 }
 
 const NAME_RE = /^[A-Za-z0-9][\w.-]{0,63}$/;
@@ -157,8 +176,18 @@ function steps(value: unknown, field: string): Step[] | undefined {
 			task: step.task,
 			...(typeof step.name === "string" && step.name.trim() !== "" ? { name: step.name.trim() } : {}),
 			...(step.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
+			...effortOf(step.effort, `${field}[${index}].effort`),
 		};
 	});
+}
+
+/** A call's `effort`, checked. */
+function effortOf(value: unknown, field: string): { effort?: AgentEffort } {
+	if (value === undefined) return {};
+	if (typeof value !== "string" || !(AGENT_EFFORTS as readonly string[]).includes(value)) {
+		throw new Error(`"${field}" must be one of ${AGENT_EFFORTS.join(", ")}`);
+	}
+	return { effort: value as AgentEffort };
 }
 
 function firstLine(text: string, max = 80): string {
@@ -235,6 +264,13 @@ function describe(toolName: string, agents: readonly AgentDefinition[]): string 
 	].join("\n");
 }
 
+/** Claude Code's effort parameter: the subagent's thinking level for this run. */
+const EFFORT_PARAMETER = {
+	type: "string",
+	enum: ["low", "medium", "high", "xhigh", "max"],
+	description: "How hard the subagent thinks (its thinking level); defaults to the agent's, else the session's",
+};
+
 const STEP_ITEM = {
 	type: "object",
 	properties: {
@@ -242,6 +278,7 @@ const STEP_ITEM = {
 		task: { type: "string" },
 		name: { type: "string", description: "A name to address this subagent by with send_message" },
 		isolation: { type: "string", enum: ["worktree"], description: "Run in a temporary git worktree of its own" },
+		effort: EFFORT_PARAMETER,
 	},
 	required: ["task"],
 };
@@ -258,6 +295,7 @@ const PARAMETERS = {
 			description:
 				"Run the subagent in a temporary git worktree of its own, so parallel edits do not collide (single mode)",
 		},
+		effort: EFFORT_PARAMETER,
 		tasks: {
 			type: "array",
 			description: `Array of {agent, task, name?} to run in parallel (at most ${MAX_PARALLEL_TASKS})`,
@@ -304,6 +342,9 @@ interface StoredMeta {
 	mode?: PermissionMode;
 	isolation?: "worktree";
 	worktree?: string;
+	effort?: ThinkingLevel;
+	contextWindow?: number;
+	maxTurns?: number;
 }
 
 /** `<session file without .jsonl>/subagents` (Claude Code keeps `<session>/subagents/agent-<id>.jsonl`). */
@@ -356,6 +397,9 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				...(record.mode !== undefined ? { mode: record.mode } : {}),
 				...(record.isolation !== undefined ? { isolation: record.isolation } : {}),
 				...(record.worktree !== undefined ? { worktree: record.worktree } : {}),
+				...(record.effort !== undefined ? { effort: record.effort } : {}),
+				...(record.contextWindow !== undefined ? { contextWindow: record.contextWindow } : {}),
+				...(record.maxTurns !== undefined ? { maxTurns: record.maxTurns } : {}),
 			};
 			try {
 				await store.fs.writeTextFile(
@@ -402,9 +446,13 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 		): SubagentRecord => {
 			const id = `sub-${nextId++}`;
 			const isolation = step.isolation ?? agent.isolation;
+			const effort = step.effort ?? agent.effort;
 			const record: SubagentRecord = {
 				id,
 				...(isolation ? { isolation } : {}),
+				...(effort !== undefined ? { effort } : {}),
+				...(agent.autoCompactWindow !== undefined ? { contextWindow: agent.autoCompactWindow } : {}),
+				...(agent.maxTurns !== undefined ? { maxTurns: agent.maxTurns } : {}),
 				...(step.name !== undefined ? { name: step.name } : {}),
 				agent: agent.name,
 				task: step.task,
@@ -462,7 +510,11 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 						...(record.background ? { detached: true } : {}),
 						...(record.model !== undefined ? { model: record.model } : {}),
 						...(record.mode !== undefined ? { permissionMode: record.mode } : {}),
-						...(options.maxTurnsPerPrompt !== undefined ? { maxTurnsPerPrompt: options.maxTurnsPerPrompt } : {}),
+						...(record.effort !== undefined ? { thinkingLevel: record.effort } : {}),
+						...(record.contextWindow !== undefined ? { contextWindow: record.contextWindow } : {}),
+						...((record.maxTurns ?? options.maxTurnsPerPrompt) !== undefined
+							? { maxTurnsPerPrompt: record.maxTurns ?? options.maxTurnsPerPrompt }
+							: {}),
 						...(record.messages.length > 0 ? { initialMessages: record.messages } : {}),
 						onSpawn: (handle) => {
 							record.handle = handle;
@@ -611,6 +663,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 												task: args.task,
 												...(typeof args.name === "string" && args.name.trim() !== "" ? { name: args.name.trim() } : {}),
 												...(args.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
+												...effortOf(args.effort, "effort"),
 											},
 										]
 									: undefined;
@@ -630,11 +683,14 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 								}
 							}
 
-							const background = args.background === true;
+							// P49: an agent with `background: true` makes every call with it a background one (Claude Code).
+							const background =
+								args.background === true || plan.some((step) => byName.get(step.agent)?.background === true);
 							const recordFor = (step: Step): SubagentRecord => {
 								const agent = byName.get(step.agent) as AgentDefinition;
+								const disallowed = new Set(agent.disallowedTools ?? []);
 								const toolNames = (agent.tools ?? parentTools).filter(
-									(name) => name !== toolName && name !== SEND_MESSAGE_TOOL,
+									(name) => name !== toolName && name !== SEND_MESSAGE_TOOL && !disallowed.has(name),
 								);
 								return newRecord(agent, step, toolNames, background);
 							};
@@ -810,6 +866,12 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 						agent.tools ? `tools: ${agent.tools.join(", ")}` : "all tools",
 						...(agent.model ? [`model: ${agent.model}`] : []),
 						...(agent.mode ? [`mode: ${agent.mode}`] : []),
+						...(agent.effort ? [`effort: ${agent.effort}`] : []),
+						...(agent.disallowedTools ? [`without: ${agent.disallowedTools.join(", ")}`] : []),
+						...(agent.autoCompactWindow ? [`compacts at: ${agent.autoCompactWindow}`] : []),
+						...(agent.maxTurns ? [`max turns: ${agent.maxTurns}`] : []),
+						...(agent.background ? ["background"] : []),
+						...(agent.warnings ? [`! ${agent.warnings.join("; ")}`] : []),
 					].join(" · ");
 				if (!ctx.ui) return agents.map((agent) => `${label(agent)}\n  ${agent.description}`).join("\n");
 				const labels = agents.map(label);
