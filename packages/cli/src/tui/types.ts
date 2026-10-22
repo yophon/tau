@@ -29,6 +29,8 @@ export interface RunTuiOptions {
 	modelChoices?: string[];
 	baseUrl: string;
 	cwd: string;
+	/** P46: whether the session moved (a worktree) and its settings and extensions should be reloaded. */
+	consumeReload?: () => boolean;
 	contextWindow?: number;
 	permissionMode: PermissionMode;
 	sessionRepo: JsonlSessionRepo;

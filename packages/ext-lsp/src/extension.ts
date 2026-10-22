@@ -54,6 +54,8 @@ export interface LspExtensionHandle {
 	hasPendingDiagnostics(): boolean;
 	/** Shut every server down (what session_shutdown does). */
 	shutdown(): Promise<void>;
+	/** The session moved (P46, a worktree): servers of the old directory stop; the next use starts them in `cwd`. */
+	moveTo(cwd: string): Promise<void>;
 }
 
 const EDIT_TOOLS = new Set(["edit", "write"]);
@@ -252,6 +254,13 @@ export function createLspExtension(options: LspExtensionOptions): LspExtensionHa
 			const closing = manager;
 			manager = undefined;
 			edited.clear();
+			await closing?.shutdown();
+		},
+		async moveTo(next) {
+			const closing = manager;
+			manager = undefined;
+			edited.clear();
+			cwd = next;
 			await closing?.shutdown();
 		},
 	};

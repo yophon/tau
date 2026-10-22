@@ -396,6 +396,8 @@ export class TuiController {
 		this.checkShortcuts();
 		// session_start after the host actions are in place (P23e, pi bindExtensions order).
 		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
+		// A resumed session may have moved back into its worktree (P46).
+		await this.reloadIfMoved();
 		await this.refreshSurfaces();
 		// Command-line prompts (P36c, pi initialMessage + initialMessages): the first now, the rest after it.
 		const [first, ...rest] = this.options.initialPrompts ?? [];
@@ -2436,6 +2438,23 @@ export class TuiController {
 	}
 
 	async runPrompt(input: UserContent | null): Promise<void> {
+		await this.runPromptOnce(input);
+		await this.reloadIfMoved();
+	}
+
+	/**
+	 * P46: the session moved into or out of a worktree during the turn: its settings, AGENTS.md
+	 * and extensions follow now, and the TUI's own directory (footer, completion, `!` commands).
+	 */
+	private async reloadIfMoved(): Promise<void> {
+		if (this.state.task !== undefined || !this.options.consumeReload?.()) return;
+		(this.options as { cwd: string }).cwd = process.cwd();
+		this.files = undefined;
+		this.filesEpoch++;
+		await this.reloadExtensions();
+	}
+
+	private async runPromptOnce(input: UserContent | null): Promise<void> {
 		const before = this.agent.getSessionUsage();
 		const startedAt = this.now();
 		let interrupted = false;

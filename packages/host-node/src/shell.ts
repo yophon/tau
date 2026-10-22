@@ -235,7 +235,7 @@ export function commandEnvironment(
 }
 
 export class NodeShell implements Shell {
-	readonly cwd: string;
+	cwd: string;
 	/** The environment of spawned commands; default: this process's (P32b: the CLI passes one without secrets). */
 	readonly env: Record<string, string> | undefined;
 	/** Variables worked out per command over `env` (P43). */
@@ -252,6 +252,11 @@ export class NodeShell implements Shell {
 		this.commandEnv = options.commandEnv;
 		const { env: _env, commandEnv: _commandEnv, ...shellOptions } = options;
 		this.options = shellOptions;
+	}
+
+	/** Run commands in `cwd` from now on (P46). */
+	moveTo(cwd: string): void {
+		this.cwd = resolve(cwd);
 	}
 
 	async exec(

@@ -8,7 +8,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
 import { createResourcesExtension } from "@yophon/tau-ext-resources";
-import { createSubagentsExtension } from "@yophon/tau-ext-subagents";
+import { createSubagentsExtension, type SubagentsOptions } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
 import { type Agent, type AgentMessage, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
@@ -43,6 +43,8 @@ const state: {
 	resources: boolean;
 	/** P46: features after P40 are on (everywhere but the gateway, which stays as it was). */
 	extended: boolean;
+	/** P46: a worktree for an isolated subagent, set by the workspace (none in the gateway). */
+	isolate: SubagentsOptions["isolate"];
 	/** P41a (pi): the conventional skill and prompt directories, in the order they are searched. */
 	defaultSkillPaths: string[];
 	defaultPromptPaths: string[];
@@ -65,6 +67,7 @@ const state: {
 	envAllow: [],
 	resources: false,
 	extended: true,
+	isolate: undefined,
 	defaultSkillPaths: [],
 	defaultPromptPaths: [],
 	skillPaths: [],
@@ -321,6 +324,11 @@ const settingsResources: Extension = (api) => {
  * The built-ins for one workspace. `memory` overrides its memory scope (P32a: a
  * gateway guest gets only their own, never the owner's).
  */
+/** P46: how an isolated subagent gets its worktree (the workspace sets it; the gateway does not). */
+export function setSubagentIsolation(isolate: SubagentsOptions["isolate"]): void {
+	state.isolate = isolate;
+}
+
 export function builtinExtensions(options: { memory?: MemoryScope } = {}): Extension[] {
 	return [
 		// P32b: first, so a blocked read never reaches another extension and results are masked early.
@@ -353,10 +361,24 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		createSubagentsExtension({
 			tasksCommand: false,
 			// P44: scheduled tasks and monitors belong to the session, not to a child that ends.
-			parentOnlyTools: ["cron_create", "cron_list", "cron_delete", "schedule_wakeup", "monitor", "push_notification"],
+			parentOnlyTools: [
+				"cron_create",
+				"cron_list",
+				"cron_delete",
+				"schedule_wakeup",
+				"monitor",
+				"push_notification",
+				"enter_worktree",
+				"exit_worktree",
+			],
 			// P46 (Claude Code's SendMessage): continue or steer subagents; the gateway keeps what it had.
 			sendMessage: state.extended,
 			persist: state.extended,
+			// P46 (Claude Code's isolation: worktree): read when a subagent starts, so the workspace can set it later.
+			isolate: (agentId) =>
+				state.isolate
+					? state.isolate(agentId)
+					: Promise.reject(new Error("This host cannot run a subagent in a worktree of its own.")),
 		}),
 		// P26c: the todo list and long-term memory.
 		todoExtension,

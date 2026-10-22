@@ -24,12 +24,14 @@ import type {
 	AgentRunResult,
 	Extension,
 	ExtensionAPI,
+	ExtensionCapabilities,
 	ExtensionContext,
 	FileSystem,
 	JsonObject,
 	PermissionMode,
 	SubagentHandle,
 	TauAbortSignal,
+	Tool,
 	Usage,
 } from "@yophon/tau-kernel";
 import { type AgentDefinition, type AgentDirectories, DEFAULT_AGENT, discoverAgents } from "./agents.ts";
@@ -65,6 +67,21 @@ export interface SubagentsOptions {
 	sendMessage?: boolean;
 	/** Save subagents next to the session so a resumed session can continue them (default true). */
 	persist?: boolean;
+	/**
+	 * A temporary git worktree for a subagent with isolation "worktree" (P46, Claude Code).
+	 * Without it such a subagent fails to start. Called again when an isolated subagent resumes.
+	 */
+	isolate?: (agentId: string) => Promise<IsolatedWorkspace>;
+}
+
+/** Where an isolated subagent works: its own file and shell tools, and what to do when it ends. */
+export interface IsolatedWorkspace {
+	cwd: string;
+	/** Replace the parent's tools of the same name (read, write, edit, bash, ...). */
+	tools: Tool[];
+	capabilities: Partial<Omit<ExtensionCapabilities, "platform">>;
+	/** The subagent ended: remove the worktree when nothing changed; say where it stays otherwise. */
+	finish(): Promise<{ kept: boolean; path: string; branch: string }>;
 }
 
 /** Event bus channel (api.events) carrying a {@link BackgroundTask} copy whenever one starts or ends (P36a). */
@@ -87,6 +104,7 @@ interface Step {
 	agent: string;
 	task: string;
 	name?: string;
+	isolation?: "worktree";
 }
 
 export interface BackgroundTask {
@@ -116,6 +134,8 @@ interface SubagentRecord extends BackgroundTask {
 	/** Messages sent before the child existed (it is starting). */
 	pendingSteer: string[];
 	stoppedBy?: "model" | "user";
+	/** P46: it runs in a worktree of its own. */
+	isolation?: "worktree";
 }
 
 const NAME_RE = /^[A-Za-z0-9][\w.-]{0,63}$/;
@@ -131,6 +151,7 @@ function steps(value: unknown, field: string): Step[] | undefined {
 			agent: typeof step.agent === "string" && step.agent.trim() !== "" ? step.agent.trim() : DEFAULT_AGENT,
 			task: step.task,
 			...(typeof step.name === "string" && step.name.trim() !== "" ? { name: step.name.trim() } : {}),
+			...(step.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
 		};
 	});
 }
@@ -202,6 +223,7 @@ function describe(toolName: string, agents: readonly AgentDefinition[]): string 
 		"Delegate tasks to subagents, each with its own context window; only their final answers come back.",
 		`Modes: single ({agent, task}), parallel ({tasks: [{agent, task}, ...]}, at most ${MAX_PARALLEL_TASKS}, ${MAX_CONCURRENCY} at a time), chain ({chain: [...]}, where {previous} in a task is replaced by the prior step's output).`,
 		`Set background: true to return immediately; the result arrives later as a follow-up message. agent defaults to "${DEFAULT_AGENT}".`,
+		`isolation: "worktree" runs a subagent in a temporary git worktree of its own (removed when it changed nothing, kept and named in its result otherwise).`,
 		`Every subagent gets an agent ID (sub-N), shown with its result; give it a name to address it by name. Use ${SEND_MESSAGE_TOOL} with the ID or name to continue a finished subagent with its full history, or to steer one still running in the background.`,
 		`Subagents cannot call ${toolName}. Available agents:`,
 		list,
@@ -214,6 +236,7 @@ const STEP_ITEM = {
 		agent: { type: "string" },
 		task: { type: "string" },
 		name: { type: "string", description: "A name to address this subagent by with send_message" },
+		isolation: { type: "string", enum: ["worktree"], description: "Run in a temporary git worktree of its own" },
 	},
 	required: ["task"],
 };
@@ -224,6 +247,12 @@ const PARAMETERS = {
 		agent: { type: "string", description: `Name of the agent to invoke (single mode; default "${DEFAULT_AGENT}")` },
 		task: { type: "string", description: "Task to delegate (single mode)" },
 		name: { type: "string", description: "A name to address the subagent by with send_message (single mode)" },
+		isolation: {
+			type: "string",
+			enum: ["worktree"],
+			description:
+				"Run the subagent in a temporary git worktree of its own, so parallel edits do not collide (single mode)",
+		},
 		tasks: {
 			type: "array",
 			description: `Array of {agent, task, name?} to run in parallel (at most ${MAX_PARALLEL_TASKS})`,
@@ -268,6 +297,7 @@ interface StoredMeta {
 	systemPrompt: string;
 	model?: string;
 	mode?: PermissionMode;
+	isolation?: "worktree";
 }
 
 /** `<session file without .jsonl>/subagents` (Claude Code keeps `<session>/subagents/agent-<id>.jsonl`). */
@@ -318,6 +348,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				systemPrompt: record.systemPrompt,
 				...(record.model !== undefined ? { model: record.model } : {}),
 				...(record.mode !== undefined ? { mode: record.mode } : {}),
+				...(record.isolation !== undefined ? { isolation: record.isolation } : {}),
 			};
 			try {
 				await store.fs.writeTextFile(
@@ -363,8 +394,10 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 			background: boolean,
 		): SubagentRecord => {
 			const id = `sub-${nextId++}`;
+			const isolation = step.isolation ?? agent.isolation;
 			const record: SubagentRecord = {
 				id,
+				...(isolation ? { isolation } : {}),
 				...(step.name !== undefined ? { name: step.name } : {}),
 				agent: agent.name,
 				task: step.task,
@@ -401,11 +434,20 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 			record.stoppedBy = undefined;
 			delete record.endedAt;
 			emitTask(record);
+			let isolated: IsolatedWorkspace | undefined;
+			let worktreeNote = "";
 			try {
+				if (record.isolation === "worktree") {
+					if (!options.isolate) throw new Error("This host cannot run a subagent in a worktree of its own.");
+					isolated = await options.isolate(record.id);
+				}
 				const result = await runSubagent(
 					prompt,
 					{
-						appendSystemPrompt: record.systemPrompt,
+						appendSystemPrompt: isolated
+							? `${record.systemPrompt}\n\nYou work in a git worktree of your own at ${isolated.cwd}; your file tools and commands run there.`
+							: record.systemPrompt,
+						...(isolated ? { capabilities: isolated.capabilities, toolOverrides: isolated.tools } : {}),
 						toolNames: record.toolNames,
 						label: record.agent,
 						...(record.background ? { detached: true } : {}),
@@ -435,6 +477,18 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				record.result = error instanceof Error ? error.message : String(error);
 				throw error;
 			} finally {
+				// P46: an isolated subagent's worktree goes when it changed nothing (Claude Code).
+				if (isolated) {
+					try {
+						const outcome = await isolated.finish();
+						worktreeNote = outcome.kept
+							? `[worktree kept: ${outcome.path} on branch ${outcome.branch}]`
+							: "[worktree removed: no changes]";
+					} catch (error) {
+						worktreeNote = `[worktree not cleaned up: ${error instanceof Error ? error.message : String(error)}]`;
+					}
+					record.result = `${record.result ?? ""}\n\n${worktreeNote}`.trim();
+				}
 				record.handle = undefined;
 				record.endedAt = Date.now();
 				emitTask(record);
@@ -546,6 +600,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 														: DEFAULT_AGENT,
 												task: args.task,
 												...(typeof args.name === "string" && args.name.trim() !== "" ? { name: args.name.trim() } : {}),
+												...(args.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
 											},
 										]
 									: undefined;

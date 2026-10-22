@@ -59,6 +59,7 @@ async function main() {
 		await run("p39", runP39Smoke);
 		await run("p44", runP44Smoke);
 		await run("p45", runP45Smoke);
+		await run("p46", runP46Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -1129,6 +1130,53 @@ async function runP45Smoke(root, baseUrl) {
 	}
 }
 
+// P46: the model moves the session into a new worktree, writes there and comes back keeping it
+// (the main checkout never sees the file; the TUI reloads after the move); a finished subagent is
+// continued with send_message and its resumed answer comes back.
+async function runP46Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p46", true);
+	const git = (...args) =>
+		new Promise((resolve, reject) =>
+			execFile(
+				"git",
+				args,
+				{
+					cwd: dirs.cwd,
+					env: {
+						...process.env,
+						GIT_AUTHOR_NAME: "t",
+						GIT_AUTHOR_EMAIL: "t@e",
+						GIT_COMMITTER_NAME: "t",
+						GIT_COMMITTER_EMAIL: "t@e",
+					},
+				},
+				(error, stdout) => (error ? reject(error) : resolve(stdout)),
+			),
+		);
+	await git("init", "-q", "-b", "main");
+	await writeFile(join(dirs.cwd, "a.txt"), "one\n", "utf8");
+	await writeFile(join(dirs.cwd, ".gitignore"), ".tau/\n", "utf8");
+	await git("add", ".");
+	await git("commit", "-q", "-m", "first");
+	const session = await startTui("p46", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("worktree smoke", "Enter");
+		await session.waitFor("SMOKE_WT_DONE", 20_000);
+		await session.waitFor("Extensions reloaded.", 15_000);
+		const inside = join(dirs.cwd, ".tau", "worktrees", "smoke", "wt.txt");
+		if (!existsSync(inside)) throw new Error(`The worktree file is missing: ${inside}`);
+		if (existsSync(join(dirs.cwd, "wt.txt"))) throw new Error("The file landed in the main checkout");
+		await session.send("resume smoke", "Enter");
+		await session.waitFor("SMOKE_RESUME_DONE", 25_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok p46");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P38a: tau reads keys itself — Home, Delete, Ctrl+Left and Alt+Backspace edit the line, a
 // burst of arrow keys in one write all count (tech debt #21), Shift+Enter (kitty CSI-u) is a
 // newline, Ctrl+R finds history, Ctrl+D on an empty input exits.
@@ -1535,6 +1583,12 @@ async function startMockOpenAI() {
 
 function responseFor(request) {
 	const messages = Array.isArray(request.messages) ? request.messages : [];
+	if (String(messages[0]?.content ?? "").includes("worker agent")) {
+		const asked = messages.filter((message) => message.role === "user").map((message) => String(message.content ?? ""));
+		if (asked.includes("SMOKE_CHILD_TASK")) {
+			return textTurn(asked.includes("SMOKE_CHILD_AGAIN") ? "SMOKE_CHILD_RESUMED" : "SMOKE_CHILD_FIRST");
+		}
+	}
 	if (String(messages[0]?.content ?? "").includes("You name conversations")) return textTurn("SMOKE_TITLE");
 	const toolContents = messages
 		.filter((message) => message.role === "tool")
@@ -1561,6 +1615,13 @@ function responseFor(request) {
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
 		if (content.includes("GOT_octo")) return textTurn("SMOKE_ELICIT_DONE");
 		if (content.includes("Document symbols:") && content.includes("smokeFn")) return textTurn("SMOKE_LSP_DONE");
+		if (content.includes("Created worktree smoke"))
+			return toolCallTurn("write", { path: "wt.txt", content: "inside\n" });
+		if (content.includes("characters to wt.txt")) return toolCallTurn("exit_worktree", { action: "keep" });
+		if (content.includes("Kept worktree smoke")) return textTurn("SMOKE_WT_DONE");
+		if (content.includes("SMOKE_CHILD_FIRST"))
+			return toolCallTurn("send_message", { to: "sub-1", message: "SMOKE_CHILD_AGAIN" });
+		if (content.includes("Resumed sub-1")) return textTurn("SMOKE_SENT");
 	}
 	if (String(messages[0]?.content ?? "").includes("You are a context transfer assistant")) {
 		return textTurn("## Context\nSmoke context.\n\n## Task\nSMOKE_HANDOFF_TASK");
@@ -1568,6 +1629,9 @@ function responseFor(request) {
 	const lastUser = messages.findLast((message) => message.role === "user");
 	const content = String(lastUser?.content ?? "");
 	if (content.includes("<side-question>")) return textTurn("SMOKE_BTW_ANSWER");
+	if (content.includes("SMOKE_CHILD_RESUMED")) return textTurn("SMOKE_RESUME_DONE");
+	if (content.includes("worktree smoke")) return toolCallTurn("enter_worktree", { name: "smoke" });
+	if (content.includes("resume smoke")) return toolCallTurn("subagent", { task: "SMOKE_CHILD_TASK" });
 	// P45: the diagnostics message is the newest user-role message after the write.
 	if (content.includes("<new-diagnostics>") && content.includes("SMOKE_LSP_ERROR")) {
 		return toolCallTurn("lsp", { operation: "documentSymbol", filePath: "smoke.ts", line: 1, character: 1 });

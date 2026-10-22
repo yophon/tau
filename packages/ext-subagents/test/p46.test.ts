@@ -16,7 +16,13 @@ import {
 } from "@yophon/tau-kernel";
 import { NodeFileSystem } from "../../host-node/src/fs.ts";
 import { makeSseResponse, seededRandomBytes, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
-import { createSubagentsExtension, SUBAGENT_STOP_CHANNEL, type SubagentStopRequest } from "../src/index.ts";
+import {
+	createSubagentsExtension,
+	type IsolatedWorkspace,
+	parseAgentFile,
+	SUBAGENT_STOP_CHANNEL,
+	type SubagentStopRequest,
+} from "../src/index.ts";
 
 interface WireRequest {
 	messages: Array<{ role: string; content: unknown }>;
@@ -251,5 +257,69 @@ describe("P46a names, persistence", () => {
 		assert.match(toolTexts(second.agent)[1] ?? "", /\[agent id: sub-2\]$/);
 		await until(() => customs(second.agent).length > 0);
 		assert.match(customs(second.agent)[0] ?? "", /history: remember blue \| which colour\?/);
+	});
+});
+
+describe("P46c isolation: worktree", () => {
+	it("an isolated subagent works with the host's tools for its worktree; the outcome joins its answer", async () => {
+		const finished: string[] = [];
+		const isolate = async (agentId: string): Promise<IsolatedWorkspace> => ({
+			cwd: `/iso/${agentId}`,
+			tools: [
+				{
+					name: "read",
+					description: "read",
+					parameters: { type: "object", properties: {} },
+					execute: async () => ({ content: [{ type: "text", text: "read in the worktree" }] }),
+				},
+			],
+			capabilities: {},
+			finish: async () => {
+				finished.push(agentId);
+				return { kept: true, path: `/iso/${agentId}`, branch: `worktree-agent-${agentId}` };
+			},
+		});
+		const { platform, requests } = platformFor((request) => {
+			if (isChild(request)) return toolResults(request) === 0 ? toolCallTurn("read", {}) : textTurn("edited in place");
+			return toolResults(request) > 0
+				? textTurn("ok")
+				: toolCallTurn("subagent", { task: "refactor", isolation: "worktree" });
+		});
+		const fs = new NodeFileSystem(tmpdir());
+		const registry = await ExtensionRegistry.load([
+			createSubagentsExtension({ directories: { user: [], project: [] }, isolate, persist: false }),
+		]);
+		const agent = new Agent({
+			config: { baseUrl: "https://fake.test/v1", model: "m" },
+			platform,
+			extensions: registry,
+			tools: [probe("read")],
+			capabilities: { fs, platform },
+		});
+		await drain(agent, "go");
+		assert.deepEqual(finished, ["sub-1"]);
+		assert.equal(
+			toolTexts(agent)[0],
+			"edited in place\n\n[worktree kept: /iso/sub-1 on branch worktree-agent-sub-1]\n\n[agent id: sub-1]",
+		);
+		const child = requests.filter(isChild);
+		assert.match(text(child[0]?.messages[0]?.content), /You work in a git worktree of your own at \/iso\/sub-1/);
+		// The child's read was the worktree's.
+		assert.ok(
+			child[1]?.messages.some((message) => message.role === "tool" && text(message.content) === "read in the worktree"),
+		);
+	});
+
+	it("without a host that isolates, an isolated subagent fails to start; frontmatter can ask for isolation", async () => {
+		const { agent } = await setup((request) =>
+			toolResults(request) > 0 ? textTurn("ok") : toolCallTurn("subagent", { task: "x", isolation: "worktree" }),
+		);
+		await drain(agent, "go");
+		assert.equal(toolTexts(agent)[0], "This host cannot run a subagent in a worktree of its own.");
+		const parsed = parseAgentFile(
+			"---\nname: refactorer\ndescription: Refactors\nisolation: worktree\n---\nDo it.",
+			"user",
+		);
+		assert.equal(parsed?.isolation, "worktree");
 	});
 });

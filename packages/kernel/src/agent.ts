@@ -498,7 +498,10 @@ export class Agent {
 			get permissionMode() {
 				return currentPermissionMode();
 			},
-			...(options.capabilities?.fs?.cwd !== undefined ? { cwd: options.capabilities.fs.cwd } : {}),
+			// Read on every call: a host may move the session's working directory (P46, worktrees).
+			get cwd() {
+				return options.capabilities?.fs?.cwd;
+			},
 			onApproval: this.onApproval,
 			ui: () => this.ui,
 			preflightLock: this.preflightLock,
@@ -1192,11 +1195,14 @@ export class Agent {
 				])
 			: undefined;
 		const registered = this.currentTools();
-		const tools =
+		const picked =
 			options.tools ??
 			(options.toolNames
 				? options.toolNames.map((name) => registered.get(name)).filter((tool): tool is Tool => tool !== undefined)
 				: this.baseTools);
+		// P46: a child in its own worktree gets file and shell tools bound there.
+		const overrides = new Map((options.toolOverrides ?? []).map((tool) => [tool.name, tool]));
+		const tools = overrides.size > 0 ? picked.map((tool) => overrides.get(tool.name) ?? tool) : picked;
 		// P44: the parent's extensions hear the child start (Claude Code's SubagentStart) and may add context.
 		const agentId = `agent-${Math.random().toString(16).slice(2, 10)}`;
 		const parentCtx = this.extensionContext();
@@ -1230,7 +1236,7 @@ export class Agent {
 			systemPrompt,
 			tools,
 			ui: this.ui,
-			capabilities: this.capabilities,
+			capabilities: options.capabilities ? { ...this.capabilities, ...options.capabilities } : this.capabilities,
 			initialMessages: options.initialMessages,
 			maxTurnsPerPrompt: options.maxTurnsPerPrompt ?? this.maxTurnsPerPrompt,
 			steeringMode: this.steeringQueue.mode,

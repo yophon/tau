@@ -192,6 +192,8 @@ export interface LspHostOptions {
 
 export interface LspHost {
 	extension: Extension;
+	/** The session moved (P46): language servers follow on their next use. */
+	moveTo(cwd: string): Promise<void>;
 	errors: readonly string[];
 }
 
@@ -278,5 +280,5 @@ export function createLspHost(options: LspHostOptions): LspHost {
 					];
 		},
 	});
-	return { extension: host.extension, errors: config.errors };
+	return { extension: host.extension, errors: config.errors, moveTo: (cwd) => host.moveTo(cwd) };
 }

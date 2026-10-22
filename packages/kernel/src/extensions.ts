@@ -146,6 +146,10 @@ export interface AgentSpawnOptions {
 	 * into its current run, `messages` is its conversation so far (also after an abort).
 	 */
 	onSpawn?: (handle: SubagentHandle) => void;
+	/** P46: the child's file system, shell and paths (a subagent in its own worktree); the parent's otherwise. */
+	capabilities?: Partial<Omit<ExtensionCapabilities, "platform">>;
+	/** P46: tools that replace the picked ones of the same name (file and shell tools bound to a worktree). */
+	toolOverrides?: Tool[];
 }
 
 /** What {@link AgentSpawnOptions.onSpawn} hands over. */

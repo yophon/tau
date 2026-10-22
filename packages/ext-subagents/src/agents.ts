@@ -20,6 +20,8 @@ export interface AgentDefinition {
 	tools?: string[];
 	model?: string;
 	mode?: PermissionMode;
+	/** P46 (Claude Code's frontmatter): run in a temporary git worktree of its own. */
+	isolation?: "worktree";
 	systemPrompt: string;
 	source: AgentSource;
 	filePath?: string;
@@ -69,6 +71,7 @@ export function parseAgentFile(text: string, source: AgentSource, filePath?: str
 		...(tools.length > 0 ? { tools } : {}),
 		...(model !== undefined ? { model } : {}),
 		...(mode !== undefined ? { mode } : {}),
+		...(data.isolation === "worktree" ? { isolation: "worktree" as const } : {}),
 		systemPrompt: body,
 		source,
 		...(filePath !== undefined ? { filePath } : {}),

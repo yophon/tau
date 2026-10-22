@@ -350,6 +350,15 @@ export class HookRunner {
 		});
 	}
 
+	/**
+	 * The session moved (P46): hooks run there and get it as `cwd`; TAU_PROJECT_DIR and
+	 * CLAUDE_PROJECT_DIR stay where the session started (Claude Code).
+	 */
+	moveTo(cwd: string): void {
+		this.options.cwd = cwd;
+		this.shell.moveTo(cwd);
+	}
+
 	/** P40b (pi's shellPath): the bash hook commands run with. */
 	setShellPath(shellPath: string | undefined): void {
 		this.shell.options = shellPath ? { shellPath } : {};

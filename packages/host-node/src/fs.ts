@@ -58,9 +58,14 @@ export function normalizeWindowsShellPath(path: string, platform: NodeJS.Platfor
 }
 
 export class NodeFileSystem implements FileSystem {
-	readonly cwd: string;
+	cwd: string;
 
 	constructor(cwd: string = process.cwd()) {
+		this.cwd = resolve(cwd);
+	}
+
+	/** Resolve relative paths against `cwd` from now on (P46: a session moving into a worktree). */
+	moveTo(cwd: string): void {
 		this.cwd = resolve(cwd);
 	}
 

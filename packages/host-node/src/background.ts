@@ -34,7 +34,7 @@ function installExitHook(): void {
 }
 
 export class NodeBackgroundShell implements BackgroundShell {
-	readonly cwd: string;
+	cwd: string;
 	/** Where output files go: `<dir>/<id>.output`. */
 	readonly dir: string;
 	private readonly env: Record<string, string> | undefined;
@@ -72,6 +72,11 @@ export class NodeBackgroundShell implements BackgroundShell {
 		};
 		this.dir = options.dir ?? join(tmpdir(), "tau", `${process.pid}-${++instances}`, "tasks");
 		this.moveOnTimeout = options.moveOnTimeout !== false;
+	}
+
+	/** Start commands in `cwd` from now on (P46). */
+	moveTo(cwd: string): void {
+		this.cwd = resolve(cwd);
 	}
 
 	/** Commands running in the foreground through run() (Ctrl+B has something to move). */

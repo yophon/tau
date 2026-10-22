@@ -121,7 +121,7 @@ export class WorkspacePermissions {
 	private readonly files: SettingsFile[];
 	private localTracked: { mtimeMs: number; repoFile: boolean } | undefined;
 	private readonly options: WorkspacePermissionsOptions;
-	readonly cwd: string;
+	cwd: string;
 	readonly localRoot: string;
 
 	constructor(options: WorkspacePermissionsOptions) {
@@ -144,6 +144,19 @@ export class WorkspacePermissions {
 			}
 		}
 		for (const dir of options.addDirs ?? []) this.sessionDirectories.push(this.resolveDir(dir));
+	}
+
+	/**
+	 * The session moved (P46, Claude Code's EnterWorktree): the project's settings and the
+	 * relative rules follow; local rules stay where they live (the main checkout, P37d).
+	 */
+	moveTo(cwd: string): void {
+		this.cwd = cwd;
+		for (const file of this.files) {
+			if (file.source === "project") file.path = join(cwd, ".tau", "settings.json");
+			if (file.source !== "user") file.base = cwd;
+		}
+		this.cache.clear();
 	}
 
 	/** The rules in force now (files re-read when they change). */

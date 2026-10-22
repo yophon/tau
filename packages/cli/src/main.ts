@@ -82,12 +82,20 @@ import {
 	createAuditExtension,
 } from "./audit.ts";
 import { createBackgroundExtension, MONITOR_MAX_MS, MONITOR_PRINT_MAX_MS } from "./background.ts";
-import { attachPromptAgent, builtinExtensions, configureBuiltins, setResourceFlags, toolLine } from "./builtins.ts";
+import {
+	attachPromptAgent,
+	builtinExtensions,
+	configureBuiltins,
+	setResourceFlags,
+	setSubagentIsolation,
+	toolLine,
+} from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
 import { shadowedContextFile } from "./git-paths.ts";
 import { createHooksExtension, HookRunner, loadHookConfig, postToolBatch, withHookApprovals } from "./hooks.ts";
+import type { LspHost } from "./lsp.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
 	availableModels,
@@ -141,6 +149,7 @@ import {
 	type WorktreeSession,
 	worktreeState,
 } from "./worktree.ts";
+import { type CurrentWorktree, createWorktreeToolsExtension, type WorktreeHost } from "./worktree-tools.ts";
 
 /** The CLI package version (src/ and dist/ both sit one level below package.json). */
 const CLI_VERSION = (
@@ -945,6 +954,8 @@ async function saveProjectTrust(cwd: string, trusted: boolean): Promise<string[]
 interface LoadedExtensions {
 	registry: ExtensionRegistry;
 	projectTrusted: boolean;
+	/** P46: the language servers of this load, which follow the session when it moves. */
+	lsp?: LspHost;
 }
 
 /** P41b (pi -e, -ne): extensions named on the command line, and whether the discovered and configured ones stay out. */
@@ -1094,6 +1105,7 @@ async function loadExtensionRegistry(
 	}
 	// Language servers (P45, Claude Code): ~/.tau/lsp.json and, when trusted, the project's.
 	// The gateway is parked and gets none.
+	let lspHost: LspHost | undefined;
 	if (extendedSettings) {
 		const { createLspHost } = await import("./lsp.ts");
 		const lsp = createLspHost({
@@ -1106,6 +1118,7 @@ async function loadExtensionRegistry(
 		});
 		for (const error of lsp.errors) console.log(dim(`lsp: ${error}`));
 		await registry.add([lsp.extension]);
+		lspHost = lsp;
 	}
 	// User hooks (P35): ~/.tau/settings.json and, when trusted, the project's.
 	if (hooks) {
@@ -1114,7 +1127,7 @@ async function loadExtensionRegistry(
 		await registry.add([createHooksExtension(hooks)]);
 	}
 	reportExtensionLoad(registry);
-	return { registry, projectTrusted };
+	return { registry, projectTrusted, ...(lspHost ? { lsp: lspHost } : {}) };
 }
 
 /**
@@ -1692,6 +1705,8 @@ async function main(): Promise<void> {
 	};
 	// P37d: --worktree makes the worktree the working directory for everything below.
 	let worktreeSession: WorktreeSession | undefined;
+	/** P46: where the session was before enter_worktree (a --worktree session came from the main checkout). */
+	let worktreeOriginal: string | undefined;
 	/** The session reached its first prompt (from here on an exit keeps the worktree, as -p does). */
 	let worktreeStarted = false;
 	if (options.worktree) {
@@ -1709,14 +1724,8 @@ async function main(): Promise<void> {
 			console.error(`Error creating worktree: ${error instanceof Error ? error.message : String(error)}`);
 			process.exit(1);
 		}
-		const store = readTrustStore();
-		const mainKey = samePath(worktreeSession.mainRoot);
-		const main = Object.entries(store.trusted).find(([key]) => samePath(key) === mainKey)?.[1];
-		const mainTrusted = main === true || (typeof main === "object" && main !== null && main.trusted);
 		process.chdir(worktreeSession.path);
-		// Trust follows the main checkout (Claude Code).
-		if (mainTrusted && store.trusted[resolve(process.cwd())] === undefined)
-			await saveProjectTrust(resolve(process.cwd()), true);
+		await followMainTrust(worktreeSession.path, worktreeSession.mainRoot);
 		console.error(dim(`Worktree ${worktreeSession.name} on branch ${worktreeSession.branch}: ${worktreeSession.path}`));
 		// A worktree made just now that never got a session (tau exited on a bad argument) goes again.
 		if (worktreeSession.created && !worktreeSession.named) {
@@ -1925,7 +1934,7 @@ async function main(): Promise<void> {
 			current?: () => { runId?: string; trigger: AuditTrigger };
 		};
 	}) => {
-		const cwd = spec.cwd;
+		let cwd = spec.cwd;
 		let workspaceMode = spec.permissionMode;
 		// The audit ledger (P32c): who decided each approval, and a record per run and tool call.
 		const approvals = new ApprovalLog();
@@ -2000,6 +2009,22 @@ async function main(): Promise<void> {
 						projectTrusted: () => projectTrusted,
 					})
 				: undefined;
+		/** P46: what enter_worktree and exit_worktree move; the worktree itself is tracked for the whole process. */
+		const worktreeHost: WorktreeHost = {
+			cwd: () => cwd,
+			current: (): CurrentWorktree | undefined =>
+				worktreeSession
+					? { session: worktreeSession, original: worktreeOriginal ?? worktreeSession.mainRoot }
+					: undefined,
+			move: async (target, worktree) => {
+				if (worktree) await followMainTrust(worktree.session.path, worktree.session.mainRoot);
+				worktreeSession = worktree?.session;
+				worktreeOriginal = worktree?.original;
+				await moveTo(target);
+			},
+			settings: () => userSettings.worktree ?? {},
+			permissionMode: () => workspaceMode ?? permissionMode ?? "supervised",
+		};
 		const hostExtensions = [
 			...(askUser ? [askUser] : []),
 			createBackgroundExtension(background, {
@@ -2015,6 +2040,13 @@ async function main(): Promise<void> {
 					: {}),
 			}),
 			...(scheduling ? [scheduling.extension] : []),
+			// P46 (Claude Code's EnterWorktree / ExitWorktree).
+			...(extended &&
+			spec.fs === undefined &&
+			(workspaceHost === "tui" || workspaceHost === "repl" || workspaceHost === "print" || workspaceHost === "json") &&
+			(workspaceMode ?? permissionMode) !== "read-only"
+				? [createWorktreeToolsExtension(worktreeHost)]
+				: []),
 			// P46 (Claude Code's PushNotification): where a terminal can show it.
 			...(extended && (workspaceHost === "tui" || workspaceHost === "repl") ? [createPushNotificationExtension()] : []),
 			...(spec.extensions ?? []),
@@ -2032,6 +2064,8 @@ async function main(): Promise<void> {
 			workspaceHost === "tui",
 		);
 		const extensions = loaded.registry;
+		/** P46: the language servers in use (a reload brings new ones). */
+		let currentLsp = loaded.lsp;
 		// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 		let projectTrusted = loaded.projectTrusted;
 		// P40c (pi): settings.json in layers, the user's then a trusted project's; /reload reads them again.
@@ -2123,6 +2157,7 @@ async function main(): Promise<void> {
 				workspaceHost === "tui",
 			);
 			projectTrusted = next.projectTrusted;
+			currentLsp = next.lsp;
 			workspaceSettings = readWorkspaceSettings();
 			promptSources = readPromptSources();
 			applyShellSettings();
@@ -2152,6 +2187,59 @@ async function main(): Promise<void> {
 					})
 				: undefined;
 		const powershellBackground = powershellShell ? background.forPowerShell() : undefined;
+		// P46 (Claude Code's isolation: worktree): a subagent's own worktree, with file and shell tools bound
+		// there (no background commands); removed when it changed nothing. Not in the parked gateway.
+		setSubagentIsolation(
+			spec.extendedSettings === false
+				? undefined
+				: async (agentId) => {
+						const session = openWorktree({ cwd, name: `agent-${agentId}`, settings: userSettings.worktree ?? {} });
+						const childFs = new NodeFileSystem(session.path);
+						const childShell = new NodeShell(session.path, {
+							env: modelEnvironment(),
+							...(commandEnv ? { commandEnv } : {}),
+						});
+						const tools = createCodingTools(
+							{ fs: childFs, shell: childShell, images: imageProcessor },
+							{ mode: workspaceMode ?? permissionMode ?? "supervised", supportsImages: modelTakesImages },
+						);
+						return {
+							cwd: session.path,
+							tools,
+							capabilities: {
+								fs: childFs,
+								shell: childShell,
+								paths: { cwd: session.path, userTauDir: join(userHome(), ".tau") },
+							},
+							finish: async () => {
+								const state = worktreeState(session);
+								if (state.unknown === undefined && state.changedFiles === 0 && state.newCommits === 0) {
+									removeWorktree(session);
+									return { kept: false, path: session.path, branch: session.branch };
+								}
+								return { kept: true, path: session.path, branch: session.branch };
+							},
+						};
+					},
+		);
+		/** P46: a move asked for a reload (settings, AGENTS.md, extensions), which the TUI does when the turn ends. */
+		let reloadPending = false;
+		/**
+		 * P46 (Claude Code's EnterWorktree): the session's working directory moves now — files,
+		 * commands, background tasks, permissions, hooks, language servers.
+		 */
+		const moveTo = async (target: string): Promise<void> => {
+			cwd = resolve(target);
+			process.chdir(cwd);
+			if (fs instanceof NodeFileSystem) fs.moveTo(cwd);
+			toolShell.moveTo(cwd);
+			powershellShell?.moveTo(cwd);
+			background.moveTo(cwd);
+			permissions?.moveTo(cwd);
+			hookRunner.moveTo(cwd);
+			await currentLsp?.moveTo(cwd).catch(() => undefined);
+			reloadPending = true;
+		};
 		/** P40b (pi): shellPath and shellCommandPrefix for bash (the tool, `!` commands, background commands); hooks take the path. */
 		function applyShellSettings(): void {
 			const { shellPath, shellCommandPrefix } = workspaceSettings;
@@ -2281,7 +2369,9 @@ async function main(): Promise<void> {
 					fs,
 					shell: toolShell,
 					paths: {
-						cwd,
+						get cwd() {
+							return cwd;
+						},
 						userTauDir: join(userHome(), ".tau"),
 						// Project paths only for a trusted project (defense in depth; extensions also ask ctx).
 						...(projectTrusted ? { projectTauDir: join(cwd, ".tau"), projectPiDir: join(cwd, ".pi") } : {}),
@@ -2345,6 +2435,12 @@ async function main(): Promise<void> {
 			sessionRepo,
 			buildAgent,
 			reloadExtensions,
+			/** P46: whether a move asked for a reload since the last call (the TUI reloads after the turn). */
+			consumeReload: (): boolean => {
+				const pending = reloadPending;
+				reloadPending = false;
+				return pending;
+			},
 			/** P36a: this workspace's background commands. */
 			background,
 			/** P40c: the settings in force (the user's, then a trusted project's), read again on /reload. */
@@ -2639,6 +2735,7 @@ async function main(): Promise<void> {
 			},
 			buildAgent,
 			reloadExtensions,
+			consumeReload: workspace.consumeReload,
 			sessionReason,
 		});
 		if (worktreeSession) await finishWorktree(worktreeSession, workspace.background);
@@ -2901,6 +2998,16 @@ function samePath(path: string): string {
 		// A path that no longer exists compares as written.
 	}
 	return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+/** Trust follows the main checkout into its worktrees (Claude Code; P37d, P46). */
+async function followMainTrust(worktreePath: string, mainRoot: string): Promise<void> {
+	const store = readTrustStore();
+	const mainKey = samePath(mainRoot);
+	const main = Object.entries(store.trusted).find(([key]) => samePath(key) === mainKey)?.[1];
+	const mainTrusted = main === true || (typeof main === "object" && main !== null && main.trusted);
+	const path = resolve(worktreePath);
+	if (mainTrusted && store.trusted[path] === undefined) await saveProjectTrust(path, true);
 }
 
 /** A question on the terminal after the TUI or REPL ended. */
