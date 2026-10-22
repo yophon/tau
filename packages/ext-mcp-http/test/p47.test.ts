@@ -995,3 +995,27 @@ describe("P47 -32022 that lists 2026-07-28", () => {
 		await mcp.close();
 	});
 });
+
+describe("SSE reader cancel", () => {
+	it("a cancel that rejects after an SSE reply is handled (it used to end tau -p)", async () => {
+		const unhandled: unknown[] = [];
+		const onUnhandled = (reason: unknown) => unhandled.push(reason);
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const { platform } = httpPlatform((request) => {
+				const stream = sse([reply(request, { protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {} })]);
+				const body = stream.body as unknown as { getReader(): { read(): Promise<unknown>; cancel(): unknown } };
+				const getReader = body.getReader.bind(body);
+				body.getReader = () => ({ ...getReader(), cancel: () => Promise.reject("settled") });
+				return request.body?.method === "initialize" ? stream : { ...response(202, ""), ok: true };
+			});
+			const mcp = new McpClient({ name: "tau", version: "test", platform: sleepPlatform });
+			await mcp.connect(new StreamableHttpTransport({ url: "https://mcp.test/mcp", platform }), { timeoutMs: 2000 });
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			assert.deepEqual(unhandled, []);
+			await mcp.close();
+		} finally {
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+});
