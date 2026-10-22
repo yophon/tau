@@ -239,6 +239,17 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D52：Claude Code 新出的几个小功能（2026-10-22，P49，用户确认）
+
+- **子 agent 的 frontmatter**：照 Claude Code 加 `effort`、`autoCompactWindow`、`disallowedTools`、`maxTurns`、`background`；工具每一步可带 `effort`，优先于定义，续接沿用第一次的。写错的值不生效、在 `/agents` 里标出。`background: true` 的 agent 出现在一次调用里，整次调用就在后台跑（等于每次都带 `background`）。
+- **子 agent 的压缩窗口在内核判断**：`AgentSpawnOptions.contextWindow` 只在比父会话的小、或父会话没有窗口时生效，子 agent 不能声称比模型更大的窗口。
+- **Read 的 `allow_large`**：读多少由工具上下文里的 `getContextUsage()` 决定（它现在带上 `reserveTokens`）：窗口减已用减压缩预留。没按规格草案给 `createCodingTools` 加 `contextRoom` 选项：工具对象被子 agent 共用，绑在某个 Agent 上的回调会量错子 agent 的空间，工具上下文是执行它的那个 Agent 的。窗口未知时上限 256 KB（用户确认）。按整行截断，说明还剩多少行、从哪里接着读。
+- **钩子**：exec 形式经 host-node 的 `NodeShell.exec({argv})` 启动，复用超时、杀进程树和 stdin；`onFailure: "block"` 把失败变成该事件 exit 2 的结果，复用现有的拦截与审批逻辑；HTTP 钩子照抄 Claude Code 的定义与错误处理。照 Claude Code 也加了「Windows 没有 Git Bash 时，没写 shell/args/onFailure 的 PreToolUse、PermissionRequest 钩子失败即拦下」。网关保持 P49 之前的钩子。
+- **Ctrl+C 清掉的草稿**：不再写进历史，单独记住最近一次；空输入框里按 ↑ 先回到它（粘贴的标记照样展开），再按 ↑ 才是历史。
+- **OSC 7501**：TUI 与 REPL 报告 working、blocked（permission、question、auth）、done、idle（跑完后你开始输入）、error、clear，带 `app=tau` 和 base64 的 `msg`，同一状态不重复发；与 `tui.title` 共用开关（用户确认），`-p` 和网关不发。MCP 要求打开网页登录时算 `auth`。
+- **`TAU_DISABLE_FILE_MENTIONS=1`**：tau 只有命令行的 `@文件` 参数会附上内容（pi 的做法，TUI 里的 `@路径` 本来就是文字），开关让它只给路径（`@绝对路径`）；文件不存在照样报错退出。
+- **不做**（用户确认）：空闲压缩、`-p` 结束后说明在等什么、子 agent 的其余 frontmatter 字段。
+
 ## D51：参照改为 pi 1.4.0，照搬 1.3 / 1.4 的修复（2026-10-22，P48，用户确认）
 
 - **重锚到 v1.4.0**：`../pi` 切到 v1.4.0。扩展接口的 91 个成员与 1.2.0 相同；pi 的 MCP 与 OAuth 代码 1.2 到 1.4 没变（只有 `mcp.json` 的 BOM，tau 早已处理），移植文件头写明「1.4.0，与 1.2.0 相同」。

@@ -6,16 +6,28 @@
 
 | 模式 | 参数 | 说明 |
 |---|---|---|
-| 单个 | `{agent?, task, name?, isolation?}` | `agent` 缺省是 `worker` |
-| 并行 | `{tasks: [{agent, task, name?, isolation?}, ...]}` | 最多 8 个，同时跑 4 个 |
-| 链式 | `{chain: [{agent, task, name?, isolation?}, ...]}` | 任务里的 `{previous}` 换成上一步的输出 |
+| 单个 | `{agent?, task, name?, isolation?, effort?}` | `agent` 缺省是 `worker` |
+| 并行 | `{tasks: [{agent, task, name?, isolation?, effort?}, ...]}` | 最多 8 个，同时跑 4 个 |
+| 链式 | `{chain: [{agent, task, name?, isolation?, effort?}, ...]}` | 任务里的 `{previous}` 换成上一步的输出 |
 | 后台 | 以上任一种加 `background: true` | 工具立刻返回，结果之后作为后续消息送回；`/tasks` 里能看到 |
 
 子 agent 从父会话的工具里挑（永远不带 `subagent`，不能再派子 agent），权限模式取父子里更严的那个，审批框里写明是哪个子 agent 发起的。
 
+`effort`（`low`、`medium`、`high`、`xhigh`、`max`，P49，照 Claude Code）是这次运行的思考级别，优先于 agent 定义里的；都没写时跟主会话一样。`send_message` 续接时沿用第一次运行的级别。
+
 ## agent 定义
 
-Markdown 文件，frontmatter 写 `name`、`description`，可选 `tools`（逗号分隔）、`model`、`mode`（权限模式）、`isolation: worktree`；正文是它的系统提示。内置 `worker`、`scout`、`planner`、`reviewer`（pi 的示例）。按名字覆盖的顺序：
+Markdown 文件，frontmatter 写 `name`、`description`，可选 `tools`（逗号分隔）、`model`、`mode`（权限模式）、`isolation: worktree`；正文是它的系统提示。P49 照 Claude Code 加了：
+
+| 字段 | 作用 |
+|---|---|
+| `effort` | 思考级别（`low` 到 `max`），调用时的 `effort` 优先 |
+| `autoCompactWindow` | 100000 到 1000000 之间的 token 数：子 agent 按这个窗口自动压缩，比主会话的小时生效；主会话没配上下文窗口时，子 agent 照它开启自动压缩 |
+| `disallowedTools` | 先按 `tools` 挑，再去掉这些 |
+| `maxTurns` | 一次运行最多几轮，到了就停并报错 |
+| `background: true` | 总在后台跑，等于每次调用都带 `background` |
+
+写错的值（比如 `effort: extreme`、窗口超出范围）不生效，`/agents` 里会标出来。内置 `worker`、`scout`、`planner`、`reviewer`（pi 的示例）。按名字覆盖的顺序：
 
 - 用户级：`~/.pi/agent/agents/`、`~/.tau/agents/`
 - 项目级（只在受信任的项目里）：`.pi/agents/`、`.tau/agents/`
@@ -59,4 +71,4 @@ Markdown 文件，frontmatter 写 `name`、`description`，可选 `tools`（逗�
 
 ## 不做
 
-Claude Code 的 agent teams（队友之间互发消息、共用任务表）、子 agent 之间互发消息、`isolation: "remote"`。
+Claude Code 的 agent teams（队友之间互发消息、共用任务表）、子 agent 之间互发消息、`isolation: "remote"`；frontmatter 的 `mcpServers`、`hooks`、`skills`、`memory`、`initialPrompt`、`omitClaudeMd`（各自牵涉别的子系统，P49 没做）。

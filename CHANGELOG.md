@@ -4,6 +4,25 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P49: Claude Code)
+- ext-subagents: agent frontmatter `effort`, `autoCompactWindow`,
+  `disallowedTools`, `maxTurns`, `background` (`AgentDefinition.warnings`
+  lists ignored values, `AGENT_EFFORTS`, `AUTO_COMPACT_WINDOW_RANGE`); the
+  subagent tool's `effort` parameter; resumed runs keep their effort.
+- kernel: `AgentSpawnOptions.contextWindow` (a narrower window for a child);
+  `read` takes `allow_large` (up to the room left in the context, 256 KB
+  when the window is unknown); `getContextUsage()` carries `reserveTokens`.
+- CLI hooks: exec form (`args`), `shell: "powershell"` (and PowerShell on
+  Windows without Git Bash), `onFailure: "block"`, `type: "http"` hooks with
+  `headers` and `allowedEnvVars`. host-node: `NodeShell.exec({ argv })`,
+  `bashAvailable()`.
+- CLI: the TUI and REPL report their state over OSC 7501 (with `tui.title`);
+  `TAU_DISABLE_FILE_MENTIONS=1` sends `@file` arguments as paths.
+
+### Changed (P49)
+- CLI TUI: Ctrl+C keeps the cleared draft aside instead of adding it to the
+  history; ↑ in the empty input brings it back first.
+
 ### Changed (P48: pi 1.3 / 1.4)
 - Reference re-pinned to pi v1.4.0 (D51). The extension surface is the same
   91 members; the ported MCP and OAuth code did not change in pi.

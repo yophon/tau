@@ -30,7 +30,8 @@ inject a small adapter instead of polyfilling globals.
   output file, hears when the command ends, stops it with `task_stop`; see
   `/tasks`), and grep / find / ls in pure ES over the host filesystem (they
   honor `.gitignore` and work on every host, OPFS included). Show the model a
-  screenshot with Alt+V in the TUI or `tau @shot.png "what's wrong?"`. The
+  screenshot with Alt+V in the TUI or `tau @shot.png "what's wrong?"`
+  (`TAU_DISABLE_FILE_MENTIONS=1` passes `@file` arguments as paths only). The
   CLI adds `todo_write` (a checklist in the TUI), long-term
   memory about you and about the project (`memory_write`, `#fact` in the TUI;
   see [docs/memory.md](docs/memory.md)), `session_search` over your earlier
@@ -408,7 +409,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture, kernel code map, glossary
 - [docs/roadmap.md](docs/roadmap.md) — phased plan with status, dependencies, and tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D51)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D52)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins

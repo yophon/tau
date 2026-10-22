@@ -1,6 +1,6 @@
 # 用户钩子
 
-在 `settings.json` 里写 shell 命令，tau 运行到对应时机时执行它。格式与 Claude Code 相同（Codex、Gemini CLI、Copilot CLI、Cursor 也采用或兼容这一格式），现成的钩子脚本一般改一下工具名就能用（tau 的工具名是 `bash`、`read`、`edit`、`write` 等，matcher 不分大小写，所以 `Bash`、`Edit|Write` 也能匹配）。Windows 上还有 `powershell` 工具（P40），它的 `tool_input.command` 与 bash 相同；检查命令的钩子照 Claude Code 写 `Bash|PowerShell`。
+在 `settings.json` 里写 shell 命令（或一个接收 POST 的网址），tau 运行到对应时机时执行它。格式与 Claude Code 相同（Codex、Gemini CLI、Copilot CLI、Cursor 也采用或兼容这一格式），现成的钩子脚本一般改一下工具名就能用（tau 的工具名是 `bash`、`read`、`edit`、`write` 等，matcher 不分大小写，所以 `Bash`、`Edit|Write` 也能匹配）。Windows 上还有 `powershell` 工具（P40），它的 `tool_input.command` 与 bash 相同；检查命令的钩子照 Claude Code 写 `Bash|PowerShell`。
 
 钩子批准调用（`permissionDecision: "allow"`）越不过 `settings.json` 里的 deny 和 ask 规则（P37a，照 Claude Code，见 [permissions.md](permissions.md)）。
 
@@ -27,8 +27,11 @@
   - 只含字母、数字、`_`、`-`、`|`、`,`、空格：按名字精确匹配，可以用 `|` 或 `,` 列多个（`edit|write` 不会命中 `memory_write`）；
   - 含其他字符：当作正则，例如 `mcp__github__.*`、`.*opus.*`。
 - 命令的字段：
-  - `type`：只支持 `"command"`；
+  - `type`：`"command"`（缺省）或 `"http"`（P49，见下文）；提示词、agent、MCP 工具类型的钩子不支持；
   - `command`：要执行的命令；
+  - `args`（P49，exec 形式）：写了就不经过 shell，`command` 是可执行文件，`args` 里每一项原样作为一个参数（空格、引号、`$` 都不用转义）。没有 shell 展开变量，`${TAU_PROJECT_DIR}`、`${CLAUDE_PROJECT_DIR}` 由 tau 换成项目目录。Windows 上 `command` 要是真正的可执行文件（`.exe`），`node_modules/.bin` 里的 `.cmd` 脚本要用 shell 形式，或写成 `"command": "node", "args": ["脚本路径"]`；
+  - `shell`（P49）：`"bash"`（缺省）或 `"powershell"`。Windows 上找不到 Git Bash 时 shell 形式的钩子缺省用 PowerShell；写了 `args` 时不管它；
+  - `onFailure`（P49）：`"continue"`（缺省）或 `"block"`，见下文「钩子坏了」；
   - `timeout`：秒数，缺省 600，写 0 表示不限；
   - `async`：设为 `true` 时在后台跑，见下文；
   - `statusMessage`：可写，目前不显示。
@@ -140,6 +143,42 @@
 - 子代理的工具调用同样经过 `PreToolUse`、`PostToolUse`。
 - 网关里钩子同样生效，只是 `Notification` 不触发（网关有自己的聊天通知）。网关搁置中，保持 P44 之前的行为：没有 P44 新加的事件，matcher 只对工具事件生效，`PostToolUse` 也在失败时触发，`SessionStart`、`SessionEnd` 带原来的取值。
 - 钩子批准或拦下的调用，审计里的决定来源分别记为 `hook_allow`、`hook`。
+
+## 钩子坏了（`onFailure`，P49）
+
+照 Claude Code，以下都算钩子失败：起不来（脚本或程序不存在）；退出码既不是 0 也不是 2（即使输出了允许的 JSON）；超时；输出是 JSON 但解析不了（纯文本输出不算）；HTTP 钩子连不上或状态码不是 2xx、2xx 的响应体既不为空也不是 JSON 对象。
+
+缺省（`"continue"`）失败只警告，动作照常进行，所以路径写错的策略钩子会放行一切。写 `"onFailure": "block"` 后，失败按该事件 exit 2 的效果处理：`PreToolUse` 拦下调用、`UserPromptSubmit` 拦下提示，`PermissionRequest` 上是拒绝。拦下时的说明照 Claude Code，比如：
+
+```text
+PreToolUse:bash hook error: [node /项目/.tau/hooks/check.js]: failed; blocking because onFailure is "block"
+Error: Cannot find module '/项目/.tau/hooks/check.js'
+```
+
+超时则写 `timed out`。对 `Stop`、`SubagentStop` 和后台钩子不起作用（exit 2 在那里是让 agent 继续干活，而钩子本身坏了）。
+
+Windows 上没有 Git Bash 时，没写 `shell`、`args`、`onFailure` 的 `PreToolUse`、`PermissionRequest` 钩子失败也会拦下（它在 PowerShell 里跑，写给 bash 的脚本多半跑不起来），说明里写明原因（照 Claude Code）。
+
+## HTTP 钩子（P49）
+
+```jsonc
+"PreToolUse": [{
+  "matcher": "bash",
+  "hooks": [{
+    "type": "http",
+    "url": "http://localhost:8080/hooks/pre-tool-use",
+    "headers": { "Authorization": "Bearer $MY_TOKEN" },
+    "allowedEnvVars": ["MY_TOKEN"],
+    "timeout": 30,
+    "onFailure": "block"
+  }]
+}]
+```
+
+- 钩子的 JSON 输入作为请求体 POST 给 `url`，`Content-Type: application/json`；走 P40a 的代理设置。
+- `headers` 里可以写 `$名字` 或 `${名字}`，只有 `allowedEnvVars` 列出的变量会换成值，其余换成空字符串。
+- 2xx 的空响应等于什么都不做；2xx 的 JSON 对象和命令钩子 exit 0 时的 JSON 输出一样处理；其他情况算失败（按 `onFailure`）。
+- 网关（搁置中）不支持 HTTP 钩子，也不认 `args`、`shell`、`onFailure`，保持 P49 之前的行为。
 
 ## 例子
 

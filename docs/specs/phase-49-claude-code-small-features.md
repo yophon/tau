@@ -158,24 +158,52 @@ type HookHandler =
 
 ## 验收清单
 
-- [ ] 49a：
-  - [ ] `effort` 在 frontmatter 与调用参数里都生效（调用优先），续接沿用；
-  - [ ] `autoCompactWindow` 让子 agent 在该窗口压缩（包括主会话没有窗口时）；
-  - [ ] `disallowedTools` 去掉工具，`maxTurns` 限制轮数，`background: true` 总在后台。
-- [ ] 49b：`allow_large` 读完超过 2000 行 / 50 KB 的文件；剩余空间不够时截断并说明；窗口未知时按确认的上限；图片不受影响。
-- [ ] 49c：
-  - [ ] exec 形式的参数原样传入（含空格、引号、`$`）；
-  - [ ] `shell: "powershell"` 在 Windows 上用 PowerShell 跑；
-  - [ ] `onFailure: "block"` 在起不来、退出码 1、超时、坏 JSON 时拦下 `PreToolUse`，`PermissionRequest` 上拒绝，`Stop` 上不起作用；
-  - [ ] HTTP 钩子（若确认）：放行、拦下、非 2xx、连不上、超时。
-- [ ] 49d：Ctrl+C 后 ↑ 找回草稿（含粘贴的图片）；OSC 7501 在跑、等审批、跑完、退出时发出正确的序列（测试截取输出）；`TAU_DISABLE_FILE_MENTIONS=1` 时只给路径。
-- [ ] smoke-tui 新场景：Ctrl+C 清掉后 ↑ 找回；OSC 7501 序列出现在 tmux 截取的原始输出里。
-- [ ] 真 DeepSeek：带 `effort` 的子 agent、`allow_large` 读大文件、`onFailure: "block"` 的钩子拦下一次调用。
-- [ ] 全量测试、check、pack smoke、浏览器打包与运行、smoke-tui 全屏与 inline 通过；push 后 CI 通过。
-- [ ] DoD 通用项；D52；文档更新。
+- [x] 49a：
+  - [x] `effort` 在 frontmatter 与调用参数里都生效（调用优先），续接沿用；
+  - [x] `autoCompactWindow` 让子 agent 在该窗口压缩（包括主会话没有窗口时）；
+  - [x] `disallowedTools` 去掉工具，`maxTurns` 限制轮数，`background: true` 总在后台。
+- [x] 49b：`allow_large` 读完超过 2000 行 / 50 KB 的文件；剩余空间不够时截断并说明；窗口未知时按确认的上限；图片不受影响。
+- [x] 49c：
+  - [x] exec 形式的参数原样传入（含空格、引号、`$`）；
+  - [x] `shell: "powershell"` 在 Windows 上用 PowerShell 跑；
+  - [x] `onFailure: "block"` 在起不来、退出码 1、超时、坏 JSON 时拦下 `PreToolUse`，`PermissionRequest` 上拒绝，`Stop` 上不起作用；
+  - [x] HTTP 钩子（若确认）：放行、拦下、非 2xx、连不上、超时。
+- [x] 49d：Ctrl+C 后 ↑ 找回草稿（含粘贴的图片）；OSC 7501 在跑、等审批、跑完、退出时发出正确的序列（测试截取输出）；`TAU_DISABLE_FILE_MENTIONS=1` 时只给路径。
+- [x] smoke-tui 新场景：Ctrl+C 清掉后 ↑ 找回；OSC 7501 序列出现在 tmux 截取的原始输出里。
+- [x] 真 DeepSeek：带 `effort` 的子 agent、`allow_large` 读大文件、`onFailure: "block"` 的钩子拦下一次调用。
+- [x] 全量测试、check、pack smoke、浏览器打包与运行、smoke-tui 全屏与 inline 通过；push 后 CI 通过。
+- [x] DoD 通用项；D52；文档更新。
 
 ## 风险与开放问题
 
 - **`allow_large` 的剩余空间估算**依赖 tau 的 token 估算（技术债 #10，中文偏差较大），估多了会让请求超出上下文，所以留出压缩预留。
 - **exec 形式在 Windows 上**要按 PATH 与 PATHEXT 找可执行文件（P45 的 `findExecutable` 可复用）。
 - **开放问题**：无（「需要确认」四条已按建议确认）。
+
+## 实施记录（2026-10-22）
+
+提交：aefd61e（规格书，与 P48 的一起）、2eca46c（49a、49b）、cd354d9（49c）、0b22559（49d）、文档提交。
+
+### 偏差
+
+- **`allow_large` 不用 `contextRoom` 选项**：接口草案给 `createCodingTools` 加 `contextRoom()`，由 Agent 提供。工具对象被子 agent 共用，绑在某个 Agent 上的回调会量错子 agent 的空间。改为 `read` 从执行它的那个 Agent 的工具上下文里取 `getContextUsage()`，它多带一个 `reserveTokens`（有窗口时）。按整行截断，说明还剩多少行、从哪里接着读。
+- **Ctrl+C 清掉的草稿不再写进历史**：P38a 起它进历史，↑ 也能找回；照规格「先回到草稿、再按 ↑ 才是历史」，改为单独记住最近一次，避免历史里出现重复的一条。
+- **`background: true` 与一次调用里的多个 agent**：一次调用里只要有一个 agent 写了它，整次调用就在后台跑（等于每次都带 `background`）。
+- **多做了一条 Claude Code 的规则**：Windows 上没有 Git Bash 时，没写 `shell`、`args`、`onFailure` 的 `PreToolUse`、`PermissionRequest` 钩子失败即拦下（它在 PowerShell 里跑），说明照 Claude Code。
+- **HTTP 钩子的缺省超时**是 600 秒，同 command 钩子（Claude Code 的表）。
+- **exec 形式不用 `findExecutable`**：风险一节设想复用 P45 的查找；实际交给 Node 的 spawn 按 PATH 找（Windows 上是 `.exe`、`.com`），`.cmd`、`.bat` 起不来，与 Claude Code 文档的说明一致（要用 shell 形式，或 `node 脚本`）。
+- **REPL 的 idle**：REPL 读到你输入的一行时报 idle，随即开始的一轮报 working。
+- **`TAU_DISABLE_FILE_MENTIONS`** 只作用于命令行的 `@文件` 参数：tau 只有它们会附上内容（pi 的做法），TUI 里的 `@路径` 本来就是文字。开关打开时给 `@绝对路径`，文件不存在照样报错。
+- **接口多出来的**：`AgentDefinition.warnings`、`AGENT_EFFORTS`、`AUTO_COMPACT_WINDOW_RANGE`、`HookOutcome.failure`、`hookLabel`、`NodeShell.exec` 的 `argv`、`bashAvailable`、`programStatusSequence`、`ProgramStatus`、`TerminalStatus.active`、控制器的 `expectSignIn`。
+
+### 真 DeepSeek（deepseek-flash，经代理记录请求体）
+
+- 写了 `effort: high` 的 `thinker` agent：子 agent 的请求带 `reasoning_effort: "high"`，主会话的请求不带。
+- `read` 加 `allow_large` 读 3000 多行的文件（models.json 给了 1000000 的窗口）：一次读回约 19 万字符，含第 3000 行和最后一行。
+- `PreToolUse` 钩子用 exec 形式指向不存在的脚本、`onFailure: "block"`：模型的 bash 调用被拦下，说明是 `PreToolUse:bash hook error: [node …missing-check.mjs]: failed; blocking because onFailure is "block"` 加上 node 的报错。
+
+### 测试
+
+- 全量 1372 个，1367 通过、5 跳过。新增：内核 5、ext-subagents 5、CLI 钩子 8、CLI 交互 5；改写 1 条（HTTP 钩子原先作为「不支持的类型」的例子）。
+- check、pack smoke、浏览器 bundle、浏览器 runtime（Edge）、QuickJS、QuickJS MCP 通过。
+- smoke-tui 新增 p49 场景（OSC 7501 的 working、done、idle、clear 出现在 tmux 截取的原始输出里；Ctrl+C 清掉的草稿按 ↑ 回来），全屏与 inline 各 38 个场景各一遍全过。
