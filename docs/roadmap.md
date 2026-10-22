@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-22（P47 完成；P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = 待定（P47 之后未排期）**）
+> 最后更新：2026-10-22（P47 完成；P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P48**，P49 规格书已确认）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -417,6 +417,14 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 官方一致性测试 2026-07-28 的 32 个客户端场景：30 个通过；`auth/metadata-var3`、`auth/scope-step-up` 失败，原因是 P32b 的 OAuth 移植与 pi 1.2 的两处差距（与新协议无关），登记为技术债 #23。
 - 验收中发现并修掉：`-32022` 带着 tau 自己的版本时不重试；SEP-2352 沿用缓存的发现结果；P24 起读 SSE 回复后 `reader.cancel()` 的拒绝没人处理，`tau -p` 连用 SSE 回复的 HTTP 服务器时会退出；P24 起有 MCP 服务器时 `tau -p` 做完还要等满 10 秒。
 - 决策记为 D50，偏差见规格书「实施记录」。真机验收待用户执行。
+
+## Phase 48 🚧 跟进 pi 1.3 / 1.4，补齐 OAuth
+
+规格书（2026-10-22 确认；用户：「都按你的建议来，搞吧」）：[specs/phase-48-pi-1-4.md](specs/phase-48-pi-1-4.md)。pi 1.3.0、1.4.0 里 tau 也有的 17 处问题照 pi 修掉（摘要输出上限、`/compact` 指令、空白工具输出、坏 JSON 参数、换模型的思考、重试与溢出、Anthropic 两处、恢复会话的工具集、对话框叠放、提示模板空参数、Windows 找 PowerShell、codemode 排队等）；技术债 #23（OAuth 登录带 challenge、403 升级授权）；参照改成 pi 1.4.0；smoke-tui 在 WSL 自己的文件系统里跑（技术债 #22）。
+
+## Phase 49 ⬜ 补 Claude Code 新出的几个小功能
+
+规格书（2026-10-22 确认，排在 P48 之后）：[specs/phase-49-claude-code-small-features.md](specs/phase-49-claude-code-small-features.md)。子 agent 的 `effort`、`autoCompactWindow`、`disallowedTools`、`maxTurns`、`background`；Read 的 `allow_large`；钩子的 exec 形式、`shell`、`onFailure` 与 HTTP 钩子；Ctrl+C 清掉的草稿按 ↑ 找回、OSC 7501 终端状态、`TAU_DISABLE_FILE_MENTIONS`。
 
 ## 产品层后续 ⬜ 待定
 
