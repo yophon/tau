@@ -60,6 +60,7 @@ async function main() {
 		await run("p44", runP44Smoke);
 		await run("p45", runP45Smoke);
 		await run("p46", runP46Smoke);
+		await run("p47", runP47Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -1054,6 +1055,72 @@ createInterface({ input: process.stdin }).on("line", async (line) => {
 });
 `;
 
+// P47: an MCP server that speaks 2026-07-28 only (no initialize): its tool asks for a name with
+// an input_required round, answered by retrying with inputResponses and the requestState.
+const SMOKE_MODERN_SERVER = `
+import { createInterface } from "node:readline";
+const send = (message) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...message }) + "\\n");
+createInterface({ input: process.stdin }).on("line", (line) => {
+	if (!line.trim()) return;
+	const message = JSON.parse(line);
+	if (message.id === undefined) return;
+	const reply = (result) => send({ id: message.id, result: { resultType: "complete", ...result } });
+	if (message.params?._meta?.["io.modelcontextprotocol/protocolVersion"] !== "2026-07-28") {
+		return send({ id: message.id, error: { code: -32602, message: "2026-07-28 only" } });
+	}
+	switch (message.method) {
+		case "server/discover":
+			return reply({ supportedVersions: ["2026-07-28"], capabilities: { tools: { listChanged: true } }, _meta: { "io.modelcontextprotocol/serverInfo": { name: "modern" } }, ttlMs: 0, cacheScope: "private" });
+		case "tools/list":
+			return reply({ tools: [{ name: "ask", description: "Ask the user a name", inputSchema: { type: "object", properties: {} } }], ttlMs: 0, cacheScope: "private" });
+		case "subscriptions/listen":
+			// Acknowledged and held open.
+			return send({ method: "notifications/subscriptions/acknowledged", params: { _meta: { "io.modelcontextprotocol/subscriptionId": message.id }, notifications: message.params.notifications } });
+		case "tools/call": {
+			const answer = message.params.inputResponses?.name;
+			if (!answer || message.params.requestState !== "ask-1") {
+				return send({ id: message.id, result: { resultType: "input_required", requestState: "ask-1", inputRequests: { name: { method: "elicitation/create", params: { mode: "form", message: "SMOKE_MODERN_ELICIT", requestedSchema: { type: "object", properties: { name: { type: "string", title: "Name" } }, required: ["name"] } } } } } });
+			}
+			return reply({ content: [{ type: "text", text: "MODERN_GOT_" + (answer.content?.name ?? answer.action) }] });
+		}
+		default:
+			return send({ id: message.id, error: { code: -32601, message: "Method not found" } });
+	}
+});
+`;
+
+async function runP47Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p47", false);
+	const server = join(dirs.home, "smoke-modern.mjs");
+	await writeFile(server, SMOKE_MODERN_SERVER, "utf8");
+	await mkdir(join(dirs.home, ".tau"), { recursive: true });
+	await writeFile(
+		join(dirs.home, ".tau", "mcp.json"),
+		`${JSON.stringify({ mcpServers: { modern: { command: process.execPath, args: [server] } } })}\n`,
+		"utf8",
+	);
+	const session = await startTui("p47", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("modern smoke", "Enter");
+		await session.waitFor("Name *: —", 15_000);
+		await session.send("Enter");
+		await session.waitFor("Name *", 10_000);
+		await session.send("-l", "octo");
+		await session.send("Enter");
+		await session.waitFor("Name *: octo", 10_000);
+		await session.send("Enter");
+		await session.waitFor("SMOKE_MODERN_DONE", 15_000);
+		await session.send("/mcp", "Enter");
+		await session.waitFor("MCP 2026-07-28", 10_000);
+		await session.send("exit", "Enter");
+		await session.waitForExit();
+		console.log("ok p47");
+	} finally {
+		await session.kill();
+	}
+}
+
 // P44: /loop schedules and runs at once (shown in /tasks), an MCP prompt is a command, and an
 // MCP server's elicitation is answered in the TUI form.
 async function runP44Smoke(root, baseUrl) {
@@ -1613,6 +1680,7 @@ function responseFor(request) {
 		if (content.includes("Command running in background with ID: b1")) return textTurn("SMOKE_BG_STARTED");
 		if (content.includes("Command running in background with ID: b2")) return textTurn("SMOKE_BG_SECOND");
 		if (content.includes("Tool call blocked: SMOKE_HOOK_BLOCKED")) return textTurn("SMOKE_HOOK_SAW_BLOCK");
+		if (content.includes("MODERN_GOT_octo")) return textTurn("SMOKE_MODERN_DONE");
 		if (content.includes("GOT_octo")) return textTurn("SMOKE_ELICIT_DONE");
 		if (content.includes("Document symbols:") && content.includes("smokeFn")) return textTurn("SMOKE_LSP_DONE");
 		if (content.includes("Created worktree smoke"))
@@ -1642,6 +1710,7 @@ function responseFor(request) {
 	if (content.includes("loop smoke")) return textTurn("SMOKE_LOOP_RAN");
 	if (content.includes("SMOKE_PROMPT_TEXT")) return textTurn("SMOKE_PROMPT_DONE");
 	if (content.includes("elicit smoke")) return toolCallTurn("mcp__smoke__ask", {});
+	if (content.includes("modern smoke")) return toolCallTurn("mcp__modern__ask", {});
 	if (content.includes("which model")) return textTurn(`MODEL_IS_${request.model}`);
 	if (content.includes("fg smoke"))
 		return toolCallTurn("bash", { command: "echo SMOKE_FG_START; sleep 30; echo SMOKE_FG_END" });
