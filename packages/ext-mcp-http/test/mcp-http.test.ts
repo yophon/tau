@@ -509,7 +509,7 @@ test("/mcp lists servers with state and tool count; reconnect brings an offline 
 	assert.ok(command);
 	const status = String(await command.handler("", ctx));
 	assert.match(status, /MCP servers \(2\)/);
-	assert.match(status, /● up \(http\) · connected · 1 tool/);
+	assert.match(status, /● up \(http\) · connected · MCP 2025-11-25 · 1 tool/);
 	assert.match(status, /✗ down \(http\) · offline: .*ECONNREFUSED/);
 
 	assert.deepEqual(

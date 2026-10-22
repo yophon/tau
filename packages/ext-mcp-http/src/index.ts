@@ -12,14 +12,18 @@ import { createMcpServers, type McpServerConfig, type McpServerStatus } from "./
 export {
 	type CallToolResult,
 	type InitializeResult,
+	MCP_MODERN_PROTOCOL_VERSION,
 	MCP_PROTOCOL_VERSION,
 	McpClient,
 	type McpClientOptions,
+	type McpConnectOptions,
 	type McpContentBlock,
 	type McpGetPromptResult,
 	type McpProgress,
 	type McpPrompt,
 	type McpPromptArgument,
+	type McpProtocolEra,
+	type McpProtocolNegotiation,
 	type McpReadResourceResult,
 	type McpRequestHandler,
 	type McpRequestOptions,
@@ -57,6 +61,7 @@ export {
 	renderServersSection,
 	toToolExposure,
 } from "./exposure.ts";
+export { encodeHeaderValue, type McpParamHeader, mirroredParams, paramHeaders, standardHeaders } from "./headers.ts";
 export {
 	type McpAuth,
 	McpHttpError,
@@ -74,9 +79,13 @@ export {
 	type JsonRpcNotification,
 	type JsonRpcRequest,
 	type JsonRpcResponse,
+	MCP_ERROR_CODES,
+	MCP_META,
 	McpAbortError,
 	McpConnectionClosedError,
 	McpError,
+	McpProbeExitedError,
+	McpStreamBrokenError,
 	McpTimeoutError,
 	parseJsonRpcMessage,
 } from "./jsonrpc.ts";

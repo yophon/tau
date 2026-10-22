@@ -15,9 +15,22 @@ export interface McpTransportSendOptions {
 	 * message after that; it does not undo a message already dispatched.
 	 */
 	signal?: TauAbortSignal;
+	/** Headers for this message only (MCP 2026-07-28 `Mcp-Param-*`); HTTP transports send them. */
+	headers?: Record<string, string>;
+	/**
+	 * Given (2026-07-28 requests), a response stream that ends or breaks before the response
+	 * calls this instead of being resumed or failing the request: the client reissues it.
+	 */
+	onStreamBroken?: (reason: string) => void;
 }
 
 export interface McpTransport {
+	/**
+	 * "http": a 2026-07-28 request is cancelled by closing its stream, and a probe that times
+	 * out means the server is down. Anything else (stdio) sends notifications/cancelled, and a
+	 * silent probe means a legacy server.
+	 */
+	readonly kind?: "http" | "stdio";
 	start(): Promise<void>;
 	send(message: JsonRpcMessage, options?: McpTransportSendOptions): Promise<void>;
 	close(): Promise<void>;

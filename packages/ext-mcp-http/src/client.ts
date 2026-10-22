@@ -6,6 +6,14 @@
 // server requests (ping, roots/list, handlers set by the host such as
 // elicitation/create). Pure ES: timeouts run on the injected Platform.sleep (no
 // timers without it, D15).
+//
+// P47 (MCP 2026-07-28, as the official SDK 2.x client and Claude Code): with
+// protocolNegotiation "auto", connect() first sends server/discover. A DiscoverResult
+// means the modern, stateless revision: no handshake, every request carries the
+// `_meta` envelope (version, client info, capabilities), results carry `resultType`,
+// a broken HTTP stream is reissued once under a new id, and the server sends no
+// requests. Anything that is not modern evidence falls back to initialize; on stdio a
+// silent server is legacy, on HTTP silence is an outage (SDK).
 import { AbortHandle, type Platform, type TauAbortSignal } from "@yophon/tau-kernel";
 import {
 	isJsonRpcNotification,
@@ -17,16 +25,27 @@ import {
 	type JsonRpcMessage,
 	type JsonRpcRequest,
 	type JsonRpcResponse,
+	MCP_ERROR_CODES,
+	MCP_META,
 	McpAbortError,
 	McpConnectionClosedError,
 	McpError,
+	McpProbeExitedError,
+	McpStreamBrokenError,
 	McpTimeoutError,
 	toError,
 } from "./jsonrpc.ts";
 import type { McpTransport } from "./transport.ts";
 
-/** Protocol version tau offers (pi 1.2 LATEST_PROTOCOL_VERSION). */
+/** Protocol version tau offers in `initialize` (pi 1.2 LATEST_PROTOCOL_VERSION). */
 export const MCP_PROTOCOL_VERSION = "2025-11-25";
+/** The stateless revision (P47): no handshake, a `_meta` envelope on every request. */
+export const MCP_MODERN_PROTOCOL_VERSION = "2026-07-28";
+/** "modern": 2026-07-28 and later; "legacy": the initialize handshake (2025-11-25 and earlier). */
+export type McpProtocolEra = "modern" | "legacy";
+/** "legacy" shakes hands as before; "auto" asks with server/discover first (SDK versionNegotiation). */
+export type McpProtocolNegotiation = "auto" | "legacy";
+const MODERN_ERROR_CODES = new Set<number>(Object.values(MCP_ERROR_CODES));
 /** Versions the server may select in `initialize`; any other closes the connection (pi). */
 export const SUPPORTED_PROTOCOL_VERSIONS: readonly string[] = [
 	MCP_PROTOCOL_VERSION,
@@ -160,7 +179,33 @@ export interface McpClientOptions {
 	roots?: readonly McpRoot[];
 	/** Client capabilities declared in `initialize`, besides `roots` (pi), e.g. `elicitation`. */
 	capabilities?: Record<string, unknown>;
+	/** P47: "legacy" (default, as the official SDK) skips the probe; "auto" probes for 2026-07-28. */
+	protocolNegotiation?: McpProtocolNegotiation;
 }
+
+export interface McpConnectOptions extends McpRequestOptions {
+	/** The era an earlier connection to this server found: no probe ("modern" still asks server/discover). */
+	era?: McpProtocolEra;
+}
+
+/** How one request goes out (P47). */
+interface RequestFlags {
+	/** Sent while connecting (the probe, initialize). */
+	connecting?: boolean;
+	/** Carries the 2026-07-28 envelope; defaults to the connection's era. */
+	envelope?: boolean;
+	/** notifications/cancelled on abort or timeout (not for initialize or the probe). */
+	cancellable?: boolean;
+	/** The transport reports a broken response stream instead of failing the request. */
+	reportBrokenStream?: boolean;
+	/** Headers for this request only (`Mcp-Param-*`). */
+	headers?: Record<string, string>;
+	/** Learns the JSON-RPC id the request goes out with. */
+	onId?: (id: JsonRpcId) => void;
+}
+
+/** How long the probe waits when nothing else bounds it (the official SDK uses the request timeout). */
+const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
 
 export interface McpRequestOptions {
 	signal?: TauAbortSignal;
@@ -289,6 +334,11 @@ export class McpClient {
 	private instructionsValue: string | undefined;
 	private protocolVersionValue: string | undefined;
 	private serverCapabilitiesValue: Record<string, unknown> | undefined;
+	private eraValue: McpProtocolEra | undefined;
+	private serverInfoValue: { name: string; version?: string } | undefined;
+	private eraRejectedValue = false;
+	/** Requests given up on whose late answers are expected (the probe), dropped quietly. */
+	private ignoredResponses = new Set<JsonRpcId>();
 	private pending = new Map<JsonRpcId, PendingRequest>();
 	/** progressToken → request id of the requests that asked for progress. */
 	private progressRequests = new Map<JsonRpcId, JsonRpcId>();
@@ -325,7 +375,22 @@ export class McpClient {
 		return this.serverCapabilitiesValue;
 	}
 
-	async connect(transport: McpTransport, options: McpRequestOptions = {}): Promise<InitializeResult> {
+	/** The era connect() settled on (P47). */
+	get protocolEra(): McpProtocolEra | undefined {
+		return this.eraValue;
+	}
+
+	/** The server's self-reported name and version (initialize, or the 2026-07-28 result `_meta`). */
+	get serverInfo(): { name: string; version?: string } | undefined {
+		return this.serverInfoValue;
+	}
+
+	/** A 2026-07-28 server stopped accepting the revision mid-connection: probe again next time. */
+	get eraRejected(): boolean {
+		return this.eraRejectedValue;
+	}
+
+	async connect(transport: McpTransport, options: McpConnectOptions = {}): Promise<InitializeResult> {
 		if (this.state !== "idle") throw new Error(`Cannot connect MCP client in ${this.state} state`);
 		this.state = "connecting";
 		this.transport = transport;
@@ -335,34 +400,142 @@ export class McpClient {
 			transport.onError((error) => this.emitError(error)),
 			transport.onClose(() => this.markClosed(new McpConnectionClosedError())),
 		];
+		const { era, ...requestOptions } = options;
+		const probe = era === undefined && this.options.protocolNegotiation === "auto";
 		try {
 			await transport.start();
-			const result = validateInitializeResult(
-				await this.requestInternal(
-					"initialize",
-					{
-						protocolVersion: MCP_PROTOCOL_VERSION,
-						capabilities: { ...this.options.capabilities, ...(this.options.roots ? { roots: {} } : {}) },
-						clientInfo: { name: this.options.name, version: this.options.version },
-					},
-					options,
-					true,
-				),
-			);
-			if (!SUPPORTED_PROTOCOL_VERSIONS.includes(result.protocolVersion)) {
-				throw new Error(`MCP server selected unsupported protocol version ${result.protocolVersion}`);
+			if (probe || era === "modern") {
+				const modern = await this.discover(transport, requestOptions, era === "modern");
+				if (modern) {
+					this.state = "connected";
+					return modern;
+				}
 			}
-			this.protocolVersionValue = result.protocolVersion;
-			this.serverCapabilitiesValue = result.capabilities;
-			this.instructionsValue = result.instructions?.trim() || undefined;
-			transport.setProtocolVersion?.(result.protocolVersion);
-			await this.notifyInternal("notifications/initialized", undefined, true);
-			this.state = "connected";
-			return result;
+			try {
+				return await this.initialize(transport, requestOptions);
+			} catch (error) {
+				// The probe may have left a stdio server unable to shake hands: start it again.
+				if (probe && transport.kind !== "http" && !(error instanceof McpAbortError)) {
+					throw new McpProbeExitedError(`MCP server did not shake hands after the probe: ${toError(error).message}`);
+				}
+				throw error;
+			}
 		} catch (error) {
 			await this.close().catch(() => {});
 			throw error;
 		}
+	}
+
+	/** The legacy handshake (pi). */
+	private async initialize(transport: McpTransport, options: McpRequestOptions): Promise<InitializeResult> {
+		const result = validateInitializeResult(
+			await this.requestInternal(
+				"initialize",
+				{
+					protocolVersion: MCP_PROTOCOL_VERSION,
+					capabilities: this.clientCapabilities(),
+					clientInfo: { name: this.options.name, version: this.options.version },
+				},
+				options,
+				{ connecting: true, envelope: false, cancellable: false },
+			),
+		);
+		if (!SUPPORTED_PROTOCOL_VERSIONS.includes(result.protocolVersion)) {
+			throw new Error(`MCP server selected unsupported protocol version ${result.protocolVersion}`);
+		}
+		this.eraValue = "legacy";
+		this.protocolVersionValue = result.protocolVersion;
+		this.serverCapabilitiesValue = result.capabilities;
+		this.instructionsValue = result.instructions?.trim() || undefined;
+		this.serverInfoValue = result.serverInfo;
+		transport.setProtocolVersion?.(result.protocolVersion);
+		await this.notifyInternal("notifications/initialized", undefined, true);
+		this.state = "connected";
+		return result;
+	}
+
+	/**
+	 * server/discover with the 2026-07-28 envelope (P47). Resolves the connection for a modern
+	 * server and undefined for a legacy one (any reply that is not modern evidence; on stdio
+	 * also silence). `pinned` (a remembered "modern") turns a legacy answer into an error.
+	 */
+	private async discover(
+		transport: McpTransport,
+		options: McpRequestOptions,
+		pinned: boolean,
+	): Promise<InitializeResult | undefined> {
+		const http = transport.kind === "http";
+		let value: unknown;
+		let probeId: JsonRpcId | undefined;
+		const timeoutMs = options.timeoutMs ?? this.options.requestTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS;
+		try {
+			value = await this.requestInternal(
+				"server/discover",
+				undefined,
+				{ ...options, timeoutMs },
+				{
+					connecting: true,
+					envelope: true,
+					cancellable: false,
+					onId: (id) => {
+						probeId = id;
+					},
+				},
+			);
+		} catch (error) {
+			// A slow server may still answer the abandoned probe.
+			if (probeId !== undefined) this.ignoredResponses.add(probeId);
+			if (error instanceof McpAbortError) throw error;
+			if (error instanceof McpError) {
+				if (error.code === MCP_ERROR_CODES.unsupportedProtocolVersion) return this.legacyFromSupported(error.data);
+				if (MODERN_ERROR_CODES.has(error.code)) throw error;
+			} else if (error instanceof McpConnectionClosedError) {
+				throw http ? error : new McpProbeExitedError();
+			} else if (error instanceof McpTimeoutError) {
+				if (http) throw error;
+			} else {
+				// HTTP: 401/403 are not era evidence (auth answers first), 5xx is an outage; other 4xx is legacy.
+				const status = (error as { status?: unknown }).status;
+				if (typeof status !== "number" || status === 401 || status === 403 || status >= 500) throw error;
+			}
+			if (pinned) throw new Error("MCP server no longer answers server/discover (protocol 2026-07-28)");
+			return undefined;
+		}
+		const supported = isObject(value) && Array.isArray(value.supportedVersions) ? value.supportedVersions : undefined;
+		if (!isObject(value) || !supported?.includes(MCP_MODERN_PROTOCOL_VERSION)) {
+			if (pinned) throw new Error("MCP server no longer offers protocol 2026-07-28");
+			return supported ? this.legacyFromSupported({ supported }) : undefined;
+		}
+		const meta = isObject(value._meta) ? value._meta : {};
+		const serverInfo = meta[MCP_META.serverInfo];
+		const result: InitializeResult = {
+			protocolVersion: MCP_MODERN_PROTOCOL_VERSION,
+			capabilities: isObject(value.capabilities) ? value.capabilities : {},
+			...(isObject(serverInfo) && typeof serverInfo.name === "string"
+				? { serverInfo: serverInfo as InitializeResult["serverInfo"] }
+				: {}),
+			...(typeof value.instructions === "string" ? { instructions: value.instructions } : {}),
+		};
+		this.eraValue = "modern";
+		this.protocolVersionValue = MCP_MODERN_PROTOCOL_VERSION;
+		this.serverCapabilitiesValue = result.capabilities;
+		this.instructionsValue = result.instructions?.trim() || undefined;
+		this.serverInfoValue = result.serverInfo;
+		return result;
+	}
+
+	/** A modern server without 2026-07-28: shake hands when it lists a version tau speaks there. */
+	private legacyFromSupported(data: unknown): undefined {
+		const supported = isObject(data) && Array.isArray(data.supported) ? data.supported.map(String) : [];
+		if (supported.some((version) => SUPPORTED_PROTOCOL_VERSIONS.includes(version))) return undefined;
+		throw new Error(
+			`MCP server supports protocol ${supported.join(", ") || "(none listed)"}, none of which tau speaks`,
+		);
+	}
+
+	/** Capabilities declared in initialize and in every 2026-07-28 envelope. */
+	private clientCapabilities(): Record<string, unknown> {
+		return { ...this.options.capabilities, ...(this.options.roots ? { roots: {} } : {}) };
 	}
 
 	request<Result = unknown>(
@@ -370,7 +543,37 @@ export class McpClient {
 		params?: Record<string, unknown>,
 		options: McpRequestOptions = {},
 	): Promise<Result> {
-		return this.requestInternal(method, params, options, false) as Promise<Result>;
+		if (this.eraValue !== "modern") return this.requestInternal(method, params, options, {}) as Promise<Result>;
+		return this.requestModern(method, params, options) as Promise<Result>;
+	}
+
+	/**
+	 * A 2026-07-28 request: reissued once under a new id when its HTTP stream broke (spec),
+	 * `resultType` checked (absent means complete). A -32022 means the server dropped the
+	 * revision: the connection closes and the next one probes again.
+	 */
+	private async requestModern(
+		method: string,
+		params: Record<string, unknown> | undefined,
+		options: McpRequestOptions,
+	): Promise<unknown> {
+		let result: unknown;
+		for (let attempt = 0; ; attempt++) {
+			try {
+				result = await this.requestInternal(method, params, options, { reportBrokenStream: true });
+				break;
+			} catch (error) {
+				if (error instanceof McpStreamBrokenError && attempt === 0 && !options.signal?.aborted) continue;
+				if (error instanceof McpError && error.code === MCP_ERROR_CODES.unsupportedProtocolVersion) {
+					this.eraRejectedValue = true;
+					void this.close().catch(() => {});
+				}
+				throw error;
+			}
+		}
+		const resultType = isObject(result) ? result.resultType : undefined;
+		if (resultType === undefined || resultType === "complete") return result;
+		throw invalid(`Invalid MCP ${method} result: resultType ${JSON.stringify(resultType)}`);
 	}
 
 	notify(method: string, params?: Record<string, unknown>): Promise<void> {
@@ -546,29 +749,46 @@ export class McpClient {
 		method: string,
 		params: Record<string, unknown> | undefined,
 		options: McpRequestOptions,
-		allowConnecting: boolean,
+		flags: RequestFlags,
 	): Promise<unknown> {
 		let transport: McpTransport;
 		try {
-			transport = this.requireTransport(allowConnecting);
+			transport = this.requireTransport(flags.connecting === true);
 		} catch (error) {
 			return Promise.reject(error);
 		}
 		if (options.signal?.aborted) return Promise.reject(new McpAbortError());
 		const id = this.nextRequestId++;
+		flags.onId?.(id);
+		const envelope = flags.envelope ?? this.eraValue === "modern";
 		// The request id doubles as the progress token (pi).
 		const progressToken = options.onProgress ? id : undefined;
-		const requestParams =
-			progressToken === undefined
-				? params
-				: { ...params, _meta: { ...(isObject(params?._meta) ? params._meta : {}), progressToken } };
+		const meta = {
+			...(isObject(params?._meta) ? params._meta : {}),
+			...(progressToken === undefined ? {} : { progressToken }),
+			...(envelope
+				? {
+						[MCP_META.protocolVersion]: MCP_MODERN_PROTOCOL_VERSION,
+						[MCP_META.clientInfo]: { name: this.options.name, version: this.options.version },
+						[MCP_META.clientCapabilities]: this.clientCapabilities(),
+					}
+				: {}),
+		};
+		const requestParams = progressToken === undefined && !envelope ? params : { ...params, _meta: meta };
 		const message: JsonRpcRequest = {
 			jsonrpc: "2.0",
 			id,
 			method,
 			...(requestParams === undefined ? {} : { params: requestParams }),
 		};
-		const cancellable = method !== "initialize";
+		// 2026-07-28 over HTTP cancels by closing the request's stream, which settling does.
+		const cancellable = flags.cancellable ?? (method !== "initialize" && !(envelope && transport.kind === "http"));
+		const sendOptions = {
+			...(flags.headers ? { headers: flags.headers } : {}),
+			...(flags.reportBrokenStream
+				? { onStreamBroken: (reason: string) => this.failPending(id, new McpStreamBrokenError(reason)) }
+				: {}),
+		};
 		return new Promise<unknown>((resolve, reject) => {
 			const entry: PendingRequest = {
 				resolve,
@@ -587,7 +807,9 @@ export class McpClient {
 			if (progressToken !== undefined) this.progressRequests.set(progressToken, id);
 			options.signal?.addEventListener("abort", entry.onAbort);
 			this.armTimeout(id, entry);
-			transport.send(message, { signal: entry.settle.signal }).catch((error) => this.failPending(id, error));
+			transport
+				.send(message, { signal: entry.settle.signal, ...sendOptions })
+				.catch((error) => this.failPending(id, error));
 		});
 	}
 
@@ -650,6 +872,7 @@ export class McpClient {
 	private handleResponse(message: JsonRpcResponse): void {
 		const entry = this.pending.get(message.id);
 		if (!entry) {
+			if (this.ignoredResponses.delete(message.id)) return;
 			this.emitError(new Error(`Received response for unknown MCP request ${String(message.id)}`));
 			return;
 		}
@@ -662,7 +885,8 @@ export class McpClient {
 	private async handleRequest(message: JsonRpcRequest): Promise<void> {
 		const transport = this.transport;
 		if (!transport) return;
-		const handler = this.requestHandlers.get(message.method);
+		// A 2026-07-28 server sends no requests (input comes through input_required results).
+		const handler = this.eraValue === "modern" ? undefined : this.requestHandlers.get(message.method);
 		let reply: JsonRpcMessage;
 		if (!handler) {
 			reply = {

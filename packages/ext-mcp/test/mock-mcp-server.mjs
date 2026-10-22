@@ -46,10 +46,51 @@ function callTool(name, args) {
 	return { content: [{ type: "text", text: name }] };
 }
 
+// P47: MOCK_ERA=modern answers MCP 2026-07-28 only (server/discover, the envelope required);
+// "exit" and "silent" are 2025 servers that exit on, or ignore, anything sent before initialize.
+const era = process.env.MOCK_ERA;
+let initialized = false;
+const VERSION_KEY = "io.modelcontextprotocol/protocolVersion";
+
+function modern(message) {
+	if (message.params?._meta?.[VERSION_KEY] !== "2026-07-28") {
+		send({ jsonrpc: "2.0", id: message.id, error: { code: -32602, message: "Missing the request envelope" } });
+		return;
+	}
+	const result = (value) => send({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", ...value } });
+	switch (message.method) {
+		case "server/discover":
+			result({
+				supportedVersions: ["2026-07-28"],
+				capabilities: { tools: {} },
+				instructions: "Modern mock tools.",
+				_meta: { "io.modelcontextprotocol/serverInfo": { name: "tau-mock-modern", version: "0.0.1" } },
+				ttlMs: 0,
+				cacheScope: "private",
+			});
+			break;
+		case "tools/list":
+			result({ tools, ttlMs: 0, cacheScope: "private" });
+			break;
+		case "tools/call":
+			result(callTool(message.params.name, message.params.arguments ?? {}));
+			break;
+		default:
+			send({ jsonrpc: "2.0", id: message.id, error: { code: -32601, message: `Method not found: ${message.method}` } });
+	}
+}
+
 createInterface({ input: process.stdin }).on("line", (line) => {
 	if (!line.trim()) return;
 	const message = JSON.parse(line);
 	if (message.id === undefined) return; // notifications
+	if (era === "modern") {
+		modern(message);
+		return;
+	}
+	if (message.method === "initialize") initialized = true;
+	else if (!initialized && era === "exit") process.exit(0);
+	else if (!initialized && era === "silent") return;
 	switch (message.method) {
 		case "initialize":
 			setTimeout(() => send({

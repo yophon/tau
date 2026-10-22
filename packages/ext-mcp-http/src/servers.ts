@@ -19,6 +19,10 @@
 // P44 (Claude Code): prompts become /mcp__<server>__<prompt> commands, `@server:uri`
 // mentions are completed and attached, servers can ask the user (elicitation,
 // through the host's handler), tool calls show progress and cancel on abort.
+//
+// P47 (MCP 2026-07-28, Claude Code): with protocolNegotiation "auto" each server is probed
+// once per run and the era it answered with is kept for reconnects; a stdio server the
+// probe knocked over is started again on the legacy handshake.
 import type {
 	Extension,
 	ExtensionAPI,
@@ -41,6 +45,8 @@ import {
 	McpClient,
 	type McpProgress,
 	type McpPrompt,
+	type McpProtocolEra,
+	type McpProtocolNegotiation,
 	type McpRoot,
 	type McpToolInfo,
 } from "./client.ts";
@@ -63,7 +69,14 @@ import {
 	toToolExposure,
 } from "./exposure.ts";
 import { type McpAuth, McpHttpError, McpSessionExpiredError } from "./http.ts";
-import { JSON_RPC_ERROR_CODES, McpAbortError, McpConnectionClosedError, McpError, McpTimeoutError } from "./jsonrpc.ts";
+import {
+	JSON_RPC_ERROR_CODES,
+	McpAbortError,
+	McpConnectionClosedError,
+	McpError,
+	McpProbeExitedError,
+	McpTimeoutError,
+} from "./jsonrpc.ts";
 import { createMentionProvider, findMentions, type MentionResource, mentionBlock } from "./mentions.ts";
 import { createMcpToolName, mcpNamespace } from "./naming.ts";
 import { mcpPromptCommandName, promptArguments, promptCommandDescription, promptMessageContent } from "./prompts.ts";
@@ -140,6 +153,8 @@ export interface McpServerStatus {
 	state: "connecting" | "connected" | "offline";
 	/** Number of tools offered (state "connected" only). */
 	toolCount?: number;
+	/** The protocol version in use (state "connected" only; P47). */
+	protocolVersion?: string;
 	/** The server offers resources (state "connected" only; P43). */
 	resources?: boolean;
 	/** Failure description (state "offline" only). */
@@ -191,6 +206,11 @@ export interface McpServersOptions {
 	 * true; P46, Claude Code's WaitForMcpServers).
 	 */
 	waitTool?: boolean;
+	/**
+	 * "auto" asks each server for MCP 2026-07-28 first and falls back to the initialize
+	 * handshake (P47, Claude Code); "legacy" (default, as the official SDK) only shakes hands.
+	 */
+	protocolNegotiation?: McpProtocolNegotiation;
 }
 
 export interface McpServersHandle {
@@ -221,6 +241,8 @@ interface ServerState {
 	activeCalls: ExtensionToolContext[];
 	/** URL elicitations the user opened, for notifications/elicitation/complete. */
 	openedUrls: Set<string>;
+	/** The era the server answered with this run (P47): reconnects skip the probe. */
+	era?: McpProtocolEra;
 }
 
 /** Progress as a line of the tool's live output (P44). */
@@ -298,7 +320,8 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		if (state.connecting) return `◐ ${name} (${transport}) · connecting`;
 		if (state.client?.connectionState === "connected") {
 			const resources = state.hasResources ? " · resources" : "";
-			return `● ${name} (${transport}) · connected · ${state.tools.size} tool${state.tools.size === 1 ? "" : "s"}${resources}`;
+			const version = state.client.protocolVersion ? ` · MCP ${state.client.protocolVersion}` : "";
+			return `● ${name} (${transport}) · connected${version} · ${state.tools.size} tool${state.tools.size === 1 ? "" : "s"}${resources}`;
 		}
 		const last = lastStatus.get(name);
 		return last?.state === "offline"
@@ -324,17 +347,24 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 	};
 
 	/** Open one connection (and list its tools); the client is tracked until closed. */
-	const openOnce = async (state: ServerState, list: boolean): Promise<{ client: McpClient; tools: McpToolInfo[] }> => {
+	const openOnce = async (
+		state: ServerState,
+		list: boolean,
+		era: McpProtocolEra | undefined = state.era,
+	): Promise<{ client: McpClient; tools: McpToolInfo[] }> => {
 		const client = new McpClient({
 			...options.clientInfo,
 			platform: options.platform,
 			...(options.roots ? { roots: options.roots } : {}),
 			...(options.elicit ? { capabilities: { elicitation: ELICITATION_CAPABILITY } } : {}),
+			...(options.protocolNegotiation ? { protocolNegotiation: options.protocolNegotiation } : {}),
 		});
 		clients.add(client);
 		client.onClose(() => {
 			clients.delete(client);
 			if (state.client === client) state.client = undefined;
+			// The server dropped 2026-07-28 mid-connection: probe again next time.
+			if (client.eraRejected) state.era = undefined;
 		});
 		if (options.elicit) {
 			client.setRequestHandler("elicitation/create", (params, { signal }) => elicit(state, params, signal));
@@ -350,7 +380,8 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		}
 		try {
 			const timeoutMs = state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS;
-			await client.connect(options.createTransport(state.config), { timeoutMs });
+			await client.connect(options.createTransport(state.config), { timeoutMs, ...(era ? { era } : {}) });
+			state.era = client.protocolEra;
 			client.onNotification("notifications/tools/list_changed", () => {
 				void refreshTools(state, client);
 			});
@@ -367,6 +398,8 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 			return { client, tools };
 		} catch (error) {
 			await client.close().catch(() => {});
+			// A remembered era that no longer holds is probed for again (spec).
+			state.era = undefined;
 			throw error;
 		}
 	};
@@ -380,7 +413,11 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		const startedIn = generation;
 		for (let attempt = 0; ; attempt++) {
 			try {
-				return await openOnce(state, list);
+				return await openOnce(state, list).catch((error) => {
+					// The probe knocked a stdio server over: a fresh process on the legacy handshake.
+					if (error instanceof McpProbeExitedError) return openOnce(state, list, "legacy");
+					throw error;
+				});
 			} catch (error) {
 				const delay = retries[attempt];
 				if (delay === undefined || startedIn !== generation || !isTransientError(error)) throw error;
@@ -742,6 +779,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 					server,
 					state: "connected",
 					toolCount: tools.length,
+					...(client.protocolVersion ? { protocolVersion: client.protocolVersion } : {}),
 					...(state.hasResources ? { resources: true } : {}),
 				});
 			} catch (cause) {

@@ -44,6 +44,29 @@ export const JSON_RPC_ERROR_CODES = {
 	internalError: -32603,
 } as const;
 
+/** Error codes MCP 2026-07-28 reserves (-32020 to -32099); any of them marks a modern server. */
+export const MCP_ERROR_CODES = {
+	headerMismatch: -32020,
+	missingRequiredClientCapability: -32021,
+	unsupportedProtocolVersion: -32022,
+} as const;
+
+/** `_meta` keys MCP 2026-07-28 reserves for the per-request envelope and its replies. */
+export const MCP_META = {
+	protocolVersion: "io.modelcontextprotocol/protocolVersion",
+	clientInfo: "io.modelcontextprotocol/clientInfo",
+	clientCapabilities: "io.modelcontextprotocol/clientCapabilities",
+	serverInfo: "io.modelcontextprotocol/serverInfo",
+	subscriptionId: "io.modelcontextprotocol/subscriptionId",
+} as const;
+
+/** The protocol version a 2026-07-28 request declares in its envelope; undefined for anything else. */
+export function envelopeVersion(message: unknown): string | undefined {
+	if (!isJsonRpcRequest(message) || !isObject(message.params) || !isObject(message.params._meta)) return undefined;
+	const version = message.params._meta[MCP_META.protocolVersion];
+	return typeof version === "string" ? version : undefined;
+}
+
 export class McpError extends Error {
 	readonly code: number;
 	readonly data: unknown;
@@ -77,6 +100,25 @@ export class McpAbortError extends Error {
 	constructor(message = "MCP request aborted") {
 		super(message);
 		this.name = "AbortError";
+	}
+}
+
+/**
+ * A stdio server left in no state to shake hands by the 2026-07-28 probe (it exited, or
+ * initialize failed after it): connect again on a fresh process with era "legacy" (P47).
+ */
+export class McpProbeExitedError extends Error {
+	constructor(message = "MCP server exited when asked for protocol 2026-07-28") {
+		super(message);
+		this.name = "McpProbeExitedError";
+	}
+}
+
+/** A 2026-07-28 response stream that broke before its response (reissued once, then this). */
+export class McpStreamBrokenError extends Error {
+	constructor(reason: string) {
+		super(`MCP response stream failed: ${reason}`);
+		this.name = "McpStreamBrokenError";
 	}
 }
 

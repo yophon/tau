@@ -74,6 +74,7 @@ export interface StdioTransportOptions {
 }
 
 export class StdioTransport extends TransportEvents implements McpTransport {
+	readonly kind = "stdio" as const;
 	readonly options: Readonly<StdioTransportOptions>;
 	private child: ChildProcess | undefined;
 	private stdoutBuffer = Buffer.alloc(0);

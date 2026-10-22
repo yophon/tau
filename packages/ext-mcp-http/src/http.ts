@@ -2,6 +2,12 @@
 // transports/streamable-http.ts, the subset tau uses). Each request is a POST;
 // the reply comes back as JSON or as an SSE stream on the same response.
 //
+// P47 (MCP 2026-07-28): a request that carries the per-request envelope is sent as
+// that revision says, whatever the connection: MCP-Protocol-Version from the envelope,
+// Mcp-Method, Mcp-Name and the caller's Mcp-Param-* headers, no session id; a 4xx whose
+// body is a JSON-RPC error for it is delivered as that error (the probe and the client
+// read it), and a broken stream is reported to the caller to reissue, never resumed.
+//
 // An SSE stream that ends or breaks before its response arrives is resumed with
 // GET and Last-Event-ID when the server assigned event ids, as servers may close
 // response streams at will (pi; MCP 2025-11-25). The server-to-client GET stream
@@ -11,11 +17,15 @@
 // session), no auth provider (headers only, D24). Adapters without response
 // headers (some mini-program request APIs) are handled by sniffing the body.
 import { AbortHandle, type Platform, type PlatformResponse, SseParser, type TauAbortSignal } from "@yophon/tau-kernel";
+import { standardHeaders } from "./headers.ts";
 import {
+	envelopeVersion,
 	isJsonRpcRequest,
+	isJsonRpcResponse,
 	JSON_RPC_ERROR_CODES,
 	type JsonRpcId,
 	type JsonRpcMessage,
+	type JsonRpcResponse,
 	McpConnectionClosedError,
 	parseJsonRpcMessage,
 	toError,
@@ -107,7 +117,18 @@ function reconnectDelay(attempt: number, serverDelayMs: number | undefined): num
 	return Math.min(RECONNECT_INITIAL_DELAY_MS * 2 ** attempt, RECONNECT_MAX_DELAY_MS);
 }
 
+/** The JSON-RPC error a 4xx body carries for request `id`, if it is one. */
+function errorReplyFor(body: string, id: JsonRpcId): JsonRpcResponse | undefined {
+	try {
+		const reply: unknown = JSON.parse(body);
+		return isJsonRpcResponse(reply) && "error" in reply && reply.id === id ? reply : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
 export class StreamableHttpTransport extends TransportEvents implements McpTransport {
+	readonly kind = "http" as const;
 	readonly options: Readonly<StreamableHttpTransportOptions>;
 	private readonly lifetime = new AbortHandle();
 	private started = false;
@@ -138,14 +159,12 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		return this.sendOnce(message, options, false);
 	}
 
-	private async sendOnce(
-		message: JsonRpcMessage,
-		{ signal }: McpTransportSendOptions,
-		retried: boolean,
-	): Promise<void> {
+	private async sendOnce(message: JsonRpcMessage, options: McpTransportSendOptions, retried: boolean): Promise<void> {
+		const { signal } = options;
 		if (!this.started || this.closed) throw new McpConnectionClosedError();
 		if (signal?.aborted) return;
 		const isInitialize = isJsonRpcRequest(message) && message.method === "initialize";
+		const modern = envelopeVersion(message);
 		const headers: Record<string, string> = {
 			"content-type": "application/json",
 			accept: "application/json, text/event-stream",
@@ -153,8 +172,12 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		};
 		const token = await this.options.auth?.token();
 		if (token) headers.authorization = `Bearer ${token}`;
-		// The initialize request itself carries neither header (MCP spec).
-		if (!isInitialize) {
+		if (modern !== undefined && isJsonRpcRequest(message)) {
+			// MCP 2026-07-28: the headers mirror the body; there is no session.
+			Object.assign(headers, { "mcp-protocol-version": modern }, standardHeaders(message.method, message.params));
+			Object.assign(headers, options.headers);
+		} else if (!isInitialize) {
+			// The initialize request itself carries neither header (MCP spec).
 			if (this.protocolVersion !== undefined) headers["mcp-protocol-version"] = this.protocolVersion;
 			if (this.sessionIdValue !== undefined) headers["mcp-session-id"] = this.sessionIdValue;
 		}
@@ -174,6 +197,8 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 			throw error;
 		}
 		if (!response.ok) {
+			// A 2026-07-28 server explains a 4xx in a JSON-RPC error body (version, headers, method).
+			const body = modern !== undefined ? await response.text().catch(() => "") : undefined;
 			request.abort("settled");
 			if (response.status === 401 && !retried && this.options.auth?.onUnauthorized) {
 				await this.options.auth.onUnauthorized({
@@ -181,7 +206,12 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 					serverUrl: this.options.url,
 					...(token ? { token } : {}),
 				});
-				return this.sendOnce(message, { signal }, true);
+				return this.sendOnce(message, options, true);
+			}
+			const reply = body !== undefined && isJsonRpcRequest(message) ? errorReplyFor(body, message.id) : undefined;
+			if (reply) {
+				this.emitMessage(reply);
+				return;
 			}
 			if (response.status === 404 && this.sessionIdValue !== undefined && !isInitialize) {
 				throw new McpSessionExpiredError();
@@ -203,7 +233,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		const type = contentType(response);
 		if (type === "text/event-stream") {
 			// The reply streams in; read it in the background so send() resolves on dispatch (pi).
-			void this.consumeResponseStream(response, message.id, request);
+			void this.consumeResponseStream(response, message.id, request, options.onStreamBroken);
 			return;
 		}
 		try {
@@ -363,12 +393,14 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 	/**
 	 * Read the SSE reply to one request. When the stream ends or breaks before the response
 	 * arrives and the server assigned event ids, resume it with GET and Last-Event-ID (pi);
-	 * otherwise, or once resuming fails, only this request fails.
+	 * otherwise, or once resuming fails, only this request fails. With `onStreamBroken`
+	 * (MCP 2026-07-28, no resumption) the caller is told instead.
 	 */
 	private async consumeResponseStream(
 		response: PlatformResponse,
 		requestId: JsonRpcId,
 		request: AbortHandle,
+		onStreamBroken?: (reason: string) => void,
 	): Promise<void> {
 		const cursor = newCursor();
 		let answered = false;
@@ -391,6 +423,7 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 					}
 				}
 				if (answered || stopped()) return;
+				if (onStreamBroken) break;
 				if (failure !== undefined && !isRetryable(failure)) break;
 				if (cursor.lastEventId === undefined || attempt >= RECONNECT_MAX_RETRIES || !sleep) break;
 				if (cursor.received) attempt = 0;
@@ -417,6 +450,10 @@ export class StreamableHttpTransport extends TransportEvents implements McpTrans
 		}
 		if (this.closed) return;
 		const reason = failure === undefined ? "stream ended without a response" : toError(failure).message;
+		if (onStreamBroken) {
+			onStreamBroken(reason);
+			return;
+		}
 		this.emitMessage({
 			jsonrpc: "2.0",
 			id: requestId,

@@ -455,7 +455,7 @@ test("the resource tools take the widest exposure of the servers they reach; hid
 test("/mcp marks servers with resources", async () => {
 	const s = await servers([{ name: "docs", handle: server({ resources: {} }, files) }]);
 	const output = await s.registry.commands.get("mcp")?.handler("", {} as never);
-	assert.match(String(output), /● docs \(stdio\) · connected · 0 tools · resources/);
+	assert.match(String(output), /● docs \(stdio\) · connected · MCP 2025-11-25 · 0 tools · resources/);
 	await s.handle.close();
 });
 

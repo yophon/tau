@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import {
 	createMcpServers,
 	type McpElicitHandler,
+	type McpProtocolNegotiation,
 	type McpServerConfig,
 	type McpServerStatus,
 	StreamableHttpTransport,
@@ -75,6 +76,8 @@ export interface McpExtensionOptions {
 	resourceMentions?: boolean;
 	/** wait_for_mcp_servers while servers connect (default true; P46). */
 	waitTool?: boolean;
+	/** "auto" asks servers for MCP 2026-07-28 first (P47, Claude Code); "legacy" (default) only shakes hands. */
+	protocolNegotiation?: McpProtocolNegotiation;
 }
 
 /**
@@ -99,6 +102,7 @@ export function createMcpExtension(options: McpExtensionOptions): Extension {
 		...(options.promptCommands === false ? { promptCommands: false } : {}),
 		...(options.resourceMentions === false ? { resourceMentions: false } : {}),
 		...(options.waitTool === false ? { waitTool: false } : {}),
+		...(options.protocolNegotiation ? { protocolNegotiation: options.protocolNegotiation } : {}),
 		// Without a UI (tau -p, pipes) an unavailable server still gets reported.
 		reportUnavailable: (message) => process.stderr.write(`${message}\n`),
 		createTransport: (config) => {
