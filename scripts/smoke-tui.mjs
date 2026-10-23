@@ -62,6 +62,7 @@ async function main() {
 		await run("p46", runP46Smoke);
 		await run("p47", runP47Smoke);
 		await run("p49", runP49Smoke);
+		await run("p53", runP53Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -1127,6 +1128,43 @@ async function runP49Smoke(root, baseUrl) {
 	}
 }
 
+// P53 (yo-agent): -r opens the session picker at start and resumes the one picked; /cwd; /tasks shows
+// a running background subagent's latest activity.
+async function runP53Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p53", true);
+	const first = await startTui("p53-first", dirs, baseUrl, []);
+	try {
+		await first.waitFor("tau ·", 10_000);
+		await first.send("pricing smoke", "Enter");
+		await first.waitFor("SMOKE_PRICING_OK", 10_000);
+		await first.send("exit", "Enter");
+		await first.waitForExit();
+	} finally {
+		await first.kill();
+	}
+	const session = await startTui("p53", dirs, baseUrl, ["-r"]);
+	try {
+		await session.waitFor("Resume a session", 10_000);
+		await session.waitFor("pricing smoke", 5_000);
+		await session.send("Enter");
+		await session.waitFor("SMOKE_PRICING_OK", 10_000);
+		await session.send("/cwd", "Enter");
+		await session.waitFor(dirs.cwd.split("/").at(-1), 5_000);
+		await session.send("p53 bg smoke", "Enter");
+		await session.waitFor("SMOKE_P53_BG_STARTED", 10_000);
+		await sleep(500);
+		await session.send("/tasks", "Enter");
+		await session.waitFor("Background tasks", 5_000);
+		await session.send("Enter");
+		await session.waitFor("View", 5_000);
+		await session.send("Enter");
+		await session.waitFor("● read(p53.txt)", 5_000);
+		console.log("ok p53");
+	} finally {
+		await session.kill();
+	}
+}
+
 async function runP47Smoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "p47", false);
 	const server = join(dirs.home, "smoke-modern.mjs");
@@ -1690,6 +1728,11 @@ function responseFor(request) {
 	const messages = Array.isArray(request.messages) ? request.messages : [];
 	if (String(messages[0]?.content ?? "").includes("worker agent")) {
 		const asked = messages.filter((message) => message.role === "user").map((message) => String(message.content ?? ""));
+		if (asked.includes("SMOKE_P53_CHILD")) {
+			return messages.some((message) => message.role === "tool")
+				? { payloads: [], hold: true }
+				: toolCallTurn("read", { path: "p53.txt" });
+		}
 		if (asked.includes("SMOKE_CHILD_TASK")) {
 			return textTurn(asked.includes("SMOKE_CHILD_AGAIN") ? "SMOKE_CHILD_RESUMED" : "SMOKE_CHILD_FIRST");
 		}
@@ -1728,6 +1771,7 @@ function responseFor(request) {
 		if (content.includes("SMOKE_CHILD_FIRST"))
 			return toolCallTurn("send_message", { to: "sub-1", message: "SMOKE_CHILD_AGAIN" });
 		if (content.includes("Resumed sub-1")) return textTurn("SMOKE_SENT");
+		if (content.includes("Started 1 background subagent: sub-1")) return textTurn("SMOKE_P53_BG_STARTED");
 	}
 	if (String(messages[0]?.content ?? "").includes("You are a context transfer assistant")) {
 		return textTurn("## Context\nSmoke context.\n\n## Task\nSMOKE_HANDOFF_TASK");
@@ -1738,6 +1782,7 @@ function responseFor(request) {
 	if (content.includes("SMOKE_CHILD_RESUMED")) return textTurn("SMOKE_RESUME_DONE");
 	if (content.includes("worktree smoke")) return toolCallTurn("enter_worktree", { name: "smoke" });
 	if (content.includes("resume smoke")) return toolCallTurn("subagent", { task: "SMOKE_CHILD_TASK" });
+	if (content.includes("p53 bg smoke")) return toolCallTurn("subagent", { task: "SMOKE_P53_CHILD", background: true });
 	// P45: the diagnostics message is the newest user-role message after the write.
 	if (content.includes("<new-diagnostics>") && content.includes("SMOKE_LSP_ERROR")) {
 		return toolCallTurn("lsp", { operation: "documentSymbol", filePath: "smoke.ts", line: 1, character: 1 });
