@@ -41,6 +41,7 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import { restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import type { GatewayCommand } from "./args.ts";
 import { OWN_ANSWER, SKIP_QUESTION } from "./ask-user.ts";
 import {
 	type AuditHost,
@@ -54,7 +55,6 @@ import {
 } from "./audit.ts";
 import { backgroundTasksText } from "./background.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
-import type { GatewayCommand } from "./main.ts";
 import type { MemoryScope } from "./memory.ts";
 import { HeadlessSession, type HeadlessWorkspace, type ModelSwitch } from "./modes/headless.ts";
 import { readSettings } from "./settings.ts";
