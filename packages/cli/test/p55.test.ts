@@ -1,7 +1,7 @@
 // P55 in the CLI: apply_patch (55a), loop detection (55b), checkpoints (55c).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -162,6 +162,27 @@ describe("P55c checkpoints in the CLI", () => {
 		} finally {
 			await on.close();
 			await off.close();
+		}
+	});
+});
+
+describe("P55c checkpoint cleanup", () => {
+	it("removes the checkpoints of sessions untouched for 30 days at start, keeps recent ones", async () => {
+		const mock = await startMockOpenAI([() => mockTextTurn("HI")]);
+		try {
+			const home = mkdtempSync(join(tmpdir(), "tau-p55c-clean-"));
+			const root = join(home, ".tau", "checkpoints");
+			mkdirSync(join(root, "old-session"), { recursive: true });
+			mkdirSync(join(root, "recent-session"), { recursive: true });
+			writeFileSync(join(root, "old-session", "x.json"), "{}");
+			const fortyDaysAgo = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+			utimesSync(join(root, "old-session"), fortyDaysAgo, fortyDaysAgo);
+			const result = await run(["-p", "hi"], mkdtempSync(join(tmpdir(), "tau-p55c-cwd-")), mock.baseUrl, home);
+			assert.equal(result.code, 0, result.output);
+			assert.equal(existsSync(join(root, "old-session")), false);
+			assert.equal(existsSync(join(root, "recent-session")), true);
+		} finally {
+			await mock.close();
 		}
 	});
 });
