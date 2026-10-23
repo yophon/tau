@@ -31,6 +31,7 @@
 		"@yophon/tau-ext-lsp": "^0.2.0",
 		"@yophon/tau-ext-mcp": "^0.2.0",
 		"@yophon/tau-ext-provider-anthropic": "^0.2.0",
+		"@yophon/tau-ext-provider-google": "^0.2.0",
 		"@yophon/tau-ext-provider-openai-responses": "^0.2.0",
 		"@yophon/tau-ext-resources": "^0.2.0",
 		"@yophon/tau-ext-subagents": "^0.2.0",

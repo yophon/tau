@@ -20,6 +20,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-lsp",
 	"ext-provider-anthropic",
 	"ext-provider-openai-responses",
+	"ext-provider-google",
 	"ext-resources",
 	"ext-feishu",
 	"gateway",

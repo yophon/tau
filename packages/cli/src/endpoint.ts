@@ -1,6 +1,6 @@
 // The model and endpoint a session runs on (P50: split out of main.ts): the startup choice
 // (models.json, then flags and environment variables scoped to one wire protocol), each
-// endpoint's config and native transport config (Anthropic, OpenAI Responses), /model's switch
+// endpoint's config and native transport config (Anthropic, OpenAI Responses, Gemini), /model's switch
 // across providers (D21 addendum, D33), and the prices that apply.
 import {
 	ANTHROPIC_DEFAULT_BASE_URL,
@@ -9,6 +9,12 @@ import {
 	createAnthropicTransport,
 	defaultMaxTokens,
 } from "@yophon/tau-ext-provider-anthropic";
+import {
+	createGoogleTransport,
+	GOOGLE_DEFAULT_BASE_URL,
+	GOOGLE_GENERATIVE_AI_API,
+	type GoogleTransportConfig,
+} from "@yophon/tau-ext-provider-google";
 import {
 	createOpenAIResponsesTransport,
 	OPENAI_DEFAULT_BASE_URL,
@@ -52,7 +58,8 @@ import type { TauSettings } from "./settings.ts";
 /** A protocol the kernel does not speak itself, with its transport's config (read per request). */
 export type NativeTransportConfig =
 	| { kind: "anthropic"; config: AnthropicTransportConfig }
-	| { kind: "openai-responses"; config: OpenAIResponsesTransportConfig };
+	| { kind: "openai-responses"; config: OpenAIResponsesTransportConfig }
+	| { kind: "google"; config: GoogleTransportConfig };
 
 /** The endpoint a session runs on (P50: one object, so /model's switch reaches every reader). */
 export interface ActiveEndpoint {
@@ -66,7 +73,13 @@ export interface ActiveEndpoint {
 
 /** The --provider kind of a models.json api. */
 export function providerKindOf(api: ModelApi): ProviderKind {
-	return api === "anthropic-messages" ? "anthropic" : api === "openai-responses" ? "openai-responses" : "openai";
+	return api === "anthropic-messages"
+		? "anthropic"
+		: api === "openai-responses"
+			? "openai-responses"
+			: api === "google-generative-ai"
+				? "google"
+				: "openai";
 }
 
 /** The endpoint a protocol has when none is given; Chat Completions has none. */
@@ -75,7 +88,9 @@ function defaultBaseUrl(provider: ProviderKind): string | undefined {
 		? ANTHROPIC_DEFAULT_BASE_URL
 		: provider === "openai-responses"
 			? OPENAI_DEFAULT_BASE_URL
-			: undefined;
+			: provider === "google"
+				? GOOGLE_DEFAULT_BASE_URL
+				: undefined;
 }
 
 /** What every endpoint of the run shares: the stall timeout, TAU_MAX_TOKENS and the Chat Completions dialect knobs. */
@@ -146,20 +161,22 @@ export function resolveStartupEndpoint(input: {
 		: (options.provider ?? envProvider ?? "openai");
 	// Endpoint and credential env vars are scoped to one wire protocol, so a key
 	// configured for one vendor is never sent to another vendor's host: OPENAI_* only
-	// feed openai and openai-responses, ANTHROPIC_* only feed anthropic, and TAU_BASE_URL/TAU_API_KEY only
+	// feed openai and openai-responses, ANTHROPIC_* only feed anthropic, GEMINI_API_KEY only google, and TAU_BASE_URL/TAU_API_KEY only
 	// the protocol TAU_PROVIDER names (openai when unset). Explicit flags always win.
 	const tauEnvApplies = (envProvider ?? "openai") === provider;
 	const vendorEnv =
 		provider === "anthropic"
 			? { baseUrl: process.env.ANTHROPIC_BASE_URL, apiKey: process.env.ANTHROPIC_API_KEY }
-			: { baseUrl: process.env.OPENAI_BASE_URL, apiKey: process.env.OPENAI_API_KEY };
+			: provider === "google"
+				? { baseUrl: undefined, apiKey: process.env.GEMINI_API_KEY }
+				: { baseUrl: process.env.OPENAI_BASE_URL, apiKey: process.env.OPENAI_API_KEY };
 	const baseUrl = activeModel
 		? activeModel.baseUrl
 		: (options.baseUrl ?? (tauEnvApplies ? process.env.TAU_BASE_URL : undefined) ?? (vendorEnv.baseUrl || undefined));
 	const apiKey = activeModel
 		? resolveConfigValue(activeModel.apiKey, valueResolver)
 		: (options.apiKey ?? (tauEnvApplies ? process.env.TAU_API_KEY : undefined) ?? (vendorEnv.apiKey || undefined));
-	// anthropic and openai-responses have well-known default endpoints; the OpenAI-compatible world does not.
+	// The vendor protocols have well-known default endpoints; the OpenAI-compatible world does not.
 	if (!model || (provider === "openai" && !baseUrl)) {
 		if (modelsConfig.present) {
 			console.error(`No model in ${modelsConfig.path} has a usable API key, and no --base-url/--model was given.\n`);
@@ -172,7 +189,8 @@ export function resolveStartupEndpoint(input: {
 		process.exit(1);
 	}
 	if (provider !== "openai" && !apiKey) {
-		const vendorKey = provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
+		const vendorKey =
+			provider === "anthropic" ? "ANTHROPIC_API_KEY" : provider === "google" ? "GEMINI_API_KEY" : "OPENAI_API_KEY";
 		console.error(
 			`--provider ${provider} requires an API key (--api-key, ${vendorKey}, or TAU_API_KEY with TAU_PROVIDER=${provider}).`,
 		);
@@ -247,7 +265,9 @@ export function endpointTransport(
 			? createAnthropicTransport(native.config, platform)
 			: native?.kind === "openai-responses"
 				? createOpenAIResponsesTransport(native.config, platform)
-				: undefined;
+				: native?.kind === "google"
+					? createGoogleTransport(native.config, platform)
+					: undefined;
 	const shim = model ? model.toolCalling === "prompt" : process.env.TAU_TOOL_SHIM === "1";
 	return shim ? withPromptToolShim(base ?? createOpenAICompatTransport(platform, built.config)) : base;
 }
@@ -284,9 +304,11 @@ export function buildEndpoint(
 			? { provider: spec.label ?? "anthropic", api: ANTHROPIC_MESSAGES_API }
 			: spec.kind === "openai-responses"
 				? { provider: spec.label ?? "openai", api: OPENAI_RESPONSES_API }
-				: spec.label !== undefined
-					? { provider: spec.label }
-					: {}),
+				: spec.kind === "google"
+					? { provider: spec.label ?? "google", api: GOOGLE_GENERATIVE_AI_API }
+					: spec.label !== undefined
+						? { provider: spec.label }
+						: {}),
 		...headers,
 		...stallTimeout,
 		// TAU_INPUT (in dialect) still wins over the table.
@@ -294,6 +316,22 @@ export function buildEndpoint(
 		...dialect,
 	};
 	const maxTokens = spec.maxTokens ?? envMaxTokens;
+	if (spec.kind === "google") {
+		const google: GoogleTransportConfig = {
+			// The required-key gate ran already; assert for the type system.
+			apiKey: spec.apiKey as string,
+			model: spec.model,
+			...(spec.baseUrl !== undefined ? { baseUrl: spec.baseUrl } : {}),
+			...(maxTokens !== undefined ? { maxTokens } : {}),
+			...(spec.label !== undefined ? { provider: spec.label } : {}),
+			// An endpoint from flags or the environment is taken for a thinking model (current Gemini models are).
+			reasoning: spec.reasoning ?? true,
+			...(config.input ? { input: config.input } : {}),
+			...headers,
+			...stallTimeout,
+		};
+		return { config, native: { kind: "google", config: google } };
+	}
 	if (spec.kind === "openai-responses") {
 		const responses: OpenAIResponsesTransportConfig = {
 			// The required-key gate ran already; assert for the type system.

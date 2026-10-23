@@ -1,7 +1,7 @@
 // Kernel purity gate: @yophon/tau-kernel must bundle for a neutral platform with no
 // external imports, and its sources must not reference host globals. Anything
 // beyond ECMAScript must flow through the Platform seam.
-// Pure-Platform extension packages (ext-mcp-http, ext-provider-anthropic) run
+// Pure-Platform extension packages (ext-mcp-http, the ext-provider-* transports) run
 // under the same gate: identical source scan, neutral bundle with only the
 // kernel left external.
 import { readdirSync, readFileSync } from "node:fs";
@@ -17,6 +17,7 @@ const PURE_PACKAGES = [
 	{ dir: "ext-mcp-http", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-provider-anthropic", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-provider-openai-responses", external: ["@yophon/tau-kernel"] },
+	{ dir: "ext-provider-google", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-tool-search", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-web", external: ["@yophon/tau-kernel"] },
 	// The pure entry only; ./node wires the worker-thread sandbox (D30).

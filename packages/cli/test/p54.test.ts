@@ -1,4 +1,4 @@
-// P54 in the CLI: OpenAI Responses (54a), model fallback (54c), the prompt shim (54d).
+// P54 in the CLI: OpenAI Responses (54a), Gemini (54b), model fallback (54c), the prompt shim (54d).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -165,23 +165,41 @@ describe("P54d the prompt shim in the CLI", () => {
 	});
 });
 
-/** A server answering each POST with the next scripted SSE stream (Responses framing); records what it got. */
-async function scriptedSse(streams: Array<Array<Record<string, unknown> & { type: string }>>): Promise<{
+/** A server answering each POST with the next scripted SSE stream (an event line when the data has a type); records what it got. */
+async function scriptedSse(streams: Array<Array<Record<string, unknown>>>): Promise<{
 	baseUrl: string;
-	requests: Array<{ url: string; authorization: string | undefined; body: Record<string, unknown> }>;
+	requests: Array<{
+		url: string;
+		authorization: string | undefined;
+		key: string | undefined;
+		body: Record<string, unknown>;
+	}>;
 	close: () => Promise<void>;
 }> {
-	const requests: Array<{ url: string; authorization: string | undefined; body: Record<string, unknown> }> = [];
+	const requests: Array<{
+		url: string;
+		authorization: string | undefined;
+		key: string | undefined;
+		body: Record<string, unknown>;
+	}> = [];
 	const server: Server = createServer((req, res) => {
 		let raw = "";
 		req.setEncoding("utf8").on("data", (chunk: string) => {
 			raw += chunk;
 		});
 		req.on("end", () => {
-			requests.push({ url: req.url ?? "", authorization: req.headers.authorization, body: JSON.parse(raw || "{}") });
+			const key = req.headers["x-goog-api-key"];
+			requests.push({
+				url: req.url ?? "",
+				authorization: req.headers.authorization,
+				key: typeof key === "string" ? key : undefined,
+				body: JSON.parse(raw || "{}"),
+			});
 			const events = streams[requests.length - 1] ?? [];
 			res.writeHead(200, { "content-type": "text/event-stream" });
-			res.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+			const frame = (event: Record<string, unknown>) =>
+				`${typeof event.type === "string" ? `event: ${event.type}\n` : ""}data: ${JSON.stringify(event)}\n\n`;
+			res.end(events.map(frame).join(""));
 		});
 	});
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -248,6 +266,63 @@ describe("P54a OpenAI Responses in the CLI", () => {
 				(item) => item.type === "function_call_output",
 			);
 			assert.match(String(output?.output), /RESPONSES_FILE/);
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+describe("P54b Gemini in the CLI", () => {
+	it("a models.json model with api google-generative-ai runs a tool loop; --provider google works ad hoc", async () => {
+		const turn = (parts: unknown[], finishReason = "STOP") => ({
+			candidates: [{ content: { role: "model", parts }, finishReason }],
+			usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2, totalTokenCount: 7 },
+		});
+		const mock = await scriptedSse([
+			[turn([{ functionCall: { id: "c1", name: "read", args: { path: "note.txt" } } }])],
+			[turn([{ text: "GEMINI_DONE" }])],
+			[turn([{ text: "AD_HOC_DONE" }])],
+		]);
+		try {
+			const home = mkdtempSync(join(tmpdir(), "tau-p54g-home-"));
+			const cwd = mkdtempSync(join(tmpdir(), "tau-p54g-cwd-"));
+			writeFileSync(join(cwd, "note.txt"), "GEMINI_FILE\n");
+			mkdirSync(join(home, ".tau"), { recursive: true });
+			writeFileSync(
+				join(home, ".tau", "models.json"),
+				JSON.stringify({
+					providers: {
+						gem: {
+							baseUrl: mock.baseUrl,
+							api: "google-generative-ai",
+							apiKey: "g-key",
+							models: [{ id: "gemini-3-pro-preview", reasoning: true }],
+						},
+					},
+				}),
+			);
+			const result = await run(["-m", "gem/gemini-3-pro-preview", "-p", "what is in note.txt?"], home, cwd);
+			assert.equal(result.code, 0, result.output);
+			assert.match(result.output, /GEMINI_DONE/);
+			const [first, second] = mock.requests;
+			assert.equal(first?.url, "/v1/models/gemini-3-pro-preview:streamGenerateContent?alt=sse");
+			assert.equal(first?.key, "g-key");
+			assert.ok(first?.body.systemInstruction, "the system prompt as systemInstruction");
+			assert.ok(Array.isArray(first?.body.tools));
+			const response = (second?.body.contents as Array<{ parts: Array<{ functionResponse?: { response: unknown } }> }>)
+				.flatMap((content) => content.parts)
+				.find((part) => part.functionResponse);
+			assert.match(JSON.stringify(response?.functionResponse?.response), /GEMINI_FILE/);
+
+			const adHoc = await run(
+				["--provider", "google", "-b", mock.baseUrl, "-k", "ad-hoc-key", "-m", "gemini-2.5-flash", "-p", "hi"],
+				home,
+				cwd,
+			);
+			assert.equal(adHoc.code, 0, adHoc.output);
+			assert.match(adHoc.output, /AD_HOC_DONE/);
+			assert.equal(mock.requests[2]?.key, "ad-hoc-key");
+			assert.equal(mock.requests[2]?.url, "/v1/models/gemini-2.5-flash:streamGenerateContent?alt=sse");
 		} finally {
 			await mock.close();
 		}

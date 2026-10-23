@@ -9,8 +9,13 @@ import type { ModelPricing } from "@yophon/tau-kernel";
 import { defaultCredentialLookup } from "./credentials.ts";
 import { registerSecret } from "./secrets.ts";
 
-/** Wire APIs tau speaks (pi names): the kernel's Chat Completions, ext-provider-anthropic, ext-provider-openai-responses (P54a). */
-export const MODEL_APIS = ["openai-completions", "anthropic-messages", "openai-responses"] as const;
+/** Wire APIs tau speaks (pi names): the kernel's Chat Completions and the ext-provider-* transports (P54: Responses, Gemini). */
+export const MODEL_APIS = [
+	"openai-completions",
+	"anthropic-messages",
+	"openai-responses",
+	"google-generative-ai",
+] as const;
 export type ModelApi = (typeof MODEL_APIS)[number];
 
 /** Prices in USD per million tokens (pi `cost`). */
@@ -26,7 +31,7 @@ export interface ConfiguredModel {
 	id: string;
 	name?: string;
 	api: ModelApi;
-	/** Omitted for anthropic-messages = https://api.anthropic.com, for openai-responses = https://api.openai.com/v1. */
+	/** Required for openai-completions; the other protocols have their vendor's endpoint by default. */
 	baseUrl?: string;
 	/** The key as written: `$NAME`, `${NAME}`, `!command` or a literal; resolve with resolveConfigValue. */
 	apiKey?: string;
@@ -280,6 +285,7 @@ export function describeModel(model: ConfiguredModel): string {
 	if (model.reasoning) parts.push("reasoning");
 	if (model.api === "anthropic-messages") parts.push("anthropic");
 	if (model.api === "openai-responses") parts.push("responses");
+	if (model.api === "google-generative-ai") parts.push("gemini");
 	return parts.join(" · ");
 }
 
