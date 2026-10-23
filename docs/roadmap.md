@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**下一阶段待定**）
+> 最后更新：2026-10-23（P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P52**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -67,6 +67,10 @@
 | [P51](specs/phase-51-structure-followup.md) | P50 的结构收尾：TUI 各部分与命令表收窄接口，内核一份 `AgentInternals`，结构门禁 | 2026-10-23 | D54 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
+
+## Phase 52 🚧 项目现状复盘
+
+规格书（2026-10-23 确认；用户：「1、可以，2 可以…4.先记录」）：[specs/phase-52-retrospective.md](specs/phase-52-retrospective.md)。不加功能、不改代码：定位与范围、代码健康、测试与验证、依赖与发布、文档与流程五块复盘，加上对照 yo-agent 的 TUI（功能差距与摘出来的可行性）；产出 `docs/retrospectives/2026-10-23.md`。
 
 ## 产品层后续 ⬜ 待定
 
