@@ -2,14 +2,11 @@
 // extension), the active set declared to the model (pi agent.state.tools) with names restored
 // from the transcript that wait for their tool to register (pi _pendingToolNames, P48's restore
 // rules), the tools callable through ctx.executeTool(), and the loadout a request declares.
-
 import type { ExtensionRegistry } from "./extensions.ts";
-
+import type { AgentMessage } from "./messages.ts";
 import type { ToolPolicy } from "./policy.ts";
 import { getCurrentTools } from "./projection.ts";
-
 import type { SessionEntry } from "./session.ts";
-
 import {
 	applyToolModifiers,
 	isActivatedOnRegistration,
@@ -266,4 +263,25 @@ export class ToolState {
 		const { declared, hidden } = this.computeLoadout();
 		return declared.filter((tool) => !hidden.has(tool.name)).map((tool) => this.toolInfo(tool));
 	}
+}
+
+/**
+ * Leave the declarations prepareLoadout hooks hide out of a request (pi
+ * _installHiddenDeclarationsProjection). The whole transcript is filtered with the
+ * current set, so the declarations stay consistent across requests and only change
+ * when the loadout does. The log keeps them: the active set survives /tree and resume.
+ */
+export function withoutHiddenDeclarations(messages: AgentMessage[], hidden: ReadonlySet<string>): AgentMessage[] {
+	if (hidden.size === 0) return messages;
+	return messages.map((message) => {
+		if (message.role !== "system" || (!message.toolsAdded && !message.toolsRemoved)) return message;
+		const { toolsAdded, toolsRemoved, ...rest } = message;
+		const added = toolsAdded?.filter((tool) => !hidden.has(tool.name)) ?? [];
+		const removed = toolsRemoved?.filter((tool) => !hidden.has(tool.name)) ?? [];
+		return {
+			...rest,
+			...(added.length > 0 ? { toolsAdded: added } : {}),
+			...(removed.length > 0 ? { toolsRemoved: removed } : {}),
+		};
+	});
 }

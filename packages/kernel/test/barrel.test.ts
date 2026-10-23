@@ -20,9 +20,13 @@ const INTERNAL = new Set([
 	// The agent's tool set (P50 split); the agent's tool methods are the public surface.
 	"tool-state.ts:ToolStateHost",
 	"tool-state.ts:ToolState",
+	"tool-state.ts:withoutHiddenDeclarations",
 	// Spawning a child agent (P50 split); extensions reach it through ctx.runSubagent.
 	"subagent-spawn.ts:SubagentHost",
 	"subagent-spawn.ts:runSubagent",
+	// The /btw request (P50 split); hosts call agent.askAside.
+	"aside.ts:AsideHost",
+	"aside.ts:askAside",
 	// The agent drives nested calls; tools reach them through ctx.executeTool (P24c).
 	"nested-calls.ts:NestedToolCallHost",
 	"nested-calls.ts:NestedToolCallRunner",
