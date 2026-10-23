@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**下一阶段待定**）
+> 最后更新：2026-10-23（P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P51**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -66,6 +66,10 @@
 | [P50](specs/phase-50-consolidation.md) | 修整：文档写成现状，CLI `main.ts`、TUI 控制器、内核 `agent.ts` 按职责拆开，两个偶发测试 | 2026-10-23 | D53 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
+
+## Phase 51 🚧 P50 的结构收尾
+
+规格书（2026-10-23；用户：「都做」）：[specs/phase-51-structure-followup.md](specs/phase-51-structure-followup.md)。不改行为：TUI 拆出的五块与命令表改收窄接口，内核四份适配器合成一份 `AgentInternals`，加行数上限与依赖方向检查。
 
 ## 产品层后续 ⬜ 待定
 
