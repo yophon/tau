@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P56 规格书（常驻 tau 第一步）**）
+> 最后更新：2026-10-23（P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P56（常驻 tau 第一步）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -71,6 +71,10 @@
 | [P55](specs/phase-55-protections.md) | 运行保护：apply_patch（Codex 格式，缺省不开）、循环检测包（照 Gemini CLI，缺省关）、checkpoint 包与 TUI 的 `/rewind`（照 Claude Code，缺省开） | 2026-10-23 | D57 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
+
+## Phase 56 🚧 协议与会话中枢
+
+规格书（2026-10-23 确认；用户：「按你想法来，去做吧」）：[specs/phase-56-session-hub.md](specs/phase-56-session-hub.md)。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
