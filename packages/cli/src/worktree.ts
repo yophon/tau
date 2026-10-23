@@ -13,6 +13,7 @@ import {
 	lstatSync,
 	mkdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -20,7 +21,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { excludeFromGit } from "./permissions.ts";
+import { readTrustStore, saveProjectTrust } from "./project-trust.ts";
+import { ask, dim } from "./util.ts";
 
 export interface WorktreeSettings {
 	baseRef?: "fresh" | "head";
@@ -413,4 +417,53 @@ export async function finishWorktreeSession(
 	if (removeIt) return remove();
 	io.log(`Kept ${session.path}. Resume with: tau --worktree ${session.name} --continue`);
 	return "kept";
+}
+
+/** One spelling for comparing paths: the real path, case-folded on Windows. */
+export function samePath(path: string): string {
+	let real = resolve(path);
+	try {
+		real = realpathSync.native(path);
+	} catch {
+		// A path that no longer exists compares as written.
+	}
+	return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+/** Trust follows the main checkout into its worktrees (Claude Code; P37d, P46). */
+export async function followMainTrust(worktreePath: string, mainRoot: string): Promise<void> {
+	const store = readTrustStore();
+	const mainKey = samePath(mainRoot);
+	const main = Object.entries(store.trusted).find(([key]) => samePath(key) === mainKey)?.[1];
+	const mainTrusted = main === true || (typeof main === "object" && main !== null && main.trusted);
+	const path = resolve(worktreePath);
+	if (mainTrusted && store.trusted[path] === undefined) await saveProjectTrust(path, true);
+}
+
+/** A question on the terminal after the TUI or REPL ended. */
+export async function askLine(question: string): Promise<string> {
+	// Ink unrefs stdin when the TUI unmounts; without this Node exits before the answer.
+	if (process.stdin.isTTY) process.stdin.setRawMode(false);
+	process.stdin.ref();
+	const rl = createInterface({ input: process.stdin, output: process.stdout });
+	try {
+		// An ended input answers with the default.
+		return (await ask(rl, question)) ?? "";
+	} finally {
+		rl.close();
+	}
+}
+
+/** Leaving a worktree session (P37d): worktree.ts decides, the terminal answers. */
+export async function finishWorktree(session: WorktreeSession, background: { stopAll(): void }): Promise<void> {
+	await finishWorktreeSession(session, {
+		ask: askLine,
+		log: (text) => console.log(dim(text)),
+		error: (text) => console.error(text),
+		beforeRemove: () => {
+			background.stopAll();
+			// Windows will not delete the directory the process stands in.
+			process.chdir(session.mainRoot);
+		},
+	});
 }

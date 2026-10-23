@@ -2,6 +2,7 @@
 // version, terminal colors for plain console output, and a message's first line.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import type { createInterface } from "node:readline/promises";
 
 /**
  * User-level tau directory root. Honors `HOME` when set (tests and sandboxes
@@ -28,3 +29,26 @@ export function firstLine(text: string, max = 120): string {
 export const CLI_VERSION = (
 	JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
 ).version;
+
+export type Readline = ReturnType<typeof createInterface>;
+
+/**
+ * A line from the terminal; undefined once the input has ended (Ctrl+D, a closed pipe), which
+ * readline's own question never reports (the promise stays pending and Node exits with 13).
+ */
+export function ask(readline: Readline, prompt: string): Promise<string | undefined> {
+	return new Promise((resolve) => {
+		const ended = () => resolve(undefined);
+		readline.once("close", ended);
+		readline.question(prompt).then(
+			(answer) => {
+				readline.off("close", ended);
+				resolve(answer);
+			},
+			() => {
+				readline.off("close", ended);
+				resolve(undefined);
+			},
+		);
+	});
+}
