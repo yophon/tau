@@ -1,6 +1,6 @@
 import { AbortHandle } from "./abort.ts";
 import { type AsideHost, askAside } from "./aside.ts";
-import { collectEntriesForBranchSummary, generateBranchSummary } from "./branch.ts";
+
 import type { ImageProcessor } from "./capabilities.ts";
 import {
 	type CompactionResult,
@@ -32,7 +32,6 @@ import {
 	type ReadonlySessionManager,
 	type RegisteredCommand,
 	type ThinkingLevel,
-	type TreePreparation,
 	type UIPromptKind,
 	type UiCapability,
 } from "./extensions.ts";
@@ -54,6 +53,7 @@ import {
 	type UserMessage,
 	userContentText,
 } from "./messages.ts";
+import { type NavigationHost, runNavigation } from "./navigation.ts";
 import { type ExecuteToolOptions, NestedToolCallRunner } from "./nested-calls.ts";
 import {
 	type ChatStreamEvent,
@@ -1734,111 +1734,10 @@ export class Agent {
 	): Promise<{ cancelled: boolean; editorText?: string }> {
 		const handle = this.beginOperation("navigate", options?.signal);
 		try {
-			return await this.runNavigation(entryId, handle.signal, options);
+			return await runNavigation(this.navigationHost(), entryId, handle.signal, options);
 		} finally {
 			this.endOperation();
 		}
-	}
-
-	private async runNavigation(
-		entryId: string,
-		signal: TauAbortSignal,
-		options:
-			| {
-					summarize?: boolean;
-					customInstructions?: string;
-					replaceInstructions?: boolean;
-					label?: string;
-					onEvent?: (event: AgentEvent) => void;
-			  }
-			| undefined,
-	): Promise<{ cancelled: boolean; editorText?: string }> {
-		await this.flushWrites();
-		const store = this.session.store;
-		const oldLeafId = await store.getLeafId();
-		if (oldLeafId === entryId) return { cancelled: false };
-		const targetEntry = await store.getEntry(entryId);
-		if (!targetEntry) throw new SessionError("not_found", `Entry ${entryId} not found`);
-
-		const ctx = this.extensionContext();
-		const { entries, commonAncestorId } = await collectEntriesForBranchSummary(store, oldLeafId, entryId);
-		const preparation: TreePreparation = {
-			targetId: entryId,
-			oldLeafId,
-			commonAncestorId,
-			entriesToSummarize: entries,
-			userWantsSummary: options?.summarize !== false,
-			customInstructions: options?.customInstructions,
-			...(options?.replaceInstructions !== undefined ? { replaceInstructions: options.replaceInstructions } : {}),
-			...(options?.label !== undefined ? { label: options.label } : {}),
-		};
-		const hook = this.extensions ? await this.extensions.runSessionBeforeTree({ preparation, signal }, ctx) : {};
-		if (hook.cancel || signal.aborted) return { cancelled: true };
-		// pi: handlers may override the instructions, whether they replace the prompt, and the label.
-		const replaceInstructions = hook.replaceInstructions ?? options?.replaceInstructions;
-		const label = (hook.label ?? options?.label)?.trim();
-
-		let summaryText = hook.summary?.summary;
-		let summaryDetails = hook.summary?.details;
-		let summaryUsage = hook.summary?.usage;
-		if (!summaryText && options?.summarize !== false && entries.length > 0) {
-			try {
-				const generated = await generateBranchSummary(this.summaryTransport(), entries, {
-					customInstructions: hook.customInstructions ?? options?.customInstructions,
-					...(replaceInstructions !== undefined ? { replaceInstructions } : {}),
-					contextWindow: this.config.contextWindow,
-					...(this.config.maxOutputTokens !== undefined ? { maxTokens: this.config.maxOutputTokens } : {}),
-					reserveTokens: this.branchSummaryReserveTokens ?? this.effectiveCompactionSettings().reserveTokens,
-					signal,
-					retry: this.summarizationRetry({ source: "branchSummary" }, options?.onEvent),
-				});
-				summaryText = generated.summary;
-				summaryDetails = { readFiles: generated.readFiles, modifiedFiles: generated.modifiedFiles };
-				summaryUsage = generated.usage;
-			} catch (error) {
-				// As in pi: an aborted summary generation cancels the navigation.
-				if (error instanceof TauError && error.code === "aborted") return { cancelled: true };
-				throw error;
-			}
-		}
-		if (signal.aborted) return { cancelled: true };
-
-		// pi: a user or custom message goes back to the editor; the leaf moves to its parent.
-		let leafId: string | null = entryId;
-		let editorText: string | undefined;
-		if (targetEntry.type === "message" && targetEntry.message.role === "user") {
-			leafId = targetEntry.parentId;
-			editorText = userContentText(targetEntry.message.content);
-		} else if (targetEntry.type === "custom_message") {
-			leafId = targetEntry.parentId;
-			editorText = userContentText(targetEntry.content);
-		}
-
-		const fromExtension = hook.summary !== undefined;
-		const summaryEntry = await this.enqueueWrite(async () => {
-			const entry = await this.session.moveTo(
-				leafId,
-				summaryText
-					? {
-							summary: summaryText,
-							details: summaryDetails,
-							usage: summaryUsage && this.priced(summaryUsage),
-							fromHook: fromExtension || undefined,
-						}
-					: undefined,
-			);
-			// pi: the label goes on the summary entry, or on the target when there is no summary.
-			if (label) {
-				const labelled = summaryText ? entry?.id : entryId;
-				if (labelled) await this.session.appendLabel(labelled, label);
-			}
-			await this.refresh();
-			this.toolState.restoreToolsFromTranscript();
-			return entry;
-		});
-		const newLeafId = await store.getLeafId();
-		await this.extensions?.notifySessionTree({ newLeafId, oldLeafId, summaryEntry, fromExtension }, ctx);
-		return editorText !== undefined ? { cancelled: false, editorText } : { cancelled: false };
 	}
 
 	private async *runPrompt(input: UserContent, signal?: TauAbortSignal): AsyncGenerator<AgentEvent> {
@@ -2509,6 +2408,34 @@ export class Agent {
 			get transport() {
 				return agent.transport;
 			},
+		};
+	}
+
+	/** What a navigation reads from the agent, live (P50: navigation.ts). */
+	private navigationHost(): NavigationHost {
+		const agent = this;
+		return {
+			get branchSummaryReserveTokens() {
+				return agent.branchSummaryReserveTokens;
+			},
+			get config() {
+				return agent.config;
+			},
+			effectiveCompactionSettings: () => agent.effectiveCompactionSettings(),
+			enqueueWrite: (write) => agent.enqueueWrite(write),
+			extensionContext: () => agent.extensionContext(),
+			get extensions() {
+				return agent.extensions;
+			},
+			flushWrites: () => agent.flushWrites(),
+			priced: (usage) => agent.priced(usage),
+			refresh: () => agent.refresh(),
+			get session() {
+				return agent.session;
+			},
+			summarizationRetry: (source, emit) => agent.summarizationRetry(source, emit),
+			summaryTransport: () => agent.summaryTransport(),
+			restoreToolsFromTranscript: () => agent.toolState.restoreToolsFromTranscript(),
 		};
 	}
 }
