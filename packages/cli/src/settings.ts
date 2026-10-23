@@ -67,6 +67,8 @@ export interface TauSettings {
 	fallback?: { enabled?: boolean; on?: FallbackReason[] };
 	/** P55b (Gemini CLI, yo-agent): stop a run that keeps repeating the same tool call. Default off. */
 	loopDetection?: boolean;
+	/** P55c (Claude Code's checkpointing): keep files before each prompt changes them, for /rewind. Default on. */
+	checkpoints?: boolean;
 	/** P40c (pi): branch summaries when /tree leaves a branch. */
 	branchSummary?: { reserveTokens?: number; skipPrompt?: boolean };
 	/** P40c (pi): automatic retries (TAU_MAX_RETRIES / TAU_RETRY_BASE_DELAY_MS still win). */
@@ -177,6 +179,7 @@ function readP40Keys(raw: Record<string, unknown>, settings: TauSettings, base: 
 	if (typeof raw.enableSkillCommands === "boolean") settings.enableSkillCommands = raw.enableSkillCommands;
 	if (typeof raw.continueOnMaxTokens === "boolean") settings.continueOnMaxTokens = raw.continueOnMaxTokens;
 	if (typeof raw.loopDetection === "boolean") settings.loopDetection = raw.loopDetection;
+	if (typeof raw.checkpoints === "boolean") settings.checkpoints = raw.checkpoints;
 	if (Array.isArray(raw.fallbackModels)) {
 		const models = raw.fallbackModels.filter(
 			(value): value is string => typeof value === "string" && value.trim() !== "",
@@ -307,6 +310,7 @@ const P40_KEYS = [
 	"fallbackModels",
 	"fallback",
 	"loopDetection",
+	"checkpoints",
 ] as const;
 
 /** The settings without the keys P40 added (the gateway, parked, stays as it was). */

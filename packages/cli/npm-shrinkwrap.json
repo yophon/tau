@@ -10,9 +10,10 @@
 			"license": "MIT",
 			"dependencies": {
 				"@yophon/tau-channel-weixin": "^0.2.0",
+				"@yophon/tau-ext-checkpoint": "^0.2.0",
 				"@yophon/tau-ext-codemode": "^0.2.0",
-				"@yophon/tau-ext-lsp": "^0.2.0",
 				"@yophon/tau-ext-loop-detection": "^0.2.0",
+				"@yophon/tau-ext-lsp": "^0.2.0",
 				"@yophon/tau-ext-mcp": "^0.2.0",
 				"@yophon/tau-ext-provider-anthropic": "^0.2.0",
 				"@yophon/tau-ext-provider-google": "^0.2.0",
@@ -46,6 +47,14 @@
 				"qrcode-terminal": "0.12.0"
 			}
 		},
+		"node_modules/@yophon/tau-ext-checkpoint": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-checkpoint/-/tau-ext-checkpoint-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.2.0"
+			}
+		},
 		"node_modules/@yophon/tau-ext-codemode": {
 			"version": "0.2.0",
 			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-codemode/-/tau-ext-codemode-0.2.0.tgz",
@@ -56,6 +65,14 @@
 				"@yophon/tau-kernel": "^0.2.0"
 			}
 		},
+		"node_modules/@yophon/tau-ext-loop-detection": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-loop-detection/-/tau-ext-loop-detection-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.2.0"
+			}
+		},
 		"node_modules/@yophon/tau-ext-lsp": {
 			"version": "0.2.0",
 			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-lsp/-/tau-ext-lsp-0.2.0.tgz",
@@ -63,14 +80,6 @@
 			"dependencies": {
 				"@yophon/tau-kernel": "^0.2.0",
 				"cross-spawn": "7.0.6"
-			}
-		},
-		"node_modules/@yophon/tau-ext-loop-detection": {
-			"version": "0.2.0",
-			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-loop-detection/-/tau-ext-loop-detection-0.2.0.tgz",
-			"license": "MIT",
-			"dependencies": {
-				"@yophon/tau-kernel": "^0.2.0"
 			}
 		},
 		"node_modules/@yophon/tau-ext-mcp": {

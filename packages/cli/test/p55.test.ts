@@ -1,7 +1,7 @@
-// P55 in the CLI: apply_patch (55a).
+// P55 in the CLI: apply_patch (55a), loop detection (55b), checkpoints (55c).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -123,6 +123,45 @@ describe("P55b loop detection in the CLI", () => {
 		} finally {
 			await off.close();
 			await on.close();
+		}
+	});
+});
+
+describe("P55c checkpoints in the CLI", () => {
+	it("records files before the tools change them under ~/.tau/checkpoints; settings checkpoints false turns it off", async () => {
+		const turns = [
+			() => mockToolCallTurn("write", { path: "made.txt", content: "new\n" }),
+			() => mockTextTurn("WROTE"),
+		];
+		const on = await startMockOpenAI(turns);
+		const off = await startMockOpenAI(turns);
+		try {
+			const cwd = mkdtempSync(join(tmpdir(), "tau-p55c-cwd-"));
+			const home = mkdtempSync(join(tmpdir(), "tau-p55c-home-"));
+			const result = await run(["-p", "make a file"], cwd, on.baseUrl, home);
+			assert.equal(result.code, 0, result.output);
+			const root = join(home, ".tau", "checkpoints");
+			const sessions = readdirSync(root);
+			assert.equal(sessions.length, 1);
+			const index = readdirSync(join(root, sessions[0] as string)).find((name) => name.endsWith(".json"));
+			const checkpoint = JSON.parse(readFileSync(join(root, sessions[0] as string, index as string), "utf8")) as {
+				label: string;
+				files: Array<{ path: string; existed: boolean }>;
+			};
+			assert.equal(checkpoint.label, "make a file");
+			assert.equal(checkpoint.files.length, 1);
+			assert.match(checkpoint.files[0]?.path ?? "", /made\.txt$/);
+			assert.equal(checkpoint.files[0]?.existed, false);
+
+			const quiet = mkdtempSync(join(tmpdir(), "tau-p55c-home-"));
+			mkdirSync(join(quiet, ".tau"), { recursive: true });
+			writeFileSync(join(quiet, ".tau", "settings.json"), JSON.stringify({ checkpoints: false }));
+			const offRun = await run(["-p", "make a file"], mkdtempSync(join(tmpdir(), "tau-p55c-cwd-")), off.baseUrl, quiet);
+			assert.equal(offRun.code, 0, offRun.output);
+			assert.equal(existsSync(join(quiet, ".tau", "checkpoints")), false);
+		} finally {
+			await on.close();
+			await off.close();
 		}
 	});
 });

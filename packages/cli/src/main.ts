@@ -27,7 +27,7 @@ import {
 
 import type { AuditHost, AuditTrigger } from "./audit.ts";
 
-import { setResourceFlags } from "./builtins.ts";
+import { checkpointBackend, setResourceFlags } from "./builtins.ts";
 
 import {
 	type ActiveEndpoint,
@@ -668,6 +668,8 @@ async function main(): Promise<void> {
 						}
 					: {}),
 			}),
+			// P55c: /rewind restores code from the session's checkpoints.
+			checkpoints: checkpointBackend,
 			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
 			showReasoning: userSettings.showReasoning ?? false,
 			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),

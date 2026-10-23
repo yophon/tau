@@ -3,16 +3,25 @@
 // inactive (`--tools +codemode`, `--tools +tool_search`, or an MCP server with
 // codemode/deferred exposure activates them), the system prompt's tool line,
 // (P26b) the subagent tool, and (P28) web_fetch / web_search.
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { type CheckpointBackend, createCheckpointExtension, createFileBackupBackend } from "@yophon/tau-ext-checkpoint";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
 import { createLoopDetectionExtension } from "@yophon/tau-ext-loop-detection";
 import { createResourcesExtension } from "@yophon/tau-ext-resources";
 import { createSubagentsExtension, type SubagentsOptions } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
 import { createWebExtension, type WebSearchConfig } from "@yophon/tau-ext-web";
-import { type Agent, type AgentMessage, type Extension, sessionDirSlug, type ToolInfo } from "@yophon/tau-kernel";
+import { NodeFileSystem } from "@yophon/tau-host-node";
+import {
+	type Agent,
+	type AgentMessage,
+	type Extension,
+	type FileSystem,
+	sessionDirSlug,
+	type ToolInfo,
+} from "@yophon/tau-kernel";
 import { mainCheckoutOf } from "./git-paths.ts";
 import { createMemoryExtension, type MemoryScope } from "./memory.ts";
 import { resolveConfigValue } from "./models.ts";
@@ -60,6 +69,8 @@ const state: {
 	blockImages: boolean;
 	/** P55b: settings' loopDetection (the extension loads either way; /loop-detection on|off per session). */
 	loopDetection: boolean;
+	/** P55c: settings' checkpoints (default on). */
+	checkpoints: boolean;
 } = {
 	codemode: {},
 	agent: undefined,
@@ -79,6 +90,7 @@ const state: {
 	cli: { skillPaths: [], promptPaths: [], noSkills: false, noPrompts: false },
 	blockImages: false,
 	loopDetection: false,
+	checkpoints: true,
 };
 
 /** P41b: pi's --skill, --prompt-template, -ns and -np (paths already resolved against the cwd). */
@@ -235,6 +247,8 @@ export function configureBuiltins(options: {
 	];
 	state.blockImages = layered.images?.blockImages === true;
 	state.loopDetection = layered.loopDetection === true;
+	state.checkpoints = layered.checkpoints !== false;
+	if (state.extended) cleanupCheckpoints(home);
 	// P40c: sessions kept in settings' sessionDir are searched too.
 	if (layered.sessionDir !== undefined) {
 		state.memory.sessions = [...state.memory.sessions, { dir: resolve(options.cwd, layered.sessionDir) }];
@@ -247,6 +261,32 @@ export function configureBuiltins(options: {
 		...readCodemodeSettings(join(home, ".tau", "settings.json")),
 		...(options.projectTrusted ? readCodemodeSettings(join(options.cwd, ".tau", "settings.json")) : {}),
 	};
+}
+
+/** Claude Code keeps checkpoints 30 days (cleanupPeriodDays). */
+const CHECKPOINT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+let checkpointsCleaned = false;
+
+/** The checkpoints of a session (P55c): ~/.tau/checkpoints/<session id>; undefined when settings turn them off. */
+export function checkpointBackend(sessionId: string, workspace: FileSystem | undefined): CheckpointBackend | undefined {
+	if (!state.checkpoints || !workspace || sessionId === "") return undefined;
+	const dir = join(state.home, ".tau", "checkpoints", sessionId.replace(/[^A-Za-z0-9_-]/g, "_"));
+	return createFileBackupBackend({ workspace, store: new NodeFileSystem(dir) });
+}
+
+/** Once per process: remove the checkpoints of sessions untouched for 30 days. */
+function cleanupCheckpoints(home: string): void {
+	if (checkpointsCleaned) return;
+	checkpointsCleaned = true;
+	const root = join(home, ".tau", "checkpoints");
+	try {
+		for (const name of readdirSync(root)) {
+			const dir = join(root, name);
+			if (Date.now() - statSync(dir).mtimeMs > CHECKPOINT_RETENTION_MS) rmSync(dir, { recursive: true, force: true });
+		}
+	} catch {
+		// No checkpoints yet.
+	}
 }
 
 /** Point the prompt's tool line at this agent; `defaultPrompt` false leaves a custom prompt alone. */
@@ -359,6 +399,8 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		createToolSearchExtension(),
 		// P55b: loop detection, off unless settings turn it on (not in the gateway, which stays as it was).
 		...(state.extended ? [createLoopDetectionExtension({ disabled: !state.loopDetection })] : []),
+		// P55c: checkpoints for /rewind (not in the gateway).
+		...(state.extended ? [createCheckpointExtension({ backendFor: checkpointBackend })] : []),
 		createNodeCodemodeExtension({
 			getMode: () => state.codemode.mode,
 			getInlineBudget: () => state.codemode.inlineBudget,

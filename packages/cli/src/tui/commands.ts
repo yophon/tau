@@ -33,6 +33,7 @@ import { getKeybindings } from "./keybindings.ts";
 import type { PickerItem } from "./model.ts";
 import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
+import { runRewind } from "./rewind.ts";
 import type { TuiRuns } from "./runs.ts";
 import { buildTree } from "./session-tree.ts";
 import type { TuiSessions } from "./sessions.ts";
@@ -279,6 +280,11 @@ const BUILTINS: BuiltinCommand[] = [
 			const result = await tui.sessions.switchSession(await tui.options.sessionRepo.open(selected), "resume");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension.");
 		},
+	},
+	{
+		name: "rewind",
+		description: "Go back to before one of your messages: restore the code, the conversation, or both (Claude Code)",
+		run: (tui) => runRewind(tui),
 	},
 	{
 		name: "tree",

@@ -1,0 +1,25 @@
+{
+	"name": "@yophon/tau-ext-checkpoint",
+	"version": "0.2.0",
+	"description": "Checkpoints for tau: files kept before each prompt changes them, restored with /rewind (pure ES over FileSystem, after Claude Code)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-checkpoint"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}

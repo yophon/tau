@@ -1,7 +1,9 @@
+import type { CheckpointBackend } from "@yophon/tau-ext-checkpoint";
 import type {
 	Agent,
 	AgentMessage,
 	ExtensionRegistry,
+	FileSystem,
 	JsonlSessionRepo,
 	PermissionMode,
 	SessionRecorder,
@@ -89,6 +91,8 @@ export interface RunTuiOptions {
 	dirtyRepoGuard?: boolean;
 	/** P38b: reasoning shown in full instead of one "Thought for Ns" row (tui.showReasoning; default off). */
 	showReasoning?: boolean;
+	/** P55c: the checkpoints /rewind restores code from (undefined: checkpoints off). */
+	checkpoints?: (sessionId: string, workspace: FileSystem | undefined) => CheckpointBackend | undefined;
 	/** P37b: Esc twice on an empty input (pi doubleEscapeAction; default "tree"). */
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37b: save a /settings choice (section.key in ~/.tau/settings.json). */

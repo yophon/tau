@@ -16,6 +16,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-mcp",
 	"ext-tool-search",
 	"ext-loop-detection",
+	"ext-checkpoint",
 	"ext-web",
 	"ext-codemode",
 	"ext-lsp",

@@ -63,6 +63,7 @@ async function main() {
 		await run("p47", runP47Smoke);
 		await run("p49", runP49Smoke);
 		await run("p53", runP53Smoke);
+		await run("p55", runP55Smoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -1165,6 +1166,34 @@ async function runP53Smoke(root, baseUrl) {
 	}
 }
 
+// P55c (Claude Code's /rewind): a write the model made is undone, and the conversation goes back
+// to before the message, its text in the input box.
+async function runP55Smoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "p55", true);
+	await writeFile(join(dirs.cwd, "rw.txt"), "SMOKE_ORIGINAL\n", "utf8");
+	const session = await startTui("p55", dirs, baseUrl, []);
+	try {
+		await session.waitFor("tau ·", 10_000);
+		await session.send("rewind smoke", "Enter");
+		await session.waitFor("SMOKE_REWIND_WROTE", 10_000);
+		if (!(await readFile(join(dirs.cwd, "rw.txt"), "utf8")).includes("SMOKE_CHANGED")) {
+			throw new Error("the write did not happen");
+		}
+		await session.send("/rewind", "Enter");
+		await session.waitFor("Rewind to before", 5_000);
+		await session.waitFor("1 file changed since", 5_000);
+		await session.send("Enter");
+		await session.waitFor("Restore code and conversation", 5_000);
+		await session.send("Enter");
+		await session.waitFor("Restored 1 file", 5_000);
+		const restored = await readFile(join(dirs.cwd, "rw.txt"), "utf8");
+		if (restored !== "SMOKE_ORIGINAL\n") throw new Error(`rw.txt not restored: ${JSON.stringify(restored)}`);
+		console.log("ok p55");
+	} finally {
+		await session.kill();
+	}
+}
+
 async function runP47Smoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "p47", false);
 	const server = join(dirs.home, "smoke-modern.mjs");
@@ -1767,6 +1796,7 @@ function responseFor(request) {
 		if (content.includes("Created worktree smoke"))
 			return toolCallTurn("write", { path: "wt.txt", content: "inside\n" });
 		if (content.includes("characters to wt.txt")) return toolCallTurn("exit_worktree", { action: "keep" });
+		if (content.includes("characters to rw.txt")) return textTurn("SMOKE_REWIND_WROTE");
 		if (content.includes("Kept worktree smoke")) return textTurn("SMOKE_WT_DONE");
 		if (content.includes("SMOKE_CHILD_FIRST"))
 			return toolCallTurn("send_message", { to: "sub-1", message: "SMOKE_CHILD_AGAIN" });
@@ -1783,6 +1813,7 @@ function responseFor(request) {
 	if (content.includes("worktree smoke")) return toolCallTurn("enter_worktree", { name: "smoke" });
 	if (content.includes("resume smoke")) return toolCallTurn("subagent", { task: "SMOKE_CHILD_TASK" });
 	if (content.includes("p53 bg smoke")) return toolCallTurn("subagent", { task: "SMOKE_P53_CHILD", background: true });
+	if (content.includes("rewind smoke")) return toolCallTurn("write", { path: "rw.txt", content: "SMOKE_CHANGED\n" });
 	// P45: the diagnostics message is the newest user-role message after the write.
 	if (content.includes("<new-diagnostics>") && content.includes("SMOKE_LSP_ERROR")) {
 		return toolCallTurn("lsp", { operation: "documentSymbol", filePath: "smoke.ts", line: 1, character: 1 });
