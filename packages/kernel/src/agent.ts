@@ -1,6 +1,6 @@
 import { AbortHandle } from "./abort.ts";
-import { type AsideHost, askAside } from "./aside.ts";
-
+import type { AgentInternals } from "./agent-internals.ts";
+import { askAside } from "./aside.ts";
 import type { ImageProcessor } from "./capabilities.ts";
 import {
 	type CompactionResult,
@@ -53,7 +53,7 @@ import {
 	type UserMessage,
 	userContentText,
 } from "./messages.ts";
-import { type NavigationHost, runNavigation } from "./navigation.ts";
+import { runNavigation } from "./navigation.ts";
 import { type ExecuteToolOptions, NestedToolCallRunner } from "./nested-calls.ts";
 import {
 	type ChatStreamEvent,
@@ -88,7 +88,7 @@ import {
 	retryDelayMs,
 } from "./retry.ts";
 import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
-import { runSubagent, type SubagentHost } from "./subagent-spawn.ts";
+import { runSubagent } from "./subagent-spawn.ts";
 import {
 	normalizeToolOutcome,
 	PreflightLock,
@@ -96,7 +96,7 @@ import {
 	ToolBatchRunner,
 	type ToolOutcome,
 } from "./tool-batch.ts";
-import { ToolState, type ToolStateHost, withoutHiddenDeclarations } from "./tool-state.ts";
+import { ToolState, withoutHiddenDeclarations } from "./tool-state.ts";
 import {
 	assertToolSchema,
 	errorResult,
@@ -346,8 +346,10 @@ function lastPromptText(messages: readonly AgentMessage[]): string {
  * tool_result messages committed in source order.
  */
 export class Agent {
-	/** The tool set (P50: tool-state.ts), reading the agent's fields through an adapter so they stay private. */
-	private readonly toolState = new ToolState(this.toolStateHost());
+	/** The view of private state the split-out modules read (P51: agent-internals.ts). */
+	private readonly internals: AgentInternals = this.exposeInternals();
+	/** The tool set (P50: tool-state.ts). */
+	private readonly toolState = new ToolState(this.internals);
 	/** Projection of the session log (frozen; replaced after every write). */
 	private projection: readonly AgentMessage[] = Object.freeze([]);
 	/** Source entry of each projected message (pi _entryIdsByMessage). */
@@ -611,25 +613,6 @@ export class Agent {
 			getThinkingLevel: () => this.currentThinkingLevel,
 			setThinkingLevel: (level) => this.setThinkingLevel(level),
 		});
-	}
-
-	/** What the tool set reads from the agent, live (P50). */
-	private toolStateHost(): ToolStateHost {
-		const agent = this;
-		return {
-			get baseTools() {
-				return agent.baseTools;
-			},
-			get extensions() {
-				return agent.extensions;
-			},
-			get policy() {
-				return agent.policy;
-			},
-			get activePath() {
-				return agent.activePath;
-			},
-		};
 	}
 
 	/** Names of the active tools, the ones declared to the model (pi getActiveTools). */
@@ -1048,83 +1031,7 @@ export class Agent {
 		options: AgentSpawnOptions = {},
 		signal?: TauAbortSignal,
 	): Promise<AgentRunResult> {
-		return runSubagent(this.subagentHost(), prompt, options, signal);
-	}
-
-	/** What a child spawn reads from this agent, live (P50: subagent-spawn.ts). */
-	private subagentHost(): SubagentHost {
-		const agent = this;
-		return {
-			get baseTools() {
-				return agent.baseTools;
-			},
-			get capabilities() {
-				return agent.capabilities;
-			},
-			get compactionSettings() {
-				return agent.compactionSettings;
-			},
-			get config() {
-				return agent.config;
-			},
-			get currentThinkingLevel() {
-				return agent.currentThinkingLevel;
-			},
-			get extensions() {
-				return agent.extensions;
-			},
-			get imageProcessor() {
-				return agent.imageProcessor;
-			},
-			get isProjectTrusted() {
-				return agent.isProjectTrusted;
-			},
-			get maxTurnsPerPrompt() {
-				return agent.maxTurnsPerPrompt;
-			},
-			get onApproval() {
-				return agent.onApproval;
-			},
-			get permissionMode() {
-				return agent.permissionMode;
-			},
-			get platform() {
-				return agent.platform;
-			},
-			get policy() {
-				return agent.policy;
-			},
-			get preflightLock() {
-				return agent.preflightLock;
-			},
-			get pricing() {
-				return agent.pricing;
-			},
-			get retrySettings() {
-				return agent.retrySettings;
-			},
-			get systemPrompt() {
-				return agent.systemPrompt;
-			},
-			get toolExecution() {
-				return agent.toolExecution;
-			},
-			get transport() {
-				return agent.transport;
-			},
-			get ui() {
-				return agent.ui;
-			},
-			get steeringMode() {
-				return agent.steeringQueue.mode;
-			},
-			get followUpMode() {
-				return agent.followUpQueue.mode;
-			},
-			currentTools: () => agent.toolState.currentTools(),
-			extensionContext: () => agent.extensionContext(),
-			createAgent: (options) => new Agent(options),
-		};
+		return runSubagent(this.internals, prompt, options, signal);
 	}
 
 	/** A usage with its cost filled from the host pricing, when there is one (D19-3). */
@@ -1466,7 +1373,7 @@ export class Agent {
 			onText?: (delta: string) => void;
 		} = {},
 	): Promise<{ text: string; toolCalls: number; stopReason: AssistantMessage["stopReason"] }> {
-		return askAside(this.asideHost(), question, options);
+		return askAside(this.internals, question, options);
 	}
 
 	/**
@@ -1734,7 +1641,7 @@ export class Agent {
 	): Promise<{ cancelled: boolean; editorText?: string }> {
 		const handle = this.beginOperation("navigate", options?.signal);
 		try {
-			return await runNavigation(this.navigationHost(), entryId, handle.signal, options);
+			return await runNavigation(this.internals, entryId, handle.signal, options);
 		} finally {
 			this.endOperation();
 		}
@@ -2374,68 +2281,109 @@ export class Agent {
 		};
 	}
 
-	/** What aside.ts reads from the agent, live (P50). */
-	private asideHost(): AsideHost {
+	/** What the split-out modules read (P51: agent-internals.ts): getters read the current values. */
+	private exposeInternals(): AgentInternals {
 		const agent = this;
 		return {
+			get activePath() {
+				return agent.activePath;
+			},
+			get baseTools() {
+				return agent.baseTools;
+			},
+			get branchSummaryReserveTokens() {
+				return agent.branchSummaryReserveTokens;
+			},
+			get capabilities() {
+				return agent.capabilities;
+			},
+			get compactionSettings() {
+				return agent.compactionSettings;
+			},
 			get config() {
 				return agent.config;
 			},
+			createAgent: (options) => new Agent(options),
 			get currentModel() {
 				return agent.currentModel;
 			},
 			get currentThinkingLevel() {
 				return agent.currentThinkingLevel;
 			},
-			enqueueBackground: (write) => agent.enqueueBackground(write),
-			extensionContext: () => agent.extensionContext(),
-			get extensions() {
-				return agent.extensions;
-			},
-			get hiddenDeclarations() {
-				return agent.hiddenDeclarations;
-			},
-			get messages() {
-				return agent.messages;
-			},
-			pricingFor: (model) => agent.pricingFor(model),
-			providerEventHooks: (ctx, model) => agent.providerEventHooks(ctx, model),
-			providerHeaders: (ctx) => agent.providerHeaders(ctx),
-			refresh: () => agent.refresh(),
-			get session() {
-				return agent.session;
-			},
-			get transport() {
-				return agent.transport;
-			},
-		};
-	}
-
-	/** What a navigation reads from the agent, live (P50: navigation.ts). */
-	private navigationHost(): NavigationHost {
-		const agent = this;
-		return {
-			get branchSummaryReserveTokens() {
-				return agent.branchSummaryReserveTokens;
-			},
-			get config() {
-				return agent.config;
-			},
+			currentTools: () => agent.toolState.currentTools(),
 			effectiveCompactionSettings: () => agent.effectiveCompactionSettings(),
+			enqueueBackground: (write) => agent.enqueueBackground(write),
 			enqueueWrite: (write) => agent.enqueueWrite(write),
 			extensionContext: () => agent.extensionContext(),
 			get extensions() {
 				return agent.extensions;
 			},
 			flushWrites: () => agent.flushWrites(),
+			get followUpMode() {
+				return agent.followUpQueue.mode;
+			},
+			get hiddenDeclarations() {
+				return agent.hiddenDeclarations;
+			},
+			get imageProcessor() {
+				return agent.imageProcessor;
+			},
+			get isProjectTrusted() {
+				return agent.isProjectTrusted;
+			},
+			get maxTurnsPerPrompt() {
+				return agent.maxTurnsPerPrompt;
+			},
+			get messages() {
+				return agent.messages;
+			},
+			get onApproval() {
+				return agent.onApproval;
+			},
+			get permissionMode() {
+				return agent.permissionMode;
+			},
+			get platform() {
+				return agent.platform;
+			},
+			get policy() {
+				return agent.policy;
+			},
+			get preflightLock() {
+				return agent.preflightLock;
+			},
 			priced: (usage) => agent.priced(usage),
+			get pricing() {
+				return agent.pricing;
+			},
+			pricingFor: (model) => agent.pricingFor(model),
+			providerEventHooks: (ctx, model) => agent.providerEventHooks(ctx, model),
+			providerHeaders: (ctx) => agent.providerHeaders(ctx),
 			refresh: () => agent.refresh(),
+			restoreToolsFromTranscript: () => agent.toolState.restoreToolsFromTranscript(),
+			get retrySettings() {
+				return agent.retrySettings;
+			},
 			get session() {
 				return agent.session;
 			},
+			get steeringMode() {
+				return agent.steeringQueue.mode;
+			},
 			summarizationRetry: (source, emit) => agent.summarizationRetry(source, emit),
 			summaryTransport: () => agent.summaryTransport(),
-			restoreToolsFromTranscript: () => agent.toolState.restoreToolsFromTranscript(),
+			get systemPrompt() {
+				return agent.systemPrompt;
+			},
+			get toolExecution() {
+				return agent.toolExecution;
+			},
+			get transport() {
+				return agent.transport;
+			},
+			get ui() {
+				return agent.ui;
+			},
 		};
 	}
 }

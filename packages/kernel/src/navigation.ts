@@ -2,35 +2,32 @@
 // branch being left, move the leaf, record the branch summary, rebuild the conversation.
 
 import type { AgentEvent } from "./agent.ts";
+import type { AgentInternals } from "./agent-internals.ts";
 import { collectEntriesForBranchSummary, generateBranchSummary } from "./branch.ts";
-import type { CompactionSettings, SummarizationRetry } from "./compaction.ts";
+
 import { SessionError, TauError } from "./errors.ts";
-import type { CompactionReason, ExtensionContext, ExtensionRegistry, TreePreparation } from "./extensions.ts";
-import { type Usage, userContentText } from "./messages.ts";
-import type { ChatTransport, OpenAICompatConfig } from "./openai.ts";
+import type { TreePreparation } from "./extensions.ts";
+import { userContentText } from "./messages.ts";
+
 import type { TauAbortSignal } from "./platform.ts";
-import type { SessionRecorder } from "./session.ts";
 
 /** What a navigation reads from the agent (live: getters and forwarding methods). */
-export interface NavigationHost {
-	readonly branchSummaryReserveTokens: number | undefined;
-	readonly config: OpenAICompatConfig;
-	effectiveCompactionSettings(): CompactionSettings;
-	enqueueWrite<T>(write: () => Promise<T>): Promise<T>;
-	extensionContext(): ExtensionContext;
-	readonly extensions: ExtensionRegistry | undefined;
-	flushWrites(): Promise<void>;
-	priced(usage: Usage): Usage;
-	refresh(): Promise<void>;
-	readonly session: SessionRecorder;
-	summarizationRetry(
-		source: { source: "compaction"; reason: CompactionReason } | { source: "branchSummary" },
-		emit?: (event: AgentEvent) => void,
-	): SummarizationRetry;
-	summaryTransport(): ChatTransport;
-	/** The tools the new branch's transcript recorded become active (pi). */
-	restoreToolsFromTranscript(): void;
-}
+export type NavigationHost = Pick<
+	AgentInternals,
+	| "branchSummaryReserveTokens"
+	| "config"
+	| "effectiveCompactionSettings"
+	| "enqueueWrite"
+	| "extensionContext"
+	| "extensions"
+	| "flushWrites"
+	| "priced"
+	| "refresh"
+	| "restoreToolsFromTranscript"
+	| "session"
+	| "summarizationRetry"
+	| "summaryTransport"
+>;
 
 /** Agent.navigateTo's work, inside the operation it holds (abort cancels through `signal`). */
 export async function runNavigation(

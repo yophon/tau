@@ -1,48 +1,41 @@
 // A side question (P50: split out of agent.ts; P39c, Claude Code's /btw): one request over the
 // conversation as the next request would send it, outside the conversation.
 
+import type { AgentInternals } from "./agent-internals.ts";
 import { TauError } from "./errors.ts";
-import type { ExtensionContext, ExtensionRegistry, ThinkingLevel } from "./extensions.ts";
+
 import {
 	type AgentMessage,
 	type AssistantMessage,
 	computeUsageCost,
 	emptyUsage,
-	type ModelPricing,
 	messageText,
 	type ToolResultMessage,
 	toolCallsOf,
 } from "./messages.ts";
-import {
-	type ChatTransport,
-	OPENAI_COMPLETIONS_API,
-	type OpenAICompatConfig,
-	type TransportRequest,
-} from "./openai.ts";
+import { OPENAI_COMPLETIONS_API } from "./openai.ts";
 import type { TauAbortSignal } from "./platform.ts";
-import type { SessionRecorder } from "./session.ts";
+
 import { withoutHiddenDeclarations } from "./tool-state.ts";
 
 /** What a side question reads from the agent (live: getters and forwarding methods). */
-export interface AsideHost {
-	readonly config: OpenAICompatConfig;
-	readonly currentModel: string;
-	readonly currentThinkingLevel: ThinkingLevel | undefined;
-	enqueueBackground(write: () => Promise<unknown>): void;
-	extensionContext(): ExtensionContext;
-	readonly extensions: ExtensionRegistry | undefined;
-	readonly hiddenDeclarations: ReadonlySet<string>;
-	readonly messages: readonly AgentMessage[];
-	pricingFor(model: string): ModelPricing | undefined;
-	providerEventHooks(
-		ctx: ExtensionContext,
-		model: string,
-	): Pick<TransportRequest, "onPayload" | "onResponse" | "onStreamEvent"> | undefined;
-	providerHeaders(ctx: ExtensionContext): Promise<Record<string, string | null> | undefined>;
-	refresh(): Promise<void>;
-	readonly session: SessionRecorder;
-	readonly transport: ChatTransport;
-}
+export type AsideHost = Pick<
+	AgentInternals,
+	| "config"
+	| "currentModel"
+	| "currentThinkingLevel"
+	| "enqueueBackground"
+	| "extensionContext"
+	| "extensions"
+	| "hiddenDeclarations"
+	| "messages"
+	| "pricingFor"
+	| "providerEventHooks"
+	| "providerHeaders"
+	| "refresh"
+	| "session"
+	| "transport"
+>;
 
 /**
  * A side question (P39c, Claude Code's /btw): the conversation as the next request would

@@ -2,55 +2,45 @@
 // policy and approvals (never more permissive, P26b), the parent's extension rules on its tool
 // calls, SubagentStart / SubagentStop (P44), and the child's text, messages and usage.
 
-import type { Agent, AgentOptions, QueueMode } from "./agent.ts";
-import type { ImageProcessor } from "./capabilities.ts";
-import type { CompactionSettings } from "./compaction.ts";
-import {
-	type AgentRunResult,
-	type AgentSpawnOptions,
-	type ExtensionCapabilities,
-	type ExtensionContext,
-	ExtensionRegistry,
-	type ThinkingLevel,
-	type UiCapability,
-} from "./extensions.ts";
+import type { AgentInternals } from "./agent-internals.ts";
+
+import { type AgentRunResult, type AgentSpawnOptions, ExtensionRegistry } from "./extensions.ts";
 import { messageText } from "./messages.ts";
-import type { ChatTransport, OpenAICompatConfig } from "./openai.ts";
-import type { Platform, TauAbortSignal } from "./platform.ts";
-import { type ApprovalRequest, type PermissionMode, stricterMode, type ToolPolicy } from "./policy.ts";
-import type { RetrySettings } from "./retry.ts";
-import type { PreflightLock } from "./tool-batch.ts";
-import type { Tool, ToolExecutionMode } from "./tools.ts";
+
+import type { TauAbortSignal } from "./platform.ts";
+import { stricterMode } from "./policy.ts";
+
+import type { Tool } from "./tools.ts";
 
 /** What a spawn reads from the parent agent (live: the agent passes getters). */
-export interface SubagentHost {
-	readonly baseTools: Tool[];
-	readonly capabilities: ExtensionCapabilities;
-	readonly compactionSettings: CompactionSettings;
-	readonly config: OpenAICompatConfig;
-	readonly currentThinkingLevel: ThinkingLevel | undefined;
-	readonly extensions: ExtensionRegistry | undefined;
-	readonly followUpMode: QueueMode;
-	readonly imageProcessor: ImageProcessor | undefined;
-	readonly isProjectTrusted: (() => boolean) | undefined;
-	readonly maxTurnsPerPrompt: number;
-	readonly onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
-	readonly permissionMode: PermissionMode;
-	readonly platform: Platform;
-	readonly policy: ToolPolicy;
-	readonly preflightLock: PreflightLock;
-	readonly pricing: AgentOptions["pricing"];
-	readonly retrySettings: RetrySettings;
-	readonly steeringMode: QueueMode;
-	readonly systemPrompt: string | undefined;
-	readonly toolExecution: ToolExecutionMode;
-	readonly transport: ChatTransport;
-	readonly ui: UiCapability | undefined;
-	/** Every registered tool of the parent (base, extension, MCP). */
-	currentTools(): Map<string, Tool>;
-	extensionContext(): ExtensionContext;
-	createAgent(options: AgentOptions): Agent;
-}
+export type SubagentHost = Pick<
+	AgentInternals,
+	| "baseTools"
+	| "capabilities"
+	| "compactionSettings"
+	| "config"
+	| "createAgent"
+	| "currentThinkingLevel"
+	| "currentTools"
+	| "extensionContext"
+	| "extensions"
+	| "followUpMode"
+	| "imageProcessor"
+	| "isProjectTrusted"
+	| "maxTurnsPerPrompt"
+	| "onApproval"
+	| "permissionMode"
+	| "platform"
+	| "policy"
+	| "preflightLock"
+	| "pricing"
+	| "retrySettings"
+	| "steeringMode"
+	| "systemPrompt"
+	| "toolExecution"
+	| "transport"
+	| "ui"
+>;
 
 /** Run a prompt in a child agent (ctx.runSubagent). */
 export async function runSubagent(

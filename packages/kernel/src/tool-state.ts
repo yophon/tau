@@ -2,11 +2,13 @@
 // extension), the active set declared to the model (pi agent.state.tools) with names restored
 // from the transcript that wait for their tool to register (pi _pendingToolNames, P48's restore
 // rules), the tools callable through ctx.executeTool(), and the loadout a request declares.
-import type { ExtensionRegistry } from "./extensions.ts";
+
+import type { AgentInternals } from "./agent-internals.ts";
+
 import type { AgentMessage } from "./messages.ts";
-import type { ToolPolicy } from "./policy.ts";
+
 import { getCurrentTools } from "./projection.ts";
-import type { SessionEntry } from "./session.ts";
+
 import {
 	applyToolModifiers,
 	isActivatedOnRegistration,
@@ -18,15 +20,7 @@ import {
 } from "./tools.ts";
 
 /** What the tool set reads from its agent (live values; the agent passes getters). */
-export interface ToolStateHost {
-	/** Tools the agent was created with; extension tools override them by name (pi). */
-	readonly baseTools: readonly Tool[];
-	readonly extensions: ExtensionRegistry | undefined;
-	/** For whole-tool deny rules (P37a). */
-	readonly policy: ToolPolicy;
-	/** The branch's entries: the transcript a restore reads. */
-	readonly activePath: readonly SessionEntry[];
-}
+export type ToolStateHost = Pick<AgentInternals, "activePath" | "baseTools" | "extensions" | "policy">;
 
 export class ToolState {
 	private readonly host: ToolStateHost;

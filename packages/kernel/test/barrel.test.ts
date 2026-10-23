@@ -17,6 +17,8 @@ const INTERNAL = new Set([
 	"tool-batch.ts:ToolOutcome",
 	"tool-batch.ts:ToolBatchRunner",
 	"tool-batch.ts:normalizeToolOutcome",
+	// What the modules split out of agent.ts read from it (P51); not part of Agent's surface.
+	"agent-internals.ts:AgentInternals",
 	// The agent's tool set (P50 split); the agent's tool methods are the public surface.
 	"tool-state.ts:ToolStateHost",
 	"tool-state.ts:ToolState",
