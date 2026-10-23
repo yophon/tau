@@ -213,13 +213,13 @@ async function main(): Promise<void> {
 		contextWindow,
 		maxTokens: tableEntry?.maxTokens,
 		headers: activeModel ? resolveHeaders(activeModel, valueResolver) : {},
-		...(activeModel ? { input: activeModel.input ?? ["text"] } : {}),
+		...(activeModel ? { input: activeModel.input ?? ["text"], reasoning: activeModel.reasoning } : {}),
 	});
 	/** The endpoint the session runs on now; /model's commit replaces it (P28). */
 	const endpoint: ActiveEndpoint = {
 		activeModel,
 		config: startupEndpoint.config,
-		anthropic: startupEndpoint.anthropic,
+		native: startupEndpoint.native,
 		transport: endpointTransport(platform, startupEndpoint, activeModel),
 	};
 	// The thinking level travels with every request (P23d); /thinking changes it on the agent.
@@ -441,7 +441,7 @@ async function main(): Promise<void> {
 	const hostSetters = {
 		setHostModel: (nextModel: string) => {
 			endpoint.config.model = nextModel;
-			if (endpoint.anthropic) endpoint.anthropic.model = nextModel;
+			if (endpoint.native) endpoint.native.config.model = nextModel;
 		},
 		setHostThinking: (nextLevel: ThinkingLevel | undefined) => {
 			run.thinkingLevel = nextLevel;
@@ -702,7 +702,7 @@ async function main(): Promise<void> {
 			setModel: (nextModel) => {
 				// Agents built later (/reload, /resume) start from the switched model.
 				endpoint.config.model = nextModel;
-				if (endpoint.anthropic) endpoint.anthropic.model = nextModel;
+				if (endpoint.native) endpoint.native.config.model = nextModel;
 			},
 			setThinkingLevel: (nextLevel) => {
 				run.thinkingLevel = nextLevel;

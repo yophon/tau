@@ -227,7 +227,7 @@ export function normalizeToolCallId(id: string, provider: string): string {
 }
 
 /** Fast non-cryptographic hash, verbatim from pi utils/hash.ts. */
-function shortHash(str: string): string {
+export function shortHash(str: string): string {
 	let h1 = 0xdeadbeef;
 	let h2 = 0x41c6ce57;
 	for (let i = 0; i < str.length; i++) {

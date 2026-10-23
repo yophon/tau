@@ -11,6 +11,7 @@ import {
 	clearConfigValueCache,
 	describeModel,
 	findModel,
+	MODEL_APIS,
 	modelPricing,
 	parseModelsConfig,
 	resolveConfigValue,
@@ -38,7 +39,7 @@ const TABLE = JSON.stringify({
 			baseUrl: "http://localhost:11434/v1",
 			models: [{ id: "qwen", name: "Qwen local" }, { id: "deepseek-chat" }],
 		},
-		google: { api: "google-generative-ai", apiKey: "$G", models: [{ id: "gemini" }] },
+		bedrock: { api: "bedrock-converse-stream", apiKey: "$B", models: [{ id: "nova" }] },
 		broken: { models: [{ id: "x" }] },
 	},
 });
@@ -57,7 +58,7 @@ describe("models.json", () => {
 			],
 		);
 		assert.deepEqual(config.diagnostics, [
-			'/home/u/.tau/models.json: providers.google.models[0]: api "google-generative-ai" is not supported (openai-completions, anthropic-messages); skipped',
+			`/home/u/.tau/models.json: providers.bedrock.models[0]: api "bedrock-converse-stream" is not supported (${MODEL_APIS.join(", ")}); skipped`,
 			'/home/u/.tau/models.json: providers.broken.models[0]: "baseUrl" is required for openai-completions; skipped',
 		]);
 		const claude = config.models[2];

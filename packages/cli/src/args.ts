@@ -27,13 +27,14 @@ Options:
   -m, --model <model>    Model: provider/id or id from ~/.tau/models.json, or a model
                          id on the --base-url endpoint (env: TAU_MODEL)
       --list-models      List the models configured in ~/.tau/models.json and exit
-      --provider <name>  Wire protocol: openai (default) | anthropic
+      --provider <name>  Wire protocol: openai (default) | anthropic | openai-responses
                          (anthropic: /thinking sends adaptive thinking + effort;
                          TAU_ANTHROPIC_THINKING=budget for pre-4.6 models;
                          TAU_MAX_TOKENS sets the output cap, default 8192)
                          (env: TAU_PROVIDER). anthropic speaks the Anthropic
                          Messages API: native thinking, prompt caching, images
-                         in tool results.
+                         in tool results. openai-responses speaks OpenAI's
+                         Responses API (OPENAI_* env; reasoning replayed).
       --models <list>    Comma-separated TUI model selector candidates (env: TAU_MODELS)
   -s, --system-prompt <text|file>  Replace the system prompt (also --system; default:
                          .tau/SYSTEM.md of a trusted project, else ~/.tau/SYSTEM.md, else tau's)
@@ -517,7 +518,7 @@ export function isToolExecutionMode(value: string): value is ToolExecutionMode {
 	return (TOOL_EXECUTION_MODES as readonly string[]).includes(value);
 }
 
-export const PROVIDERS = ["openai", "anthropic"] as const;
+export const PROVIDERS = ["openai", "anthropic", "openai-responses"] as const;
 
 export type ProviderKind = (typeof PROVIDERS)[number];
 

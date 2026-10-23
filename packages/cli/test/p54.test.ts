@@ -1,4 +1,4 @@
-// P54 in the CLI: model fallback (54c), the prompt shim (54d).
+// P54 in the CLI: OpenAI Responses (54a), model fallback (54c), the prompt shim (54d).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -159,6 +159,95 @@ describe("P54d the prompt shim in the CLI", () => {
 			assert.match(String(first?.messages[0]?.content), /To call one, write a fenced code block/);
 			assert.ok(JSON.stringify(second?.messages).includes("SHIM_FILE_CONTENTS"), "the tool result came back as text");
 			assert.ok(second?.messages.every((message) => message.role !== "tool"));
+		} finally {
+			await mock.close();
+		}
+	});
+});
+
+/** A server answering each POST with the next scripted SSE stream (Responses framing); records what it got. */
+async function scriptedSse(streams: Array<Array<Record<string, unknown> & { type: string }>>): Promise<{
+	baseUrl: string;
+	requests: Array<{ url: string; authorization: string | undefined; body: Record<string, unknown> }>;
+	close: () => Promise<void>;
+}> {
+	const requests: Array<{ url: string; authorization: string | undefined; body: Record<string, unknown> }> = [];
+	const server: Server = createServer((req, res) => {
+		let raw = "";
+		req.setEncoding("utf8").on("data", (chunk: string) => {
+			raw += chunk;
+		});
+		req.on("end", () => {
+			requests.push({ url: req.url ?? "", authorization: req.headers.authorization, body: JSON.parse(raw || "{}") });
+			const events = streams[requests.length - 1] ?? [];
+			res.writeHead(200, { "content-type": "text/event-stream" });
+			res.end(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""));
+		});
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address() as { port: number };
+	return {
+		baseUrl: `http://127.0.0.1:${address.port}/v1`,
+		requests,
+		close: () => new Promise((resolve) => server.close(() => resolve())),
+	};
+}
+
+describe("P54a OpenAI Responses in the CLI", () => {
+	it("a models.json model with api openai-responses runs a tool loop over /responses", async () => {
+		const call = {
+			type: "function_call",
+			id: "fc_1",
+			call_id: "call_1",
+			name: "read",
+			arguments: '{"path":"note.txt"}',
+		};
+		const message = (text: string) => ({ type: "message", id: "msg_1", content: [{ type: "output_text", text }] });
+		const mock = await scriptedSse([
+			[
+				{ type: "response.output_item.added", output_index: 0, item: { ...call, arguments: "" } },
+				{ type: "response.output_item.done", output_index: 0, item: call },
+				{ type: "response.completed", response: { status: "completed", usage: { input_tokens: 5, output_tokens: 2 } } },
+			],
+			[
+				{ type: "response.output_item.added", output_index: 0, item: { type: "message", id: "msg_1", content: [] } },
+				{ type: "response.output_text.delta", output_index: 0, delta: "RESPONSES_DONE" },
+				{ type: "response.output_item.done", output_index: 0, item: message("RESPONSES_DONE") },
+				{ type: "response.completed", response: { status: "completed" } },
+			],
+		]);
+		try {
+			const home = mkdtempSync(join(tmpdir(), "tau-p54r-home-"));
+			const cwd = mkdtempSync(join(tmpdir(), "tau-p54r-cwd-"));
+			writeFileSync(join(cwd, "note.txt"), "RESPONSES_FILE\n");
+			mkdirSync(join(home, ".tau"), { recursive: true });
+			writeFileSync(
+				join(home, ".tau", "models.json"),
+				JSON.stringify({
+					providers: {
+						oai: {
+							baseUrl: mock.baseUrl,
+							api: "openai-responses",
+							apiKey: "sk-resp",
+							models: [{ id: "gpt-x", reasoning: true }],
+						},
+					},
+				}),
+			);
+			const result = await run(["-m", "oai/gpt-x", "-p", "what is in note.txt?"], home, cwd);
+			assert.equal(result.code, 0, result.output);
+			assert.match(result.output, /RESPONSES_DONE/);
+			const [first, second] = mock.requests;
+			assert.equal(first?.url, "/v1/responses");
+			assert.equal(first?.authorization, "Bearer sk-resp");
+			assert.equal(first?.body.model, "gpt-x");
+			assert.equal(first?.body.store, false);
+			assert.equal((first?.body.input as Array<{ role?: string }>)[0]?.role, "developer");
+			assert.ok(Array.isArray(first?.body.tools) && (first?.body.tools as unknown[]).length > 0);
+			const output = (second?.body.input as Array<{ type?: string; output?: unknown }>).find(
+				(item) => item.type === "function_call_output",
+			);
+			assert.match(String(output?.output), /RESPONSES_FILE/);
 		} finally {
 			await mock.close();
 		}

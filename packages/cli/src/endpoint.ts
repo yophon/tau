@@ -1,7 +1,7 @@
 // The model and endpoint a session runs on (P50: split out of main.ts): the startup choice
 // (models.json, then flags and environment variables scoped to one wire protocol), each
-// endpoint's config and Anthropic transport config, /model's switch across providers (D21
-// addendum, D33), and the prices that apply.
+// endpoint's config and native transport config (Anthropic, OpenAI Responses), /model's switch
+// across providers (D21 addendum, D33), and the prices that apply.
 import {
 	ANTHROPIC_DEFAULT_BASE_URL,
 	ANTHROPIC_MESSAGES_API,
@@ -9,6 +9,12 @@ import {
 	createAnthropicTransport,
 	defaultMaxTokens,
 } from "@yophon/tau-ext-provider-anthropic";
+import {
+	createOpenAIResponsesTransport,
+	OPENAI_DEFAULT_BASE_URL,
+	OPENAI_RESPONSES_API,
+	type OpenAIResponsesTransportConfig,
+} from "@yophon/tau-ext-provider-openai-responses";
 import {
 	type ChatTransport,
 	createOpenAICompatTransport,
@@ -34,6 +40,7 @@ import {
 	findModel,
 	type loadModelsConfig,
 	MODELS_EXAMPLE,
+	type ModelApi,
 	modelPricing,
 	modelRef,
 	resolveConfigValue,
@@ -42,13 +49,33 @@ import {
 } from "./models.ts";
 import type { TauSettings } from "./settings.ts";
 
+/** A protocol the kernel does not speak itself, with its transport's config (read per request). */
+export type NativeTransportConfig =
+	| { kind: "anthropic"; config: AnthropicTransportConfig }
+	| { kind: "openai-responses"; config: OpenAIResponsesTransportConfig };
+
 /** The endpoint a session runs on (P50: one object, so /model's switch reaches every reader). */
 export interface ActiveEndpoint {
 	/** The table entry; undefined on the ad-hoc / env path. */
 	activeModel: ConfiguredModel | undefined;
 	config: OpenAICompatConfig;
-	anthropic: AnthropicTransportConfig | undefined;
+	/** Undefined for Chat Completions, the kernel's own protocol. */
+	native: NativeTransportConfig | undefined;
 	transport: ChatTransport | undefined;
+}
+
+/** The --provider kind of a models.json api. */
+export function providerKindOf(api: ModelApi): ProviderKind {
+	return api === "anthropic-messages" ? "anthropic" : api === "openai-responses" ? "openai-responses" : "openai";
+}
+
+/** The endpoint a protocol has when none is given; Chat Completions has none. */
+function defaultBaseUrl(provider: ProviderKind): string | undefined {
+	return provider === "anthropic"
+		? ANTHROPIC_DEFAULT_BASE_URL
+		: provider === "openai-responses"
+			? OPENAI_DEFAULT_BASE_URL
+			: undefined;
 }
 
 /** What every endpoint of the run shares: the stall timeout, TAU_MAX_TOKENS and the Chat Completions dialect knobs. */
@@ -115,13 +142,11 @@ export function resolveStartupEndpoint(input: {
 		else console.error(`Ignoring TAU_PROVIDER="${value}" (expected one of: ${PROVIDERS.join(", ")})`);
 	}
 	const provider: ProviderKind = activeModel
-		? activeModel.api === "anthropic-messages"
-			? "anthropic"
-			: "openai"
+		? providerKindOf(activeModel.api)
 		: (options.provider ?? envProvider ?? "openai");
 	// Endpoint and credential env vars are scoped to one wire protocol, so a key
 	// configured for one vendor is never sent to another vendor's host: OPENAI_* only
-	// feed openai, ANTHROPIC_* only feed anthropic, and TAU_BASE_URL/TAU_API_KEY only
+	// feed openai and openai-responses, ANTHROPIC_* only feed anthropic, and TAU_BASE_URL/TAU_API_KEY only
 	// the protocol TAU_PROVIDER names (openai when unset). Explicit flags always win.
 	const tauEnvApplies = (envProvider ?? "openai") === provider;
 	const vendorEnv =
@@ -134,7 +159,7 @@ export function resolveStartupEndpoint(input: {
 	const apiKey = activeModel
 		? resolveConfigValue(activeModel.apiKey, valueResolver)
 		: (options.apiKey ?? (tauEnvApplies ? process.env.TAU_API_KEY : undefined) ?? (vendorEnv.apiKey || undefined));
-	// anthropic has a well-known default endpoint; the OpenAI-compatible world does not.
+	// anthropic and openai-responses have well-known default endpoints; the OpenAI-compatible world does not.
 	if (!model || (provider === "openai" && !baseUrl)) {
 		if (modelsConfig.present) {
 			console.error(`No model in ${modelsConfig.path} has a usable API key, and no --base-url/--model was given.\n`);
@@ -146,9 +171,10 @@ export function resolveStartupEndpoint(input: {
 		console.error(USAGE);
 		process.exit(1);
 	}
-	if (provider === "anthropic" && !apiKey) {
+	if (provider !== "openai" && !apiKey) {
+		const vendorKey = provider === "anthropic" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
 		console.error(
-			"--provider anthropic requires an API key (--api-key, ANTHROPIC_API_KEY, or TAU_API_KEY with TAU_PROVIDER=anthropic).",
+			`--provider ${provider} requires an API key (--api-key, ${vendorKey}, or TAU_API_KEY with TAU_PROVIDER=${provider}).`,
 		);
 		process.exit(1);
 	}
@@ -163,7 +189,7 @@ export function resolveStartupEndpoint(input: {
 	// "120s" used to become a 120 ms watchdog; now it is rejected with a warning.
 	const envStall = envInt("TAU_STALL_TIMEOUT_MS", 0);
 	const stallTimeout = envStall !== undefined ? { stallTimeoutMs: envStall } : {};
-	const effectiveBaseUrl = baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL;
+	const effectiveBaseUrl = baseUrl ?? defaultBaseUrl(provider) ?? ANTHROPIC_DEFAULT_BASE_URL;
 	// Output cap for the Anthropic transport (it must send max_tokens; default 8192 is
 	// tight once adaptive thinking runs at high/xhigh effort).
 	const envMaxTokens = envInt("TAU_MAX_TOKENS", 1);
@@ -204,18 +230,24 @@ export function resolveStartupEndpoint(input: {
 	};
 }
 
-/** The config and transport of one endpoint: the startup one, or a table model /model switches to. */
 /**
- * The transport for a built endpoint: Anthropic's, else undefined (the agent's OpenAI-compatible
- * default). A model without native tool calling gets the prompt shim around it (P54d): models.json
- * `toolCalling: "prompt"`, or TAU_TOOL_SHIM=1 for an endpoint from flags or the environment.
+ * The transport for a built endpoint: its native protocol's, else undefined (the agent's
+ * OpenAI-compatible default). A model without native tool calling gets the prompt shim around it
+ * (P54d): models.json `toolCalling: "prompt"`, or TAU_TOOL_SHIM=1 for an endpoint from flags or
+ * the environment.
  */
 export function endpointTransport(
 	platform: Platform,
-	built: { config: OpenAICompatConfig; anthropic: AnthropicTransportConfig | undefined },
+	built: { config: OpenAICompatConfig; native: NativeTransportConfig | undefined },
 	model: ConfiguredModel | undefined,
 ): ChatTransport | undefined {
-	const base = built.anthropic ? createAnthropicTransport(built.anthropic, platform) : undefined;
+	const native = built.native;
+	const base =
+		native?.kind === "anthropic"
+			? createAnthropicTransport(native.config, platform)
+			: native?.kind === "openai-responses"
+				? createOpenAIResponsesTransport(native.config, platform)
+				: undefined;
 	const shim = model ? model.toolCalling === "prompt" : process.env.TAU_TOOL_SHIM === "1";
 	return shim ? withPromptToolShim(base ?? createOpenAICompatTransport(platform, built.config)) : base;
 }
@@ -233,8 +265,10 @@ export function buildEndpoint(
 		headers: Record<string, string>;
 		/** P36: a table model's `input` (pi: omitted = text only); undefined for an endpoint from env/flags. */
 		input?: ("text" | "image")[];
+		/** A table model's `reasoning` (pi: omitted = false); undefined for an endpoint from env/flags. */
+		reasoning?: boolean;
 	},
-): { config: OpenAICompatConfig; anthropic: AnthropicTransportConfig | undefined } {
+): { config: OpenAICompatConfig; native: NativeTransportConfig | undefined } {
 	const { stallTimeout, envMaxTokens, dialect } = defaults;
 	const headers = Object.keys(spec.headers).length > 0 ? { headers: spec.headers } : {};
 	const config: OpenAICompatConfig = {
@@ -248,15 +282,34 @@ export function buildEndpoint(
 			spec.kind === "anthropic" ? (spec.maxTokens ?? envMaxTokens ?? defaultMaxTokens(spec.model)) : spec.maxTokens,
 		...(spec.kind === "anthropic"
 			? { provider: spec.label ?? "anthropic", api: ANTHROPIC_MESSAGES_API }
-			: spec.label !== undefined
-				? { provider: spec.label }
-				: {}),
+			: spec.kind === "openai-responses"
+				? { provider: spec.label ?? "openai", api: OPENAI_RESPONSES_API }
+				: spec.label !== undefined
+					? { provider: spec.label }
+					: {}),
 		...headers,
 		...stallTimeout,
 		// TAU_INPUT (in dialect) still wins over the table.
 		...(spec.input ? { input: spec.input } : {}),
 		...dialect,
 	};
+	const maxTokens = spec.maxTokens ?? envMaxTokens;
+	if (spec.kind === "openai-responses") {
+		const responses: OpenAIResponsesTransportConfig = {
+			// The required-key gate ran already; assert for the type system.
+			apiKey: spec.apiKey as string,
+			model: spec.model,
+			...(spec.baseUrl !== undefined ? { baseUrl: spec.baseUrl } : {}),
+			...(maxTokens !== undefined ? { maxTokens } : {}),
+			...(spec.label !== undefined ? { provider: spec.label } : {}),
+			// An endpoint from flags or the environment is taken for a reasoning model (current OpenAI models are).
+			reasoning: spec.reasoning ?? true,
+			...(config.input ? { input: config.input } : {}),
+			...headers,
+			...stallTimeout,
+		};
+		return { config, native: { kind: "openai-responses", config: responses } };
+	}
 	const anthropic: AnthropicTransportConfig | undefined =
 		spec.kind === "anthropic"
 			? {
@@ -264,7 +317,7 @@ export function buildEndpoint(
 					apiKey: spec.apiKey as string,
 					model: spec.model,
 					...(spec.baseUrl !== undefined ? { baseUrl: spec.baseUrl } : {}),
-					...((spec.maxTokens ?? envMaxTokens) !== undefined ? { maxTokens: spec.maxTokens ?? envMaxTokens } : {}),
+					...(maxTokens !== undefined ? { maxTokens } : {}),
 					...(spec.contextWindow !== undefined ? { contextWindow: spec.contextWindow } : {}),
 					...(spec.label !== undefined ? { provider: spec.label } : {}),
 					...headers,
@@ -272,7 +325,7 @@ export function buildEndpoint(
 					...stallTimeout,
 				}
 			: undefined;
-	return { config, anthropic };
+	return { config, native: anthropic ? { kind: "anthropic", config: anthropic } : undefined };
 }
 
 /**
@@ -335,12 +388,12 @@ export function createModelSwitch(input: {
 				options: {},
 				commit: () => {
 					endpoint.config.model = id;
-					if (endpoint.anthropic) endpoint.anthropic.model = id;
+					if (endpoint.native) endpoint.native.config.model = id;
 				},
 			};
 		}
 		const key = resolveConfigValue(found.apiKey, valueResolver);
-		const kind: ProviderKind = found.api === "anthropic-messages" ? "anthropic" : "openai";
+		const kind = providerKindOf(found.api);
 		const window = input.contextWindowFlag ?? found.contextWindow;
 		const next = buildEndpoint(input.defaults, {
 			kind,
@@ -352,6 +405,7 @@ export function createModelSwitch(input: {
 			maxTokens: found.maxTokens,
 			headers: resolveHeaders(found, valueResolver),
 			input: found.input ?? ["text"],
+			reasoning: found.reasoning,
 		});
 		const nextTransport = endpointTransport(platform, next, found);
 		return {
@@ -368,7 +422,7 @@ export function createModelSwitch(input: {
 			commit: () => {
 				endpoint.activeModel = found;
 				endpoint.config = next.config;
-				endpoint.anthropic = next.anthropic;
+				endpoint.native = next.native;
 				endpoint.transport = nextTransport;
 			},
 		};

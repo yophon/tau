@@ -57,7 +57,8 @@ function downgradeUnsupportedImages(messages: AgentMessage[], target: TransformT
  *
  * - thinking from a different model (api/provider/model mismatch) is not replayable —
  *   its signature or field name belongs to another protocol — and is dropped: sent as
- *   text, the new model took it for part of its reply (pi 1.3);
+ *   text, the new model took it for part of its reply (pi 1.3); text and tool calls of a
+ *   different model lose their signatures (pi);
  * - errored/aborted assistant turns are skipped (dangling tool calls, partial
  *   thinking) so the model resumes from the last valid state;
  * - every tool call gets a result: orphaned calls receive a synthetic
@@ -81,13 +82,12 @@ export function transformMessages(messages: AgentMessage[], target: TransformTar
 		if (msg.role !== "assistant") return msg;
 		if (isSameLineage(msg, target)) return msg;
 		const content = msg.content.flatMap((block): AssistantMessage["content"] => {
-			if (block.type === "toolCall" && target.normalizeToolCallId) {
-				const id = target.normalizeToolCallId(block.id);
-				if (id !== block.id) {
-					toolCallIdMap.set(block.id, id);
-					return [{ ...block, id }];
-				}
-				return [block];
+			if (block.type === "text") return [{ type: "text", text: block.text }];
+			if (block.type === "toolCall") {
+				const { thoughtSignature: _signature, ...call } = block;
+				const id = target.normalizeToolCallId?.(block.id) ?? block.id;
+				if (id !== block.id) toolCallIdMap.set(block.id, id);
+				return [{ ...call, id }];
 			}
 			// Thinking of another model is dropped (pi 1.3).
 			return block.type === "thinking" ? [] : [block];

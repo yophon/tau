@@ -16,6 +16,7 @@ const PURE_PACKAGES = [
 	{ dir: "kernel", external: [] },
 	{ dir: "ext-mcp-http", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-provider-anthropic", external: ["@yophon/tau-kernel"] },
+	{ dir: "ext-provider-openai-responses", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-tool-search", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-web", external: ["@yophon/tau-kernel"] },
 	// The pure entry only; ./node wires the worker-thread sandbox (D30).

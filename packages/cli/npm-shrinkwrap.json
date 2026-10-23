@@ -14,6 +14,7 @@
 				"@yophon/tau-ext-lsp": "^0.2.0",
 				"@yophon/tau-ext-mcp": "^0.2.0",
 				"@yophon/tau-ext-provider-anthropic": "^0.2.0",
+				"@yophon/tau-ext-provider-openai-responses": "^0.2.0",
 				"@yophon/tau-ext-resources": "^0.2.0",
 				"@yophon/tau-ext-subagents": "^0.2.0",
 				"@yophon/tau-ext-tool-search": "^0.2.0",
@@ -75,6 +76,14 @@
 		"node_modules/@yophon/tau-ext-provider-anthropic": {
 			"version": "0.2.0",
 			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-provider-anthropic/-/tau-ext-provider-anthropic-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.2.0"
+			}
+		},
+		"node_modules/@yophon/tau-ext-provider-openai-responses": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-provider-openai-responses/-/tau-ext-provider-openai-responses-0.2.0.tgz",
 			"license": "MIT",
 			"dependencies": {
 				"@yophon/tau-kernel": "^0.2.0"

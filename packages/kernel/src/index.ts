@@ -283,6 +283,7 @@ export {
 	resolveTranscript,
 	responseHeaders,
 	sanitizeSurrogates,
+	shortHash,
 	streamChatCompletion,
 	TOOL_RESULT_IMAGES_TEXT,
 	type ToolDefinition,

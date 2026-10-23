@@ -19,6 +19,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-codemode",
 	"ext-lsp",
 	"ext-provider-anthropic",
+	"ext-provider-openai-responses",
 	"ext-resources",
 	"ext-feishu",
 	"gateway",

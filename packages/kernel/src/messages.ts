@@ -21,6 +21,8 @@ export interface ToolDefinition {
 export interface TextContent {
 	type: "text";
 	text: string;
+	/** Provider metadata for replay (pi): the OpenAI Responses message item id and phase (P54a). */
+	textSignature?: string;
 }
 
 export interface ImageContent {
@@ -54,6 +56,8 @@ export interface ToolCall {
 	 * it sent. `arguments` is then `{}` and the call fails validation with this, so the model sees it.
 	 */
 	argumentsError?: string;
+	/** Provider continuity payload for the call (pi): Gemini's thoughtSignature (P54b). */
+	thoughtSignature?: string;
 }
 
 export interface UsageCost {

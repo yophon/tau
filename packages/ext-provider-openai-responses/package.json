@@ -1,0 +1,25 @@
+{
+	"name": "@yophon/tau-ext-provider-openai-responses",
+	"version": "0.2.0",
+	"description": "Pure-Platform OpenAI Responses API transport for tau (zero dependencies beyond the kernel)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-provider-openai-responses"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}
