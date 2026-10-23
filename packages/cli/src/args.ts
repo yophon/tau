@@ -86,8 +86,9 @@ Options:
                          of this directory's sessions (as /resume <session>)
       --session-dir <dir>  Keep sessions in this directory (settings.json sessionDir)
       --fallback-model <model>  A models.json model to fall back to when a request fails before
-                         answering (rate limit, overload, network, key, credit); repeat for
-                         more. settings: fallbackModels, fallback.on, fallback.enabled
+                         answering (rate limit, overload, network, key, credit) and retries
+                         are spent; repeat for more. settings: fallbackModels, fallback.on,
+                         fallback.enabled
       --no-session       Do not persist this conversation
   -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
   -e,  --extension <path>  Load an extension file or directory for this run (repeatable)

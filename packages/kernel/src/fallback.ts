@@ -1,11 +1,11 @@
 // Model fallback (P54c, yo-agent's provider fallback chain; Claude Code's --fallback-model): a
 // request that fails before producing anything — rate limited, overloaded, unreachable, refused
-// for its key, out of credit — goes to the next route. A route that has started answering in a
-// run keeps the rest of the run, so two models never read each other's tool calls mid-run
+// for its key, out of credit — goes to the next route once the agent's retries on the current one
+// are spent (Claude Code retries an overload, then switches). A route that has started answering
+// in a run keeps the rest of the run, so two models never read each other's tool calls mid-run
 // (yo-agent, after LangBot). Which failures switch is configurable (default: all five).
 import { HttpError, TauError } from "./errors.ts";
-import type { AssistantMessage } from "./messages.ts";
-import type { ChatStreamEvent, ChatTransport } from "./openai.ts";
+import type { ChatTransport } from "./openai.ts";
 
 /** What a failure was, for deciding whether to switch. */
 export type FallbackReason = "rate_limit" | "overloaded" | "network" | "auth" | "billing";
@@ -58,56 +58,43 @@ export function fallbackReasonOf(failure: unknown): FallbackReason | undefined {
 
 const BILLING = /insufficient[ _-]?(balance|quota|credit|funds)|billing|payment required|\b402\b|quota exceeded/i;
 
-const emptyReply = (message: AssistantMessage): boolean =>
-	message.content.every((block) =>
-		block.type === "text" ? block.text === "" : block.type === "thinking" ? block.thinking === "" : false,
-	);
+/** A run's routes: the transport the run asks, and the switch the agent takes after a failure. */
+export interface FallbackChain {
+	/** Asks the current route, for its model. */
+	readonly transport: ChatTransport;
+	/**
+	 * A request failed and the agent will not retry it: move to the next route when the failure is
+	 * one to switch on and nothing of this run has come from a route yet. True when it moved.
+	 */
+	fallBack(failure: unknown): boolean;
+}
 
-/**
- * A transport over `primary` then `options.routes`. Make one per run: the route that starts
- * answering is kept for the rest of the run.
- */
-export function createFallbackTransport(primary: FallbackRoute, options: FallbackOptions): ChatTransport {
+/** The routes of one run: `primary`, then `options.routes`. Make one per run. */
+export function createFallbackChain(primary: FallbackRoute, options: FallbackOptions): FallbackChain {
 	const routes = [primary, ...options.routes];
 	const switchOn = new Set(options.on ?? FALLBACK_REASONS);
-	let committed: number | undefined;
+	let index = 0;
+	let answered = false;
 	const transport: ChatTransport = (request) =>
 		(async function* () {
-			for (let index = committed ?? 0; index < routes.length; index++) {
-				const route = routes[index] as FallbackRoute;
-				const next = routes[index + 1];
-				const switchFor = (reason: FallbackReason | undefined, message: string): boolean => {
-					if (committed !== undefined || !next || !reason || !switchOn.has(reason) || request.signal?.aborted)
-						return false;
-					options.onSwitch?.({ from: route.label, to: next.label, reason, message });
-					return true;
-				};
-				const iterator = route.transport({ ...request, model: route.model })[Symbol.asyncIterator]();
-				let first: IteratorResult<ChatStreamEvent>;
-				try {
-					first = await iterator.next();
-				} catch (error) {
-					if (switchFor(fallbackReasonOf(error), error instanceof Error ? error.message : String(error))) continue;
-					throw error;
-				}
-				// A reply that ends at once with an error and nothing in it failed before producing anything.
-				if (
-					!first.done &&
-					first.value.type === "response_end" &&
-					first.value.message.stopReason === "error" &&
-					emptyReply(first.value.message)
-				) {
-					const message = first.value.message.errorMessage ?? "";
-					if (switchFor(fallbackReasonOf(message), message)) continue;
-				}
-				committed = index;
-				if (first.done) return;
-				yield first.value;
-				yield* { [Symbol.asyncIterator]: () => iterator };
-				return;
+			const route = routes[index] as FallbackRoute;
+			for await (const event of route.transport({ ...request, model: route.model })) {
+				answered = true;
+				yield event;
 			}
 		})();
 	transport.supportsHeaders = primary.transport.supportsHeaders;
 	transport.supportsProviderEvents = primary.transport.supportsProviderEvents;
-	return transport;
+	return {
+		transport,
+		fallBack(failure) {
+			const next = routes[index + 1];
+			const reason = fallbackReasonOf(failure);
+			if (answered || !next || !reason || !switchOn.has(reason)) return false;
+			const message = failure instanceof Error ? failure.message : String(failure);
+			options.onSwitch?.({ from: (routes[index] as FallbackRoute).label, to: next.label, reason, message });
+			index++;
+			return true;
+		},
+	};
 }

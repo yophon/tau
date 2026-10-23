@@ -35,7 +35,7 @@ import {
 	type UIPromptKind,
 	type UiCapability,
 } from "./extensions.ts";
-import { createFallbackTransport, type FallbackOptions } from "./fallback.ts";
+import { createFallbackChain, type FallbackOptions } from "./fallback.ts";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -1815,14 +1815,14 @@ export class Agent {
 		let lengthStreak = 0;
 		/** P53c: replies cut off by the output cap continued in a row. */
 		let continuedReplies = 0;
-		// P54c: one fallback transport per run, over the model the run starts with; the route that
-		// starts answering keeps the run.
-		const transport = this.fallback
-			? createFallbackTransport(
-					{ transport: this.transport, model: this.currentModel, label: `${this.provider}/${this.currentModel}` },
-					this.fallback,
-				)
-			: this.transport;
+		// P54c: one fallback chain per run, starting from the run's model; the route that answers keeps the run.
+		const primary = {
+			transport: this.transport,
+			model: this.currentModel,
+			label: `${this.provider}/${this.currentModel}`,
+		};
+		const fallback = this.fallback ? createFallbackChain(primary, this.fallback) : undefined;
+		const transport = fallback?.transport ?? this.transport;
 		let explicitContinue = false;
 		// Check for steering at start: the user may have typed while the run was starting (pi).
 		let pending: (UserMessage | CustomMessage)[] = this.steeringQueue.drain();
@@ -2086,8 +2086,8 @@ export class Agent {
 						hasMoreToolCalls = true;
 						continue;
 					}
-					state.turnIndex++;
 					if (finalMessage.stopReason === "aborted") {
+						state.turnIndex++;
 						// An aborted retry closes its cycle as cancelled (pi _finishCancelledRetry).
 						yield* this.endRun(ctx, retryAttempt, pending);
 						return "aborted";
@@ -2096,7 +2096,18 @@ export class Agent {
 						const endEvent = { success: false, attempt: retryAttempt, finalError: finalMessage.errorMessage };
 						await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
 						yield { type: "auto_retry_end", ...endEvent };
+						retryAttempt = 0;
 					}
+					// P54c: retries spent (or none apply); a run nothing has answered yet moves to the next route.
+					if (fallback?.fallBack(streamFailure)) {
+						await this.enqueueWrite(async () => {
+							await this.session.appendContextEdit(failedEntryId, null);
+							await this.refresh();
+						});
+						hasMoreToolCalls = true;
+						continue;
+					}
+					state.turnIndex++;
 					await this.flushWrites();
 					await this.extensions?.notifyAgentEnd(this.messages, ctx);
 					yield { type: "agent_end", messages: this.messages };

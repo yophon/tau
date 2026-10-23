@@ -219,8 +219,9 @@ export {
 	type WidgetPlacement,
 } from "./extensions.ts";
 export {
-	createFallbackTransport,
+	createFallbackChain,
 	FALLBACK_REASONS,
+	type FallbackChain,
 	type FallbackOptions,
 	type FallbackReason,
 	type FallbackRoute,
