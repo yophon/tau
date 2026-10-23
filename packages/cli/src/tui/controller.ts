@@ -18,25 +18,14 @@ import {
 	type CustomMessage,
 	commandPromptContent,
 	type ExtensionRegistry,
-	formErrors,
-	formFieldError,
-	formFieldTitle,
-	formValueText,
-	hasFormValue,
-	initialFormValues,
 	type PermissionMode,
-	parseFormText,
 	restoreSession,
 	type SessionMetadata,
 	SessionRecorder,
 	type SessionStore,
-	type TauAbortSignal,
 	TauError,
 	type ThinkingLevel,
 	type UiCapability,
-	type UiForm,
-	type UiFormResult,
-	type UiFormValue,
 	type UserContent,
 	userContentText,
 } from "@yophon/tau-kernel";
@@ -50,6 +39,7 @@ import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
 import { commandList, runCommand, shortcutItems, whenCommandRuns } from "./commands.ts";
+import { TuiDialogs } from "./dialogs.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, type Tone } from "./format.ts";
 import {
@@ -59,7 +49,6 @@ import {
 	type CompletionSources,
 	computeCompletion,
 	fromLines,
-	fuzzyScore,
 	listFiles,
 	toLines,
 } from "./input/completion.ts";
@@ -77,29 +66,22 @@ import {
 	pressedKey,
 	setKeybindings,
 } from "./keybindings.ts";
-import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey, type TreeAction } from "./keymap.ts";
-import {
-	type ApprovalPromptRequest,
-	type ApprovalView,
-	approvalOptions,
-	diagnosticsBlock,
-	initialState,
-	type PickerItem,
-	type PromptView,
-	type QueuedInput,
-	type TaskKind,
-} from "./model.ts";
-import { approvalBody, approvalTitle } from "./render/approval.ts";
+import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
+import { approvalOptions, diagnosticsBlock, initialState, type QueuedInput, type TaskKind } from "./model.ts";
+
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { useMarkdownTransformers } from "./render/markdown.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
-import { SessionTreeView, type TreeNode, type TreeRow } from "./session-tree.ts";
+
 import { TuiStore } from "./store.ts";
-import { type BlockedKind, notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
+import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
-import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "./types.ts";
+import type { RunTuiOptions, TuiDeps } from "./types.ts";
+
+// Kept importable from here (tests, P38).
+export { filterItems } from "./dialogs.ts";
 
 /** Image types models take as they are (P36b); others are converted to PNG before saving. */
 const PASTEABLE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
@@ -140,6 +122,7 @@ const FLASH_MS = 2000;
 const LONG_RUN_MS = 30_000;
 
 export class TuiController {
+	readonly dialogs = new TuiDialogs(this);
 	readonly store: TuiStore;
 	readonly options: RunTuiOptions;
 	agent: Agent;
@@ -169,8 +152,6 @@ export class TuiController {
 	private historyDraft: ed.EditorState | undefined;
 	/** The draft Ctrl+C cleared, for ↑ in an empty input before the history (P49, Claude Code); the last one only. */
 	private clearedDraft: ed.EditorState | undefined;
-	/** The draft put aside while the input box answers a prompt (deny-and-tell, ctx.ui.input). */
-	private promptDraft: ed.EditorState | undefined;
 	private readonly pastes = newPasteStore();
 	private readonly history: PersistentHistory;
 	private historyIndex: number;
@@ -187,23 +168,14 @@ export class TuiController {
 	private controller: AbortController | undefined;
 	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
 	private readonly pendingStarts: (UserContent | null)[] = [];
-	private nextDialogId = 1;
-	private readonly approvals = new Map<number, { resolve: (answer: ApprovalAnswer) => void; detached: boolean }>();
 	/**
 	 * Custom messages already drawn (by content key). One that arrives between runs
 	 * (a background subagent's result) is drawn before the next run; counting
 	 * messages instead races with a result landing while a turn wraps up.
 	 */
 	private readonly shownCustom = new Set<string>();
-	/** Open pickers: how each settles (with Ctrl+S, `alt` is true; with an action key, it is that key). */
-	private readonly pickers = new Map<number, (value: string | undefined, extra?: boolean | string) => void>();
-	/** Multi-select lists (P35, ctx.ui.selectMany): the checked values. */
-	private readonly multiPickers = new Map<number, (values: string[] | undefined) => void>();
 	/** The widget each row above the input box belongs to, for clicks (P35). */
 	private widgetRows: string[] = [];
-	private readonly prompts = new Map<number, (value: string | undefined) => void>();
-	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
-	private tellFor: ApprovalView | undefined;
 	private readonly toolOutput = new Map<string, string>();
 	private exitTimer: ReturnType<typeof setTimeout> | undefined;
 	/** When the last Esc on an empty, idle input came (pi's double-Esc window, P37b); 0 when none counts. */
@@ -259,14 +231,14 @@ export class TuiController {
 		);
 		this.ui = {
 			confirm: async (title, message) =>
-				(await this.pick(message ? `${title} — ${message}` : title, [
+				(await this.dialogs.pick(message ? `${title} — ${message}` : title, [
 					{ label: "Yes", value: "yes", key: "y" },
 					{ label: "No", value: "no", key: "n" },
 				])) === "yes",
 			// An extension asking (ask_user, say) gets the window's attention like an approval (P35).
 			input: (title, placeholder) => {
 				this.attention("question", title);
-				return this.blocked(title, this.ask("input", title, placeholder));
+				return this.dialogs.blocked(title, this.dialogs.ask("input", title, placeholder));
 			},
 			// Numbered options: a digit picks one (P38c, Claude Code's numbered choices); longer lists filter.
 			select: (title, values, dialog) => {
@@ -276,22 +248,24 @@ export class TuiController {
 						? { label: `${index + 1}. ${value}`, value, key: String(index + 1) }
 						: { label: value, value },
 				);
-				return this.blocked(
+				return this.dialogs.blocked(
 					title,
-					dialog?.signal || dialog?.timeout ? this.pickDismissable(title, items, dialog) : this.pick(title, items),
+					dialog?.signal || dialog?.timeout
+						? this.dialogs.pickDismissable(title, items, dialog)
+						: this.dialogs.pick(title, items),
 				);
 			},
 			selectMany: (title, values) => {
 				this.attention("question", title);
-				return this.blocked(
+				return this.dialogs.blocked(
 					title,
-					this.pickMany(
+					this.dialogs.pickMany(
 						title,
 						values.map((value) => ({ label: value, value })),
 					),
 				);
 			},
-			form: (form, options) => this.blocked(form.title, this.form(form, options?.signal)),
+			form: (form, options) => this.dialogs.blocked(form.title, this.dialogs.form(form, options?.signal)),
 			// pi ui.addAutocompleteProvider: stacked on the built-in completion, in order.
 			addAutocompleteProvider: (factory) => this.addAutocompleteProvider(factory),
 			notify: (message, level) => {
@@ -316,14 +290,14 @@ export class TuiController {
 			},
 		};
 		// P49: mcp-elicit marks a sign-in page before asking (OSC 7501 `auth`); not part of UiCapability.
-		Object.assign(this.ui, { expectSignIn: () => this.expectSignIn() });
+		Object.assign(this.ui, { expectSignIn: () => this.dialogs.expectSignIn() });
 	}
 
 	get state() {
 		return this.store.getState();
 	}
 
-	private dispatch(action: Parameters<TuiStore["dispatch"]>[0]): void {
+	dispatch(action: Parameters<TuiStore["dispatch"]>[0]): void {
 		this.store.dispatch(action);
 	}
 
@@ -385,7 +359,7 @@ export class TuiController {
 	async start(): Promise<void> {
 		this.loadKeybindings();
 		this.agent.setUi(this.ui);
-		this.options.setApprovalPrompt?.((request) => this.requestApproval(request));
+		this.options.setApprovalPrompt?.((request) => this.dialogs.requestApproval(request));
 		this.attachHostActions(this.extensions);
 		// The status line shows model, directory and mode; the header does not repeat them (P38b).
 		const version = this.options.statusLineContext?.().version;
@@ -598,7 +572,7 @@ export class TuiController {
 	// ── lists: completion menu and pickers (P34g) ──────────────────────────
 
 	/** Rows the open list shows, as last rendered. */
-	private listHeight = INLINE_LIST_ROWS;
+	listHeight = INLINE_LIST_ROWS;
 
 	setListHeight(rows: number): void {
 		this.listHeight = Math.max(1, rows);
@@ -652,135 +626,9 @@ export class TuiController {
 		return { kind: "menu", count, selected: Math.min(menu.selected, count - 1), start: menu.start };
 	}
 
-	/** The open session tree (P39f), when the picker shown is it. */
-	private tree?: { id: number; view: SessionTreeView };
-
-	private activeTree(): { id: number; view: SessionTreeView } | undefined {
-		const tree = this.tree;
-		return tree && this.state.picker?.tree && this.state.picker.id === tree.id ? tree : undefined;
-	}
-
 	/** P40c: the settings the TUI follows (tree filter, branch summary question, editor), as of the last /reload. */
 	get settings(): ReturnType<NonNullable<RunTuiOptions["settings"]>> {
 		return this.options.settings?.() ?? {};
-	}
-
-	/**
-	 * /tree (P39f, pi's tree selector): the whole session as a tree in the picker; resolves
-	 * with the chosen entry's id, undefined when cancelled.
-	 */
-	pickTree(roots: TreeNode[], leafId: string | null): Promise<string | undefined> {
-		const id = this.nextDialogId++;
-		const view = new SessionTreeView(roots, leafId);
-		// P40c (pi): settings' treeFilterMode is the filter the tree opens with.
-		const initial = this.settings.treeFilterMode;
-		if (initial !== undefined && initial !== "default") view.setFilter(initial);
-		this.tree = { id, view };
-		return new Promise((resolve) => {
-			this.pickers.set(id, (value) => {
-				if (this.tree?.id === id) this.tree = undefined;
-				resolve(value);
-			});
-			this.showTree();
-			this.store.flush();
-		});
-	}
-
-	/** The tree's rows as the picker's items, the selection kept in view. */
-	private readonly treeItems = new WeakMap<readonly TreeRow[], PickerItem[]>();
-
-	private showTree(): void {
-		const tree = this.tree;
-		if (!tree) return;
-		const rows = tree.view.rows();
-		// P42d: the same rows (a move) keep the same items, so a keystroke does not rebuild them all.
-		let items = this.treeItems.get(rows);
-		if (!items) {
-			items = rows.map((row) => ({ label: row.text, value: row.id }));
-			this.treeItems.set(rows, items);
-		}
-		const selected = tree.view.selectedIndex;
-		const height = this.listHeight;
-		const previous =
-			this.state.picker?.id === tree.id ? (this.state.picker.start ?? 0) : selected - Math.floor(height / 2);
-		const start = Math.max(0, Math.min(previous, selected, rows.length - height), selected - height + 1);
-		this.dispatch({
-			type: "picker-open",
-			picker: {
-				id: tree.id,
-				title: "Session tree",
-				items,
-				selected,
-				start: Math.max(0, start),
-				tree: { search: tree.view.searchQuery, status: tree.view.status() },
-			},
-		});
-	}
-
-	/** A session tree key (P39f, pi's TreeList.handleInput). */
-	private async treeKey(action: TreeAction): Promise<void> {
-		const tree = this.activeTree();
-		if (!tree) return;
-		const { view } = tree;
-		switch (action) {
-			case "app.tree.foldOrUp":
-				view.foldOrUp();
-				break;
-			case "app.tree.unfoldOrDown":
-				view.unfoldOrDown();
-				break;
-			case "app.tree.filter.default":
-				view.setFilter("default");
-				break;
-			case "app.tree.filter.noTools":
-				view.setFilter("no-tools");
-				break;
-			case "app.tree.filter.userOnly":
-				view.setFilter("user-only");
-				break;
-			case "app.tree.filter.labeledOnly":
-				view.setFilter("labeled-only");
-				break;
-			case "app.tree.filter.all":
-				view.setFilter("all");
-				break;
-			case "app.tree.filter.cycleForward":
-				view.cycleFilter(1);
-				break;
-			case "app.tree.filter.cycleBackward":
-				view.cycleFilter(-1);
-				break;
-			case "app.tree.toggleLabelTimestamp":
-				view.toggleLabelTimestamps();
-				break;
-			case "app.message.copy": {
-				const text = view.copyText();
-				if (text === undefined) this.flash("Nothing to copy in that entry");
-				else void this.copySelection(text);
-				return;
-			}
-			case "app.tree.editLabel": {
-				const node = view.selected();
-				if (!node) return;
-				// pi swaps the list for a label input; here the editor asks, then the tree comes back.
-				this.dispatch({ type: "picker-close", id: tree.id });
-				const label = await this.ask(
-					"input",
-					node.label ? `Label (now "${node.label}"; empty removes it)` : "Label (empty removes it)",
-				);
-				if (label !== undefined) {
-					try {
-						await this.agent.setLabel(node.entry.id, label);
-						view.setLabel(node.entry.id, label.trim() || undefined);
-					} catch (error) {
-						this.notice("error", `Label failed: ${errorText(error)}`);
-					}
-				}
-				if (this.tree === tree) this.showTree();
-				return;
-			}
-		}
-		this.showTree();
 	}
 
 	/** Move the open list's selection or window; false when no list is open. */
@@ -789,7 +637,7 @@ export class TuiController {
 		if (!list) return false;
 		const next = moveInList(list.count, list.selected, list.start, this.listHeight, move);
 		// The session tree keeps its own selection (its rows change with filters and folds).
-		this.activeTree()?.view.select(next.selected);
+		this.dialogs.activeTree()?.view.select(next.selected);
 		this.dispatch(
 			list.kind === "picker"
 				? { type: "picker-select", index: next.selected, start: next.start }
@@ -1092,7 +940,7 @@ export class TuiController {
 		}
 	}
 
-	private async copySelection(text: string): Promise<void> {
+	async copySelection(text: string): Promise<void> {
 		if (text === "") return;
 		try {
 			await this.copyText(text);
@@ -1409,7 +1257,7 @@ export class TuiController {
 		return undefined;
 	}
 
-	private setEditor(editor: ed.EditorState): void {
+	setEditor(editor: ed.EditorState): void {
 		this.dispatch({ type: "editor", editor });
 		this.syncMenu();
 	}
@@ -1466,7 +1314,7 @@ export class TuiController {
 		const count = await (this.deps.uncommittedFiles ?? uncommittedFiles)(this.options.cwd);
 		if (!count) return true;
 		const question = dirtyRepoQuestion(count, action);
-		const answer = await this.pick(question.title, [
+		const answer = await this.dialogs.pick(question.title, [
 			{ label: question.options[0], value: "yes", key: "y" },
 			{ label: question.options[1], value: "no", key: "n" },
 		]);
@@ -1803,7 +1651,7 @@ export class TuiController {
 				else this.relayout();
 				return;
 			case "shortcuts":
-				void this.pick("Keyboard shortcuts", shortcutItems(this.extensions));
+				void this.dialogs.pick("Keyboard shortcuts", shortcutItems(this.extensions));
 				return;
 			case "complete-path":
 				this.completePath();
@@ -1843,29 +1691,31 @@ export class TuiController {
 				this.dispatch({ type: "approval-move", delta: command.type === "approval-up" ? -1 : 1 });
 				return;
 			case "approval-confirm":
-				this.decideApproval(state.approval?.selected ?? 0);
+				this.dialogs.decideApproval(state.approval?.selected ?? 0);
 				return;
 			case "approval-choose":
-				this.decideApproval(command.index);
+				this.dialogs.decideApproval(command.index);
 				return;
 			case "approval-reject":
 				// One Esc denies (P38c, Claude Code and Codex; two presses came from yo-agent).
 				if (!state.approval) return;
-				this.decideApproval(approvalOptions(state.approval.request).findIndex((option) => option.choice === "deny"));
+				this.dialogs.decideApproval(
+					approvalOptions(state.approval.request).findIndex((option) => option.choice === "deny"),
+				);
 				return;
 			case "prompt-cancel":
-				this.cancelPrompt();
+				this.dialogs.cancelPrompt();
 				return;
 			case "tree-key":
-				void this.treeKey(command.action);
+				void this.dialogs.treeKey(command.action);
 				return;
 			case "picker-up":
 			case "picker-down": {
-				const tree = this.activeTree();
+				const tree = this.dialogs.activeTree();
 				if (tree) {
 					// pi's tree wraps around at either end.
 					tree.view.move(command.type === "picker-up" ? -1 : 1);
-					this.showTree();
+					this.dialogs.showTree();
 					return;
 				}
 				this.moveList({ kind: "step", delta: command.type === "picker-up" ? -1 : 1 });
@@ -1896,7 +1746,7 @@ export class TuiController {
 			case "picker-toggle": {
 				const picker = state.picker;
 				if (picker?.checked) this.dispatch({ type: "picker-toggle", id: picker.id, index: picker.selected });
-				else if (picker?.all) this.filterPicker(`${picker.query ?? ""} `);
+				else if (picker?.all) this.dialogs.filterPicker(`${picker.query ?? ""} `);
 				return;
 			}
 			case "picker-action": {
@@ -1904,18 +1754,18 @@ export class TuiController {
 				const value = picker?.items[picker.selected]?.value;
 				if (!picker?.actions?.some((action) => action.key === command.key) || value === undefined) return;
 				this.dispatch({ type: "picker-close", id: picker.id });
-				this.settlePicker(picker.id, value, command.key);
+				this.dialogs.settlePicker(picker.id, value, command.key);
 				return;
 			}
 			case "picker-backspace": {
-				const tree = this.activeTree();
+				const tree = this.dialogs.activeTree();
 				if (tree) {
 					tree.view.backspace();
-					this.showTree();
+					this.dialogs.showTree();
 					return;
 				}
 				const query = state.picker?.query;
-				if (query) this.filterPicker([...query].slice(0, -1).join(""));
+				if (query) this.dialogs.filterPicker([...query].slice(0, -1).join(""));
 				return;
 			}
 			case "picker-confirm": {
@@ -1925,14 +1775,14 @@ export class TuiController {
 					// Nothing checked: Enter does nothing (Esc cancels).
 					if (picker.checked.length === 0) return;
 					this.dispatch({ type: "picker-close", id: picker.id });
-					this.settleMany(
+					this.dialogs.settleMany(
 						picker.id,
 						picker.checked.map((index) => picker.items[index]?.value).filter((value) => value !== undefined),
 					);
 					return;
 				}
 				this.dispatch({ type: "picker-close", id: picker.id });
-				this.settlePicker(picker.id, picker.items[picker.selected]?.value);
+				this.dialogs.settlePicker(picker.id, picker.items[picker.selected]?.value);
 				return;
 			}
 			case "picker-alt": {
@@ -1940,37 +1790,37 @@ export class TuiController {
 				const value = picker?.items[picker.selected]?.value;
 				if (!picker?.alt || value === undefined) return;
 				this.dispatch({ type: "picker-close", id: picker.id });
-				this.settlePicker(picker.id, value, true);
+				this.dialogs.settlePicker(picker.id, value, true);
 				return;
 			}
 			case "picker-key": {
-				const tree = this.activeTree();
+				const tree = this.dialogs.activeTree();
 				if (tree) {
 					tree.view.type(command.key);
-					this.showTree();
+					this.dialogs.showTree();
 					return;
 				}
 				const picker = state.picker;
 				if (picker?.all) {
-					this.filterPicker((picker.query ?? "") + command.key);
+					this.dialogs.filterPicker((picker.query ?? "") + command.key);
 					return;
 				}
 				const item = picker?.items.find((candidate) => candidate.key === command.key.toLowerCase());
 				if (!picker || !item) return;
 				this.dispatch({ type: "picker-close", id: picker.id });
-				this.settlePicker(picker.id, item.value);
+				this.dialogs.settlePicker(picker.id, item.value);
 				return;
 			}
 			case "picker-cancel":
 				if (!state.picker) return;
 				// The tree's Esc clears its search first (pi).
-				if (this.activeTree()?.view.clearSearch()) {
-					this.showTree();
+				if (this.dialogs.activeTree()?.view.clearSearch()) {
+					this.dialogs.showTree();
 					return;
 				}
 				this.dispatch({ type: "picker-close", id: state.picker.id });
-				if (state.picker.checked) this.settleMany(state.picker.id, undefined);
-				else this.settlePicker(state.picker.id, undefined);
+				if (state.picker.checked) this.dialogs.settleMany(state.picker.id, undefined);
+				else this.dialogs.settlePicker(state.picker.id, undefined);
 				return;
 			case "menu-up":
 			case "menu-down":
@@ -2284,8 +2134,8 @@ export class TuiController {
 			const text = expandPastes(this.pastes, this.state.editor.text).trim();
 			if (text === "" && prompt.kind === "tell") return;
 			this.forgetEdits();
-			this.closePrompt(prompt.id);
-			this.settlePrompt(prompt.id, text === "" ? undefined : text);
+			this.dialogs.closePrompt(prompt.id);
+			this.dialogs.settlePrompt(prompt.id, text === "" ? undefined : text);
 			return;
 		}
 		const text = this.takeInput();
@@ -2435,7 +2285,7 @@ export class TuiController {
 			await run(controller.signal);
 		} finally {
 			this.controller = undefined;
-			this.settleOpenApprovals();
+			this.dialogs.settleOpenApprovals();
 			this.dispatch({ type: "task-end" });
 			this.terminalStatus?.idle(this.turnFailed);
 			this.turnFailed = false;
@@ -2720,7 +2570,7 @@ export class TuiController {
 			this.notice("dim", "Command cancelled: empty command.");
 			return;
 		}
-		const callId = `user-bash-${this.nextDialogId++}`;
+		const callId = `user-bash-${this.dialogs.nextDialogId++}`;
 		const call = { type: "toolCall" as const, id: callId, name: "bash", arguments: { command: effective } };
 		await this.runTask("bash", "Running command", async (signal) => {
 			this.dispatch({ type: "agent-event", event: { type: "tool_start", toolCall: call }, at: this.now() });
@@ -3068,31 +2918,47 @@ export class TuiController {
 		this.notice("dim", `Thinking level set to ${decision.level ?? "default"}.`);
 	}
 
-	// ── dialogs ──────────────────────────────────────────────────────────────
+	// ── dialogs (dialogs.ts) ─────────────────────────────────────────────────
 
-	requestApproval(request: ApprovalPromptRequest): Promise<ApprovalAnswer> {
-		const id = this.nextDialogId++;
-		return new Promise((resolve) => {
-			this.approvals.set(id, { resolve, detached: request.detached === true });
-			this.dispatch({ type: "approval-open", id, request });
-			this.store.flush();
-			this.terminalStatus?.waiting("permission", approvalTitle(request));
-			const detail = approvalBody(request)[0]
-				?.map((part) => part.text)
-				.join("")
-				.trim();
-			this.attention("approval", detail ? `${approvalTitle(request)}: ${detail}` : approvalTitle(request));
-		});
+	// The dialogs commands, extensions and tests open through the controller (P50: they live in dialogs.ts).
+	pick(...args: Parameters<TuiDialogs["pick"]>): ReturnType<TuiDialogs["pick"]> {
+		return this.dialogs.pick(...args);
+	}
+
+	pickMany(...args: Parameters<TuiDialogs["pickMany"]>): ReturnType<TuiDialogs["pickMany"]> {
+		return this.dialogs.pickMany(...args);
+	}
+
+	pickWithActions(...args: Parameters<TuiDialogs["pickWithActions"]>): ReturnType<TuiDialogs["pickWithActions"]> {
+		return this.dialogs.pickWithActions(...args);
+	}
+
+	pickWithAlt(...args: Parameters<TuiDialogs["pickWithAlt"]>): ReturnType<TuiDialogs["pickWithAlt"]> {
+		return this.dialogs.pickWithAlt(...args);
+	}
+
+	pickTree(...args: Parameters<TuiDialogs["pickTree"]>): ReturnType<TuiDialogs["pickTree"]> {
+		return this.dialogs.pickTree(...args);
+	}
+
+	ask(...args: Parameters<TuiDialogs["ask"]>): ReturnType<TuiDialogs["ask"]> {
+		return this.dialogs.ask(...args);
+	}
+
+	form(...args: Parameters<TuiDialogs["form"]>): ReturnType<TuiDialogs["form"]> {
+		return this.dialogs.form(...args);
+	}
+
+	requestApproval(...args: Parameters<TuiDialogs["requestApproval"]>): ReturnType<TuiDialogs["requestApproval"]> {
+		return this.dialogs.requestApproval(...args);
 	}
 
 	// ── telling you when you are not looking (P34e) ────────────────────────
 
-	private terminalStatus:
+	terminalStatus:
 		| (Pick<TerminalStatus, "running" | "waiting" | "idle"> & Partial<Pick<TerminalStatus, "active">>)
 		| undefined;
 	private turnFailed = false;
-	/** P49: the next question is an MCP sign-in (a URL elicitation), not a question. */
-	private nextQuestionKind: BlockedKind | undefined;
 
 	setTerminalStatus(
 		status: Pick<TerminalStatus, "running" | "waiting" | "idle"> & Partial<Pick<TerminalStatus, "active">>,
@@ -3100,27 +2966,12 @@ export class TuiController {
 		this.terminalStatus = status;
 	}
 
-	/** An MCP server asks you to open a sign-in page (P49: OSC 7501 says `auth`). */
-	expectSignIn(): void {
-		this.nextQuestionKind = "auth";
-	}
-
-	/** A question waits for you (P49, OSC 7501): blocked until it is answered, then working again. */
-	private blocked<T>(title: string, answer: Promise<T>): Promise<T> {
-		const kind = this.nextQuestionKind ?? "question";
-		this.nextQuestionKind = undefined;
-		this.terminalStatus?.waiting(kind, title);
-		return answer.finally(() => {
-			if (this.state.task !== undefined && this.approvals.size === 0) this.terminalStatus?.running();
-		});
-	}
-
 	/**
 	 * A desktop notification when the window is in the background: after a run, or when an
 	 * approval waits. A terminal that never reported focus gets one only after a long run (and
 	 * for approvals).
 	 */
-	private attention(kind: "done" | "approval" | "question" | "error", body: string, elapsedMs = 0): void {
+	attention(kind: "done" | "approval" | "question" | "error", body: string, elapsedMs = 0): void {
 		if (this.options.notify === "off" || this.focused === true) return;
 		const waiting = kind === "approval" || kind === "question";
 		if (this.focused === undefined && !waiting && elapsedMs < LONG_RUN_MS) return;
@@ -3135,320 +2986,6 @@ export class TuiController {
 		(this.deps.notify ?? notifyDesktop)(heading, body || heading);
 	}
 
-	private decideApproval(index: number): void {
-		const view = this.state.approval;
-		const option = view ? approvalOptions(view.request)[index] : undefined;
-		if (!view || !option) return;
-		if (option.choice === "deny-tell") {
-			// The approval stays pending until the text is sent, so the denial and the
-			// instruction reach the model together.
-			this.tellFor = view;
-			const promptId = this.nextDialogId++;
-			this.openPrompt({
-				id: promptId,
-				kind: "tell",
-				title: `Denied ${view.request.toolName}. What should the agent do instead?`,
-			});
-			this.dispatch({ type: "approval-close", id: view.id });
-			this.prompts.set(promptId, (text) => {
-				const pending = this.tellFor;
-				this.tellFor = undefined;
-				if (!pending) return;
-				if (text === undefined) {
-					// Cancelled: back to the approval panel.
-					this.dispatch({ type: "approval-open", id: pending.id, request: pending.request });
-					return;
-				}
-				this.sendQueued("steer", text);
-				this.settleApproval(pending.id, "deny");
-			});
-			return;
-		}
-		this.dispatch({ type: "approval-close", id: view.id });
-		// "Allow all edits this session" (P37a): the host switches the agent; the footer follows here.
-		if (option.choice === "always" && view.request.always?.kind === "edits") this.setMode("accept-edits");
-		this.settleApproval(view.id, option.choice === "once" ? "once" : option.choice === "always" ? "always" : "deny");
-	}
-
-	private settleApproval(id: number, answer: ApprovalAnswer): void {
-		const pending = this.approvals.get(id);
-		this.approvals.delete(id);
-		pending?.resolve(answer);
-		if (this.state.task !== undefined && this.approvals.size === 0) this.terminalStatus?.running();
-	}
-
-	/**
-	 * A task ended (or was aborted) with approvals still open: they count as denied.
-	 * A background subagent's approvals are not the task's and stay open.
-	 */
-	private settleOpenApprovals(): void {
-		for (const [id, pending] of this.approvals) {
-			if (pending.detached) continue;
-			this.approvals.delete(id);
-			pending.resolve("deny");
-			this.dispatch({ type: "approval-close", id });
-		}
-		if (this.tellFor && this.state.prompt?.kind === "tell") {
-			const promptId = this.state.prompt.id;
-			this.tellFor = undefined;
-			this.prompts.delete(promptId);
-			this.closePrompt(promptId);
-		}
-	}
-
-	pick(title: string, items: PickerItem[], selected = 0): Promise<string | undefined> {
-		const id = this.nextDialogId++;
-		return new Promise((resolve) => {
-			this.pickers.set(id, resolve);
-			this.dispatch({
-				type: "picker-open",
-				picker: {
-					id,
-					title,
-					items,
-					selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)),
-					...filterable(items),
-				},
-			});
-			this.store.flush();
-		});
-	}
-
-	/**
-	 * A picker that its signal or a timeout closes (pi's dialog options, P45): undefined then,
-	 * as when the user dismisses it. The title says when it closes.
-	 */
-	private pickDismissable(
-		title: string,
-		items: PickerItem[],
-		dialog: { signal?: TauAbortSignal; timeout?: number },
-	): Promise<string | undefined> {
-		const id = this.nextDialogId;
-		const seconds = dialog.timeout ? Math.ceil(dialog.timeout / 1000) : undefined;
-		const answer = this.pick(seconds ? `${title} (closes in ${seconds}s)` : title, items);
-		const dismiss = () => {
-			if (!this.pickers.has(id)) return;
-			// Shown or covered by a newer dialog (#11166): either way it closes.
-			this.dispatch({ type: "picker-close", id });
-			this.settlePicker(id, undefined);
-		};
-		const timer = dialog.timeout ? setTimeout(dismiss, dialog.timeout) : undefined;
-		dialog.signal?.addEventListener("abort", dismiss, { once: true });
-		if (dialog.signal?.aborted) dismiss();
-		return answer.finally(() => {
-			if (timer) clearTimeout(timer);
-			dialog.signal?.removeEventListener("abort", dismiss);
-		});
-	}
-
-	/** A multi-select list (P35, ctx.ui.selectMany): the checked values, undefined when cancelled. */
-	pickMany(title: string, items: PickerItem[], checked: number[] = []): Promise<string[] | undefined> {
-		const id = this.nextDialogId++;
-		return new Promise((resolve) => {
-			this.multiPickers.set(id, resolve);
-			this.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0, checked } });
-			this.store.flush();
-		});
-	}
-
-	private settleMany(id: number, values: string[] | undefined): void {
-		const resolve = this.multiPickers.get(id);
-		this.multiPickers.delete(id);
-		resolve?.(values);
-	}
-
-	private settlePicker(id: number, value: string | undefined, extra: boolean | string = false): void {
-		const resolve = this.pickers.get(id);
-		this.pickers.delete(id);
-		resolve?.(value, extra);
-	}
-
-	/** A picker whose action keys (Ctrl+R, Ctrl+D) settle it too, saying which (pi's session picker). */
-	pickWithActions(
-		title: string,
-		items: PickerItem[],
-		actions: Array<{ key: string; label: string }>,
-		selected = 0,
-	): Promise<{ value: string; action?: string } | undefined> {
-		const id = this.nextDialogId++;
-		return new Promise((resolve) => {
-			this.pickers.set(id, (value, extra) =>
-				resolve(value === undefined ? undefined : typeof extra === "string" ? { value, action: extra } : { value }),
-			);
-			this.dispatch({
-				type: "picker-open",
-				picker: {
-					id,
-					title,
-					items,
-					selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)),
-					actions,
-					...filterable(items),
-				},
-			});
-			this.store.flush();
-		});
-	}
-
-	/** A picker whose Ctrl+S also picks, flagged `alt` (the /model picker saves the default with it). */
-	pickWithAlt(
-		title: string,
-		items: PickerItem[],
-		selected: number,
-		alt: string,
-	): Promise<{ value: string; alt: boolean } | undefined> {
-		const id = this.nextDialogId++;
-		return new Promise((resolve) => {
-			this.pickers.set(id, (value, extra) => resolve(value === undefined ? undefined : { value, alt: extra === true }));
-			this.dispatch({
-				type: "picker-open",
-				picker: {
-					id,
-					title,
-					items,
-					selected: Math.min(Math.max(0, selected), Math.max(0, items.length - 1)),
-					alt,
-					...filterable(items),
-				},
-			});
-			this.store.flush();
-		});
-	}
-
-	ask(kind: "input", title: string, placeholder?: string, prefill?: string): Promise<string | undefined> {
-		const id = this.nextDialogId++;
-		return new Promise((resolve) => {
-			this.prompts.set(id, resolve);
-			this.openPrompt({ id, kind, title, ...(placeholder !== undefined ? { placeholder } : {}) });
-			if (prefill !== undefined && prefill !== "") this.setEditor(ed.fromText(prefill));
-			this.store.flush();
-		});
-	}
-
-	/**
-	 * A form (P44, ctx.ui.form; MCP elicitation): the fields with their values in one
-	 * list, so everything can be checked and changed before sending. Enter edits a field
-	 * (typed in the input box, or picked from its choices; a yes/no field flips), Submit
-	 * checks every field and stops at the first error, Decline declines, Esc cancels.
-	 * `signal` closes the form (the server cancelled).
-	 */
-	async form(form: UiForm, signal?: TauAbortSignal): Promise<UiFormResult | undefined> {
-		this.attention("question", form.message ?? form.title);
-		const values = initialFormValues(form);
-		const errors: Record<string, string> = {};
-		let selected = 0;
-		// The dialog open for this form, closed when the server cancels.
-		let open: number | undefined;
-		const onAbort = () => {
-			if (open === undefined) return;
-			// Shown or covered by a newer dialog (#11166).
-			if (this.pickers.has(open) || this.multiPickers.has(open)) {
-				this.dispatch({ type: "picker-close", id: open });
-				this.settlePicker(open, undefined);
-				this.settleMany(open, undefined);
-			} else if (this.prompts.has(open)) {
-				this.closePrompt(open);
-				this.settlePrompt(open, undefined);
-			}
-		};
-		signal?.addEventListener("abort", onAbort);
-		const title = `${form.title}${form.message ? ` — ${form.message}` : ""}`;
-		try {
-			for (;;) {
-				if (signal?.aborted) return undefined;
-				const items: PickerItem[] = form.fields.map((field, index) => {
-					const value = formValueText(field, values[field.name]);
-					const hint = errors[field.name] ? `! ${errors[field.name]}` : field.description;
-					return {
-						label: `${field.title}${field.required ? " *" : ""}: ${value === "" ? "—" : value}`,
-						value: `field:${index}`,
-						...(hint ? { hint } : {}),
-					};
-				});
-				items.push({ label: "Submit", value: "submit" }, { label: "Decline", value: "decline" });
-				open = this.nextDialogId;
-				const picked = await this.pick(title, items, selected);
-				open = undefined;
-				if (picked === undefined || signal?.aborted) return undefined;
-				if (picked === "decline") return { action: "decline" };
-				if (picked === "submit") {
-					const found = formErrors(form, values);
-					for (const key of Object.keys(errors)) delete errors[key];
-					Object.assign(errors, found);
-					const first = form.fields.findIndex((field) => found[field.name] !== undefined);
-					if (first === -1) return { action: "submit", values };
-					selected = first;
-					continue;
-				}
-				const index = Number(picked.slice("field:".length));
-				const field = form.fields[index];
-				if (!field) continue;
-				selected = index;
-				const current = values[field.name];
-				let next: UiFormValue | undefined = current;
-				const fieldTitle = formFieldTitle(field);
-				open = this.nextDialogId;
-				if (field.type === "boolean") next = current !== true;
-				else if (field.type === "select") {
-					const options = (field.options ?? []).map((option) => ({ label: option.label, value: option.value }));
-					if (!field.required) options.push({ label: "(none)", value: "\u0000none" });
-					const choice = await this.pick(
-						fieldTitle,
-						options,
-						Math.max(
-							0,
-							options.findIndex((option) => option.value === current),
-						),
-					);
-					if (choice !== undefined) next = choice === "\u0000none" ? undefined : choice;
-				} else if (field.type === "multiselect") {
-					const options = (field.options ?? []).map((option) => ({ label: option.label, value: option.value }));
-					const checked = Array.isArray(current)
-						? options.flatMap((option, at) => (current.includes(option.value) ? [at] : []))
-						: [];
-					const chosen = await this.pickMany(fieldTitle, options, checked);
-					if (chosen !== undefined) next = chosen;
-				} else {
-					const text = await this.ask("input", fieldTitle, field.format, hasFormValue(current) ? String(current) : "");
-					if (text !== undefined) {
-						const parsed = parseFormText(field, text);
-						if ("error" in parsed) {
-							errors[field.name] = parsed.error;
-							open = undefined;
-							continue;
-						}
-						next = parsed.value;
-					}
-				}
-				open = undefined;
-				if (signal?.aborted) return undefined;
-				if (next === undefined) delete values[field.name];
-				else values[field.name] = next;
-				const error = hasFormValue(next) ? formFieldError(field, next) : undefined;
-				if (error) errors[field.name] = error;
-				else delete errors[field.name];
-				// After a field is set, the next one is where the selection waits.
-				if (!error && index + 1 < form.fields.length + 1) selected = index + 1;
-			}
-		} finally {
-			signal?.removeEventListener("abort", onAbort);
-		}
-	}
-
-	private cancelPrompt(): void {
-		const prompt = this.state.prompt;
-		if (!prompt) return;
-		this.closePrompt(prompt.id);
-		this.settlePrompt(prompt.id, undefined);
-	}
-
-	/** Show the picker's items that match the query (every word, in the label or the hint). */
-	private filterPicker(query: string): void {
-		const picker = this.state.picker;
-		if (!picker?.all) return;
-		this.dispatch({ type: "picker-filter", id: picker.id, query, items: filterItems(picker.all, query) });
-	}
-
 	/** Ctrl+R (Claude Code): the prompt history, newest first; typing filters; the pick goes into the input box. */
 	async searchHistory(): Promise<void> {
 		if (this.state.approval || this.state.picker || this.state.prompt) return;
@@ -3458,7 +2995,7 @@ export class TuiController {
 			return;
 		}
 		const items = entries.map((text, index) => ({ label: text.replace(/\s*\n\s*/g, " ↵ "), value: String(index) }));
-		const choice = await this.pick("Search history", items);
+		const choice = await this.dialogs.pick("Search history", items);
 		if (choice === undefined) return;
 		this.pushUndo();
 		this.leaveHistory();
@@ -3483,56 +3020,6 @@ export class TuiController {
 			this.flash(result.candidates.length > 12 ? `${shown}  … ${result.candidates.length - 12} more` : shown);
 		}
 	}
-
-	/**
-	 * The input box answers a prompt: the draft in it waits aside until the prompt closes. A
-	 * prompt opened over another covers it with what was typed into it (pi 1.4, #11166).
-	 */
-	private openPrompt(prompt: PromptView): void {
-		if (this.state.prompt === undefined) this.promptDraft = this.state.editor;
-		this.dispatch({ type: "prompt-open", prompt, editor: this.state.editor });
-		this.setEditor(ed.EMPTY);
-	}
-
-	private closePrompt(id: number): void {
-		const shown = this.state.prompt?.id === id;
-		this.dispatch({ type: "prompt-close", id });
-		// A covered prompt closed: the input box keeps the shown prompt's text.
-		if (!shown) return;
-		const previous = this.state.prompt;
-		if (previous !== undefined) {
-			this.setEditor(previous.draft ?? ed.EMPTY);
-			return;
-		}
-		this.setEditor(this.promptDraft ?? ed.EMPTY);
-		this.promptDraft = undefined;
-	}
-
-	private settlePrompt(id: number, value: string | undefined): void {
-		const resolve = this.prompts.get(id);
-		this.prompts.delete(id);
-		resolve?.(value);
-	}
-}
-
-/** A picker filters as you type unless an item is picked by its key (y/n). */
-function filterable(items: PickerItem[]): { all?: PickerItem[]; query?: string } {
-	return items.some((item) => item.key !== undefined) ? {} : { all: items, query: "" };
-}
-
-/** Items matching every word of the query, in the label or the hint; best label matches first. */
-export function filterItems(items: readonly PickerItem[], query: string): PickerItem[] {
-	const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-	if (words.length === 0) return [...items];
-	return items
-		.map((item, index) => {
-			const haystack = `${item.label} ${item.hint ?? ""}`;
-			const scores = words.map((word) => fuzzyScore(haystack, word));
-			return { item, index, score: scores.every((score) => score >= 0) ? fuzzyScore(item.label, query.trim()) : -2 };
-		})
-		.filter((entry) => entry.score > -2)
-		.sort((a, b) => b.score - a.score || a.index - b.index)
-		.map((entry) => entry.item);
 }
 
 /** Directory entries (names; directories end with "/"); empty when it cannot be read. */
