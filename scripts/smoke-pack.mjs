@@ -6,8 +6,9 @@
 // pi-codemode worker and wasm resolve as they will after `npm i` (needs the
 // registry for @earendil-works/pi-codemode).
 // (4) P25: the CLI's TUI from an installed layout — its built tui/ modules next
-// to the packed kernel and the exact ink/react/string-width versions the CLI
-// pins, loaded and rendered once. The CLI tarball itself pins its internal deps
+// to the packed kernel and protocol (P57: the TUI is a protocol client; a small
+// scripted server answers it here) and the exact ink/react/string-width versions
+// the CLI pins, loaded and rendered once. The CLI tarball itself pins its internal deps
 // to registry URLs (shrinkwrap), so the full cli install runs after publishing.
 // (5) P30: the Feishu channel plugin installs the way docs/gateway.md says
 // (npm install --prefix <gateway dir>) and the packed gateway loads it from
@@ -137,16 +138,31 @@ const TUI_MJS = `
 import { PassThrough } from "node:stream";
 import React from "react";
 import { render } from "ink";
-import { Agent, ExtensionRegistry } from "@yophon/tau-kernel";
+import { createMemoryTransportPair, JsonRpcPeer, TauClient } from "@yophon/tau-protocol";
 import { App } from "./tui/app.js";
 import { TuiController } from "./tui/controller.js";
+import { TuiSession } from "./tui/session-client.js";
 
-const extensions = new ExtensionRegistry();
-const agent = new Agent({ config: { baseUrl: "https://fake.test/v1", model: "m" }, extensions });
+// A scripted server with one empty session: what the TUI asks for at start.
+const [clientEnd, serverEnd] = createMemoryTransportPair();
+const server = new JsonRpcPeer(serverEnd, { idPrefix: "s" });
+const extensions = { tools: 0, commands: 0, shortcuts: 0, messageRenderers: 0, entryRenderers: 0, toolRenderers: 0,
+	widgets: 0, statusItems: 0, diagnostics: 0, autocompleteProviders: 0, markdownTransformers: 0 };
+const state = { id: "s1", cwd: process.cwd(), model: "m", modelChoices: ["m"], permissionMode: "supervised",
+	sessionUsage: {}, contextUsage: { tokens: 0 }, tools: { all: [], active: [] }, running: false,
+	lastSessionStart: "startup", extensionsVersion: 0, extensions, foregroundCommands: 0, queued: false };
+server.onRequest("initialize", () => ({ serverInfo: { name: "pack-smoke", version: "0" }, protocolVersion: "tau/1" }));
+server.onRequest("thread/start", () => ({
+	thread: { id: "s1", cwd: process.cwd(), model: "m", status: "idle" }, events: [], seq: 0, messages: [], state,
+}));
+server.onRequest("command/list", () => ({ commands: [], shortcuts: [] }));
+server.onRequest("surfaces/read", () => ({ status: [], widgets: [] }));
+const client = new TauClient(clientEnd, { name: "pack-smoke" });
+await client.initialize({ nativeEvents: true, width: 80 });
+const session = new TuiSession(client);
+await session.join("thread/start", {});
 const controller = new TuiController(
-	{ agent, extensions, model: "m", baseUrl: "x", cwd: process.cwd(), permissionMode: "supervised",
-		sessionRepo: {}, shell: {}, setModel() {}, setThinkingLevel() {}, buildAgent: () => agent,
-		reloadExtensions: async () => extensions, sessionReason: "startup" },
+	{ session, cwd: process.cwd() },
 	{ columns: () => 80, readBranch: () => undefined },
 );
 const stdout = new PassThrough();
@@ -250,7 +266,17 @@ try {
 	mkdirSync(tuiDir);
 	writeFileSync(join(tuiDir, "package.json"), JSON.stringify({ name: "tui-consumer", type: "module" }, null, "\t"));
 	const pinned = ["ink", "react", "string-width", "highlight.js"].map((name) => `${name}@${cliPkg.dependencies[name]}`);
-	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, ...pinned], { cwd: tuiDir });
+	const protocolBefore = new Set(readdirSync(workDir));
+	await withPublishManifest(packageDir("protocol"), "protocol", async () => {
+		run("npm", ["pack", "--ignore-scripts", "--pack-destination", workDir], { cwd: packageDir("protocol") });
+	});
+	const protocolTarball = readdirSync(workDir).find((file) => file.endsWith(".tgz") && !protocolBefore.has(file));
+	if (!protocolTarball) throw new Error("npm pack produced no tarball for protocol");
+	run(
+		"npm",
+		["install", "--ignore-scripts", "--no-audit", "--no-fund", tarball, join(workDir, protocolTarball), ...pinned],
+		{ cwd: tuiDir },
+	);
 	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
 	// The TUI also loads the CLI modules it shares with the REPL (P34f: session titles).
 	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON; P39: /diff; P44: opening links;
