@@ -309,9 +309,11 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 	const messages = () => session.messages;
 	const cancelledBy = (error: unknown): boolean => (error as JsonRpcError).code === ERROR_CODES.cancelled;
 
+	// Asked of the hub, not read off the mirror: commands run concurrently, and the hub answers
+	// in the order they were sent (a set_permission_mode just before is in it).
 	const state = async (): Promise<Record<string, unknown>> => {
+		const current = await session.request("thread/state", {});
 		await session.drain();
-		const { state: current } = session;
 		return {
 			model: modelOf(current.model),
 			thinkingLevel: current.thinkingLevel ?? "default",
@@ -499,7 +501,9 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 				case "get_available_models":
 					respond(id, type, {
 						models:
-							options.models.length > 0 ? options.models : [{ provider: "", id: modelOf(session.state.model).id }],
+							options.models.length > 0
+								? options.models
+								: [{ provider: "", id: modelOf((await session.request("thread/state", {})).model).id }],
 					});
 					return;
 				case "set_thinking_level": {
@@ -526,8 +530,9 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					return;
 				}
 				case "get_permission_mode":
-					await session.drain();
-					respond(id, type, { mode: session.state.permissionMode as PermissionMode });
+					respond(id, type, {
+						mode: (await session.request("thread/state", {})).permissionMode as PermissionMode,
+					});
 					return;
 				case "compact": {
 					const result = await session.request(
@@ -576,11 +581,12 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					);
 					return;
 				case "get_session_stats": {
+					const current = await session.request("thread/state", {});
 					await session.drain();
-					const usage = usageOf(session.state);
+					const usage = usageOf(current);
 					const all = messages();
 					respond(id, type, {
-						...(session.state.sessionFile ? { sessionFile: session.state.sessionFile } : {}),
+						...(current.sessionFile ? { sessionFile: current.sessionFile } : {}),
 						sessionId: session.id,
 						userMessages: all.filter((message) => message.role === "user").length,
 						assistantMessages: all.filter((message) => message.role === "assistant").length,
@@ -598,19 +604,19 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					return;
 				}
 				case "export_html": {
+					const current = await session.request("thread/state", {});
 					await session.drain();
 					const target = resolve(
 						options.cwd,
 						typeof record.outputPath === "string" && record.outputPath !== ""
 							? record.outputPath
-							: `tau-session-${(session.state.sessionFile ? session.id : "export").slice(0, 8)}.html`,
+							: `tau-session-${(current.sessionFile ? session.id : "export").slice(0, 8)}.html`,
 					);
 					await writeFile(
 						target,
 						sessionHtml(messages(), {
-							title:
-								session.state.name ?? `tau session ${session.state.sessionFile ? session.id.slice(0, 8) : ""}`.trim(),
-							model: session.state.model,
+							title: current.name ?? `tau session ${current.sessionFile ? session.id.slice(0, 8) : ""}`.trim(),
+							model: current.model,
 							cwd: options.cwd,
 							exportedAt: new Date().toISOString(),
 						}),
@@ -630,7 +636,8 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 				}
 				case "fork":
 				case "clone": {
-					if (!session.state.sessionFile) throw new CommandError("No session file (--no-session)");
+					if (!(await session.request("thread/state", {})).sessionFile)
+						throw new CommandError("No session file (--no-session)");
 					const { entries, leafId } = await session.entries();
 					const entryId = type === "fork" ? text(record.entryId, "entryId") : leafId;
 					const entry = type === "fork" ? entries.find((candidate) => candidate.id === entryId) : undefined;

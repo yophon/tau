@@ -814,8 +814,8 @@ export class HubThread {
 			};
 			this.pending.set(requestId, request);
 			if (options.timeoutMs !== undefined) {
+				// Not unref'd: the dialog is work the session waits on.
 				const timer = setTimeout(() => this.settle(request, fallback, false), options.timeoutMs);
-				timer.unref?.();
 				request.cleanup.push(() => clearTimeout(timer));
 			}
 			const signal = options.signal;
