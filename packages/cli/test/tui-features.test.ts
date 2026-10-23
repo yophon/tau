@@ -174,11 +174,11 @@ describe("P25b commands and sessions", () => {
 		await h.submit("!echo one");
 		await h.waitFor((f) => f.includes("Output added to the context."), "the recorded command");
 		assert.match(h.frame(), /● bash\(echo one\)\n {2}⎿ ran: echo one/);
-		const recorded = h.controller.agent.messages.filter((message) => message.role === "custom");
+		const recorded = h.agent().messages.filter((message) => message.role === "custom");
 		assert.equal(recorded.length, 1);
 		await h.submit("!!echo two");
 		await h.waitFor((f) => f.includes("bash(echo two)") && f.includes("ran: echo two"), "the unrecorded command");
-		assert.equal(h.controller.agent.messages.filter((message) => message.role === "custom").length, 1);
+		assert.equal(h.agent().messages.filter((message) => message.role === "custom").length, 1);
 	});
 
 	it("a resumed session shows its history at startup", async () => {
@@ -218,7 +218,7 @@ describe("P25b commands and sessions", () => {
 		});
 		await h.submit("first question");
 		await h.waitFor((f) => f.includes("FIRST_ANSWER") && /Worked for \d/.test(f), "the first answer");
-		const original = (await h.controller.sessionStore?.getMetadata())?.id;
+		const original = (await h.metadata())?.id;
 		await h.submit("/name original");
 		await h.waitFor((f) => f.includes('Session named "original".'), "the name");
 
@@ -226,7 +226,7 @@ describe("P25b commands and sessions", () => {
 		await h.waitFor((f) => f.includes("Fork from"), "the fork picker");
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("Forked to"), "the fork");
-		assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, original);
+		assert.notEqual((await h.metadata())?.id, original);
 		assert.match(h.frame(), /› first question/);
 
 		await h.submit("/resume");
@@ -237,7 +237,7 @@ describe("P25b commands and sessions", () => {
 		for (let i = 0; i < index; i++) await h.key(DOWN);
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("Resumed"), "the resume");
-		assert.equal((await h.controller.sessionStore?.getMetadata())?.id, original);
+		assert.equal((await h.metadata())?.id, original);
 		assert.match(h.frame(), /› first question/);
 		assert.match(h.frame(), /FIRST_ANSWER/);
 
@@ -327,12 +327,12 @@ describe("P25c commands and keys", () => {
 		});
 		await h.submit("hello");
 		await h.waitFor((f) => f.includes("ANSWER_ONE") && /Worked for \d/.test(f), "the answer");
-		const before = (await h.controller.sessionStore?.getMetadata())?.id;
+		const before = (await h.metadata())?.id;
 		await h.submit("/new");
 		await h.waitFor((f) => f.includes("New session."), "the new session");
 		assert.deepEqual(reasons, ["new"]);
-		assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, before);
-		assert.equal(h.controller.agent.messages.filter((message) => message.role !== "system").length, 0);
+		assert.notEqual((await h.metadata())?.id, before);
+		assert.equal(h.agent().messages.filter((message) => message.role !== "system").length, 0);
 		// The test renderer keeps every static frame, so check what the screen was reset to.
 		assert.ok(!JSON.stringify(h.controller.state.committed).includes("ANSWER_ONE"));
 	});
@@ -341,12 +341,12 @@ describe("P25c commands and keys", () => {
 		const h = await harness({ responses: [makeSseResponse(textTurn("CLONED_ANSWER"))], sessions: true });
 		await h.submit("question");
 		await h.waitFor((f) => f.includes("CLONED_ANSWER") && /Worked for \d/.test(f), "the answer");
-		const original = await h.controller.sessionStore?.getMetadata();
-		const originalMessages = h.controller.agent.messages.filter((message) => message.role !== "system").length;
+		const original = await h.metadata();
+		const originalMessages = h.agent().messages.filter((message) => message.role !== "system").length;
 		await h.submit("/clone");
 		await h.waitFor((f) => f.includes("Forked to"), "the clone");
-		assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, original?.id);
-		assert.equal(h.controller.agent.messages.filter((message) => message.role !== "system").length, originalMessages);
+		assert.notEqual((await h.metadata())?.id, original?.id);
+		assert.equal(h.agent().messages.filter((message) => message.role !== "system").length, originalMessages);
 		assert.match(h.frame(), /CLONED_ANSWER/);
 	});
 
@@ -360,7 +360,7 @@ describe("P25c commands and keys", () => {
 		for (const line of lines) JSON.parse(line);
 		assert.ok(lines.some((line) => line.includes("EXPORTED")));
 		await h.submit("/session");
-		const id = (await h.controller.sessionStore?.getMetadata())?.id ?? "";
+		const id = (await h.metadata())?.id ?? "";
 		const frame = await h.waitFor((f) => f.includes("entries"), "the session info");
 		assert.ok(frame.includes(id));
 		assert.match(frame, /messages\s+2 in context/);
@@ -389,7 +389,7 @@ describe("P25c commands and keys", () => {
 		await h.key("\x1b[Z");
 		await h.waitFor((f) => f.includes("Autonomous: tool calls run without asking"), "the switch");
 		assert.match(h.frame(), /test-model · autonomous/);
-		assert.equal(h.controller.agent.getPermissionMode(), "autonomous");
+		assert.equal(h.agent().getPermissionMode(), "autonomous");
 		await h.submit("run tests");
 		await h.waitFor((f) => f.includes("ran") && /Worked for \d/.test(f), "the run");
 		assert.doesNotMatch(h.frame(), /wants to run/);

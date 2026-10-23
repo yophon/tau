@@ -64,7 +64,7 @@ describe("P27 argument completion", () => {
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("Accept edits:"), "the switch");
 		assert.equal(h.controller.state.editor.text, "");
-		assert.equal(h.controller.agent.getPermissionMode(), "accept-edits");
+		assert.equal(h.agent().getPermissionMode(), "accept-edits");
 	});
 
 	it("an extension's async getArgumentCompletions fills the menu when it settles", async () => {
@@ -104,12 +104,12 @@ describe("P27 built-in commands", () => {
 		await h.waitFor((f) => f.includes("Bypass skips every approval"), "the confirmation");
 		await h.key("n");
 		await h.waitFor((f) => f.includes("Mode unchanged."), "cancelled");
-		assert.equal(h.controller.agent.getPermissionMode(), "read-only");
+		assert.equal(h.agent().getPermissionMode(), "read-only");
 		await h.submit("/mode bypass");
 		await h.waitFor((f) => f.includes("Bypass skips every approval"), "the confirmation again");
 		await h.key("y");
 		await h.waitFor((f) => f.includes("Bypass: every approval is skipped"), "bypass");
-		assert.equal(h.controller.agent.getPermissionMode(), "bypass");
+		assert.equal(h.agent().getPermissionMode(), "bypass");
 		assert.match(h.frame(), /test-model · bypass/);
 		await h.submit("/mode nonsense");
 		await h.waitFor((f) => f.includes("Usage: /mode"), "the usage line");
@@ -125,7 +125,7 @@ describe("P27 built-in commands", () => {
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("bash off.") && f.includes("○ bash"), "bash off");
 		await h.key(ESC);
-		assert.deepEqual(h.controller.agent.getActiveTools(), ["read"]);
+		assert.deepEqual(h.agent().getActiveTools(), ["read"]);
 		await h.submit("hi");
 		await h.waitFor((f) => f.includes("done") && /Worked for \d/.test(f), "the answer");
 		const declared = JSON.stringify(h.requests[0]);
@@ -184,7 +184,7 @@ describe("P27 built-in commands", () => {
 		await h.key("y");
 		await h.waitFor((f) => f.includes("Imported"), "the import");
 		assert.ok(h.frame().includes("IMPORTED_QUESTION"));
-		const meta = await h.controller.sessionStore?.getMetadata();
+		const meta = await h.metadata();
 		assert.equal(meta?.id, (await source.getMetadata()).id);
 		assert.ok(meta?.filePath?.includes(".sessions"));
 		assert.ok(existsSync(sourcePath));
@@ -371,7 +371,7 @@ describe("P28 /model with a model table", () => {
 		assert.deepEqual(saved, ["other/model-b"]);
 		assert.deepEqual(commits, ["other/model-b"]);
 		assert.match(h.frame(), /other\/model-b · autonomous/);
-		assert.equal(h.controller.agent.getContextUsage().contextWindow, 200_000);
+		assert.equal(h.agent().getContextUsage().contextWindow, 200_000);
 		await h.submit("second question");
 		await h.waitFor((f) => f.includes("FROM_OTHER") && /Worked for \d/.test(f), "the other provider's answer");
 		assert.equal(h.requests.length, 1);
@@ -408,6 +408,6 @@ describe("P28 resume restores the session's model", () => {
 		await h.submit(`/resume ${id}`);
 		await h.waitFor((f) => f.includes("Model set to other/model-b."), "the restored model");
 		assert.deepEqual(switched, ["other/model-b"]);
-		assert.equal(h.controller.agent.model, "model-b");
+		assert.equal(h.agent().model, "model-b");
 	});
 });

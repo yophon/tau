@@ -129,7 +129,8 @@ describe("P49d OSC 7501", () => {
 			await h.waitFor(() => h.controller.state.picker !== undefined, "the picker");
 			await h.key("1");
 			assert.equal(await answer, "a");
-			(h.controller.ui as unknown as { expectSignIn(): void }).expectSignIn();
+			// P57: the hub marks the next question a sign-in page (ui/request signIn); the dialogs take it here.
+			h.controller.dialogs.expectSignIn();
 			const signIn = h.controller.ui.select("Open the sign-in page?", ["Open in browser", "Decline"]);
 			await h.waitFor(() => h.controller.state.picker !== undefined, "the sign-in dialog");
 			await h.key("2");

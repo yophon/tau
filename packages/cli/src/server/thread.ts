@@ -5,6 +5,7 @@
 // job at a time (a turn, a compaction, a `!` command, …), the native data for full clients, the
 // client that opens a session seeing its start, and a session handing its extensions over to the
 // next one a client moves to (the TUI's /new, /resume, /fork).
+import { randomUUID } from "node:crypto";
 import type { CheckpointBackend } from "@yophon/tau-ext-checkpoint";
 import {
 	type AgentEvent,
@@ -12,6 +13,8 @@ import {
 	type ApprovalRequest,
 	type AutocompleteProvider,
 	type AutocompleteProviderFactory,
+	type AutocompleteSuggestions,
+	type ExtensionRegistry,
 	type FileSystem,
 	type PermissionMode,
 	restoreSession,
@@ -31,6 +34,7 @@ import {
 	type JsonRpcPeer,
 	NATIVE_NOTIFICATIONS,
 	type NativeEvent,
+	SESSION_EVENT_NOTIFICATIONS,
 	type ServerNotification,
 	type ServerRequestMethod,
 	type ServerRequests,
@@ -39,6 +43,7 @@ import {
 	type ThreadState,
 	type ThreadStatus,
 } from "@yophon/tau-protocol";
+import { sessionEventStream } from "../modes/events.ts";
 import { HeadlessSession, type ModelSwitch, type RunOutcome } from "../modes/headless.ts";
 import { openAlwaysOptions } from "../permissions.ts";
 import { autoTitle } from "../session-title.ts";
@@ -46,7 +51,7 @@ import type { Workspace, WorkspaceSpec } from "../workspace.ts";
 import { reload, setModel } from "./control.ts";
 import { ItemTracker, itemsFromMessages, lastStop, type PendingNotification, toUserInput } from "./items.ts";
 import { changesMessages, MessageMirror, threadState } from "./native.ts";
-import { bottomProvider, threadUi, type UiRoute } from "./ui.ts";
+import { bottomProvider, CLIENT_APPLIES, threadUi, type UiRoute } from "./ui.ts";
 
 /** What the hub needs from the CLI. */
 export interface HubHost {
@@ -60,8 +65,10 @@ export interface HubHost {
 	setHostThinking?: (level: ThinkingLevel | undefined) => void;
 	/** P57: a resumed session goes back to its last model when the table has it (pi); false when -m chose one. */
 	restoreSessionModel?: boolean;
-	/** P57: after a turn the model names a session that has no name (settings session.autoTitle). */
-	autoTitle?: boolean;
+	/** P57: after a turn the model names a session that has no name (settings session.autoTitle, per workspace). */
+	autoTitle?: boolean | ((workspace: Workspace) => boolean);
+	/** P57: sessions are not saved (--no-session): no session file, nothing to resume. */
+	noSession?: boolean;
 	/** P57: a session's code checkpoints (/rewind). */
 	checkpoints?: (sessionId: string, fs: FileSystem | undefined) => CheckpointBackend | undefined;
 	/** P57: settings' permissions.defaultMode for each session (P37a), unless the flag or the environment chose a mode. */
@@ -73,9 +80,14 @@ export interface Subscriber {
 	readonly peer: JsonRpcPeer;
 	/** P57: it asked for the native data (thread/event, messages, state). */
 	readonly native?: boolean;
+	/** P57: it asked for pi's JSON-mode event records (thread/sessionEvent). */
+	readonly sessionEvents?: boolean;
 	/** P57: its columns (components draw at them). */
 	width?: number;
 }
+
+/** The registries that already write pi's JSON-mode records (ensureSessionEvents). */
+const streamedRegistries = new WeakSet<ExtensionRegistry>();
 
 /** The notifications a thread keeps for clients that join later (Codex keeps the rollout; tau a window). */
 export const LOG_LIMIT = 20_000;
@@ -145,6 +157,8 @@ export class HubThread {
 	bashRuns = 0;
 	/** Called when nothing holds the thread any more (no subscriber, run, queued turn, job or open request). */
 	onIdle: (() => void) | undefined;
+	/** Called when the session ended by itself (an extension's ctx.shutdown): the hub drops it. */
+	onClose: (() => void) | undefined;
 
 	private constructor(
 		host: HubHost,
@@ -200,15 +214,18 @@ export class HubThread {
 			host.applyDefaultMode && !options.permissionMode ? workspace.permissions?.defaultMode() : undefined;
 		if (defaults?.mode) workspace.setPermissionMode(defaults.mode);
 		const resumed = options.metadata !== undefined || options.store !== undefined;
+		// --no-session: nothing is written (no store, no recorder), as main.ts always did.
 		const store =
 			options.store ??
 			(options.metadata
 				? await workspace.sessionRepo.open(options.metadata)
-				: await workspace.sessionRepo.create(
-						options.parentSession !== undefined ? { parentSession: options.parentSession } : undefined,
-					));
-		const restored = resumed ? await restoreSession(store) : undefined;
-		const recorder = await SessionRecorder.open(store);
+				: host.noSession
+					? undefined
+					: await workspace.sessionRepo.create(
+							options.parentSession !== undefined ? { parentSession: options.parentSession } : undefined,
+						));
+		const restored = resumed && store ? await restoreSession(store) : undefined;
+		const recorder = store ? await SessionRecorder.open(store) : undefined;
 		const agent = workspace.buildAgent(restored?.messages, recorder, workspace.extensions);
 		const session = new HeadlessSession(
 			{
@@ -217,7 +234,9 @@ export class HubThread {
 				modelChoices: host.modelChoices,
 				...(host.resolveModelSwitch ? { resolveModelSwitch: host.resolveModelSwitch } : {}),
 				onEvent: (event) => route.thread?.onAgentEvent(event),
-				onNotice: (level, text) => route.thread?.notice(level, text),
+				// A run that threw (the only notice a HeadlessSession gives).
+				onNotice: (level, text) => route.thread?.notice(level, text, level === "error"),
+				onShutdown: () => route.thread?.closeByExtension(),
 				onExtensionError: (event, error) =>
 					route.thread?.notice("error", `Extension error in ${event}: ${error.message}`),
 				...(host.setHostModel ? { setHostModel: host.setHostModel } : {}),
@@ -234,11 +253,12 @@ export class HubThread {
 			session,
 			route,
 			ui,
-			await store.getMetadata(),
+			store ? await store.getMetadata() : { id: randomUUID() },
 			resumed ? "resume" : "startup",
 		);
 		route.thread = thread;
 		if (options.opener) thread.subscribers.add(options.opener);
+		await thread.ensureSessionEvents();
 		for (const warning of defaults?.warnings ?? []) thread.notice("warning", `permissions: ${warning}`);
 		await session.start(resumed ? "resume" : "startup");
 		if (resumed) await thread.restoreModel();
@@ -321,6 +341,7 @@ export class HubThread {
 	 */
 	subscribe(subscriber: Subscriber, afterSeq?: number): JoinResult {
 		this.subscribers.add(subscriber);
+		void this.ensureSessionEvents();
 		setTimeout(() => {
 			for (const request of this.pending.values()) this.send(request, subscriber);
 		}, 0);
@@ -431,6 +452,7 @@ export class HubThread {
 		next.extensionsVersion = this.extensionsVersion;
 		this.route.thread = next;
 		next.subscribers.add(subscriber);
+		await next.ensureSessionEvents();
 		await session.extensions.notifySessionStart(started, session.agent.extensionContext());
 		if (reason === "resume") await next.restoreModel();
 		return next;
@@ -454,20 +476,35 @@ export class HubThread {
 		this.task = { kind, activity, controller };
 		this.emit({ method: "thread/task/started", params: { kind, activity } });
 		this.emitState();
+		let failure: string | undefined;
 		try {
 			return await run(controller.signal);
+		} catch (error) {
+			failure = errorText(error);
+			throw error;
 		} finally {
 			this.task = undefined;
 			this.syncMessages();
-			this.emit({ method: "thread/task/ended", params: { kind } });
+			this.emit({
+				method: "thread/task/ended",
+				params: { kind, ...(failure !== undefined ? { error: failure } : {}) },
+			});
 			this.emitState();
 			this.startQueued();
 		}
 	}
 
-	/** Something to show that is not part of the conversation. */
-	notice(level: "info" | "warning" | "error", text: string): void {
-		this.emit({ method: "thread/notice", params: { level, text } });
+	/** An extension asked to shut down (ctx.shutdown): the clients are told, then the session stops. */
+	closeByExtension(): void {
+		if (this.stopped) return;
+		this.emit({ method: "thread/closed", params: { reason: "shutdown" } });
+		if (this.onClose) this.onClose();
+		else void this.stop();
+	}
+
+	/** Something to show that is not part of the conversation; `turnError`: a run failed with it. */
+	notice(level: "info" | "warning" | "error", text: string, turnError = false): void {
+		this.emit({ method: "thread/notice", params: { level, text, ...(turnError ? { turnError: true } : {}) } });
 	}
 
 	/** Number and keep a notification and send it to the subscribers (native ones only to native clients). */
@@ -481,9 +518,27 @@ export class HubThread {
 			if (this.log.length > LOG_LIMIT) this.log.splice(0, this.log.length - LOG_LIMIT);
 		}
 		const native = NATIVE_NOTIFICATIONS.has(event.method);
+		const sessionEvent = SESSION_EVENT_NOTIFICATIONS.has(event.method);
 		for (const subscriber of this.subscribers) {
-			if (!native || subscriber.native) subscriber.peer.notify(event.method, event.params);
+			if (native && !subscriber.native) continue;
+			if (sessionEvent && !subscriber.sessionEvents) continue;
+			subscriber.peer.notify(event.method, event.params);
 		}
+	}
+
+	/**
+	 * pi's JSON-mode event records for the clients that ask (the rpc adapter, P57): the extension that
+	 * writes them joins the session's extensions once, and sends them to whichever thread serves it.
+	 */
+	async ensureSessionEvents(): Promise<void> {
+		if (![...this.subscribers].some((subscriber) => subscriber.sessionEvents)) return;
+		const registry = this.session.extensions;
+		if (streamedRegistries.has(registry)) return;
+		streamedRegistries.add(registry);
+		const route = this.route;
+		await registry.add([
+			sessionEventStream((record) => route.thread?.emit({ method: "thread/sessionEvent", params: { record } }, false)),
+		]);
 	}
 
 	/** The state to native clients; not kept (a client joining gets it fresh). */
@@ -515,10 +570,13 @@ export class HubThread {
 		this.chain = undefined;
 	}
 
+	/** The client's own completion for the request being answered (the bottom of the chain). */
+	private completionBase: AutocompleteSuggestions | null = null;
+
 	private providerChain(): AutocompleteProvider {
 		this.chain ??= this.autocomplete.reduce<AutocompleteProvider>(
 			(current, factory) => factory(current),
-			bottomProvider,
+			bottomProvider(() => this.completionBase),
 		);
 		return this.chain;
 	}
@@ -529,11 +587,13 @@ export class HubThread {
 		line: number,
 		col: number,
 		force?: boolean,
+		base?: { items: CompletionItem[]; prefix: string },
 	): Promise<{ items: CompletionItem[]; prefix: string } | null> {
 		if (this.autocomplete.length === 0) return null;
 		this.completionAbort?.abort();
 		const abort = new AbortController();
 		this.completionAbort = abort;
+		this.completionBase = base ?? null;
 		const suggestions = await this.providerChain().getSuggestions(lines, line, col, {
 			signal: abort.signal,
 			...(force ? { force } : {}),
@@ -555,8 +615,9 @@ export class HubThread {
 		col: number,
 		item: CompletionItem,
 		prefix: string,
-	): { lines: string[]; line: number; col: number } {
+	): { lines: string[]; line: number; col: number } | null {
 		const applied = this.providerChain().applyCompletion(lines, line, col, item, prefix);
+		if (applied.cursorLine === CLIENT_APPLIES) return null;
 		return { lines: applied.lines, line: applied.cursorLine, col: applied.cursorCol };
 	}
 
@@ -636,9 +697,11 @@ export class HubThread {
 	private async afterTurn(): Promise<void> {
 		if (this.stopped) return;
 		if (this.workspace.consumeReload?.()) {
-			await reload(this).catch((error: unknown) => this.notice("error", `Reload failed: ${errorText(error)}`));
+			// A failure ends the reload job with its error (thread/task/ended): the clients say so.
+			await reload(this).catch(() => undefined);
 		}
-		if (this.host.autoTitle) await this.title();
+		const autoTitle = this.host.autoTitle;
+		if (typeof autoTitle === "function" ? autoTitle(this.workspace) : autoTitle === true) await this.title();
 	}
 
 	private async title(): Promise<void> {

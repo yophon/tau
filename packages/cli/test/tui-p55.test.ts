@@ -89,13 +89,13 @@ describe("P55c /rewind: one side only", () => {
 
 	it("Restore code leaves the conversation as it is", async () => {
 		const { h, file } = await twoTurns();
-		const before = h.controller.agent.messages.length;
+		const before = h.agent().messages.length;
 		await h.key(DOWN);
 		await h.key(DOWN);
 		await h.key(ENTER);
 		await h.waitFor((f) => f.includes("Restored 1 file"), "the code restored");
 		assert.equal(readFileSync(file, "utf8"), "v0\n");
-		assert.equal(h.controller.agent.messages.length, before);
+		assert.equal(h.agent().messages.length, before);
 		assert.equal(h.controller.state.editor.text, "");
 	});
 

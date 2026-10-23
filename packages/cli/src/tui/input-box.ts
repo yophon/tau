@@ -7,7 +7,6 @@ import { randomUUID } from "node:crypto";
 import { readdirSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
-import { type AutocompleteProvider, type AutocompleteProviderFactory, userContentText } from "@yophon/tau-kernel";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
 import type { CompletionHost } from "./commands.ts";
 import { commandList } from "./commands.ts";
@@ -36,7 +35,7 @@ import type { TuiRuns } from "./runs.ts";
 export type InputBoxHost = CompletionHost &
 	Pick<
 		TuiController,
-		"columns" | "deps" | "dispatch" | "execute" | "extensions" | "flash" | "notice" | "setEditor" | "state" | "store"
+		"columns" | "deps" | "dispatch" | "execute" | "flash" | "notice" | "setEditor" | "state" | "store"
 	> & {
 		readonly dialogs: Pick<TuiDialogs, "pick">;
 		readonly runs: Pick<TuiRuns, "pending">;
@@ -262,7 +261,7 @@ export class TuiInputBox {
 			last.cursor === cursor &&
 			last.files === this.files &&
 			last.version === this.completionVersion &&
-			last.extensions === this.host.extensions
+			last.extensions === this.extensionsKey()
 		) {
 			return last.result;
 		}
@@ -273,7 +272,7 @@ export class TuiInputBox {
 			cursor,
 			files: this.files,
 			version: this.completionVersion,
-			extensions: this.host.extensions,
+			extensions: this.extensionsKey(),
 			result,
 		};
 		return result;
@@ -293,85 +292,55 @@ export class TuiInputBox {
 	/** Bumped when argument completions settle (their results feed the completion). */
 	private completionVersion = 0;
 
-	/** Extension autocomplete providers (P44, pi ui.addAutocompleteProvider), for the registry that added them. */
-	private autocompleteFactories: AutocompleteProviderFactory[] = [];
+	/** The session's command list changed: the menu is worked out again. */
+	commandsChanged(): void {
+		this.argumentCache.clear();
+		this.completionVersion++;
+		this.rawCache = undefined;
+		this.menuCache = undefined;
+		this.host.dispatch({ type: "menu-refresh" });
+		this.host.store.flush();
+	}
+
+	/** The session and the load of its extensions the cached completions belong to. */
+	private extensionsKey(): string {
+		return `${this.host.session.id}:${this.host.session.state.extensionsVersion}`;
+	}
 
 	/** Bumped when the `@` file list loads: the providers see the new files. */
 	filesEpoch = 0;
 
-	private autocompleteOwner: unknown;
-
-	private autocompleteChain: AutocompleteProvider | undefined;
-
 	/** The providers' answer for one input state; pending while `result` is absent. */
-	private providerAnswer: { key: string; result?: Completion | null; abort: AbortController } | undefined;
+	private providerAnswer: { key: string; result?: Completion | null } | undefined;
 
-	addAutocompleteProvider(factory: AutocompleteProviderFactory): void {
-		// /reload loads the extensions again: their providers start over.
-		if (this.autocompleteOwner !== this.host.extensions) {
-			this.autocompleteFactories = [];
-			this.autocompleteOwner = this.host.extensions;
-		}
-		this.autocompleteFactories.push(factory);
-		this.autocompleteChain = undefined;
-		this.providerAnswer = undefined;
-		this.rawCache = undefined;
-		this.menuCache = undefined;
-	}
-
-	/** The built-in completion as pi's provider shape, the bottom of the chain. */
-	private builtinProvider(): AutocompleteProvider {
-		return {
-			getSuggestions: async (lines, line, col) => {
-				const { text, cursor } = fromLines(lines, line, col);
-				const completion = computeCompletion(text, cursor, this.completionSources());
-				if (!completion) return null;
-				return {
-					items: completion.items.map((item) => ({
+	/**
+	 * With extension providers (P44, pi ui.addAutocompleteProvider; P57: they run in the hub), their
+	 * answer for this input once it settles (the built-in completion shows meanwhile); without any,
+	 * the built-in completion. A provider that defers gets nothing from the hub's end of the chain,
+	 * and the built-in completion shows.
+	 */
+	private providerCompletion(text: string, cursor: number, builtin: Completion | undefined): Completion | undefined {
+		const { session } = this.host;
+		if (session.state.extensions.autocompleteProviders === 0) return builtin;
+		const key = `${cursor}\u0000${this.completionVersion}\u0000${this.filesEpoch}\u0000${this.extensionsKey()}\u0000${text}`;
+		const answer = this.providerAnswer;
+		if (answer?.key === key) return answer.result === undefined ? builtin : (answer.result ?? builtin);
+		const pending: { key: string; result?: Completion | null } = { key };
+		this.providerAnswer = pending;
+		const { lines, line, col } = toLines(text, cursor);
+		const base = builtin
+			? {
+					items: builtin.items.map((item) => ({
 						value: item.value,
 						label: item.label,
 						...(item.hint !== undefined ? { description: item.hint } : {}),
 					})),
-					prefix: completion.token,
-				};
-			},
-			applyCompletion: (lines, line, col, item, prefix) => {
-				const { text, cursor } = fromLines(lines, line, col);
-				const completion = computeCompletion(text, cursor, this.completionSources()) ?? {
-					kind: "file" as const,
-					tokenStart: cursor - prefix.length,
-					token: prefix,
-					items: [],
-				};
-				const next = acceptCompletion(text, completion, { value: item.value, label: item.label });
-				const back = toLines(next.text, next.cursor);
-				return { lines: back.lines, cursorLine: back.line, cursorCol: back.col };
-			},
-		};
-	}
-
-	/**
-	 * With extension providers, their answer for this input once it settles (the built-in
-	 * completion shows meanwhile); without any, the built-in completion.
-	 */
-	private providerCompletion(text: string, cursor: number, builtin: Completion | undefined): Completion | undefined {
-		if (this.autocompleteFactories.length === 0 || this.autocompleteOwner !== this.host.extensions) return builtin;
-		this.autocompleteChain ??= this.autocompleteFactories.reduce<AutocompleteProvider>(
-			(current, factory) => factory(current),
-			this.builtinProvider(),
-		);
-		const chain = this.autocompleteChain;
-		const key = `${cursor}\u0000${this.completionVersion}\u0000${this.filesEpoch}\u0000${text}`;
-		const answer = this.providerAnswer;
-		if (answer?.key === key) return answer.result === undefined ? builtin : (answer.result ?? undefined);
-		answer?.abort.abort();
-		const abort = new AbortController();
-		const pending: { key: string; result?: Completion | null; abort: AbortController } = { key, abort };
-		this.providerAnswer = pending;
-		const { lines, line, col } = toLines(text, cursor);
-		void chain.getSuggestions(lines, line, col, { signal: abort.signal }).then(
+					prefix: builtin.token,
+				}
+			: undefined;
+		void session.request("completion/request", { lines, line, col, ...(base ? { base } : {}) }).then(
 			(suggestions) => {
-				if (abort.signal.aborted || this.providerAnswer !== pending) return;
+				if (this.providerAnswer !== pending) return;
 				pending.result =
 					suggestions && suggestions.items.length > 0
 						? {
@@ -383,15 +352,26 @@ export class TuiInputBox {
 									label: item.label,
 									...(item.description !== undefined ? { hint: item.description } : {}),
 								})),
-								apply: (item) => {
-									const applied = chain.applyCompletion(
+								apply: async (item) => {
+									const applied = await session.request("completion/apply", {
 										lines,
 										line,
 										col,
-										{ value: item.value, label: item.label },
-										suggestions.prefix,
+										item: { value: item.value, label: item.label },
+										prefix: suggestions.prefix,
+									});
+									if (applied) return fromLines(applied.lines, applied.line, applied.col);
+									// One of the built-in items: applied as the built-in completion does.
+									return acceptCompletion(
+										text,
+										builtin ?? {
+											kind: "file",
+											tokenStart: cursor - suggestions.prefix.length,
+											token: suggestions.prefix,
+											items: [],
+										},
+										item,
 									);
-									return fromLines(applied.lines, applied.cursorLine, applied.cursorCol);
 								},
 							}
 						: null;
@@ -401,15 +381,16 @@ export class TuiInputBox {
 				this.host.store.flush();
 			},
 			() => {
-				if (this.providerAnswer === pending) pending.result = builtin ?? null;
+				if (this.providerAnswer === pending) pending.result = null;
 			},
 		);
 		return builtin;
 	}
 
 	private completionSources(): CompletionSources {
+		if (this.host.state.editor.text.startsWith("/")) this.host.session.refreshCommandsIfStale();
 		return {
-			commands: commandList(this.host.extensions, this.host),
+			commands: commandList(this.host.session, this.host),
 			files: this.files,
 			argumentCompletions: (name, prefix) => this.argumentCompletions(name, prefix),
 		};
@@ -423,7 +404,7 @@ export class TuiInputBox {
 	private argumentCompletions(name: string, prefix: string): readonly CompletionItem[] | undefined {
 		const key = `${name}\u0000${prefix}`;
 		if (this.argumentCache.has(key)) return this.argumentCache.get(key);
-		const command = commandList(this.host.extensions, this.host).find((entry) => entry.name === `/${name}`);
+		const command = commandList(this.host.session, this.host).find((entry) => entry.name === `/${name}`);
 		if (!command?.complete) return undefined;
 		let result: ReturnType<NonNullable<typeof command.complete>>;
 		try {
@@ -581,7 +562,7 @@ export class TuiInputBox {
 	private takeBackQueued(): void {
 		const last = this.host.runs.pending.pop();
 		if (!last) {
-			this.restoreQueuedInput();
+			void this.restoreQueuedInput();
 			return;
 		}
 		this.host.dispatch({ type: "queue-remove", input: queuedInput(last) });
@@ -589,12 +570,14 @@ export class TuiInputBox {
 	}
 
 	/** Take steering and follow-ups back into the editor; waiting commands stay queued and run after the turn. */
-	restoreQueuedInput(): void {
-		const { steering, followUp } = this.host.agent.clearQueue();
-		const texts = [...steering, ...followUp]
-			.filter((message) => message.role === "user")
-			.map((message) => userContentText(message.content))
-			.filter((text) => text !== "");
+	async restoreQueuedInput(): Promise<void> {
+		let texts: string[] = [];
+		try {
+			const { steering, followUp } = await this.host.session.request("thread/clearQueue", {});
+			texts = [...steering, ...followUp].filter((text) => text !== "");
+		} catch {
+			texts = [];
+		}
 		this.host.dispatch({ type: "queue-clear" });
 		for (const item of this.host.runs.pending) this.host.dispatch({ type: "queue-add", input: queuedInput(item) });
 		if (texts.length === 0) return;

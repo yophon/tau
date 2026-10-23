@@ -224,7 +224,14 @@ export async function bash(
 					timestamp: Date.now(),
 				});
 			}
-			return { output, exitCode: result.exitCode, cancelled: false, recorded: decision.recordInContext };
+			return {
+				output,
+				exitCode: result.exitCode,
+				cancelled: false,
+				recorded: decision.recordInContext,
+				stdout: result.stdout,
+				stderr: result.stderr,
+			};
 		} catch (error) {
 			if (isAbort(error) || signal.aborted) {
 				event({
@@ -254,7 +261,9 @@ export function clearQueue(thread: HubThread): Result<"thread/clearQueue"> {
 	const { steering, followUp } = thread.session.agent.clearQueue();
 	const text = (message: (typeof steering)[number]): string =>
 		typeof message.content === "string" ? message.content : userContentText(message.content as UserContent);
-	return { steering: steering.map(text), followUp: followUp.map(text) };
+	// Your own messages come back; extension messages queued meanwhile are dropped (the TUI always did).
+	const own = (messages: typeof steering): string[] => messages.filter((message) => message.role === "user").map(text);
+	return { steering: own(steering), followUp: own(followUp) };
 }
 
 /**
@@ -277,6 +286,7 @@ export function reload(thread: HubThread): Promise<void> {
 			// the new agent (P23e, pi bindExtensions order).
 			session.agent = nextAgent;
 			session.adoptRegistry(nextExtensions);
+			await thread.ensureSessionEvents();
 			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
 			// Only now that the new registry took over: an api/ctx captured from the old one throws
 			// instead of reaching the new agent (pi runtime invalidate).
@@ -299,9 +309,8 @@ export function handoff(thread: HubThread, goal: string): Promise<Result<"thread
 	return thread.runTask("handoff", "Generating handoff prompt", async (signal) => {
 		const { agent } = thread.session;
 		try {
-			const prompt = await generateHandoffPrompt(agent, agent.messages, goal, signal);
-			if (prompt === "") throw new JsonRpcError(ERROR_CODES.internalError, "the model returned an empty prompt");
-			return { prompt };
+			// Empty when the model wrote nothing: the client says so.
+			return { prompt: await generateHandoffPrompt(agent, agent.messages, goal, signal) };
 		} catch (error) {
 			if (isAbort(error)) return { cancelled: true };
 			throw error instanceof JsonRpcError ? error : new JsonRpcError(ERROR_CODES.internalError, errorText(error));

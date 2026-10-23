@@ -1,6 +1,7 @@
-// Shared harness for the P25 TUI tests: a real Agent on a scripted platform,
-// optional JSONL sessions in a temp dir, rendered with ink-testing-library and
-// driven through stdin like a terminal.
+// Shared harness for the P25 TUI tests: a real Agent on a scripted platform, optional JSONL
+// sessions in a temp dir, rendered with ink-testing-library and driven through stdin like a
+// terminal. P57: the TUI is a client of an in-process session hub, as in tau itself; the
+// harness's workspace stands in for the CLI's.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,33 +9,47 @@ import { NodeFileSystem } from "@yophon/tau-host-node";
 import {
 	Agent,
 	type AgentMessage,
+	type ApprovalRequest,
 	defaultPlatform,
 	type Extension,
 	ExtensionRegistry,
+	InMemorySessionRepo,
 	JsonlSessionRepo,
 	type PermissionMode,
-	restoreSession,
+	type SessionEntry,
+	type SessionMetadata,
 	SessionRecorder,
 	type SessionStore,
 	type Tool,
 	type ToolResult,
 } from "@yophon/tau-kernel";
+import { createMemoryTransportPair, TauClient } from "@yophon/tau-protocol";
 import { render } from "ink-testing-library";
 import React from "react";
 import { fakePlatform } from "../../kernel/test/helpers.ts";
-import { suggestRules } from "../src/permissions.ts";
+import { type AlwaysOption, openAlwaysOptions, suggestRules } from "../src/permissions.ts";
+import { SessionHub } from "../src/server/hub.ts";
+import type { HubHost } from "../src/server/thread.ts";
 import { App } from "../src/tui/app.ts";
 import { TuiController } from "../src/tui/controller.ts";
 import { FullscreenApp } from "../src/tui/fullscreen.ts";
-import type { ApprovalPromptRequest } from "../src/tui/model.ts";
 import { CARET_END, CARET_MARK } from "../src/tui/render/bottom.ts";
 import { LineCache } from "../src/tui/render/lines.ts";
-import type { ApprovalAnswer, RunTuiOptions, TuiDeps } from "../src/tui/types.ts";
+import { TuiSession } from "../src/tui/session-client.ts";
+import type { RunTuiOptions, TuiDeps } from "../src/tui/types.ts";
+import type { Workspace, WorkspaceSpec } from "../src/workspace.ts";
 
 export type Response = Parameters<typeof fakePlatform>[0][number];
 
 export interface Harness {
 	controller: TuiController;
+	/** The hub the TUI is a client of (P57). */
+	hub: SessionHub;
+	/** The shown session's Agent in the hub (tests look behind the protocol). */
+	agent(): Agent;
+	/** The shown session's metadata and entries in the hub (undefined / none without a session file). */
+	metadata(): Promise<SessionMetadata | undefined>;
+	entries(): Promise<SessionEntry[]>;
 	requests: Array<{ messages: Array<{ role: string; content: unknown }> }>;
 	repo?: JsonlSessionRepo;
 	/** Text /copy put on the clipboard. */
@@ -59,6 +74,18 @@ export const ALT_ENTER = "\x1b\r";
 export const UP = "\x1b[A";
 export const DOWN = "\x1b[B";
 
+/** What the TUI's options held for the session before P57: the harness hands it to the hub. */
+export interface HubSideOptions {
+	/** The model the session starts on (default test-model). */
+	model?: string;
+	modelChoices?: string[];
+	resolveModelSwitch?: HubHost["resolveModelSwitch"];
+	autoTitle?: boolean;
+	checkpoints?: HubHost["checkpoints"];
+	background?: { readonly foregroundCount: number; moveToBackground(): number };
+	consumeReload?: () => boolean;
+}
+
 export interface HarnessOptions {
 	responses: Response[];
 	tools?: Tool[];
@@ -70,92 +97,113 @@ export interface HarnessOptions {
 	resume?: (store: SessionStore, recorder: SessionRecorder) => Promise<void>;
 	/** What /reload loads; defaults to the same extensions again. */
 	reloadExtensions?: Extension[];
-	/** Extra RunTuiOptions (P28: the model table hooks). */
-	tui?: Partial<RunTuiOptions>;
+	/** Extra RunTuiOptions, and what the hub takes for the session (P28: the model table hooks). */
+	tui?: Partial<RunTuiOptions> & HubSideOptions;
 	/** Render the full-screen view (P33/P34) instead of the inline one. */
 	fullscreen?: boolean;
 	/** Extra TuiDeps (P36b: the clipboard). */
 	deps?: Partial<TuiDeps>;
+	/** P57: another TUI on this hub's session (the hub stays its owner's). */
+	join?: { hub: SessionHub; threadId: string };
+}
+
+/** What main.ts's workspace offers as "always" for an approval (P37a). */
+function alwaysOption(request: ApprovalRequest): AlwaysOption | undefined {
+	const edits = request.toolName === "write" || request.toolName === "edit";
+	const rules = edits || request.protectedPath ? [] : suggestRules(request, { allow: [], ask: [], deny: [] });
+	if (edits) return { label: "Allow all edits this session", kind: "edits", rules: [], apply: () => undefined };
+	if (rules.length > 0) {
+		return { label: `Always allow in this project: ${rules.join(", ")}`, kind: "rules", rules, apply: () => undefined };
+	}
+	return undefined;
 }
 
 export async function harness(options: HarnessOptions): Promise<Harness> {
 	const requests: Harness["requests"] = [];
 	const platform = fakePlatform(options.responses, requests);
 	const permissionMode = options.permissionMode ?? "autonomous";
-	const extensions = await ExtensionRegistry.load(options.extensions ?? []);
-	let approvalPrompt: ((request: ApprovalPromptRequest) => Promise<ApprovalAnswer>) | undefined;
 	const cwd = mkdtempSync(join(tmpdir(), "tau-tui-"));
+	const { model, modelChoices, resolveModelSwitch, autoTitle, checkpoints, background, consumeReload, ...terminal } =
+		options.tui ?? {};
 
 	let repo: JsonlSessionRepo | undefined;
-	let store: SessionStore | undefined;
-	let recorder: SessionRecorder | undefined;
-	let initial: AgentMessage[] | undefined;
+	let resumeId: string | undefined;
 	if (options.sessions) {
 		repo = new JsonlSessionRepo(new NodeFileSystem("/"), defaultPlatform(), join(cwd, ".sessions"), cwd);
-		store = await repo.create();
-		recorder = await SessionRecorder.open(store);
 		if (options.resume) {
-			await options.resume(store, recorder);
-			initial = (await restoreSession(store)).messages;
+			const store = await repo.create();
+			await options.resume(store, await SessionRecorder.open(store));
+			resumeId = (await store.getMetadata()).id;
 		}
 	}
-
-	const buildAgent = (
-		messages: AgentMessage[] | undefined,
-		session: SessionRecorder | undefined,
-		registry: ExtensionRegistry,
-	): Agent =>
-		new Agent({
-			config: { baseUrl: "http://mock/v1", apiKey: "k", model: "test-model" },
-			platform,
-			tools: options.tools ?? [],
-			extensions: registry,
-			permissionMode,
-			...(messages !== undefined ? { initialMessages: messages } : {}),
-			...(session !== undefined ? { session } : {}),
-			onApproval: async (request) => {
-				if (!approvalPrompt) return false;
-				// What main.ts's workspace would offer as "always" (P37a).
-				const edits = request.toolName === "write" || request.toolName === "edit";
-				const rules = edits || request.protectedPath ? [] : suggestRules(request, { allow: [], ask: [], deny: [] });
-				const always = edits
-					? { label: "Allow all edits this session", kind: "edits" as const }
-					: rules.length > 0
-						? { label: `Always allow in this project: ${rules.join(", ")}`, kind: "rules" as const }
-						: undefined;
-				return (await approvalPrompt(always ? { ...request, always } : request)) !== "deny";
-			},
-		});
-	const agent = buildAgent(initial, recorder, extensions);
-	const tuiOptions: RunTuiOptions = {
-		agent,
-		extensions,
-		model: "test-model",
-		modelChoices: ["test-model", "other-model"],
-		baseUrl: "http://mock/v1",
-		cwd,
-		permissionMode,
-		sessionRepo: (repo ?? {}) as RunTuiOptions["sessionRepo"],
-		shell: {
-			exec: async (command: string, opts?: { onStdout?: (chunk: string) => void }) => {
-				opts?.onStdout?.(`ran: ${command}\n`);
-				return { stdout: `ran: ${command}\n`, stderr: "", exitCode: 0 };
-			},
-		} as unknown as RunTuiOptions["shell"],
-		...(store !== undefined ? { store } : {}),
-		...(recorder !== undefined ? { recorder } : {}),
-		setModel: () => undefined,
-		setThinkingLevel: () => undefined,
-		setApprovalPrompt: (prompt) => {
-			approvalPrompt = prompt;
+	const sessionRepo = repo ?? new InMemorySessionRepo(platform, cwd);
+	const shell = {
+		exec: async (command: string, opts?: { onStdout?: (chunk: string) => void }) => {
+			opts?.onStdout?.(`ran: ${command}\n`);
+			return { stdout: `ran: ${command}\n`, stderr: "", exitCode: 0 };
 		},
-		buildAgent: (messages, session, registry) => buildAgent(messages, session, registry),
-		reloadExtensions: async () => ExtensionRegistry.load(options.reloadExtensions ?? options.extensions ?? []),
-		sessionReason: initial ? "resume" : "startup",
-		// A title request would take the next scripted response: tests that want it turn it on.
-		autoTitle: false,
-		...options.tui,
 	};
+	const host: HubHost = {
+		cwd,
+		modelDisplay: () => model ?? "test-model",
+		modelChoices: modelChoices ?? ["test-model", "other-model"],
+		...(resolveModelSwitch ? { resolveModelSwitch } : {}),
+		// A title request would take the next scripted response: tests that want it turn it on.
+		autoTitle: autoTitle ?? false,
+		...(checkpoints ? { checkpoints } : {}),
+		...(options.sessions ? {} : { noSession: true }),
+		openWorkspace: async (spec: WorkspaceSpec) => {
+			const extensions = await ExtensionRegistry.load(options.extensions ?? []);
+			const onApproval = spec.onApproval;
+			const buildAgent = (
+				messages: AgentMessage[] | undefined,
+				session: SessionRecorder | undefined,
+				registry: ExtensionRegistry,
+			): Agent =>
+				new Agent({
+					config: { baseUrl: "http://mock/v1", apiKey: "k", model: "test-model" },
+					platform,
+					tools: options.tools ?? [],
+					extensions: registry,
+					permissionMode,
+					...(spec.ui ? { ui: spec.ui } : {}),
+					...(messages !== undefined ? { initialMessages: messages } : {}),
+					...(session !== undefined ? { session } : {}),
+					onApproval: async (request) => {
+						if (!onApproval) return false;
+						const always = alwaysOption(request);
+						if (always) openAlwaysOptions.set(request.toolCallId, always);
+						try {
+							return await onApproval(request);
+						} finally {
+							openAlwaysOptions.delete(request.toolCallId);
+						}
+					},
+				});
+			const workspace = {
+				cwd,
+				extensions,
+				sessionRepo,
+				shell,
+				background,
+				setPermissionMode: () => undefined,
+				buildAgent,
+				reloadExtensions: async () => ExtensionRegistry.load(options.reloadExtensions ?? options.extensions ?? []),
+				consumeReload: () => consumeReload?.() ?? false,
+			};
+			return workspace as unknown as Workspace;
+		},
+	};
+	const hub = options.join?.hub ?? new SessionHub(host, { version: "test" });
+	const [clientEnd, serverEnd] = createMemoryTransportPair();
+	hub.connect(serverEnd);
+	const client = new TauClient(clientEnd, { name: "test-tui" });
+	await client.initialize({ nativeEvents: true, width: 100 });
+	const session = new TuiSession(client);
+	if (options.join) await session.join("thread/resume", { threadId: options.join.threadId });
+	else if (resumeId) await session.join("thread/resume", { threadId: resumeId });
+	else await session.join("thread/start", {});
+	const tuiOptions: RunTuiOptions = { session, cwd, ...terminal };
 	const copied: string[] = [];
 	const notified: string[] = [];
 	const editorResult: { value: string | undefined } = { value: undefined };
@@ -179,6 +227,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	const cleanup = (): void => {
 		ink.unmount();
 		void controller.stop();
+		if (!options.join) void hub.close();
 	};
 	await controller.start();
 	// Let Ink mount and attach its stdin listener (useInput's raw mode) before anything is typed;
@@ -216,8 +265,17 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		write(sequence);
 		await pause(10);
 	};
+	const thread = () => {
+		const held = hub.loadedThreads.find((candidate) => candidate.id === controller.session.id);
+		if (!held) throw new Error(`The hub does not hold session ${controller.session.id}`);
+		return held;
+	};
 	return {
 		controller,
+		hub,
+		agent: () => thread().session.agent,
+		metadata: async () => thread().session.store?.getMetadata(),
+		entries: async () => (await thread().session.store?.getEntries()) ?? [],
 		requests,
 		copied,
 		notified,

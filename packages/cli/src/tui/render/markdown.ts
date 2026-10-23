@@ -28,35 +28,37 @@ export interface MarkdownTransformContext {
 	availableWidth: number;
 }
 
-/** The extensions' markdown transformers (P40d, pi registerMarkdownTransformer), set on load and /reload. */
-let transformers: ReadonlyArray<(markdown: string, context: MarkdownTransformContext) => string> = [];
+/**
+ * The extensions' markdown transformers (P40d, pi registerMarkdownTransformer). P57: they run in
+ * the hub; the TUI fetches their output for a text before it is drawn finished (session-client.ts)
+ * and drawing reads it from here. Text still streaming is drawn as written.
+ */
+let transformed:
+	| ((text: string, messageType: MarkdownTransformContext["messageType"]) => string | undefined)
+	| undefined;
 let transformersVersion = 0;
 
-export function useMarkdownTransformers(
-	list: ReadonlyArray<(markdown: string, context: MarkdownTransformContext) => string>,
+export function useMarkdownTransforms(
+	source: ((text: string, messageType: MarkdownTransformContext["messageType"]) => string | undefined) | undefined,
 ): void {
-	if (list.length === 0 && transformers.length === 0) return;
-	transformers = [...list];
+	transformed = source;
 	transformersVersion++;
 }
 
-/** Bumped whenever the transformers change: cached rows drawn with the old ones are stale. */
+/** New output arrived: cached rows drawn without it are stale. */
+export function markdownTransformsChanged(): void {
+	transformersVersion++;
+}
+
+/** Bumped whenever the transformers' output changes: cached rows drawn with the old one are stale. */
 export function markdownTransformersVersion(): number {
 	return transformersVersion;
 }
 
-/** The text after every transformer, in extension order; one that throws or returns no string is skipped. */
+/** The text as the transformers made it (fetched beforehand), else as written. */
 export function transformMarkdown(text: string, context: MarkdownTransformContext): string {
-	let out = text;
-	for (const transformer of transformers) {
-		try {
-			const next = transformer(out, context);
-			if (typeof next === "string") out = next;
-		} catch {
-			// A broken transformer must not take the transcript down.
-		}
-	}
-	return out;
+	if (context.isStreaming || !transformed) return text;
+	return transformed(text, context.messageType) ?? text;
 }
 
 /** One markdown line: what leads its first row, its text, and what leads the rows it wraps onto. */

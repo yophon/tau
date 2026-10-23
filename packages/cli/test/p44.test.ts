@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import { parseElicitation } from "@yophon/tau-ext-mcp-http";
-import type { UiCapability } from "@yophon/tau-kernel";
+import type { Extension, UiCapability } from "@yophon/tau-kernel";
 import { elicitationDecision, type HookConfig, type HookOutcome, HookRunner, withHookApprovals } from "../src/hooks.ts";
 import { createElicitHandler } from "../src/mcp-elicit.ts";
 import { DOWN, ENTER, ESC, type Harness, type HarnessOptions, harness as start } from "./tui-harness.ts";
@@ -278,26 +278,40 @@ describe("the TUI form (ctx.ui.form)", () => {
 
 describe("extension autocomplete providers (pi ui.addAutocompleteProvider)", () => {
 	it("a provider adds `@` items after the files and decides how its items are applied", async () => {
-		const h = await harness({ responses: [], deps: { fileLister: async () => ["src/a.ts"] } });
-		h.controller.ui.addAutocompleteProvider?.((current) => ({
-			getSuggestions: async (lines, line, col, options) => {
-				const base = await current.getSuggestions(lines, line, col, options);
-				if (!(lines[line] ?? "").slice(0, col).endsWith("@")) return base;
-				return { items: [...(base?.items ?? []), { value: "@gh:issue://1", label: "@gh:issue://1" }], prefix: "@" };
-			},
-			applyCompletion: (lines, line, col, item, prefix) =>
-				item.value.startsWith("@gh:")
-					? {
-							lines: [`${(lines[line] ?? "").slice(0, col - prefix.length)}${item.value} `],
-							cursorLine: 0,
-							cursorCol: 99,
-						}
-					: current.applyCompletion(lines, line, col, item, prefix),
-		}));
+		// P57: the provider runs in the hub, on top of the TUI's own completion (sent with each request).
+		const resource: Extension = (api) => {
+			api.on("session_start", (_event, ctx) => {
+				ctx.ui?.addAutocompleteProvider?.((current) => ({
+					getSuggestions: async (lines, line, col, options) => {
+						const base = await current.getSuggestions(lines, line, col, options);
+						if (!(lines[line] ?? "").slice(0, col).endsWith("@")) return base;
+						return {
+							items: [...(base?.items ?? []), { value: "@gh:issue://1", label: "@gh:issue://1" }],
+							prefix: "@",
+						};
+					},
+					applyCompletion: (lines, line, col, item, prefix) =>
+						item.value.startsWith("@gh:")
+							? {
+									lines: [`${(lines[line] ?? "").slice(0, col - prefix.length)}${item.value} `],
+									cursorLine: 0,
+									cursorCol: 99,
+								}
+							: current.applyCompletion(lines, line, col, item, prefix),
+				}));
+			});
+		};
+		const h = await harness({ responses: [], extensions: [resource], deps: { fileLister: async () => ["src/a.ts"] } });
 		await h.type("see @");
 		await h.waitFor((frame) => frame.includes("src/a.ts") && frame.includes("@gh:issue://1"), "files and the resource");
 		await h.key(DOWN);
 		await h.key("\t");
-		assert.equal(h.controller.state.editor.text, "see @gh:issue://1 ");
+		await h.waitFor(() => h.controller.state.editor.text === "see @gh:issue://1 ", "the provider's item applied");
+		// A built-in item is still applied by the TUI.
+		h.controller.setInput("");
+		await h.type("again @");
+		await h.waitFor((frame) => frame.includes("src/a.ts") && frame.includes("@gh:issue://1"), "the menu again");
+		await h.key("\t");
+		await h.waitFor(() => h.controller.state.editor.text.startsWith("again @src/a.ts"), "the file applied");
 	});
 });

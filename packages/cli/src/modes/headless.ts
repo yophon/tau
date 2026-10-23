@@ -59,6 +59,8 @@ export interface HeadlessOptions {
 	onNotice?: (level: "info" | "warning" | "error", text: string) => void;
 	/** P57: an extension handler failed (the registry's error sink); default: stderr. */
 	onExtensionError?: (event: string, error: Error) => void;
+	/** P57: an extension asked to shut down (ctx.shutdown); default: this session stops. */
+	onShutdown?: () => void;
 	modelDisplay: string;
 	modelChoices: readonly string[];
 	resolveModelSwitch?: (requested: string) => ModelSwitch;
@@ -144,7 +146,8 @@ export class HeadlessSession {
 				} else void this.run(null);
 			},
 			shutdown: () => {
-				void this.stop();
+				if (this.options.onShutdown) this.options.onShutdown();
+				else void this.stop();
 			},
 		});
 	}

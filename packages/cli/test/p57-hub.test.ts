@@ -45,6 +45,8 @@ function testHost(options: {
 	extensions?: Extension[];
 	shell?: TestShell;
 	modelChoices?: string[];
+	/** /reload throws instead of loading. */
+	reloadFails?: boolean;
 }) {
 	const platform: Platform = fakePlatform(options.responses ?? []);
 	const repo = new InMemorySessionRepo(platform, "/work");
@@ -90,6 +92,7 @@ function testHost(options: {
 				buildAgent,
 				reloadExtensions: async () => {
 					counts.reloads++;
+					if (options.reloadFails) throw new Error("bad extension");
 					return ExtensionRegistry.load(options.extensions ?? []);
 				},
 				consumeReload: () => false,
@@ -112,14 +115,20 @@ function newHub(host: HubHost): SessionHub {
 	return hub;
 }
 
-/** A client recording every notification; `native` asks for the native data. */
-async function connect(hub: SessionHub, name: string, native = false) {
+/** A client recording every notification; `native` asks for the native data (or name the capabilities). */
+async function connect(
+	hub: SessionHub,
+	name: string,
+	native: boolean | { nativeEvents?: boolean; sessionEvents?: boolean } = false,
+) {
 	const [clientEnd, serverEnd] = createMemoryTransportPair();
 	hub.connect(serverEnd);
 	const client = new TauClient(clientEnd, { name });
 	const events: ServerNotification[] = [];
 	client.on("*", (params, method) => events.push({ method, params } as ServerNotification));
-	await client.initialize(native ? { nativeEvents: true, width: 100 } : undefined);
+	await client.initialize(
+		typeof native === "object" ? native : native ? { nativeEvents: true, width: 100 } : undefined,
+	);
 	return { client, events };
 }
 
@@ -310,7 +319,14 @@ describe("P57 session hub: control and jobs", () => {
 		const id = joined.thread.id;
 
 		const recorded = await tui.client.call("thread/bash", { threadId: id, command: "echo out", record: true });
-		assert.deepEqual(recorded, { output: "out", exitCode: 0, cancelled: false, recorded: true });
+		assert.deepEqual(recorded, {
+			output: "out",
+			exitCode: 0,
+			cancelled: false,
+			recorded: true,
+			stdout: "out\n",
+			stderr: "",
+		});
 		const bashEvents = of(tui.events, "thread/event").map((event) => event.params.event);
 		assert.deepEqual(
 			bashEvents.map((event) => event.type),
@@ -365,6 +381,53 @@ describe("P57 session hub: control and jobs", () => {
 		assert.equal(of(tui.events, "thread/task/started").at(-1)?.params.kind, "compaction");
 		assert.ok(of(tui.events, "thread/messages/reset").length > 0);
 		assert.equal(roles(mirror(joined.messages ?? [], tui.events))[0], "compactionSummary");
+	});
+});
+
+describe("P57 session hub: what rpc and the TUI rely on", () => {
+	it("pi's JSON-mode records go to clients that ask; a failed job says why; ctx.shutdown closes the session", async () => {
+		const extension: Extension = (api) => {
+			api.registerCommand("bye", {
+				description: "Quit",
+				handler: (_args, ctx) => {
+					ctx.shutdown?.();
+					return "bye";
+				},
+			});
+		};
+		const { host } = testHost({
+			responses: [makeSseResponse(textTurn("hello"))],
+			extensions: [extension],
+			reloadFails: true,
+		});
+		const hub = newHub(host);
+		const rpc = await connect(hub, "rpc", { nativeEvents: true, sessionEvents: true });
+		const tui = await connect(hub, "tui", true);
+		const { thread } = await rpc.client.startThread();
+		await tui.client.resumeThread(thread.id);
+		await rpc.client.startTurn(thread.id, "hi");
+		await until(
+			() => of(tui.events, "turn/completed").length === 1 && of(rpc.events, "turn/completed").length === 1,
+			"the turn",
+		);
+		const records = of(rpc.events, "thread/sessionEvent").map((event) => event.params.record.type);
+		for (const type of ["agent_start", "turn_start", "message_update", "message_end", "agent_end"]) {
+			assert.ok(records.includes(type), `${type} in ${records.join(",")}`);
+		}
+		assert.equal(of(tui.events, "thread/sessionEvent").length, 0, "only clients that ask get them");
+
+		await rejects(tui.client.call("thread/reload", { threadId: thread.id }), ERROR_CODES.internalError);
+		const ended = of(tui.events, "thread/task/ended").at(-1);
+		assert.equal(ended?.params.kind, "reload");
+		assert.match(ended?.params.error ?? "", /Reload failed: bad extension/);
+
+		await tui.client.call("command/run", { threadId: thread.id, name: "bye", args: "" });
+		await until(
+			() => of(tui.events, "thread/closed").length === 1 && of(rpc.events, "thread/closed").length === 1,
+			"the close",
+		);
+		assert.equal(of(tui.events, "thread/closed")[0]?.params.reason, "shutdown");
+		await until(() => hub.loadedThreads.length === 0, "the session to go");
 	});
 });
 
@@ -479,7 +542,10 @@ describe("P57 session hub: the extensions' side of the screen", () => {
 						(lines[line] ?? "").slice(0, col).endsWith("#")
 							? { items: [{ value: "#42", label: "#42", description: "issue" }], prefix: "#" }
 							: current.getSuggestions(lines, line, col, options),
-					applyCompletion: (lines, line, col, item, prefix) => current.applyCompletion(lines, line, col, item, prefix),
+					applyCompletion: (lines, line, col, item, prefix) =>
+						item.value === "#42"
+							? { lines: [`${(lines[line] ?? "").slice(0, col - prefix.length)}#42`], cursorLine: line, cursorCol: 7 }
+							: current.applyCompletion(lines, line, col, item, prefix),
 				}));
 			});
 		};
@@ -536,6 +602,28 @@ describe("P57 session hub: the extensions' side of the screen", () => {
 				prefix: "#",
 			}),
 			{ lines: ["fix #42"], line: 0, col: 7 },
+		);
+		// The client's own items (sent as `base`) are offered under the providers and applied by the client.
+		assert.deepEqual(
+			await tui.client.call("completion/request", {
+				threadId: id,
+				lines: ["see @"],
+				line: 0,
+				col: 5,
+				base: { items: [{ value: "@a.ts", label: "a.ts" }], prefix: "@" },
+			}),
+			{ items: [{ value: "@a.ts", label: "a.ts" }], prefix: "@" },
+		);
+		assert.equal(
+			await tui.client.call("completion/apply", {
+				threadId: id,
+				lines: ["see @"],
+				line: 0,
+				col: 5,
+				item: { value: "@a.ts", label: "a.ts" },
+				prefix: "@",
+			}),
+			null,
 		);
 	});
 

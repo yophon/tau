@@ -1,61 +1,26 @@
-import type { CheckpointBackend } from "@yophon/tau-ext-checkpoint";
-import type {
-	Agent,
-	AgentMessage,
-	ExtensionRegistry,
-	FileSystem,
-	JsonlSessionRepo,
-	PermissionMode,
-	SessionRecorder,
-	SessionStore,
-	SetModelOptions,
-	Shell,
-	ThinkingLevel,
-	UiCapability,
-	UserContent,
-} from "@yophon/tau-kernel";
+import type { UserContent } from "@yophon/tau-kernel";
 import type { TauSettings } from "../settings.ts";
 import type { StatusLineFacts } from "../statusline-input.ts";
 import type { ClipboardContent } from "./clipboard-read.ts";
-import type { ApprovalPromptRequest } from "./model.ts";
+import type { TuiSession } from "./session-client.ts";
 
 export type ApprovalAnswer = "once" | "always" | "deny";
 
-/** What main.ts hands the TUI (the same shape the P8 TUI took). */
+/**
+ * What main.ts hands the TUI. P57: the session lives in the hub and the TUI reaches it through
+ * `session` (the protocol); what is here is the terminal's own (keys, screen, settings it writes).
+ */
 export interface RunTuiOptions {
-	agent: Agent;
+	/** The session to show, already joined (main.ts starts or resumes it). */
+	session: TuiSession;
 	/** P36c: prompts from the command line (`tau @shot.png "why"`), run one after another at start. */
 	initialPrompts?: UserContent[];
 	/** P53a (-r/--resume, pi): open /resume's picker at start; command-line prompts go to the session picked. */
 	openResumePicker?: boolean;
-	extensions: ExtensionRegistry;
-	model: string;
-	modelChoices?: string[];
-	baseUrl: string;
+	/** Where tau started; the TUI follows the session when it moves (a worktree, P46). */
 	cwd: string;
-	/** P46: whether the session moved (a worktree) and its settings and extensions should be reloaded. */
-	consumeReload?: () => boolean;
-	contextWindow?: number;
-	permissionMode: PermissionMode;
-	sessionRepo: JsonlSessionRepo;
-	shell: Shell;
-	store?: SessionStore;
-	recorder?: SessionRecorder;
-	thinkingLevel?: ThinkingLevel;
-	setModel(model: string): void;
 	/** Hints per `provider/id` for the /model picker (P28 model table). */
 	modelHints?: Record<string, string>;
-	/**
-	 * Resolve a /model choice against the model table (P28): the id to request,
-	 * the name to show, and what else the agent switches (transport, provider,
-	 * context window); `commit` makes later agents (/reload, /resume) use it.
-	 * Absent without a table: /model changes the id only.
-	 */
-	resolveModelSwitch?(
-		requested: string,
-	): { model: string; display: string; options: SetModelOptions; commit(): void } | { error: string };
-	/** After the first turn the model names an unnamed session (P34f; settings session.autoTitle); default true. */
-	autoTitle?: boolean;
 	/** Desktop notifications while the window is in the background (P34e; tui.notify); default "auto". */
 	notify?: "auto" | "off";
 	/** Spinner in the terminal title and tab progress (P34e; tui.title); default true. */
@@ -64,35 +29,18 @@ export interface RunTuiOptions {
 	saveTuiMode?(mode: "fullscreen" | "inline"): void;
 	/** Ctrl+S in the /model picker: save `provider/id` as the default in settings.json. */
 	saveDefaultModel?(ref: string): boolean;
-	setThinkingLevel(level: ThinkingLevel | undefined): void;
-	/** Agents built later (/reload, /resume) use the mode Shift+Tab switched to. */
-	setPermissionMode?(mode: PermissionMode): void;
 	/** Save a trust decision for this project's resources (/trust); returns the resources it covers. */
 	saveTrust?(trusted: boolean): Promise<string[]>;
-	/** P39d: the workspace's background commands; Ctrl+B moves the running bash command there (Claude Code). */
-	background?: { readonly foregroundCount: number; moveToBackground(): number };
 	/** P39e: ~/.tau/keybindings.json (pi), read at start and on /reload; absent = the default keys. */
 	keybindingsPath?: string;
 	/** P40c: settings in force (treeFilterMode, branchSummary.skipPrompt, externalEditor), read again after /reload. */
 	settings?: () => Pick<TauSettings, "treeFilterMode" | "branchSummary" | "externalEditor">;
-	/** Install the TUI approval prompt into the host's approval loop (P15). */
-	setApprovalPrompt?(prompt: (request: ApprovalPromptRequest) => Promise<ApprovalAnswer>): void;
-	buildAgent(
-		messages: AgentMessage[] | undefined,
-		session: SessionRecorder | undefined,
-		extensions: ExtensionRegistry,
-	): Agent;
-	reloadExtensions(ui: UiCapability | undefined): Promise<ExtensionRegistry>;
-	/** session_start reason; fired once the host actions are attached (P23e). */
-	sessionReason: "startup" | "resume";
 	/** P33: the alternate screen with tau's own transcript view (default), or the inline view in the main screen. */
 	screen?: "fullscreen" | "inline";
 	/** P37b: ask before switching sessions with uncommitted changes (session.dirtyRepoGuard). */
 	dirtyRepoGuard?: boolean;
 	/** P38b: reasoning shown in full instead of one "Thought for Ns" row (tui.showReasoning; default off). */
 	showReasoning?: boolean;
-	/** P55c: the checkpoints /rewind restores code from (undefined: checkpoints off). */
-	checkpoints?: (sessionId: string, workspace: FileSystem | undefined) => CheckpointBackend | undefined;
 	/** P37b: Esc twice on an empty input (pi doubleEscapeAction; default "tree"). */
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37b: save a /settings choice (section.key in ~/.tau/settings.json). */

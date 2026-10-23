@@ -43,26 +43,22 @@ import { initialContent, type ProcessedFiles, processFileArguments } from "./fil
 import {
 	availableModels,
 	describeModel,
-	findModel,
 	loadModelsConfig,
 	MODELS_EXAMPLE,
 	modelRef,
 	resolveHeaders,
 	type ValueResolver,
 } from "./models.ts";
-import { HeadlessSession } from "./modes/headless.ts";
 import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
 import { type ApprovalChoice, createUi, nestedNote, readlineApprovalPrompt, runRepl, runTurn } from "./modes/repl.ts";
-import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
+import { RpcUiBridge } from "./modes/rpc.ts";
 
 import { type HostApprovalRequest, migrateLegacyPermissions, openAlwaysOptions } from "./permissions.ts";
-import { saveProjectTrust } from "./project-trust.ts";
 import { markActivity } from "./push-notification.ts";
 
 import { autoTitleOn, findSession } from "./session-title.ts";
-import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
-import { StatusLineRunner, StatusLineSettings } from "./statusline.ts";
+import { readSettings } from "./settings.ts";
 import { conversationLength } from "./tui/format.ts";
 import { CLI_VERSION, dim, userHome } from "./util.ts";
 import {
@@ -72,14 +68,7 @@ import {
 	type WorkspaceContext,
 	type WorkspaceSpec,
 } from "./workspace.ts";
-import {
-	finishWorktree,
-	followMainTrust,
-	openWorktree,
-	removeWorktree,
-	type WorktreeSession,
-	worktreeState,
-} from "./worktree.ts";
+import { followMainTrust, openWorktree, removeWorktree, type WorktreeSession, worktreeState } from "./worktree.ts";
 
 /** All of stdin as text (--mode json takes its prompt there). */
 async function readAllStdin(): Promise<string> {
@@ -517,8 +506,57 @@ async function main(): Promise<void> {
 		});
 		return;
 	}
+	if (options.mode === "rpc" && rpcBridge) {
+		// P57: rpc is an adapter over tau's protocol; the session lives in an in-process hub.
+		const { runRpcOnHub } = await import("./rpc-hub.ts");
+		await runRpcOnHub({
+			options,
+			cwd,
+			explicitMode,
+			openWorkspace,
+			modelDisplay,
+			modelChoices,
+			...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+			setHostModel: hostSetters.setHostModel,
+			setHostThinking: hostSetters.setHostThinking,
+			bridge: rpcBridge,
+			out,
+			models: tableEntries,
+			started: () => {
+				worktreeStarted = true;
+			},
+		});
+		return;
+	}
+	if (useTui) {
+		// P57: the TUI is a client of an in-process session hub, which opens the session's workspace.
+		const { runTuiOnHub } = await import("./tui-hub.ts");
+		await runTuiOnHub({
+			options,
+			cwd,
+			home,
+			userSettings,
+			userSettingsPath,
+			run,
+			explicitMode,
+			openWorkspace,
+			modelDisplay,
+			modelChoices,
+			configuredModels,
+			...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+			setHostModel: hostSetters.setHostModel,
+			setHostThinking: hostSetters.setHostThinking,
+			provider: () => endpoint.activeModel?.provider ?? endpoint.config.provider ?? "openai-compat",
+			modelTakesImages,
+			ui,
+			started: () => {
+				worktreeStarted = true;
+			},
+		});
+		return;
+	}
 	const workspace: Workspace = await openWorkspace({ cwd, ui, onApproval });
-	const { extensions, sessionRepo, shell, buildAgent, reloadExtensions } = workspace;
+	const { extensions, sessionRepo, buildAgent } = workspace;
 	// settings' permissions.defaultMode (P37a), unless --permission-mode or the env chose.
 	if (!explicitMode && workspace.permissions) {
 		const { mode: settingsMode, warnings } = workspace.permissions.defaultMode();
@@ -527,12 +565,8 @@ async function main(): Promise<void> {
 	}
 	// P36c (pi): `@file` arguments and messages given as words on the command line.
 	const messages = resolveExtensionFlags(extensions, options.extras).messages;
-	if ((options.mode === "rpc" || options.mode === "json") && messages.length > 0) {
+	if (options.mode === "json" && messages.length > 0) {
 		console.error(`Unexpected argument: ${messages[0]} (--mode ${options.mode} takes the prompt with -p or on stdin)`);
-		process.exit(1);
-	}
-	if (options.mode === "rpc" && options.files.length > 0) {
-		console.error("@file arguments are not supported in --mode rpc.");
 		process.exit(1);
 	}
 	let files: ProcessedFiles = { text: "", images: [] };
@@ -619,24 +653,6 @@ async function main(): Promise<void> {
 		return;
 	}
 
-	if (options.mode === "rpc" && rpcBridge) {
-		const session = new HeadlessSession(
-			{
-				workspace,
-				modelDisplay: modelDisplay(),
-				modelChoices,
-				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
-				onNotice: (level, text) => rpcBridge.ui.notify(text, level),
-				...hostSetters,
-			},
-			agent,
-			store,
-			recorder,
-		);
-		await runRpcMode({ session, bridge: rpcBridge, out, cwd, models: tableEntries, sessionReason });
-		return;
-	}
-
 	if (options.print !== undefined) {
 		if (!readline) throw new Error("print mode requires readline");
 		// -p is one shot: no submitPrompt/resumeTurn, so an extension cannot start a second run.
@@ -651,108 +667,6 @@ async function main(): Promise<void> {
 		readline.close();
 		// Scripts read the exit code: an error, abort or truncated reply is a failure (pi print mode).
 		if (!ok) process.exitCode = 1;
-		return;
-	}
-
-	if (useTui) {
-		const { runTui } = await import("./tui/app.ts");
-		const firstPrompt = initialContent(files, messages[0]);
-		await runTui({
-			agent,
-			extensions,
-			...(firstPrompt !== undefined ? { initialPrompts: [firstPrompt, ...messages.slice(1)] } : {}),
-			...(options.resume ? { openResumePicker: true } : {}),
-			screen: tuiScreen(options.screen, userSettings.tuiMode),
-			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
-			dirtyRepoGuard: workspace.settings().dirtyRepoGuard === true,
-			// P37c: Claude Code's statusLine, the user's own environment like hooks.
-			statusLine: (onLines) =>
-				new StatusLineRunner({
-					settings: new StatusLineSettings({ home, cwd, projectTrusted: () => workspace.isProjectTrusted() }),
-					cwd,
-					env: process.env,
-					size: () => ({ columns: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }),
-					onLines,
-				}),
-			statusLineContext: () => ({
-				projectDir: cwd,
-				addedDirs: workspace.permissions?.workingDirectories() ?? [],
-				provider: endpoint.activeModel?.provider ?? endpoint.config.provider ?? "openai-compat",
-				version: CLI_VERSION,
-				...(run.worktreeSession
-					? {
-							projectDir: run.worktreeSession.mainRoot,
-							worktree: {
-								name: run.worktreeSession.name,
-								path: run.worktreeSession.path,
-								branch: run.worktreeSession.branch,
-								originalCwd: run.worktreeSession.mainRoot,
-								...(run.worktreeSession.originalBranch ? { originalBranch: run.worktreeSession.originalBranch } : {}),
-							},
-						}
-					: {}),
-			}),
-			// P55c: /rewind restores code from the session's checkpoints.
-			checkpoints: checkpointBackend,
-			doubleEscapeAction: userSettings.doubleEscapeAction ?? "tree",
-			showReasoning: userSettings.showReasoning ?? false,
-			saveSetting: (section, key, value) => writeSectionKey(userSettingsPath, section, key, value),
-			autoTitle: autoTitleOn(workspace.settings().autoTitle),
-			notify: userSettings.tuiNotify ?? "auto",
-			terminalTitle: userSettings.tuiTitle !== false,
-			model: endpoint.activeModel
-				? modelRef({ provider: endpoint.activeModel.provider, id: endpoint.config.model })
-				: endpoint.config.model,
-			modelChoices,
-			...(configuredModels.length > 0
-				? {
-						modelHints: Object.fromEntries(configuredModels.map((entry) => [modelRef(entry), describeModel(entry)])),
-						resolveModelSwitch,
-						saveDefaultModel: (ref: string) => {
-							const entry = findModel(configuredModels, ref);
-							if (!entry || entry === "ambiguous") return false;
-							writeSettings(userSettingsPath, { defaultProvider: entry.provider, defaultModel: entry.id });
-							return true;
-						},
-					}
-				: {}),
-			baseUrl: endpoint.config.baseUrl,
-			cwd,
-			contextWindow: endpoint.config.contextWindow,
-			permissionMode: run.permissionMode,
-			sessionRepo,
-			shell,
-			store,
-			recorder,
-			thinkingLevel: run.thinkingLevel,
-			setModel: (nextModel) => {
-				// Agents built later (/reload, /resume) start from the switched model.
-				endpoint.config.model = nextModel;
-				if (endpoint.native) endpoint.native.config.model = nextModel;
-			},
-			setThinkingLevel: (nextLevel) => {
-				run.thinkingLevel = nextLevel;
-			},
-			setPermissionMode: (nextMode) => {
-				// Agents built later (/reload, /resume) start from the switched mode.
-				run.permissionMode = nextMode;
-			},
-			saveTrust: (trusted) => saveProjectTrust(cwd, trusted),
-			// P39d: Ctrl+B moves the running bash command to the background.
-			background: workspace.background,
-			// P39e: pi's keybindings.json.
-			keybindingsPath: join(home, ".tau", "keybindings.json"),
-			// P40c: settings' treeFilterMode, branchSummary.skipPrompt and externalEditor.
-			settings: workspace.settings,
-			setApprovalPrompt: (prompt) => {
-				approvalPromptRef.current = prompt;
-			},
-			buildAgent,
-			reloadExtensions,
-			consumeReload: workspace.consumeReload,
-			sessionReason,
-		});
-		if (run.worktreeSession) await finishWorktree(run.worktreeSession, workspace.background);
 		return;
 	}
 

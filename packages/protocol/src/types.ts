@@ -134,6 +134,8 @@ export interface ThreadState {
 	extensions: ExtensionCounts;
 	/** Commands running in the foreground (thread/backgroundCommand moves them to the background). */
 	foregroundCommands: number;
+	/** Steering or follow-up messages are waiting for the turn. */
+	queued: boolean;
 }
 
 export interface CommandInfo {
@@ -203,8 +205,11 @@ export interface ClientRequests {
 		params: {
 			clientInfo: { name: string; version?: string };
 			protocolVersion: string;
-			/** P57: `nativeEvents` asks for the native data; `width` is the client's columns (components draw at it). */
-			capabilities?: { nativeEvents?: boolean; width?: number };
+			/**
+			 * P57: `nativeEvents` asks for the native data; `sessionEvents` for pi's JSON-mode event records
+			 * (what `tau --mode json|rpc` print); `width` is the client's columns (components draw at it).
+			 */
+			capabilities?: { nativeEvents?: boolean; sessionEvents?: boolean; width?: number };
 		};
 		result: { serverInfo: { name: string; version: string }; protocolVersion: string };
 	};
@@ -308,10 +313,22 @@ export interface ClientRequests {
 	 */
 	"thread/bash": {
 		params: { threadId: string; command: string; record: boolean };
-		result: { output: string; exitCode: number; cancelled: boolean; reason?: string; recorded: boolean };
+		result: {
+			output: string;
+			exitCode: number;
+			cancelled: boolean;
+			reason?: string;
+			recorded: boolean;
+			/** The command's own output (`output` is them together, as shown). */
+			stdout?: string;
+			stderr?: string;
+		};
 	};
 	/** Move the commands running in the foreground to the background (the TUI's Ctrl+B). */
 	"thread/backgroundCommand": { params: { threadId: string }; result: { moved: number } };
+	/** The background commands of the session's workspace (P36a), and stopping one. */
+	"thread/backgroundTasks": { params: { threadId: string }; result: { tasks: unknown[] } };
+	"thread/stopBackgroundTask": { params: { threadId: string; taskId: string }; result: { task: unknown } };
 	/** Take the queued steering and follow-up messages back (their text). */
 	"thread/clearQueue": { params: { threadId: string }; result: { steering: string[]; followUp: string[] } };
 	/** Esc on an empty input while nothing runs (P44: a self-paced /loop stops waiting). */
@@ -337,15 +354,25 @@ export interface ClientRequests {
 		result: { items: CompletionItem[] | null };
 	};
 	"shortcut/run": { params: { threadId: string; name: string }; result: CommandOutcome };
-	/** Extension completion (ui.addAutocompleteProvider); null when no provider has suggestions. */
+	/**
+	 * Extension completion (ui.addAutocompleteProvider); null when no provider has suggestions. `base`
+	 * is the client's own completion for the input: the bottom of the providers' chain.
+	 */
 	"completion/request": {
-		params: { threadId: string; lines: string[]; line: number; col: number; force?: boolean };
+		params: {
+			threadId: string;
+			lines: string[];
+			line: number;
+			col: number;
+			force?: boolean;
+			base?: { items: CompletionItem[]; prefix: string };
+		};
 		result: { items: CompletionItem[]; prefix: string } | null;
 	};
-	/** Apply a suggestion completion/request gave. */
+	/** Apply a suggestion completion/request gave; null when it is the client's own (it applies it). */
 	"completion/apply": {
 		params: { threadId: string; lines: string[]; line: number; col: number; item: CompletionItem; prefix: string };
-		result: { lines: string[]; line: number; col: number };
+		result: { lines: string[]; line: number; col: number } | null;
 	};
 	/** What the extensions' renderers draw (absent `rendered`: none applies). */
 	"render/tool": {
@@ -379,9 +406,9 @@ export interface ClientRequests {
 		};
 		result: { texts: string[] };
 	};
-	/** Header and footer items, and widgets (drawn at `width`). */
+	/** Header and footer items, and widgets (drawn at `width`); `parts` picks one of them (default both). */
 	"surfaces/read": {
-		params: { threadId: string; width: number };
+		params: { threadId: string; width: number; parts?: Array<"status" | "widgets"> };
 		result: {
 			status: string[];
 			widgets: Array<{
@@ -431,12 +458,20 @@ export interface ServerNotifications {
 	"item/completed": ThreadEvent & { turnId?: string; item: Item };
 	"turn/completed": ThreadEvent & { turnId: string; stopReason: string; aborted: boolean; errorMessage?: string };
 	/** Something to show that is not part of the conversation (an extension's notice, an error). */
-	"thread/notice": ThreadEvent & { level: "info" | "warning" | "error"; text: string };
+	"thread/notice": ThreadEvent & {
+		level: "info" | "warning" | "error";
+		text: string;
+		/** P57: a turn failed with this error (the TUI says "Error: …"). */
+		turnError?: boolean;
+	};
 	/** A request sent to every subscriber was answered (by this client or another): close its dialog. */
 	"serverRequest/resolved": ThreadEvent & { requestId: string };
 	/** P57: a job other than a turn began (a compaction, a `!` command, a move in the tree, …). */
 	"thread/task/started": ThreadEvent & { kind: TaskKind; activity: string };
-	"thread/task/ended": ThreadEvent & { kind: TaskKind };
+	/** `error`: the job failed with it (a reload that did not load). */
+	"thread/task/ended": ThreadEvent & { kind: TaskKind; error?: string };
+	/** P57: the session ended because an extension asked to shut down (ctx.shutdown); the TUI quits. */
+	"thread/closed": ThreadEvent & { reason: "shutdown" };
 	// P57, native clients only:
 	/** A kernel AgentEvent of the session (and the tool events of `!` commands). */
 	"thread/event": ThreadEvent & { event: NativeEvent };
@@ -445,7 +480,13 @@ export interface ServerNotifications {
 	/** The conversation changed other than by adding (a compaction, a move in the tree, a reload). */
 	"thread/messages/reset": ThreadEvent & { messages: NativeMessage[] };
 	"thread/state/changed": ThreadEvent & { state: ThreadState };
+	// P57, clients with capabilities.sessionEvents only:
+	/** One record of pi's JSON-mode event stream (agent_start, message_update, tool_execution_end, …). */
+	"thread/sessionEvent": ThreadEvent & { record: Record<string, unknown> };
 }
+
+/** Notifications only clients with `capabilities.sessionEvents` receive. */
+export const SESSION_EVENT_NOTIFICATIONS: ReadonlySet<string> = new Set(["thread/sessionEvent"]);
 
 /** Notifications only clients with `capabilities.nativeEvents` receive (their seq skips for others). */
 export const NATIVE_NOTIFICATIONS: ReadonlySet<string> = new Set([

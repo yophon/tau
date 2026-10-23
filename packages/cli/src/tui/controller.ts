@@ -1,28 +1,17 @@
 /**
- * The TUI controller: owns the Agent, the session and the extension registry,
- * runs prompts and commands, and turns their events into store actions. It is
- * plain TypeScript with no Ink, so tests drive it directly and the Ink tree
- * stays a thin view (the logic the P8 TUI kept in one closure).
+ * The TUI controller: shows one session of the hub (P57: through the protocol, session-client.ts),
+ * runs prompts and commands, and turns the session's notifications into store actions. It is
+ * plain TypeScript with no Ink, so tests drive it directly and the Ink tree stays a thin view
+ * (the logic the P8 TUI kept in one closure).
  */
 import { spawnSync } from "node:child_process";
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import {
-	type Agent,
-	type ExtensionRegistry,
-	type PermissionMode,
-	type SessionMetadata,
-	type SessionRecorder,
-	type SessionStore,
-	TauError,
-	type ThinkingLevel,
-	type UiCapability,
-} from "@yophon/tau-kernel";
+import type { PermissionMode, ThinkingLevel, UiCapability } from "@yophon/tau-kernel";
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
 import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
-import { generateHandoffPrompt } from "../handoff.ts";
 import { openUrl } from "../open-url.ts";
 import { markActivity, presence } from "../push-notification.ts";
 
@@ -31,7 +20,7 @@ import { copyToClipboard } from "./clipboard.ts";
 
 import { runCommand, shortcutItems } from "./commands.ts";
 import { TuiDialogs } from "./dialogs.ts";
-import { renderResultLines } from "./extensions.ts";
+import { widgetLines } from "./extensions.ts";
 import { conversationLength, errorText, type Tone } from "./format.ts";
 import { acceptCompletion } from "./input/completion.ts";
 import * as ed from "./input/editor.ts";
@@ -51,12 +40,13 @@ import {
 import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
 import { approvalOptions, initialState } from "./model.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
-import { useMarkdownTransformers } from "./render/markdown.ts";
+import { useMarkdownTransforms } from "./render/markdown.ts";
 import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
-import { isAbortError, TuiRuns } from "./runs.ts";
-import { TuiSessions, unique } from "./sessions.ts";
+import { TuiRuns } from "./runs.ts";
+import { contextOf, type TuiSession, usageOf } from "./session-client.ts";
+import { TuiSessions } from "./sessions.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import type { TranscriptRows } from "./transcript.ts";
@@ -99,17 +89,12 @@ export class TuiController {
 	readonly dialogs: TuiDialogs = new TuiDialogs(this);
 	readonly store: TuiStore;
 	readonly options: RunTuiOptions;
-	agent: Agent;
-	extensions: ExtensionRegistry;
-	sessionStore: SessionStore | undefined;
-	recorder: SessionRecorder | undefined;
-	model: string;
-	modelChoices: string[];
-	thinkingLevel: ThinkingLevel | undefined;
-	/** session_start reason of the active registry (/diagnostics). */
-	lastSessionStart: "startup" | "resume" | "reload";
+	/** The session shown, through the hub (P57). */
+	readonly session: TuiSession;
 	/** Extension shortcuts shadowed by a built-in key (/diagnostics). */
 	shortcutConflicts: string[] = [];
+	/** The mode the session started in (a read-only start never loaded the write tools, D20). */
+	private readonly startMode: string;
 
 	readonly deps: TuiDeps;
 	private readonly splitter = new InputSplitter();
@@ -122,7 +107,6 @@ export class TuiController {
 	private lastEscapeAt = 0;
 	/** P37c: the custom status line runner, and what it last knew about the session. */
 	private statusLineRunner: { trigger(input: () => unknown): void; stop(): void } | undefined;
-	private sessionMeta: SessionMetadata | undefined;
 	private readonly startedAt: number;
 	stopped = false;
 	private resolveDone: (() => void) | undefined;
@@ -135,31 +119,27 @@ export class TuiController {
 		// P46: push_notification asks whether you are here, and sends through the same notifier.
 		presence.notifications = options.notify !== "off";
 		presence.send = (heading, body) => (this.deps.notify ?? notifyDesktop)(heading, body);
-		this.agent = options.agent;
+		this.session = options.session;
+		this.startMode = options.session.state.permissionMode;
 		this.startedAt = (deps.now ?? Date.now)();
 		this.statusLineRunner = options.statusLine?.((lines, padding) =>
 			this.dispatch({ type: "status-line", lines, padding }),
 		);
-		this.extensions = options.extensions;
-		this.sessionStore = options.store;
-		this.recorder = options.recorder;
-		this.model = options.model;
-		this.modelChoices = unique([options.model, ...(options.modelChoices ?? [])]);
-		this.thinkingLevel = options.thinkingLevel;
-		this.lastSessionStart = options.sessionReason;
 		this.inputBox.history = PersistentHistory.load(deps.historyFile, options.cwd);
 		this.inputBox.historyIndex = this.inputBox.history.list().length;
 		this.done = new Promise((resolve) => {
 			this.resolveDone = resolve;
 		});
+		const start = options.session.state;
+		const window = (start.contextUsage as { contextWindow?: unknown }).contextWindow;
 		this.store = new TuiStore(
 			initialState(
 				{
-					model: options.model,
-					mode: options.permissionMode,
-					...(options.thinkingLevel !== undefined ? { thinking: options.thinkingLevel } : {}),
+					model: start.model,
+					mode: start.permissionMode as PermissionMode,
+					...(start.thinkingLevel !== undefined ? { thinking: start.thinkingLevel as ThinkingLevel } : {}),
 					contextTokens: 0,
-					...(options.contextWindow !== undefined ? { contextWindow: options.contextWindow } : {}),
+					...(typeof window === "number" ? { contextWindow: window } : {}),
 					inputTokens: 0,
 					outputTokens: 0,
 					costUsd: 0,
@@ -206,12 +186,8 @@ export class TuiController {
 				);
 			},
 			form: (form, options) => this.dialogs.blocked(form.title, this.dialogs.form(form, options?.signal)),
-			// pi ui.addAutocompleteProvider: stacked on the built-in completion, in order.
-			addAutocompleteProvider: (factory) => this.inputBox.addAutocompleteProvider(factory),
 			notify: (message, level) => {
 				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message);
-				// What a widget shows may follow what the extension just did (ask_user's waiting question).
-				if (this.extensions.widgets.size > 0) void this.refreshWidgets().catch(() => undefined);
 			},
 			// pi ui.editor: the external editor ($VISUAL / $EDITOR); the title has nowhere to go.
 			editor: async (_title, prefill) => {
@@ -229,8 +205,23 @@ export class TuiController {
 				}
 			},
 		};
-		// P49: mcp-elicit marks a sign-in page before asking (OSC 7501 `auth`); not part of UiCapability.
-		Object.assign(this.ui, { expectSignIn: () => this.dialogs.expectSignIn() });
+	}
+
+	get model(): string {
+		return this.session.state.model;
+	}
+
+	get modelChoices(): string[] {
+		return this.session.state.modelChoices;
+	}
+
+	get thinkingLevel(): ThinkingLevel | undefined {
+		return this.session.state.thinkingLevel as ThinkingLevel | undefined;
+	}
+
+	/** session_start reason of the session's extensions (/diagnostics). */
+	get lastSessionStart(): string {
+		return this.session.state.lastSessionStart;
 	}
 
 	get state() {
@@ -298,9 +289,7 @@ export class TuiController {
 
 	async start(): Promise<void> {
 		this.loadKeybindings();
-		this.agent.setUi(this.ui);
-		this.options.setApprovalPrompt?.((request) => this.dialogs.requestApproval(request));
-		this.attachHostActions(this.extensions);
+		this.connectSession();
 		// The status line shows model, directory and mode; the header does not repeat them (P38b).
 		const version = this.options.statusLineContext?.().version;
 		this.dispatch({
@@ -313,15 +302,12 @@ export class TuiController {
 			],
 		});
 		// A resumed session shows its history before anything new.
-		if (this.agent.messages.some((message) => message.role !== "system")) {
-			this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
+		if (this.session.messages.some((message) => message.role !== "system")) {
+			await this.runs.prefetchReplay();
+			this.dispatch({ type: "replay", blocks: messagesToBlocks(this.session.messages) });
 		}
 		this.runs.markCustomShown();
 		this.checkShortcuts();
-		// session_start after the host actions are in place (P23e, pi bindExtensions order).
-		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
-		// A resumed session may have moved back into its worktree (P46).
-		await this.runs.reloadIfMoved();
 		await this.refreshSurfaces();
 		// Command-line prompts (P36c, pi initialMessage + initialMessages): the first now, the rest after it.
 		const [first, ...rest] = this.options.initialPrompts ?? [];
@@ -339,17 +325,13 @@ export class TuiController {
 		} else startPrompts();
 	}
 
+	/** Leave: whoever holds the hub stops the session (session_shutdown) after this. */
 	async stop(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
-		this.runs.controller?.abort();
 		this.clearTimers();
 		this.statusLineRunner?.stop();
-		try {
-			await this.extensions.notifySessionShutdown("quit", this.agent.extensionContext());
-		} finally {
-			this.resolveDone?.();
-		}
+		this.resolveDone?.();
 	}
 
 	private clearTimers(): void {
@@ -357,37 +339,35 @@ export class TuiController {
 		this.exitTimer = undefined;
 	}
 
-	attachHostActions(registry: ExtensionRegistry): void {
-		registry.setErrorSink(({ event, error }) => this.notice("error", `Extension error in ${event}: ${error.message}`));
-		// P40d (pi): the extensions' markdown transformers change how messages are drawn.
-		useMarkdownTransformers(registry.markdownTransformers());
-		registry.attachHostActions({
-			submitPrompt: (content) => {
-				// A finishing turn: run next. Other tasks refuse loudly so the caller can retry (ext-feishu re-queues).
-				if (this.state.task === "turn") {
-					this.runs.pendingStarts.push(content);
-					return;
-				}
-				if (this.state.task !== undefined) throw new TauError("busy", `a ${this.state.task} task is running`);
-				void this.runs.runPrompt(content);
-			},
-			resumeTurn: () => {
-				if (this.state.task !== undefined) {
-					if (!this.runs.pendingStarts.includes(null)) this.runs.pendingStarts.push(null);
-					return;
-				}
-				void this.runs.runPrompt(null);
-			},
-			shutdown: () => {
-				void this.stop();
-			},
-		});
+	/**
+	 * The session's notifications go to the runs (in order); its approvals and dialogs open here;
+	 * drawing reads the markdown transformers' output the session fetched (P40d).
+	 */
+	private connectSession(): void {
+		const { session } = this;
+		session.attach((notification) => this.runs.handleNotification(notification));
+		session.onCommandsChanged = () => {
+			this.inputBox.commandsChanged();
+			this.checkShortcuts();
+		};
+		useMarkdownTransforms((text, kind) => session.transformed(text, kind));
+		session.client.handle("item/tool/requestApproval", (params) => this.dialogs.answerApproval(params));
+		session.client.handle("ui/request", (params) => this.dialogs.answerRequest(params));
+	}
+
+	/** P46: the session moved (into or out of a worktree): the footer, completion and `!` commands follow. */
+	followCwd(): void {
+		const cwd = this.session.state.cwd;
+		if (!cwd || cwd === this.options.cwd) return;
+		(this.options as { cwd: string }).cwd = cwd;
+		this.inputBox.files = undefined;
+		this.inputBox.filesEpoch++;
 	}
 
 	/** Extension shortcuts on a key the TUI already uses lose; note them for /diagnostics. */
 	checkShortcuts(): void {
 		const builtin = builtinKeys();
-		this.shortcutConflicts = [...this.extensions.shortcuts.values()]
+		this.shortcutConflicts = [...this.session.shortcuts.values()]
 			.filter((shortcut) => builtin.has(normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()))
 			.map((shortcut) => `${shortcut.name} (${shortcut.key})`);
 		if (this.shortcutConflicts.length > 0) {
@@ -405,28 +385,24 @@ export class TuiController {
 	}
 
 	async refreshStatus(): Promise<void> {
-		const usage = this.agent.getContextUsage();
-		const session = this.agent.getSessionUsage();
-		let sessionName: string | undefined;
-		try {
-			this.sessionMeta = this.sessionStore ? await this.sessionStore.getMetadata() : undefined;
-			sessionName = this.sessionMeta?.name;
-		} catch {
-			sessionName = undefined;
-		}
-		const items: string[] = [];
-		for (const item of [...this.extensions.headerItems.values(), ...this.extensions.footerItems.values()]) {
+		this.followCwd();
+		const usage = contextOf(this.session.state);
+		const session = usageOf(this.session.state);
+		const { state } = this.session;
+		let items: string[] = [];
+		if (state.extensions.statusItems > 0) {
 			try {
-				const result = await item.handler(this.agent.extensionContext());
-				if (result) items.push(result);
-			} catch (error) {
-				items.push(`${item.name} failed: ${errorText(error)}`);
+				items = (await this.session.request("surfaces/read", { width: this.columns(), parts: ["status"] })).status;
+			} catch {
+				items = [];
 			}
 		}
+		const sessionName = state.name;
 		this.dispatch({
 			type: "status",
 			status: {
 				model: this.model,
+				mode: state.permissionMode as PermissionMode,
 				...(this.thinkingLevel !== undefined ? { thinking: this.thinkingLevel } : { thinking: undefined }),
 				contextTokens: usage.tokens,
 				contextWindow: usage.contextWindow,
@@ -448,15 +424,16 @@ export class TuiController {
 
 	/** What the status line JSON says, in Claude Code's terms. */
 	statusLineFacts(): StatusLineFacts {
-		const usage = this.agent.getContextUsage();
-		const session = this.agent.getSessionUsage();
+		const usage = contextOf(this.session.state);
+		const session = usageOf(this.session.state);
+		const { state } = this.session;
 		const extra = this.options.statusLineContext?.() ?? {};
-		const last = [...this.agent.messages].reverse().find((message) => message.role === "assistant");
+		const last = [...this.session.messages].reverse().find((message) => message.role === "assistant");
 		const lastUsage = last && last.role === "assistant" ? last.usage : undefined;
 		return {
-			...(this.sessionMeta ? { sessionId: this.sessionMeta.id } : {}),
-			...(this.sessionMeta?.name ? { sessionName: this.sessionMeta.name } : {}),
-			...(this.sessionMeta?.filePath ? { transcriptPath: this.sessionMeta.filePath } : {}),
+			...(this.session.id ? { sessionId: this.session.id } : {}),
+			...(state.name ? { sessionName: state.name } : {}),
+			...(state.sessionFile ? { transcriptPath: state.sessionFile } : {}),
 			cwd: this.options.cwd,
 			projectDir: extra.projectDir ?? this.options.cwd,
 			addedDirs: extra.addedDirs ?? [],
@@ -480,38 +457,37 @@ export class TuiController {
 					}
 				: {}),
 			...(this.thinkingLevel !== undefined ? { thinking: this.thinkingLevel } : {}),
-			permissionMode: this.agent.getPermissionMode(),
+			permissionMode: state.permissionMode,
 			...(extra.worktree ? { worktree: extra.worktree } : {}),
 		};
 	}
 
 	async refreshWidgets(): Promise<void> {
-		const above: StyledLine[][] = [];
-		const below: StyledLine[][] = [];
-		const rows: string[] = [];
-		for (const widget of this.extensions.widgets.values()) {
-			const target = widget.placement === "below-editor" ? below : above;
+		const width = this.columns() - 2;
+		let widgets: Parameters<typeof widgetLines>[0] = [];
+		if (this.session.state.extensions.widgets > 0) {
 			try {
-				const lines = renderResultLines(await widget.handler(this.agent.extensionContext()), this.columns() - 2);
-				if (lines) {
-					target.push(lines);
-					if (target === above) rows.push(...lines.map(() => widget.name));
-				}
-			} catch (error) {
-				target.push([[span(`Widget ${widget.name} failed: ${errorText(error)}`, { color: "red" })]]);
-				if (target === above) rows.push(widget.name);
+				widgets = (await this.session.request("surfaces/read", { width, parts: ["widgets"] })).widgets;
+			} catch {
+				widgets = [];
 			}
 		}
+		const { above, below, rows, clickable } = widgetLines(widgets, width);
 		this.widgetRows = rows;
+		this.clickableWidgets = clickable;
 		this.dispatch({ type: "widgets", above, below });
 	}
 
+	/** The widgets with an onClick, as the last refresh found. */
+	private clickableWidgets = new Set<string>();
+
 	/** A click on a widget above the input box (P35): its onClick, then a fresh look. */
 	private clickWidget(row: number): void {
-		const widget = this.extensions.widgets.get(this.widgetRows[row] ?? "");
-		if (!widget?.onClick) return;
-		void Promise.resolve(widget.onClick(this.agent.extensionContext()))
-			.catch((error) => this.notice("error", `Widget ${widget.name} failed: ${errorText(error)}`))
+		const name = this.widgetRows[row] ?? "";
+		if (!this.clickableWidgets.has(name)) return;
+		void this.session
+			.request("widget/click", { name })
+			.catch((error) => this.notice("error", `Widget ${name} failed: ${errorText(error)}`))
 			.finally(() => void this.refreshWidgets().catch(() => undefined));
 	}
 
@@ -550,14 +526,17 @@ export class TuiController {
 			.filter((item) => item.done && item.error === undefined && item.answer.trim() !== "")
 			.map((item) => ({ question: item.question, answer: item.answer }));
 		this.dispatch({ type: "aside-ask", id, question });
+		const asideId = `aside-${id}`;
+		const stop = this.session.client.on("thread/aside/delta", (params) => {
+			if (params.asideId === asideId) this.dispatch({ type: "aside-text", id, delta: params.delta });
+		});
 		try {
-			const result = await this.agent.askAside(question, {
-				exchanges,
-				onText: (delta) => this.dispatch({ type: "aside-text", id, delta }),
-			});
+			const result = await this.session.request("thread/aside", { question, exchanges, asideId });
 			this.dispatch({ type: "aside-done", id, text: result.text, toolCalls: result.toolCalls });
 		} catch (error) {
 			this.dispatch({ type: "aside-done", id, error: errorText(error) });
+		} finally {
+			stop();
 		}
 		void this.refreshStatus();
 	}
@@ -786,11 +765,11 @@ export class TuiController {
 			!state.aside &&
 			!state.prompt &&
 			state.editor.text === "";
-		if (idle && this.extensions.shortcuts.size > 0) {
+		if (idle && this.session.shortcuts.size > 0) {
 			// A plain printable key is text, not a shortcut (keyId); the rest compare in one spelling (P39e).
 			const id = keyId(ch, key) === undefined ? undefined : pressedKey(ch, key);
 			if (id !== undefined && !builtinKeys().has(id)) {
-				for (const shortcut of this.extensions.shortcuts.values()) {
+				for (const shortcut of this.session.shortcuts.values()) {
 					if ((normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()) === id) {
 						void this.runs.runShortcut(shortcut.name);
 						return;
@@ -810,7 +789,7 @@ export class TuiController {
 			searchOpen: state.search !== undefined && !state.approval && !state.picker,
 			selectionActive: state.selection !== undefined,
 			running: state.task !== undefined,
-			foregroundCommand: (this.options.background?.foregroundCount ?? 0) > 0,
+			foregroundCommand: this.session.state.foregroundCommands > 0 || this.runs.runningCommands.size > 0,
 			bufferEmpty: state.editor.text === "",
 			...this.inputBox.cursorRows(),
 			platform: this.deps.platform ?? process.platform,
@@ -844,7 +823,7 @@ export class TuiController {
 			return;
 		}
 		// P44 (Claude Code): Esc stops a self-paced /loop waiting for its next iteration.
-		this.extensions.events.emit("tau:idle-escape", undefined);
+		void this.session.request("thread/escape", {}).catch(() => undefined);
 		const action = this.options.doubleEscapeAction ?? "tree";
 		if (action === "none") return;
 		const now = this.now();
@@ -887,32 +866,31 @@ export class TuiController {
 			this.notice("error", "Wait for the current turn to finish (or press Esc) before /handoff.");
 			return;
 		}
-		const store = this.sessionStore;
-		if (!store) {
+		if (!this.session.state.sessionFile) {
 			this.notice("error", "No active session (--no-session).");
 			return;
 		}
-		if (conversationLength(this.agent.messages) === 0) {
+		if (conversationLength(this.session.messages) === 0) {
 			this.notice("error", "No conversation to hand off.");
 			return;
 		}
 		let prompt: string | undefined;
-		await this.runs.runTask("handoff", "Generating handoff prompt", async (signal) => {
-			try {
-				prompt = await generateHandoffPrompt(this.agent, this.agent.messages, goal, signal);
-				if (prompt === "") this.notice("error", "Handoff failed: the model returned an empty prompt.");
-			} catch (error) {
-				this.notice(
-					isAbortError(error) ? "dim" : "error",
-					isAbortError(error) ? "Handoff cancelled." : `Handoff failed: ${errorText(error)}`,
-				);
-			}
-		});
+		try {
+			const result = await this.runs.runJob("handoff", "Generating handoff prompt", () =>
+				this.session.request("thread/handoff", { goal }),
+			);
+			if (result.cancelled) this.notice("dim", "Handoff cancelled.");
+			else if (result.prompt === "") this.notice("error", "Handoff failed: the model returned an empty prompt.");
+			prompt = result.prompt;
+		} catch (error) {
+			this.notice("error", `Handoff failed: ${errorText(error)}`);
+		}
 		if (!prompt) return;
 		if (!(await this.guardDirty("new session"))) return;
-		const source = await store.getMetadata();
-		const next = await this.options.sessionRepo.create({ parentSession: source.filePath ?? source.id });
-		const result = await this.sessions.switchSession(next, "new");
+		const result = await this.sessions.switchSession({
+			kind: "new",
+			parentSession: this.session.state.sessionFile ?? this.session.id,
+		});
 		if (result.cancelled) {
 			this.notice("dim", "New session cancelled by an extension.");
 			return;
@@ -958,7 +936,7 @@ export class TuiController {
 				else this.relayout();
 				return;
 			case "shortcuts":
-				void this.dialogs.pick("Keyboard shortcuts", shortcutItems(this.extensions));
+				void this.dialogs.pick("Keyboard shortcuts", shortcutItems(this.session));
 				return;
 			case "complete-path":
 				this.inputBox.completePath();
@@ -966,12 +944,15 @@ export class TuiController {
 			case "suspend":
 				this.deps.suspend?.();
 				return;
-			case "background-command": {
-				const moved = this.options.background?.moveToBackground() ?? 0;
-				if (moved > 0)
-					this.flash(`Moved ${moved === 1 ? "the command" : `${moved} commands`} to the background (/tasks)`);
+			case "background-command":
+				void this.session.request("thread/backgroundCommand", {}).then(
+					({ moved }) => {
+						if (moved > 0)
+							this.flash(`Moved ${moved === 1 ? "the command" : `${moved} commands`} to the background (/tasks)`);
+					},
+					() => undefined,
+				);
 				return;
-			}
 			case "aside-close":
 				this.dispatch({ type: "aside-close" });
 				return;
@@ -1143,11 +1124,23 @@ export class TuiController {
 					this.runs.submit();
 					return;
 				}
+				const accept = (next: { text: string; cursor: number }): void => {
+					this.inputBox.pushUndo();
+					this.inputBox.leaveHistory();
+					this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
+					if (runs) this.runs.submit();
+				};
 				const next = completion.apply ? completion.apply(item) : acceptCompletion(state.editor.text, completion, item);
-				this.inputBox.pushUndo();
-				this.inputBox.leaveHistory();
-				this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
-				if (runs) this.runs.submit();
+				if (next instanceof Promise) {
+					// Unchanged meanwhile: the provider's answer replaces the input as it was asked about.
+					const asked = state.editor.text;
+					void next.then(
+						(applied) => {
+							if (this.state.editor.text === asked) accept(applied);
+						},
+						(error: unknown) => this.notice("error", `Completion failed: ${errorText(error)}`),
+					);
+				} else accept(next);
 				return;
 			}
 			case "menu-close": {
@@ -1215,7 +1208,7 @@ export class TuiController {
 
 	/** Shift+Tab: supervised → accept-edits → autonomous → read-only → supervised (bypass rejoins at supervised). */
 	cycleMode(): void {
-		const current = this.agent.getPermissionMode();
+		const current = this.session.state.permissionMode;
 		this.setMode(
 			current === "supervised"
 				? "accept-edits"
@@ -1229,8 +1222,11 @@ export class TuiController {
 
 	/** Switch the permission mode (Shift+Tab and /mode). */
 	setMode(next: PermissionMode): void {
-		this.agent.setPermissionMode(next);
-		this.options.setPermissionMode?.(next);
+		// The footer and the status line follow at once; the hub's state confirms it.
+		this.session.state = { ...this.session.state, permissionMode: next };
+		void this.session
+			.request("thread/setPermissionMode", { mode: next })
+			.catch((error) => this.notice("error", `Mode change failed: ${errorText(error)}`));
 		this.dispatch({ type: "status", status: { mode: next } });
 		this.triggerStatusLine();
 		// The status line shows the mode; what it means flashes on the hint line (Claude Code).
@@ -1246,15 +1242,15 @@ export class TuiController {
 			this.flash("Supervised: medium- and high-risk tool calls ask first");
 		}
 		// Started read-only, the write tools were never loaded (D20); a reload builds them.
-		if (this.options.permissionMode === "read-only" && next !== "read-only" && !this.writeToolsLoaded()) {
+		if (this.startMode === "read-only" && next !== "read-only" && !this.writeToolsLoaded()) {
 			this.notice("dim", "This session started read-only, so the write tools are not loaded yet: /reload loads them.");
 		}
 	}
 
 	private writeToolsLoaded(): boolean {
-		return this.agent
-			.getAllTools()
-			.some((tool) => tool.name === "write" || tool.name === "bash" || tool.name === "powershell");
+		return this.session.state.tools.all.some(
+			(tool) => tool.name === "write" || tool.name === "bash" || tool.name === "powershell",
+		);
 	}
 
 	/**

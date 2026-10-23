@@ -10,20 +10,24 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SessionHub } from "../packages/cli/src/server/hub.ts";
 import { blockLines, LineCache } from "../packages/cli/src/tui/render/lines.ts";
 import { TranscriptSearch } from "../packages/cli/src/tui/render/search.ts";
 import { messagesToBlocks } from "../packages/cli/src/tui/replay.ts";
+import { TuiSession } from "../packages/cli/src/tui/session-client.ts";
 import { buildTree, SessionTreeView } from "../packages/cli/src/tui/session-tree.ts";
 import { buildTranscript } from "../packages/cli/src/tui/transcript.ts";
 import { NodeFileSystem } from "../packages/host-node/src/index.ts";
 import {
 	Agent,
 	defaultPlatform,
+	ExtensionRegistry,
 	JsonlSessionRepo,
 	restoreSession,
 	SessionRecorder,
 } from "../packages/kernel/src/index.ts";
 import { fakePlatform, makeSseResponse, multiToolCallTurn, textTurn } from "../packages/kernel/test/helpers.ts";
+import { createMemoryTransportPair, TauClient } from "../packages/protocol/src/index.ts";
 
 const sizesArg = process.argv.indexOf("--sizes");
 const sizes =
@@ -92,6 +96,44 @@ const readTool = {
 	execute: async () => ({ content: [{ type: "text", text: words(60) }] }),
 };
 
+/**
+ * P57: the TUI opening the session through an in-process hub (the hub restores it, the client gets
+ * the conversation and the state over the memory transport); ms, median of three.
+ */
+async function hubJoin(dir, id) {
+	const host = {
+		cwd: dir,
+		modelDisplay: () => "m",
+		modelChoices: ["m"],
+		openWorkspace: async () => ({
+			cwd: dir,
+			extensions: await ExtensionRegistry.load([]),
+			sessionRepo: new JsonlSessionRepo(new NodeFileSystem("/"), defaultPlatform(), dir, dir),
+			shell: { exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }) },
+			setPermissionMode: () => undefined,
+			consumeReload: () => false,
+			buildAgent: (messages, session, registry) =>
+				new Agent({
+					config: { baseUrl: "https://fake.test/v1", model: "m" },
+					platform: fakePlatform([]),
+					extensions: registry,
+					...(messages ? { initialMessages: messages } : {}),
+					...(session ? { session } : {}),
+				}),
+		}),
+	};
+	return time(async () => {
+		const hub = new SessionHub(host, { version: "bench" });
+		const [clientEnd, serverEnd] = createMemoryTransportPair();
+		hub.connect(serverEnd);
+		const client = new TauClient(clientEnd, { name: "bench" });
+		await client.initialize({ nativeEvents: true, width: 120 });
+		const session = new TuiSession(client);
+		await session.join("thread/resume", { threadId: id });
+		await hub.close();
+	});
+}
+
 /** One turn with ten tool calls on top of the session; ms. */
 async function toolTurn(store, verifyTranscript) {
 	const restored = await restoreSession(store);
@@ -141,6 +183,7 @@ for (const entries of sizes) {
 		const fresh = () => new JsonlSessionRepo(new NodeFileSystem("/"), defaultPlatform(), dir, dir);
 		const coldLoad = await time(async () => restoreSession(await fresh().open(meta)));
 		const list = await time(() => fresh().list());
+		const joined = await hubJoin(dir, meta.id);
 		// TUI: all rows of the full-screen transcript, the first search, /tree.
 		const blocks = messagesToBlocks(messages).map((block, index) => ({ ...block, id: `b${index}` }));
 		let allRows = [];
@@ -198,6 +241,7 @@ for (const entries of sizes) {
 			"10-tool turn": `${turnWithCheck} ms`,
 			"of which the check (2 requests)": `${Math.max(0, turnWithCheck - turnWithoutCheck)} ms`,
 			"cold load": `${coldLoad} ms`,
+			"hub join (P57)": `${joined} ms`,
 			"list (1 file)": `${list} ms`,
 			"full-screen all rows": `${renderAll} ms (${allRows.length})`,
 			"first Ctrl+F": `${firstSearch} ms`,

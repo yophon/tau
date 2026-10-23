@@ -163,9 +163,9 @@ describe("P39c /btw", () => {
 		await h.waitFor((f) => f.includes("DONE"), "the turn's end");
 		const main = h.requests[3]?.messages ?? [];
 		assert.ok(!JSON.stringify(main).includes("side-question"), "the main request never carries side questions");
-		assert.ok(!h.controller.agent.messages.some((m) => JSON.stringify(m).includes("side-question")));
+		assert.ok(!h.agent().messages.some((m) => JSON.stringify(m).includes("side-question")));
 		// The tokens count in the session totals (a usage entry); the question itself is not logged.
-		const entries = (await h.controller.sessionStore?.getEntries()) ?? [];
+		const entries = await h.entries();
 		assert.equal(entries.filter((e) => e.type === "usage" && e.kind === "side_question").length, 2);
 		assert.ok(!JSON.stringify(entries).includes("which config file"));
 		// /btw alone reopens the last answer.
@@ -201,16 +201,28 @@ describe("P39d Ctrl+B", () => {
 				return 1;
 			},
 		};
-		const h = await harness({ responses: [], tui: { background } });
+		const gate = deferred();
+		const h = await harness({
+			responses: [makeSseResponse(toolCallTurn("bash", { command: "slow" })), makeSseResponse(textTurn("DONE"))],
+			tools: [textTool("bash", () => gate.promise)],
+			tui: { background },
+		});
 		await h.type("ab");
 		await h.key(CTRL_B);
 		assert.equal(h.controller.state.editor.cursor, 1, "no command running: cursor left");
 		assert.equal(moved, 0);
+		// P57: the TUI knows a command runs from the session's tool events; the hub moves it.
+		h.controller.setInput("");
+		await h.submit("go");
+		await h.waitFor((f) => f.includes("bash(slow)"), "the running command");
 		foreground = 1;
+		await h.type("ab");
 		await h.key(CTRL_B);
-		assert.equal(moved, 1);
-		assert.equal(h.controller.state.editor.cursor, 1, "the cursor stays");
+		await h.waitFor(() => moved === 1, "the command moved");
+		assert.equal(h.controller.state.editor.cursor, 2, "the cursor stays");
 		await h.waitFor((f) => f.includes("Moved the command to the background (/tasks)"), "the flash");
+		gate.resolve("finished");
+		await h.waitFor((f) => f.includes("DONE"), "the turn to end");
 	});
 });
 
@@ -468,7 +480,7 @@ describe("P39f session tree (pi's tree selector)", () => {
 		await h.waitFor((f) => f.includes("Label (empty removes it)"), "the label question");
 		await h.submit("keep");
 		await h.waitFor((f) => f.includes("[keep] user: second question"), "the label in the tree");
-		const entriesNow = (await h.controller.sessionStore?.getEntries()) ?? [];
+		const entriesNow = await h.entries();
 		assert.ok(entriesNow.some((entry) => entry.type === "label" && entry.label === "keep"));
 		await h.key(CTRL_X);
 		await h.waitFor((f) => f.includes("Copied 15 characters"), "the copy");

@@ -292,9 +292,9 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 		restoreConsole();
 	}
 	// How to come back to this conversation (P38b, Codex prints "codex resume <id>").
-	const metadata = await controller.sessionStore?.getMetadata().catch(() => undefined);
-	if (metadata?.filePath && controller.agent.messages.some((message) => message.role === "user")) {
-		process.stdout.write(`\x1b[2mTo continue this session: tau --session "${metadata.filePath}"\x1b[22m\n`);
+	const file = controller.session.state.sessionFile;
+	if (file && controller.session.messages.some((message) => message.role === "user")) {
+		process.stdout.write(`\x1b[2mTo continue this session: tau --session "${file}"\x1b[22m\n`);
 	}
 }
 

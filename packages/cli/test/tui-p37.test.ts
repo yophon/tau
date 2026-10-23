@@ -22,7 +22,7 @@ describe("P37b /handoff", () => {
 		});
 		await h.submit("build the parser");
 		await h.waitFor((f) => f.includes("PARSER_DONE") && /Worked for \d/.test(f), "the answer");
-		const source = await h.controller.sessionStore?.getMetadata();
+		const source = await h.metadata();
 		await h.submit("/handoff now do the gateway part");
 		await h.waitFor((f) => f.includes("Handoff ready."), "the handoff");
 		const request = h.requests[1] as { messages: { role: string; content: string }[] };
@@ -31,10 +31,10 @@ describe("P37b /handoff", () => {
 		assert.match(prompt, /^## Conversation History\n\n\[User\]: build the parser\n\n\[Assistant\]: PARSER_DONE/);
 		assert.match(prompt, /\n\n## User's Goal for New Thread\n\nnow do the gateway part$/);
 		assert.equal(h.controller.state.editor.text, HANDOFF);
-		const next = await h.controller.sessionStore?.getMetadata();
+		const next = await h.metadata();
 		assert.notEqual(next?.id, source?.id);
 		assert.equal(next?.parentSession, source?.filePath);
-		assert.equal(h.controller.agent.messages.filter((message) => message.role !== "system").length, 0);
+		assert.equal(h.agent().messages.filter((message) => message.role !== "system").length, 0);
 		await h.type("\u0015"); // Ctrl+U clears the prompt line; /session reads the parent back.
 		h.controller.setInput("");
 		await h.submit("/session");
@@ -65,12 +65,12 @@ describe("P37b uncommitted changes", () => {
 			tui: { dirtyRepoGuard: true },
 			deps: { uncommittedFiles: async () => 3 },
 		});
-		const before = (await h.controller.sessionStore?.getMetadata())?.id;
+		const before = (await h.metadata())?.id;
 		await h.submit("/new");
 		await h.waitFor((f) => f.includes("You have 3 uncommitted file(s). New session anyway?"), "pi's question");
 		await h.key("n");
 		await h.waitFor((f) => f.includes("Commit your changes first."), "the refusal");
-		assert.equal((await h.controller.sessionStore?.getMetadata())?.id, before);
+		assert.equal((await h.metadata())?.id, before);
 		await h.submit("/new");
 		await h.waitFor((f) => f.includes("Yes, proceed anyway"), "the question again");
 		await h.key("y");

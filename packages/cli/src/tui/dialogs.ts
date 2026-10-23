@@ -15,6 +15,7 @@ import {
 	type UiFormResult,
 	type UiFormValue,
 } from "@yophon/tau-kernel";
+import type { ServerRequests } from "@yophon/tau-protocol";
 import type { TuiController } from "./controller.ts";
 import { errorText } from "./format.ts";
 import { fuzzyScore } from "./input/completion.ts";
@@ -37,12 +38,13 @@ import type { ApprovalAnswer } from "./types.ts";
 /** What the dialogs use from the controller and the other parts (P51). */
 export type DialogsHost = Pick<
 	TuiController,
-	| "agent"
 	| "attention"
+	| "ui"
 	| "dispatch"
 	| "flash"
 	| "listHeight"
 	| "notice"
+	| "session"
 	| "setEditor"
 	| "setMode"
 	| "settings"
@@ -75,6 +77,108 @@ export class TuiDialogs {
 	private readonly multiPickers = new Map<number, (values: string[] | undefined) => void>();
 
 	private readonly prompts = new Map<number, (value: string | undefined) => void>();
+
+	/** The hub's requests this TUI shows (P57): another client's answer or a timeout closes them. */
+	private readonly requests = new Map<string, AbortController>();
+
+	/** A signal that aborts when the hub says the request was settled elsewhere (serverRequest/resolved). */
+	requestSignal(requestId: string): AbortSignal {
+		const controller = new AbortController();
+		this.requests.set(requestId, controller);
+		return controller.signal;
+	}
+
+	dismissRequest(requestId: string): void {
+		this.requests.get(requestId)?.abort();
+		this.requests.delete(requestId);
+	}
+
+	forgetRequest(requestId: string): void {
+		this.requests.delete(requestId);
+	}
+
+	/** A dialog the session's extensions open (ui/request); another client may answer it first. */
+	async answerRequest(params: ServerRequests["ui/request"]["params"]): Promise<ServerRequests["ui/request"]["result"]> {
+		const signal = this.requestSignal(params.requestId);
+		// P49: an MCP server's sign-in page says `auth` to the terminal, not a question.
+		if (params.signIn) this.expectSignIn();
+		const value = (answer: string | undefined) => (answer === undefined ? { cancelled: true } : { value: answer });
+		try {
+			switch (params.kind) {
+				case "confirm": {
+					const answer = await this.pickDismissable(
+						params.message ? `${params.title} — ${params.message}` : params.title,
+						[
+							{ label: "Yes", value: "yes", key: "y" },
+							{ label: "No", value: "no", key: "n" },
+						],
+						{ signal },
+					);
+					return answer === undefined ? { cancelled: true } : { confirmed: answer === "yes" };
+				}
+				case "select":
+					return value(
+						await this.host.ui.select(params.title, params.options ?? [], {
+							signal,
+							...(params.timeoutMs !== undefined ? { timeout: params.timeoutMs } : {}),
+						}),
+					);
+				case "selectMany": {
+					this.host.attention("question", params.title);
+					const values = await this.blocked(
+						params.title,
+						this.pickMany(
+							params.title,
+							(params.options ?? []).map((option) => ({ label: option, value: option })),
+							[],
+							signal,
+						),
+					);
+					return values === undefined ? { cancelled: true } : { values };
+				}
+				case "input":
+					this.host.attention("question", params.title);
+					return value(
+						await this.blocked(params.title, this.ask("input", params.title, params.placeholder, undefined, signal)),
+					);
+				case "editor":
+					return value(await this.host.ui.editor?.(params.title, params.prefill));
+				case "form": {
+					const form = params.form as unknown as UiForm;
+					const result = await this.blocked(form.title, this.form(form, signal));
+					return result === undefined ? { cancelled: true } : { form: result as unknown as Record<string, unknown> };
+				}
+				default:
+					return { cancelled: true };
+			}
+		} finally {
+			this.forgetRequest(params.requestId);
+		}
+	}
+
+	/** An approval the hub asks for (item/tool/requestApproval): the panel, answered once by whoever is first. */
+	async answerApproval(
+		params: ServerRequests["item/tool/requestApproval"]["params"],
+	): Promise<ServerRequests["item/tool/requestApproval"]["result"]> {
+		const request: ApprovalPromptRequest = {
+			toolCallId: params.toolCallId,
+			toolName: params.toolName,
+			args: params.args,
+			risk: params.risk,
+			...(params.reason !== undefined ? { reason: params.reason } : {}),
+			...(params.rule ? { rule: params.rule as ApprovalPromptRequest["rule"] } : {}),
+			...(params.protectedPath !== undefined ? { protectedPath: params.protectedPath } : {}),
+			...(params.parentToolCallId !== undefined ? { parentToolCallId: params.parentToolCallId } : {}),
+			...(params.subagent !== undefined ? { subagent: params.subagent } : {}),
+			...(params.detached ? { detached: true } : {}),
+			...(params.always !== undefined ? { always: { label: params.always, kind: params.alwaysKind ?? "rules" } } : {}),
+		};
+		try {
+			return { decision: await this.requestApproval(request, this.requestSignal(params.requestId)) };
+		} finally {
+			this.forgetRequest(params.requestId);
+		}
+	}
 
 	/** The approval behind an open "deny and tell" prompt, restored when the prompt is cancelled. */
 	private tellFor: ApprovalView | undefined;
@@ -192,7 +296,7 @@ export class TuiDialogs {
 				);
 				if (label !== undefined) {
 					try {
-						await this.host.agent.setLabel(node.entry.id, label);
+						await this.host.session.request("thread/setLabel", { entryId: node.entry.id, label });
 						view.setLabel(node.entry.id, label.trim() || undefined);
 					} catch (error) {
 						this.host.notice("error", `Label failed: ${errorText(error)}`);
@@ -207,10 +311,26 @@ export class TuiDialogs {
 
 	// ── dialogs ──────────────────────────────────────────────────────────────
 
-	requestApproval(request: ApprovalPromptRequest): Promise<ApprovalAnswer> {
+	requestApproval(request: ApprovalPromptRequest, signal?: AbortSignal): Promise<ApprovalAnswer> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.approvals.set(id, { resolve, detached: request.detached === true });
+			// Answered elsewhere (another client, the turn interrupted): the panel goes.
+			signal?.addEventListener(
+				"abort",
+				() => {
+					if (!this.approvals.has(id)) return;
+					if (this.tellFor?.id === id && this.host.state.prompt?.kind === "tell") {
+						const promptId = this.host.state.prompt.id;
+						this.tellFor = undefined;
+						this.prompts.delete(promptId);
+						this.closePrompt(promptId);
+					}
+					this.host.dispatch({ type: "approval-close", id });
+					this.settleApproval(id, "deny");
+				},
+				{ once: true },
+			);
 			this.host.dispatch({ type: "approval-open", id, request });
 			this.host.store.flush();
 			this.host.terminalStatus?.waiting("permission", approvalTitle(request));
@@ -346,11 +466,25 @@ export class TuiDialogs {
 		});
 	}
 
-	/** A multi-select list (P35, ctx.ui.selectMany): the checked values, undefined when cancelled. */
-	pickMany(title: string, items: PickerItem[], checked: number[] = []): Promise<string[] | undefined> {
+	/** A multi-select list (P35, ctx.ui.selectMany): the checked values, undefined when cancelled or dismissed. */
+	pickMany(
+		title: string,
+		items: PickerItem[],
+		checked: number[] = [],
+		signal?: AbortSignal,
+	): Promise<string[] | undefined> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.multiPickers.set(id, resolve);
+			signal?.addEventListener(
+				"abort",
+				() => {
+					if (!this.multiPickers.has(id)) return;
+					this.host.dispatch({ type: "picker-close", id });
+					this.settleMany(id, undefined);
+				},
+				{ once: true },
+			);
 			this.host.dispatch({ type: "picker-open", picker: { id, title, items, selected: 0, checked } });
 			this.host.store.flush();
 		});
@@ -420,10 +554,25 @@ export class TuiDialogs {
 		});
 	}
 
-	ask(kind: "input", title: string, placeholder?: string, prefill?: string): Promise<string | undefined> {
+	ask(
+		kind: "input",
+		title: string,
+		placeholder?: string,
+		prefill?: string,
+		signal?: AbortSignal,
+	): Promise<string | undefined> {
 		const id = this.nextDialogId++;
 		return new Promise((resolve) => {
 			this.prompts.set(id, resolve);
+			signal?.addEventListener(
+				"abort",
+				() => {
+					if (!this.prompts.has(id)) return;
+					this.closePrompt(id);
+					this.settlePrompt(id, undefined);
+				},
+				{ once: true },
+			);
 			this.openPrompt({ id, kind, title, ...(placeholder !== undefined ? { placeholder } : {}) });
 			if (prefill !== undefined && prefill !== "") this.host.setEditor(ed.fromText(prefill));
 			this.host.store.flush();

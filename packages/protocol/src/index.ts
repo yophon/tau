@@ -31,6 +31,7 @@ export {
 	PROTOCOL_VERSION,
 	type Rendered,
 	type RenderFailure,
+	SESSION_EVENT_NOTIFICATIONS,
 	type ServerNotification,
 	type ServerNotificationMethod,
 	type ServerNotifications,

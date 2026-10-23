@@ -9,6 +9,8 @@
 // 2. Dependency direction. The CLI's root modules and modes/ must not reach tui/controller.ts through
 //    static imports: -p, the REPL, json, rpc and acp do not load the TUI (main.ts imports it
 //    dynamically when the TUI starts).
+// 3. The TUI is a client (P57): nothing under tui/ imports the kernel's Agent or ExtensionRegistry, or
+//    the hub (server/); it reaches the session through the protocol (tui/session-client.ts).
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,10 +104,36 @@ for (const entry of entries) {
 	}
 }
 
+const tuiDir = join(cliSrc, "tui");
+const KERNEL_IMPORT = /import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+["']@yophon\/tau-kernel["']/g;
+for (const file of sources.filter((path) => path.startsWith(tuiDir))) {
+	const key = relative(root, file).split("\\").join("/");
+	const text = readFileSync(file, "utf8");
+	for (const match of text.matchAll(KERNEL_IMPORT)) {
+		const names = match[1].split(",").map(
+			(name) =>
+				name
+					.trim()
+					.replace(/^type\s+/, "")
+					.split(/\s+as\s+/)[0],
+		);
+		for (const forbidden of ["Agent", "ExtensionRegistry"]) {
+			if (names.includes(forbidden)) {
+				problems.push(
+					`${key}: imports ${forbidden} from @yophon/tau-kernel; the TUI reaches the session through the protocol (tui/session-client.ts).`,
+				);
+			}
+		}
+	}
+	if (/from\s+["'](?:\.\.\/)+server\//.test(text)) {
+		problems.push(`${key}: imports the hub (server/); the TUI is a client of it (tui/session-client.ts).`);
+	}
+}
+
 if (problems.length > 0) {
 	console.error(`Structure check failed:\n${problems.map((problem) => `  - ${problem}`).join("\n")}`);
 	process.exit(1);
 }
 console.log(
-	`Structure check passed (${sources.length} source files within their line limits; the CLI's non-TUI entry points do not load the TUI controller).`,
+	`Structure check passed (${sources.length} source files within their line limits; the CLI's non-TUI entry points do not load the TUI controller; the TUI reaches sessions through the protocol only).`,
 );

@@ -302,7 +302,7 @@ describe("P38 review: the queue", () => {
 
 	it("extension commands run at once (pi); /follow waits during a compaction", () => {
 		const tui = (task: string | undefined, commands: string[] = []) =>
-			({ state: { task }, extensions: { commands: new Map(commands.map((name) => [name, {}])) } }) as never;
+			({ state: { task }, session: { commands: new Map(commands.map((name) => [name, {}])) } }) as never;
 		assert.equal(whenCommandRuns(tui("turn", ["tasks"]), "/tasks"), "now");
 		assert.equal(whenCommandRuns(tui("turn"), "/follow more"), "now");
 		assert.equal(whenCommandRuns(tui("compact"), "/follow more"), "later");

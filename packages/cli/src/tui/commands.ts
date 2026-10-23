@@ -8,24 +8,21 @@ import { copyFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
 	type AgentMessage,
-	commandPromptContent,
-	type ExtensionRegistry,
 	estimateStringTokens,
 	estimateTokens,
 	messageText,
 	type PermissionMode,
 	type SessionEntry,
 	type SessionMetadata,
-	SessionRecorder,
 	type ThinkingLevel,
 	type Usage,
 } from "@yophon/tau-kernel";
+import type { NativeEntry } from "@yophon/tau-protocol";
 import { type GitDiff, gitDiff } from "../git-diff.ts";
 import { mainCheckoutOf } from "../git-paths.ts";
 import { findSession, relativeTime, sessionLabel } from "../session-title.ts";
 import type { TuiController } from "./controller.ts";
 import { sessionHtml } from "./export-html.ts";
-import { entryRendererMatches, isRenderComponent } from "./extensions.ts";
 import { conversationLength, errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
 import type { CompletionItem } from "./input/completion.ts";
 import { truncateCells } from "./input/width.ts";
@@ -35,22 +32,21 @@ import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
 import { runRewind } from "./rewind.ts";
 import type { TuiRuns } from "./runs.ts";
+import { contextOf, savedSessions, type TuiSession, usageOf } from "./session-client.ts";
 import { buildTree } from "./session-tree.ts";
 import type { TuiSessions } from "./sessions.ts";
 
 /** What a command's argument completer reads (the input box offers completions through it). */
-export type CompletionHost = Pick<TuiController, "agent" | "model" | "modelChoices" | "options">;
+export type CompletionHost = Pick<TuiController, "model" | "modelChoices" | "options" | "session">;
 
 /** What the built-in commands use: controller members, and the runs and session switches they start (P51). */
 export type CommandHost = Pick<
 	TuiController,
-	| "agent"
 	| "ask"
 	| "askAside"
 	| "copyText"
 	| "editKeybindings"
 	| "execute"
-	| "extensions"
 	| "flash"
 	| "guardDirty"
 	| "lastSessionStart"
@@ -65,10 +61,9 @@ export type CommandHost = Pick<
 	| "pickTree"
 	| "pickWithActions"
 	| "pickWithAlt"
-	| "recorder"
 	| "refreshSurfaces"
 	| "runHandoff"
-	| "sessionStore"
+	| "session"
 	| "setMode"
 	| "settings"
 	| "shortcutConflicts"
@@ -79,7 +74,7 @@ export type CommandHost = Pick<
 > & {
 	readonly runs: Pick<
 		TuiRuns,
-		"navigate" | "promptWhenFree" | "renderNewMessages" | "runCompact" | "runPrompt" | "sendQueued"
+		"navigate" | "promptWhenFree" | "runCompact" | "runJob" | "runPrompt" | "sendQueued" | "showOutcome" | "waitForTurn"
 	>;
 	readonly sessions: Pick<TuiSessions, "reloadExtensions" | "switchModel" | "switchSession" | "switchThinking">;
 };
@@ -148,7 +143,7 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "help",
 		description: "Show commands and keys",
-		run: (tui) => tui.lines(helpLines(tui.extensions)),
+		run: (tui) => tui.lines(helpLines(tui.session)),
 	},
 	{
 		name: "compact",
@@ -226,7 +221,7 @@ const BUILTINS: BuiltinCommand[] = [
 		args: "<name>",
 		description: "Name the current session",
 		run: async (tui, args) => {
-			if (!tui.recorder) {
+			if (!tui.session.state.sessionFile) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
@@ -234,8 +229,8 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("error", "Usage: /name <name>");
 				return;
 			}
-			await tui.recorder.setName(args);
-			await tui.extensions.notifySessionInfoChanged(args, tui.agent.extensionContext());
+			await tui.session.request("thread/setName", { name: args });
+			await tui.session.drain();
 			await tui.refreshSurfaces();
 			tui.notice("dim", `Session named "${args}".`);
 		},
@@ -248,14 +243,14 @@ const BUILTINS: BuiltinCommand[] = [
 		complete: async (tui, prefix) =>
 			startingWith(
 				prefix,
-				(await tui.options.sessionRepo.list()).map((session) => ({
+				(await listSessions(tui)).map((session) => ({
 					value: session.name ?? session.id,
 					label: truncateCells(sessionLabel(session), 50),
 					hint: relativeTime(session.modified ?? session.timestamp),
 				})),
 			),
 		run: async (tui, args) => {
-			const sessions = await tui.options.sessionRepo.list();
+			const sessions = await listSessions(tui);
 			if (sessions.length === 0) {
 				tui.notice("dim", "No sessions found.");
 				return;
@@ -277,7 +272,7 @@ const BUILTINS: BuiltinCommand[] = [
 				return;
 			}
 			if (!(await tui.guardDirty("switch session"))) return;
-			const result = await tui.sessions.switchSession(await tui.options.sessionRepo.open(selected), "resume");
+			const result = await tui.sessions.switchSession({ kind: "resume", threadId: selected.id });
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension.");
 		},
 	},
@@ -291,8 +286,7 @@ const BUILTINS: BuiltinCommand[] = [
 		args: "[id]",
 		description: "Browse the session tree and go back to any point; your messages return to the input box (pi)",
 		run: async (tui, args) => {
-			const store = tui.sessionStore;
-			if (!store) {
+			if (!tui.session.state.sessionFile) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
@@ -301,8 +295,7 @@ const BUILTINS: BuiltinCommand[] = [
 				return;
 			}
 			// P39f: pi's tree selector, every entry with its branches, opened at the current leaf.
-			const entries = await store.getEntries();
-			const leafId = await store.getLeafId();
+			const { entries, leafId } = await tui.session.entries();
 			if (!entries.some((entry) => entry.type === "message" && entry.message.role === "user")) {
 				tui.notice("dim", "No messages in this session yet.");
 				return;
@@ -350,15 +343,14 @@ const BUILTINS: BuiltinCommand[] = [
 		args: "[id]",
 		description: "Copy this session (or up to a message) and switch to the copy",
 		run: async (tui, args) => {
-			const store = tui.sessionStore;
-			if (!store) {
+			if (!tui.session.state.sessionFile) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
 			let target = args;
 			if (target === "") {
 				const items: PickerItem[] = [{ label: "● The whole session", value: FULL_SESSION }];
-				for (const entry of await store.getEntries()) {
+				for (const entry of (await tui.session.entries()).entries) {
 					const fallback =
 						entry.type === "message" && entry.message.role === "user"
 							? { label: `○ ${firstLine(messageText(entry.message), 70)}`, hint: entry.id }
@@ -378,22 +370,16 @@ const BUILTINS: BuiltinCommand[] = [
 				target = picked === FULL_SESSION ? "" : picked;
 			}
 			if (!(await tui.guardDirty("fork"))) return;
-			if (target !== "") {
-				const decision = await tui.extensions.runSessionBeforeFork(
-					{ entryId: target, position: "before" },
-					tui.agent.extensionContext(),
+			// session_before_fork (before a message) and session_before_switch run in the hub.
+			const result = await tui.sessions.switchSession({ kind: "fork", ...(target === "" ? {} : { entryId: target }) });
+			if (result.cancelled) {
+				tui.notice(
+					"dim",
+					result.by === "fork"
+						? "Fork cancelled."
+						: "Session switch cancelled by an extension (the fork file was kept).",
 				);
-				if (decision.cancel) {
-					tui.notice("dim", "Fork cancelled.");
-					return;
-				}
 			}
-			const forked = await tui.options.sessionRepo.fork(
-				await store.getMetadata(),
-				target === "" ? undefined : { entryId: target },
-			);
-			const result = await tui.sessions.switchSession(forked, "fork");
-			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the fork file was kept).");
 		},
 	},
 	{
@@ -402,12 +388,12 @@ const BUILTINS: BuiltinCommand[] = [
 		aliases: ["clear", "reset"],
 		description: "Start a new session with empty context (/clear)",
 		run: async (tui) => {
-			if (!tui.sessionStore) {
+			if (!tui.session.state.sessionFile) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
 			if (!(await tui.guardDirty("new session"))) return;
-			const result = await tui.sessions.switchSession(await tui.options.sessionRepo.create(), "new");
+			const result = await tui.sessions.switchSession({ kind: "new" });
 			if (result.cancelled) tui.notice("dim", "New session cancelled by an extension.");
 		},
 	},
@@ -421,18 +407,15 @@ const BUILTINS: BuiltinCommand[] = [
 		name: "clone",
 		description: "Copy this session at its current position and switch to the copy",
 		run: async (tui) => {
-			const store = tui.sessionStore;
-			if (!store) {
+			if (!tui.session.state.sessionFile) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
 			if (!(await tui.guardDirty("fork"))) return;
-			const leaf = await store.getLeafId();
-			const copy = await tui.options.sessionRepo.fork(
-				await store.getMetadata(),
-				leaf === null || leaf === undefined ? undefined : { entryId: leaf, position: "at" },
+			const { leafId } = await tui.session.entries();
+			const result = await tui.sessions.switchSession(
+				leafId === null ? { kind: "fork" } : { kind: "fork", entryId: leafId, position: "at" },
 			);
-			const result = await tui.sessions.switchSession(copy, "fork");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the copy was kept).");
 		},
 	},
@@ -452,25 +435,25 @@ const BUILTINS: BuiltinCommand[] = [
 		aliases: ["status"],
 		description: "Show the session file, id, size and usage",
 		run: async (tui) => {
-			const usage = tui.agent.getSessionUsage();
-			const context = tui.agent.getContextUsage();
+			const usage = usageOf(tui.session.state);
+			const context = contextOf(tui.session.state);
 			const row = (label: string, value: string): StyledLine => [
 				span(`  ${label.padEnd(12)}`, { dim: true }),
 				span(value),
 			];
 			const lines: StyledLine[] = [plainLine("Session", { bold: true })];
-			if (tui.sessionStore) {
-				const metadata = await tui.sessionStore.getMetadata();
-				const entries = await tui.sessionStore.getEntries();
-				lines.push(row("id", metadata.id));
-				if (metadata.name) lines.push(row("name", metadata.name));
-				if (metadata.filePath) lines.push(row("file", metadata.filePath));
-				if (metadata.parentSession) lines.push(row("parent", metadata.parentSession));
+			const { state } = tui.session;
+			if (state.sessionFile) {
+				const { entries } = await tui.session.entries();
+				lines.push(row("id", tui.session.id));
+				if (state.name) lines.push(row("name", state.name));
+				lines.push(row("file", state.sessionFile));
+				if (state.parentSession) lines.push(row("parent", state.parentSession));
 				lines.push(row("entries", String(entries.length)));
 			} else {
 				lines.push(row("file", "none (--no-session)"));
 			}
-			lines.push(row("messages", `${conversationLength(tui.agent.messages)} in context`));
+			lines.push(row("messages", `${conversationLength(tui.session.messages)} in context`));
 			lines.push(
 				row("context", `~${context.tokens} tokens${context.contextWindow ? ` of ${context.contextWindow}` : ""}`),
 			);
@@ -482,7 +465,7 @@ const BUILTINS: BuiltinCommand[] = [
 			);
 			lines.push(row("cwd", tui.options.cwd));
 			lines.push(row("model", `${tui.model} · ${tui.thinkingLevel ?? "default"} reasoning`));
-			lines.push(row("mode", tui.agent.getPermissionMode()));
+			lines.push(row("mode", tui.session.state.permissionMode));
 			tui.lines(lines);
 		},
 	},
@@ -548,7 +531,7 @@ const BUILTINS: BuiltinCommand[] = [
 		description: "Copy an answer (the last, or the Nth from the end); with code blocks, pick one",
 		run: async (tui, args) => {
 			// Claude Code's /copy [N]: answers with text, newest first.
-			const answers = tui.agent.messages
+			const answers = tui.session.messages
 				.filter((message) => message.role === "assistant")
 				.map((message) => messageText(message).trim())
 				.filter((text) => text !== "")
@@ -586,24 +569,25 @@ const BUILTINS: BuiltinCommand[] = [
 		args: "[path]",
 		description: "Write the session as HTML (default) or JSONL",
 		run: async (tui, args) => {
-			const store = tui.sessionStore;
-			const metadata = store ? await store.getMetadata() : undefined;
-			const stem = `tau-session-${(metadata?.id ?? new Date().toISOString().replaceAll(":", "-")).slice(0, 8)}`;
+			const { state } = tui.session;
+			const persisted = state.sessionFile !== undefined;
+			const stem = `tau-session-${(persisted ? tui.session.id : new Date().toISOString().replaceAll(":", "-")).slice(0, 8)}`;
 			const target = resolve(tui.options.cwd, args === "" ? `${stem}.html` : args);
 			if (target.toLowerCase().endsWith(".jsonl")) {
-				if (!store || !metadata) {
+				if (!state.sessionFile) {
 					tui.notice("error", "No active session (--no-session): only HTML export is available.");
 					return;
 				}
-				if (metadata.filePath) {
-					await copyFile(metadata.filePath, target);
-				} else {
-					const entries = await store.getEntries();
+				try {
+					await copyFile(state.sessionFile, target);
+				} catch {
+					// Not written yet (no message): the entries as they are.
+					const { entries } = await tui.session.entries();
 					await writeFile(target, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
 				}
 			} else {
-				const html = sessionHtml(tui.agent.messages, {
-					title: metadata?.name ?? `tau session ${metadata?.id.slice(0, 8) ?? ""}`.trim(),
+				const html = sessionHtml(tui.session.messages, {
+					title: state.name ?? `tau session ${persisted ? tui.session.id.slice(0, 8) : ""}`.trim(),
 					model: tui.model,
 					cwd: tui.options.cwd,
 					exportedAt: new Date().toISOString(),
@@ -618,7 +602,7 @@ const BUILTINS: BuiltinCommand[] = [
 		args: "<path.jsonl>",
 		description: "Import a session file and switch to it",
 		run: async (tui, args) => {
-			if (!tui.sessionStore) {
+			if (!tui.session.state.sessionFile) {
 				tui.notice("error", "No active session (--no-session).");
 				return;
 			}
@@ -636,8 +620,7 @@ const BUILTINS: BuiltinCommand[] = [
 				return;
 			}
 			if (!(await tui.guardDirty("switch session"))) return;
-			const imported = await tui.options.sessionRepo.importFile(source);
-			const result = await tui.sessions.switchSession(imported, "resume");
+			const result = await tui.sessions.switchSession({ kind: "import", path: source });
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the imported file was kept).");
 			else tui.notice("dim", `Imported ${source}.`);
 		},
@@ -708,7 +691,7 @@ const BUILTINS: BuiltinCommand[] = [
 		args: "[mode]",
 		description: "Show or switch the permission mode (Shift+Tab cycles)",
 		complete: (tui, prefix) => {
-			const current = tui.agent.getPermissionMode();
+			const current = tui.session.state.permissionMode;
 			return startingWith(
 				prefix,
 				PERMISSION_MODES.map(({ mode, hint }) => ({
@@ -719,7 +702,7 @@ const BUILTINS: BuiltinCommand[] = [
 			);
 		},
 		run: async (tui, args) => {
-			const current = tui.agent.getPermissionMode();
+			const current = tui.session.state.permissionMode;
 			let requested = args.trim().toLowerCase();
 			if (requested === "") {
 				const picked = await tui.pick(
@@ -763,7 +746,7 @@ const BUILTINS: BuiltinCommand[] = [
 		name: "usage",
 		aliases: ["cost"],
 		description: "Show token usage and cost per turn",
-		run: (tui) => tui.lines(usageLines(tui.agent.messages, tui.agent.getSessionUsage())),
+		run: (tui) => tui.lines(usageLines(tui.session.messages, usageOf(tui.session.state))),
 	},
 	{
 		name: "context",
@@ -788,10 +771,10 @@ const BUILTINS: BuiltinCommand[] = [
 			const items: PickerItem[] = [
 				{ label: "Model", hint: tui.model, value: "model" },
 				{ label: "Reasoning effort", hint: tui.thinkingLevel ?? "default", value: "thinking" },
-				{ label: "Permission mode", hint: tui.agent.getPermissionMode(), value: "mode" },
+				{ label: "Permission mode", hint: tui.session.state.permissionMode, value: "mode" },
 				{ label: "Show reasoning", hint: tui.state.showReasoning ? "on" : "off", value: "reasoning" },
 				{ label: "Tool details", hint: tui.state.verbose ? "expanded" : "collapsed", value: "details" },
-				{ label: "Tools", hint: `${tui.agent.getActiveTools().length} on`, value: "tools" },
+				{ label: "Tools", hint: `${tui.session.state.tools.active.length} on`, value: "tools" },
 			];
 			if (tui.options.saveTuiMode) {
 				items.push({ label: "Screen", hint: screenName(tui.options.screen ?? "fullscreen"), value: "screen" });
@@ -827,7 +810,7 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "hotkeys",
 		description: "Show keyboard shortcuts",
-		run: (tui) => tui.lines(hotkeyLines(tui.extensions)),
+		run: (tui) => tui.lines(hotkeyLines(tui.session)),
 	},
 	{
 		name: "diagnostics",
@@ -929,8 +912,8 @@ function findBuiltin(name: string): BuiltinCommand | undefined {
 	return BUILTINS.find((command) => command.name === name || command.aliases?.includes(name));
 }
 
-/** Every command for completion: built-ins first, then extension commands that do not clash. */
-export function commandList(extensions: ExtensionRegistry, tui?: CompletionHost): CommandEntry[] {
+/** Every command for completion: built-ins first, then the session's extension commands that do not clash. */
+export function commandList(session: TuiSession, tui?: CompletionHost): CommandEntry[] {
 	const list: CommandEntry[] = BUILTINS.map((command) => {
 		const complete = command.complete;
 		return {
@@ -939,17 +922,16 @@ export function commandList(extensions: ExtensionRegistry, tui?: CompletionHost)
 			...(complete && tui ? { complete: (prefix: string) => complete(tui, prefix) } : {}),
 		};
 	});
-	for (const [invocation, command] of extensions.commands) {
+	for (const [invocation, command] of session.commands) {
 		// P41a (pi enableSkillCommands): hidden commands still run when typed, but are not offered.
 		if (findBuiltin(invocation) || command.hidden) continue;
-		const complete = command.getArgumentCompletions;
 		list.push({
 			name: `/${invocation}`,
-			description: command.description ?? "",
-			...(complete
+			description: command.description,
+			...(command.completes
 				? {
 						complete: async (prefix: string) =>
-							(await complete(prefix))?.map((item) => ({
+							(await session.request("command/complete", { name: invocation, prefix })).items?.map((item) => ({
 								value: item.value,
 								label: item.label,
 								...(item.description !== undefined ? { hint: item.description } : {}),
@@ -965,8 +947,8 @@ export function commandList(extensions: ExtensionRegistry, tui?: CompletionHost)
 async function toggleTools(tui: CommandHost): Promise<void> {
 	let selected = 0;
 	for (;;) {
-		const active = new Set(tui.agent.getActiveTools());
-		const tools = tui.agent.getAllTools().filter((tool) => tool.exposure !== "hidden");
+		const active = new Set(tui.session.state.tools.active);
+		const tools = tui.session.state.tools.all.filter((tool) => tool.exposure !== "hidden");
 		if (tools.length === 0) {
 			tui.notice("dim", "No tools are registered.");
 			return;
@@ -988,8 +970,9 @@ async function toggleTools(tui: CommandHost): Promise<void> {
 			tools.findIndex((tool) => tool.name === picked),
 		);
 		const next = active.has(picked) ? [...active].filter((name) => name !== picked) : [...active, picked];
-		tui.agent.setActiveTools(next);
-		const on = new Set(tui.agent.getActiveTools()).has(picked);
+		await tui.session.request("thread/setActiveTools", { names: next });
+		await tui.session.drain();
+		const on = new Set(tui.session.state.tools.active).has(picked);
 		tui.notice("dim", `${picked} ${on ? "on" : "off"}.`);
 	}
 }
@@ -1057,13 +1040,13 @@ export function usageLines(messages: readonly AgentMessage[], session: Usage): S
 
 /** /context: the window and an estimate of what fills it. */
 function contextLines(tui: CommandHost): StyledLine[] {
-	const context = tui.agent.getContextUsage();
+	const context = contextOf(tui.session.state);
 	const window = context.contextWindow;
 	const groups = new Map<string, number>();
 	const add = (label: string, tokens: number): void => {
 		groups.set(label, (groups.get(label) ?? 0) + tokens);
 	};
-	for (const message of tui.agent.messages) {
+	for (const message of tui.session.messages) {
 		if (message.role === "system") {
 			add(
 				"system prompt",
@@ -1087,8 +1070,8 @@ function contextLines(tui: CommandHost): StyledLine[] {
 							: "summaries";
 		add(label, estimateTokens(message));
 	}
-	const active = new Set(tui.agent.getActiveTools());
-	const declared = tui.agent.getAllTools().filter((tool) => active.has(tool.name) && tool.exposure === "direct");
+	const active = new Set(tui.session.state.tools.active);
+	const declared = tui.session.state.tools.all.filter((tool) => active.has(tool.name) && tool.exposure === "direct");
 	add(
 		`tool definitions (${declared.length})`,
 		estimateStringTokens(
@@ -1147,7 +1130,7 @@ const RUNS_DURING_A_TURN = new Set([
 
 /** When a slash command may run while a task works: now, after it, or not a command at all. */
 export function whenCommandRuns(
-	tui: Pick<TuiController, "extensions" | "state">,
+	tui: Pick<TuiController, "session" | "state">,
 	text: string,
 ): "now" | "later" | "unknown" {
 	const parsed = parseCommandLine(text);
@@ -1159,7 +1142,7 @@ export function whenCommandRuns(
 		return RUNS_DURING_A_TURN.has(builtin.name) ? "now" : "later";
 	}
 	// Extension commands run at once, even mid-turn (pi: "execute immediately, even during streaming").
-	return tui.extensions.commands.has(parsed.name) ? "now" : "unknown";
+	return tui.session.commands.has(parsed.name) ? "now" : "unknown";
 }
 
 export async function runCommand(tui: CommandHost, text: string): Promise<boolean> {
@@ -1170,25 +1153,16 @@ export async function runCommand(tui: CommandHost, text: string): Promise<boolea
 		await builtin.run(tui, parsed.args);
 		return true;
 	}
-	const command = tui.extensions.commands.get(parsed.name);
-	if (!command) return false;
+	// Not known here: the list may have grown since it was read (an MCP server's prompts).
+	if (!tui.session.commands.has(parsed.name)) await tui.session.refreshCommands(true).catch(() => false);
+	if (!tui.session.commands.has(parsed.name)) return false;
 	try {
-		await tui.agent.flush();
-		const start = tui.agent.messages.length;
-		const output = await command.handler(parsed.args, tui.agent.extensionContext());
-		await tui.runs.renderNewMessages(start);
-		await tui.refreshSurfaces();
-		if (typeof output === "string") tui.notice("info", output);
-		else if (output?.action === "prompt") {
-			// P44: UserPromptExpansion hooks may stop the prompt the command expands to.
-			const expansion = await tui.extensions.runCommandPrompt(
-				{ command: parsed.name, args: parsed.args, source: command.source ?? "extension", text: output.text },
-				tui.agent.extensionContext(),
-			);
-			if (expansion.cancel)
-				tui.notice("warn", `/${parsed.name} blocked${expansion.reason ? `: ${expansion.reason}` : "."}`);
-			else await tui.runs.promptWhenFree(commandPromptContent(output));
-		}
+		// The command runs in the hub; what it adds to the conversation arrives first, then its outcome.
+		const outcome = await tui.session.request("command/run", { name: parsed.name, args: parsed.args });
+		if (outcome.unknown) return false;
+		await tui.runs.showOutcome(parsed.name, outcome);
+		// A prompt it asked for is a turn the hub started (or queued): wait for it, as a typed prompt waits.
+		if (outcome.turn) await tui.runs.waitForTurn(outcome.turn.turnId);
 	} catch (error) {
 		tui.notice("error", `/${parsed.name} failed: ${errorText(error)}`);
 	}
@@ -1201,24 +1175,29 @@ async function presentEntry(
 	entry: SessionEntry,
 	fallback: { label: string; hint?: string } | undefined,
 ): Promise<{ label: string; hint?: string } | undefined> {
-	for (const renderer of tui.extensions.entryRenderers.values()) {
-		if (!entryRendererMatches(renderer, entry)) continue;
-		try {
-			const result = await renderer.handler(entry, tui.agent.extensionContext());
-			if (result === undefined) continue;
-			if (typeof result === "string") return { label: result, ...(fallback?.hint ? { hint: fallback.hint } : {}) };
-			if (isRenderComponent(result)) {
-				const [label, ...rest] = result.render(80);
-				if (!label) return fallback;
-				return { label, ...(rest.length > 0 ? { hint: rest.join(" ") } : {}) };
-			}
-			return { label: result.label, ...(result.description !== undefined ? { hint: result.description } : {}) };
-		} catch (error) {
-			tui.notice("error", `Entry renderer ${renderer.name} failed: ${errorText(error)}`);
+	if (tui.session.state.extensions.entryRenderers === 0) return fallback;
+	try {
+		const { rendered, failed } = await tui.session.request("render/entry", {
+			entry: entry as unknown as NativeEntry,
+			width: 80,
+		});
+		if (failed) {
+			tui.notice("error", `Entry renderer ${failed.renderer} failed: ${failed.error}`);
 			return fallback;
 		}
+		if (!rendered) return fallback;
+		if (rendered.kind === "label") {
+			return { label: rendered.label, ...(rendered.description !== undefined ? { hint: rendered.description } : {}) };
+		}
+		if (rendered.kind === "lines") {
+			const [label, ...rest] = rendered.lines;
+			if (!label) return fallback;
+			return { label, ...(rest.length > 0 ? { hint: rest.join(" ") } : {}) };
+		}
+		return { label: rendered.text, ...(fallback?.hint ? { hint: fallback.hint } : {}) };
+	} catch {
+		return fallback;
 	}
-	return fallback;
 }
 
 /** "5 min ago · 42 messages" (P34f). */
@@ -1235,7 +1214,7 @@ function sessionHint(session: SessionMetadata): string {
  */
 async function chooseSession(tui: CommandHost, initial: SessionMetadata[]): Promise<SessionMetadata | undefined> {
 	let sessions = initial;
-	const current = tui.sessionStore ? await tui.sessionStore.getMetadata() : undefined;
+	const current = { id: tui.session.id };
 	for (;;) {
 		const labels = sessions.map((session) => truncateCells(sessionLabel(session), 50));
 		const items = sessions.map((session, index) => {
@@ -1269,15 +1248,14 @@ async function chooseSession(tui: CommandHost, initial: SessionMetadata[]): Prom
 		if (picked.action === "ctrl+r") {
 			const name = (await tui.ask("input", `New name for "${sessionLabel(session)}"`))?.trim();
 			if (name) {
-				if (session.id === current?.id && tui.recorder) await tui.recorder.setName(name);
-				else await (await SessionRecorder.open(await tui.options.sessionRepo.open(session))).setName(name);
+				await tui.session.client.call("thread/setName", { threadId: session.id, name });
 				tui.flash(`Renamed to "${name}"`);
 			}
 		} else if (picked.action === "ctrl+d") {
 			if (session.id === current?.id) {
 				tui.flash("The current session cannot be deleted.");
 			} else if (await tui.ui.confirm(`Delete "${sessionLabel(session)}"?`, "This removes the session file.")) {
-				await tui.options.sessionRepo.delete(session);
+				await tui.session.client.call("thread/delete", { threadId: session.id });
 				tui.flash("Session deleted.");
 			}
 		} else {
@@ -1287,7 +1265,7 @@ async function chooseSession(tui: CommandHost, initial: SessionMetadata[]): Prom
 			}
 			return session;
 		}
-		sessions = await tui.options.sessionRepo.list();
+		sessions = await listSessions(tui);
 		if (sessions.length === 0) {
 			tui.notice("dim", "No sessions found.");
 			return undefined;
@@ -1368,7 +1346,7 @@ function keyRows(): Array<[string, string]> {
 	];
 }
 
-function helpLines(extensions: ExtensionRegistry): StyledLine[] {
+function helpLines(session: TuiSession): StyledLine[] {
 	const row = (name: string, what: string): StyledLine => [
 		span(`  ${name.padEnd(26)}`, { color: "cyan" }),
 		span(what, { dim: true }),
@@ -1376,67 +1354,80 @@ function helpLines(extensions: ExtensionRegistry): StyledLine[] {
 	const lines: StyledLine[] = [plainLine("Commands", { bold: true })];
 	for (const command of BUILTINS)
 		lines.push(row(`/${command.name}${command.args ? ` ${command.args}` : ""}`, command.description));
-	const extensionCommands = [...extensions.commands].filter(
+	const extensionCommands = [...session.commands].filter(
 		([invocation, command]) => !findBuiltin(invocation) && !command.hidden,
 	);
 	if (extensionCommands.length > 0) {
 		lines.push(plainLine("Extension commands", { bold: true }));
-		for (const [invocation, command] of extensionCommands) lines.push(row(`/${invocation}`, command.description ?? ""));
+		for (const [invocation, command] of extensionCommands) lines.push(row(`/${invocation}`, command.description));
 	}
-	lines.push(...hotkeyLines(extensions));
+	lines.push(...hotkeyLines(session));
 	return lines;
 }
 
 /** /hotkeys (pi): the built-in keys, then extension shortcuts. */
 /** The shortcuts as picker rows (P38c: ? on an empty input, Claude Code), extension shortcuts after. */
-export function shortcutItems(extensions: ExtensionRegistry): PickerItem[] {
+export function shortcutItems(session: TuiSession): PickerItem[] {
 	const rows: Array<[string, string]> = [
 		...keyRows(),
-		...[...extensions.shortcuts.values()].map((shortcut): [string, string] => [
-			shortcut.key,
-			shortcut.description ?? shortcut.name,
-		]),
+		...[...session.shortcuts.values()].map((shortcut): [string, string] => [shortcut.key, shortcut.description]),
 	];
 	return rows.map(([key, what], index) => ({ label: key, hint: what, value: String(index) }));
 }
 
-function hotkeyLines(extensions: ExtensionRegistry): StyledLine[] {
+function hotkeyLines(session: TuiSession): StyledLine[] {
 	const row = (name: string, what: string): StyledLine => [
 		span(`  ${name.padEnd(26)}`, { color: "cyan" }),
 		span(what, { dim: true }),
 	];
 	const lines: StyledLine[] = [plainLine("Keys", { bold: true })];
 	for (const [key, what] of keyRows()) lines.push(row(key, what));
-	const shortcuts = [...extensions.shortcuts.values()];
+	const shortcuts = [...session.shortcuts.values()];
 	if (shortcuts.length > 0) {
 		lines.push(plainLine("Extension shortcuts", { bold: true }));
-		for (const shortcut of shortcuts) lines.push(row(shortcut.key, shortcut.description ?? shortcut.name));
+		for (const shortcut of shortcuts) lines.push(row(shortcut.key, shortcut.description));
 	}
 	return lines;
 }
 
 async function diagnosticsLines(tui: CommandHost): Promise<StyledLine[]> {
-	const extensions = tui.extensions;
 	const count = (n: number, what: string): string => `${n} ${what}${n === 1 ? "" : "s"}`;
+	let report: Awaited<ReturnType<TuiSession["request"]>> | undefined;
+	try {
+		report = await tui.session.request("diagnostics/read", {});
+	} catch {
+		report = undefined;
+	}
+	const diagnostics = report as
+		| {
+				lastSessionStart: string;
+				counts: TuiSession["state"]["extensions"];
+				resources?: { skillPaths: number; promptPaths: number };
+				resourcesError?: string;
+				items: Array<{ name: string; result?: unknown; error?: string }>;
+		  }
+		| undefined;
+	const counts = diagnostics?.counts ?? tui.session.state.extensions;
 	const lines: StyledLine[] = [
 		plainLine("Session", { bold: true }),
 		[
-			span(`  session_start: ${tui.lastSessionStart} · ${conversationLength(tui.agent.messages)} messages in context`, {
-				dim: true,
-			}),
+			span(
+				`  session_start: ${diagnostics?.lastSessionStart ?? tui.lastSessionStart} · ${conversationLength(tui.session.messages)} messages in context`,
+				{ dim: true },
+			),
 		],
 		plainLine("Extensions", { bold: true }),
 		[
 			span(
 				`  ${[
-					count(extensions.tools.size, "tool"),
-					count(extensions.commands.size, "command"),
-					count(extensions.shortcuts.size, "shortcut"),
-					count(extensions.messageRenderers.size, "message renderer"),
-					count(extensions.entryRenderers.size, "entry renderer"),
-					count(extensions.toolRenderers.size, "tool renderer"),
-					count(extensions.widgets.size, "widget"),
-					count(extensions.headerItems.size + extensions.footerItems.size, "status item"),
+					count(counts.tools, "tool"),
+					count(counts.commands, "command"),
+					count(counts.shortcuts, "shortcut"),
+					count(counts.messageRenderers, "message renderer"),
+					count(counts.entryRenderers, "entry renderer"),
+					count(counts.toolRenderers, "tool renderer"),
+					count(counts.widgets, "widget"),
+					count(counts.statusItems, "status item"),
 				].join(" · ")}`,
 				{ dim: true },
 			),
@@ -1445,41 +1436,47 @@ async function diagnosticsLines(tui: CommandHost): Promise<StyledLine[]> {
 	if (tui.shortcutConflicts.length > 0) {
 		lines.push([span(`  Shortcuts ignored (built-in key): ${tui.shortcutConflicts.join(", ")}`, { color: "yellow" })]);
 	}
-	try {
-		const discovered = await tui.agent
-			.extensionContext()
-			.discoverResources?.(tui.lastSessionStart === "reload" ? "reload" : "startup");
+	if (diagnostics?.resourcesError !== undefined) {
+		lines.push([span(`  Resource discovery failed: ${diagnostics.resourcesError}`, { color: "red" })]);
+	} else {
 		lines.push(plainLine("Resources", { bold: true }));
 		lines.push([
 			span(
-				discovered
-					? `  ${count(discovered.skillPaths.length, "skill path")} · ${count(discovered.promptPaths.length, "prompt path")}`
+				diagnostics?.resources
+					? `  ${count(diagnostics.resources.skillPaths, "skill path")} · ${count(diagnostics.resources.promptPaths, "prompt path")}`
 					: "  unavailable",
 				{ dim: true },
 			),
 		]);
-	} catch (error) {
-		lines.push([span(`  Resource discovery failed: ${errorText(error)}`, { color: "red" })]);
 	}
-	if (extensions.diagnostics.size > 0) {
+	if (diagnostics && diagnostics.items.length > 0) {
 		lines.push(plainLine("Extension diagnostics", { bold: true }));
-		for (const diagnostic of extensions.diagnostics.values()) {
-			try {
-				const result = await diagnostic.handler(tui.agent.extensionContext());
-				for (const item of Array.isArray(result) ? result : [result]) {
-					if (!item) continue;
-					const value =
-						typeof item === "string" ? item : item.value === undefined ? item.label : `${item.label}: ${item.value}`;
-					lines.push([span(`  ${diagnostic.name}  `, { color: "cyan" }), span(value)]);
-					const details = typeof item === "object" && item.details !== undefined ? item.details : [];
-					for (const detail of Array.isArray(details) ? details : [details]) {
-						lines.push([span(`      ${detail}`, { dim: true })]);
-					}
+		for (const diagnostic of diagnostics.items) {
+			if (diagnostic.error !== undefined) {
+				lines.push([span(`  ${diagnostic.name}  `, { color: "red" }), span(diagnostic.error)]);
+				continue;
+			}
+			const result = diagnostic.result as
+				| string
+				| string[]
+				| { label: string; value?: string | number | boolean; details?: string | string[] }
+				| undefined;
+			for (const item of Array.isArray(result) ? result : [result]) {
+				if (!item) continue;
+				const value =
+					typeof item === "string" ? item : item.value === undefined ? item.label : `${item.label}: ${item.value}`;
+				lines.push([span(`  ${diagnostic.name}  `, { color: "cyan" }), span(value)]);
+				const details = typeof item === "object" && item.details !== undefined ? item.details : [];
+				for (const detail of Array.isArray(details) ? details : [details]) {
+					lines.push([span(`      ${detail}`, { dim: true })]);
 				}
-			} catch (error) {
-				lines.push([span(`  ${diagnostic.name}  `, { color: "red" }), span(errorText(error))]);
 			}
 		}
 	}
 	return lines;
+}
+
+/** The sessions of this directory as the pickers know them (thread/list; P57: the hub reads them). */
+async function listSessions(tui: Pick<CommandHost, "session">): Promise<SessionMetadata[]> {
+	return savedSessions((await tui.session.client.listThreads()).threads);
 }

@@ -115,5 +115,6 @@ export function threadState(facts: StateFacts): ThreadState {
 		extensionsVersion: facts.extensionsVersion,
 		extensions: extensionCounts(facts.registry, facts.autocompleteProviders),
 		foregroundCommands: facts.foregroundCommands,
+		queued: agent.hasQueuedMessages(),
 	};
 }

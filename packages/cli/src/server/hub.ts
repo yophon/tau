@@ -35,6 +35,8 @@ export class HubConnection implements Subscriber {
 	initialized = false;
 	/** P57: asked for the native data. */
 	native = false;
+	/** P57: asked for pi's JSON-mode event records. */
+	sessionEvents = false;
 	width: number | undefined;
 	readonly threads = new Set<string>();
 
@@ -108,6 +110,7 @@ export class SessionHub {
 			}
 			connection.initialized = true;
 			connection.native = params.capabilities?.nativeEvents === true;
+			connection.sessionEvents = params.capabilities?.sessionEvents === true;
 			connection.width = params.capabilities?.width;
 			return { serverInfo: { name: "tau", version: this.options.version }, protocolVersion: PROTOCOL_VERSION };
 		});
@@ -301,6 +304,14 @@ export class SessionHub {
 			moved: thread(params.threadId).workspace.background?.moveToBackground() ?? 0,
 		}));
 		handle("thread/clearQueue", (params) => control.clearQueue(thread(params.threadId)));
+		handle("thread/backgroundTasks", (params) => ({
+			tasks: thread(params.threadId).workspace.background?.list() ?? [],
+		}));
+		handle("thread/stopBackgroundTask", async (params) => {
+			const background = thread(params.threadId).workspace.background;
+			if (!background) throw new JsonRpcError(ERROR_CODES.invalidRequest, "This workspace has no background commands.");
+			return { task: await background.stop(params.taskId) };
+		});
 		handle("thread/escape", (params) => {
 			thread(params.threadId).session.extensions.events.emit("tau:idle-escape", undefined);
 			return {};
@@ -323,7 +334,7 @@ export class SessionHub {
 		}));
 		handle("shortcut/run", (params) => ui.runShortcut(thread(params.threadId), params.name));
 		handle("completion/request", (params) =>
-			thread(params.threadId).completion(params.lines, params.line, params.col, params.force),
+			thread(params.threadId).completion(params.lines, params.line, params.col, params.force, params.base),
 		);
 		handle("completion/apply", (params) =>
 			thread(params.threadId).applyCompletion(params.lines, params.line, params.col, params.item, params.prefix),
@@ -338,7 +349,7 @@ export class SessionHub {
 			ui.renderEntry(thread(params.threadId), params.entry as unknown as SessionEntry, width(params.width)),
 		);
 		handle("markdown/transform", (params) => ({ texts: ui.transformMarkdown(thread(params.threadId), params.items) }));
-		handle("surfaces/read", (params) => ui.readSurfaces(thread(params.threadId), width(params.width)));
+		handle("surfaces/read", (params) => ui.readSurfaces(thread(params.threadId), width(params.width), params.parts));
 		handle("widget/click", async (params) => {
 			await ui.clickWidget(thread(params.threadId), params.name);
 			return {};
@@ -382,6 +393,11 @@ export class SessionHub {
 	private adopt(held: HubThread): void {
 		this.threads.set(held.id, held);
 		held.onIdle = () => this.scheduleUnload(held);
+		held.onClose = () => {
+			this.cancelUnload(held.id);
+			if (this.threads.get(held.id) === held) this.threads.delete(held.id);
+			void held.stop();
+		};
 	}
 
 	/** The session the client says it leaves, if it is subscribed to it (and it is not the target). */

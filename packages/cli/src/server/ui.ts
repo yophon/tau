@@ -6,6 +6,7 @@ import {
 	type AgentMessage,
 	type AutocompleteProvider,
 	type AutocompleteProviderFactory,
+	type AutocompleteSuggestions,
 	commandPromptContent,
 	type ExtensionRenderComponent,
 	type RegisteredEntryRenderer,
@@ -232,19 +233,23 @@ export function transformMarkdown(
 export async function readSurfaces(
 	thread: HubThread,
 	width: number,
+	parts: ReadonlyArray<"status" | "widgets"> = ["status", "widgets"],
 ): Promise<ClientRequests["surfaces/read"]["result"]> {
 	const registry = thread.session.extensions;
 	const context = thread.session.agent.extensionContext();
 	const status: string[] = [];
-	for (const item of [...registry.headerItems.values(), ...registry.footerItems.values()]) {
-		try {
-			const result = await item.handler(context);
-			if (result) status.push(result);
-		} catch (error) {
-			status.push(`${item.name} failed: ${errorText(error)}`);
+	if (parts.includes("status")) {
+		for (const item of [...registry.headerItems.values(), ...registry.footerItems.values()]) {
+			try {
+				const result = await item.handler(context);
+				if (result) status.push(result);
+			} catch (error) {
+				status.push(`${item.name} failed: ${errorText(error)}`);
+			}
 		}
 	}
 	const widgets: ClientRequests["surfaces/read"]["result"]["widgets"] = [];
+	if (!parts.includes("widgets")) return { status, widgets };
 	for (const widget of registry.widgets.values()) {
 		const placement = widget.placement === "below-editor" ? "below-editor" : "above-editor";
 		const clickable = widget.onClick !== undefined;
@@ -318,7 +323,8 @@ export async function runCommand(thread: HubThread, name: string, args: string):
 	const { agent } = thread.session;
 	await agent.flush();
 	const output = await command.handler(args, agent.extensionContext());
-	// What it added to the conversation (sendMessage) reaches the native clients now.
+	// What it added to the conversation (sendMessage, written in the background) reaches the native clients now.
+	await agent.flush();
 	thread.syncMessages();
 	if (typeof output === "string") return { output };
 	if (output?.action !== "prompt") return {};
@@ -337,6 +343,7 @@ export async function runShortcut(thread: HubThread, name: string): Promise<Comm
 	const { agent } = thread.session;
 	await agent.flush();
 	const output = await shortcut.handler(agent.extensionContext());
+	await agent.flush();
 	thread.syncMessages();
 	if (typeof output === "string") return { output };
 	if (output?.action === "prompt") return { turn: thread.startTurn(commandPromptContent(output)) };
@@ -360,21 +367,20 @@ export async function completeCommand(
 	);
 }
 
+/** Applying reached the bottom of the chain: the item is the client's own, and the client applies it. */
+export const CLIENT_APPLIES = -1;
+
 /**
- * The bottom of the server's provider chain. The client's own completion (commands, files) is the
- * real bottom: this one has no suggestions, so a provider that defers gets null and the client
- * shows its own; applying replaces the prefix before the cursor.
+ * The bottom of the hub's provider chain: the client's own completion (commands, files), which the
+ * client sends with each request (`base`), as the TUI's built-in provider was the bottom of pi's
+ * chain. Applying one of its items is the client's (CLIENT_APPLIES).
  */
-export const bottomProvider: AutocompleteProvider = {
-	getSuggestions: async () => null,
-	applyCompletion: (lines, cursorLine, cursorCol, item, prefix) => {
-		const current = lines[cursorLine] ?? "";
-		const start = Math.max(0, cursorCol - prefix.length);
-		const next = [...lines];
-		next[cursorLine] = current.slice(0, start) + item.value + current.slice(cursorCol);
-		return { lines: next, cursorLine, cursorCol: start + item.value.length };
-	},
-};
+export function bottomProvider(base: () => AutocompleteSuggestions | null): AutocompleteProvider {
+	return {
+		getSuggestions: async () => base(),
+		applyCompletion: (lines) => ({ lines, cursorLine: CLIENT_APPLIES, cursorCol: CLIENT_APPLIES }),
+	};
+}
 
 export function invalidParams(message: string): JsonRpcError {
 	return new JsonRpcError(ERROR_CODES.invalidParams, message);

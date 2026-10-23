@@ -19,8 +19,11 @@ export interface Completion {
 	tokenStart: number;
 	token: string;
 	items: CompletionItem[];
-	/** How accepting an item changes the input, when an extension's provider decides (P44, pi applyCompletion). */
-	apply?: (item: CompletionItem) => { text: string; cursor: number };
+	/**
+	 * How accepting an item changes the input, when an extension's provider decides (P44, pi
+	 * applyCompletion); P57: the provider runs in the hub, so the answer may come later.
+	 */
+	apply?: (item: CompletionItem) => { text: string; cursor: number } | Promise<{ text: string; cursor: number }>;
 }
 
 /** The input as pi's providers see it: lines and the cursor's line and column. */

@@ -5,20 +5,26 @@
  * JSON mode (no header). `ctx.ui` dialogs and tool approvals go to the client as
  * `extension_ui_request` records; an approval is a `select` with an extra
  * `approval` field (D20 has no pi counterpart). Closing stdin shuts down.
+ * P57: an adapter over tau's protocol — the session lives in an in-process hub (rpc-hub.ts).
  */
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type {
-	ApprovalRequest,
-	ImageContent,
-	PermissionMode,
-	ThinkingLevel,
-	UiCapability,
-	UserContent,
+import {
+	type AgentEvent,
+	type ApprovalRequest,
+	askFormStepByStep,
+	type ImageContent,
+	messageText,
+	type PermissionMode,
+	type UiCapability,
+	type UiForm,
+	type UserContent,
 } from "@yophon/tau-kernel";
+import { type ClientRequests, ERROR_CODES, type JsonRpcError, type ServerRequests } from "@yophon/tau-protocol";
 import { sessionHtml } from "../tui/export-html.ts";
-import { agentEventRecord, sessionEventStream } from "./events.ts";
-import { type HeadlessSession, THINKING_LEVELS } from "./headless.ts";
+import { type TuiSession, usageOf } from "../tui/session-client.ts";
+import { agentEventRecord } from "./events.ts";
+import { THINKING_LEVELS } from "./headless.ts";
 import { type RecordWriter, readRecords } from "./jsonl.ts";
 
 export type ApprovalChoice = "once" | "always" | "deny";
@@ -182,13 +188,13 @@ export interface RpcModelEntry {
 }
 
 export interface RpcModeOptions {
-	session: HeadlessSession;
+	/** The session shown, already joined (P57: a client of the in-process hub, rpc-hub.ts). */
+	session: TuiSession;
 	bridge: RpcUiBridge;
 	out: RecordWriter;
 	input?: NodeJS.ReadableStream;
 	cwd: string;
 	models: readonly RpcModelEntry[];
-	sessionReason: "startup" | "resume";
 }
 
 class CommandError extends Error {}
@@ -209,11 +215,86 @@ function promptContent(message: string, images: unknown): UserContent {
 	return [{ type: "text", text: message }, ...blocks];
 }
 
-/** Run the RPC loop until stdin closes. */
+/** The hub's dialogs (ui/request) as the bridge's extension_ui_request records; forms field by field (pi has none). */
+export async function answerWithBridge(
+	bridge: RpcUiBridge,
+	params: ServerRequests["ui/request"]["params"],
+): Promise<ServerRequests["ui/request"]["result"]> {
+	const value = (answer: string | undefined) => (answer === undefined ? { cancelled: true } : { value: answer });
+	switch (params.kind) {
+		case "confirm":
+			return { confirmed: await bridge.ui.confirm(params.title, params.message) };
+		case "select":
+			return value(await bridge.ui.select(params.title, params.options ?? []));
+		case "selectMany": {
+			const values = await bridge.ui.selectMany?.(params.title, params.options ?? []);
+			return values === undefined ? { cancelled: true } : { values };
+		}
+		case "input":
+			return value(await bridge.ui.input(params.title, params.placeholder));
+		case "editor":
+			return value(await bridge.ui.editor?.(params.title, params.prefill));
+		case "form": {
+			const result = await askFormStepByStep(bridge.ui, params.form as unknown as UiForm);
+			return result === undefined ? { cancelled: true } : { form: result as unknown as Record<string, unknown> };
+		}
+		default:
+			return { cancelled: true };
+	}
+}
+
+/** "provider/id" (or a bare id) as get_state's model. */
+function modelOf(display: string): { provider: string; id: string } {
+	const slash = display.indexOf("/");
+	return slash === -1
+		? { provider: "", id: display }
+		: { provider: display.slice(0, slash), id: display.slice(slash + 1) };
+}
+
+/**
+ * Run the RPC loop until stdin closes (P57: an adapter over the protocol — pi's commands become
+ * requests to the hub, its session records come as thread/sessionEvent, compaction and retry
+ * records from thread/event; docs/rpc.md is unchanged).
+ */
 export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 	const { session, bridge, out } = options;
-	await session.extensions.add([sessionEventStream((record) => out.write(record))]);
-	await session.start(options.sessionReason);
+	/** A turn is running (between turn/started and turn/completed, as the hub said). */
+	let turnActive = session.state.running;
+	session.client.handle("item/tool/requestApproval", async (params) => ({
+		decision: await bridge.approve({
+			toolCallId: params.toolCallId,
+			toolName: params.toolName,
+			args: params.args,
+			risk: params.risk,
+			...(params.reason !== undefined ? { reason: params.reason } : {}),
+			...(params.subagent !== undefined ? { subagent: params.subagent } : {}),
+			...(params.always !== undefined ? { always: { label: params.always } } : {}),
+		}),
+	}));
+	session.client.handle("ui/request", (params) => answerWithBridge(bridge, params));
+	session.attach((notification) => {
+		switch (notification.method) {
+			case "thread/sessionEvent":
+				out.write(notification.params.record);
+				return;
+			case "thread/event": {
+				// The AgentEvents that have no extension hook (compaction, retries).
+				const record = agentEventRecord(notification.params.event as unknown as AgentEvent);
+				if (record) out.write(record);
+				return;
+			}
+			case "thread/notice":
+				bridge.ui.notify(notification.params.text, notification.params.level);
+				return;
+			case "turn/started":
+				turnActive = true;
+				return;
+			case "turn/completed":
+				turnActive = false;
+				return;
+			default:
+		}
+	});
 
 	const respond = (id: unknown, command: string, data?: unknown): void =>
 		out.write({
@@ -225,100 +306,209 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 		});
 	const fail = (id: unknown, command: string, error: string): void =>
 		out.write({ ...(typeof id === "string" ? { id } : {}), type: "response", command, success: false, error });
+	const messages = () => session.messages;
+	const cancelledBy = (error: unknown): boolean => (error as JsonRpcError).code === ERROR_CODES.cancelled;
 
 	const state = async (): Promise<Record<string, unknown>> => {
-		const metadata = session.store ? await session.store.getMetadata() : undefined;
-		const [provider, ...rest] = session.modelDisplay.includes("/")
-			? session.modelDisplay.split("/")
-			: ["", session.modelDisplay];
+		await session.drain();
+		const { state: current } = session;
 		return {
-			model: { provider: rest.length > 0 ? provider : "", id: session.agent.model },
-			thinkingLevel: session.agent.thinkingLevel ?? "default",
-			permissionMode: session.agent.getPermissionMode(),
-			isStreaming: session.isRunning,
-			isCompacting: session.isCompacting,
-			...(metadata?.filePath ? { sessionFile: metadata.filePath } : {}),
-			sessionId: metadata?.id ?? session.agent.extensionContext().sessionManager?.getSessionId() ?? "",
-			...(metadata?.name ? { sessionName: metadata.name } : {}),
-			messageCount: session.agent.messages.filter((message) => message.role !== "system").length,
-			pendingMessageCount: session.agent.hasQueuedMessages() ? 1 : 0,
-			autoCompactionEnabled: session.agent.getContextUsage().contextWindow !== undefined,
+			model: modelOf(current.model),
+			thinkingLevel: current.thinkingLevel ?? "default",
+			permissionMode: current.permissionMode,
+			isStreaming: turnActive,
+			isCompacting: current.task?.kind === "compaction",
+			...(current.sessionFile ? { sessionFile: current.sessionFile } : {}),
+			sessionId: session.id,
+			...(current.name ? { sessionName: current.name } : {}),
+			messageCount: messages().filter((message) => message.role !== "system").length,
+			pendingMessageCount: current.queued ? 1 : 0,
+			autoCompactionEnabled: (current.contextUsage as { contextWindow?: unknown }).contextWindow !== undefined,
 		};
 	};
 
-	const handle = async (command: Record<string, unknown>): Promise<void> => {
-		const id = command.id;
-		const type = typeof command.type === "string" ? command.type : "";
+	/** Leave this session for another (new, a file, a fork); refused by an extension: cancelled. */
+	const move = async (join: () => Promise<unknown>): Promise<{ cancelled: boolean }> => {
+		try {
+			await join();
+			return { cancelled: false };
+		} catch (error) {
+			if (cancelledBy(error)) return { cancelled: true };
+			throw error;
+		}
+	};
+
+	/**
+	 * A `/command` (as HeadlessSession.command did): extension commands run in the hub (a prompt they
+	 * ask for is a turn); the built-ins that make sense without a screen run here. Undefined when the
+	 * text is not a known command (it is then sent as a prompt).
+	 */
+	const command = async (message: string): Promise<{ output?: string; started?: boolean } | undefined> => {
+		const match = /^\/([\w:-]+)(?:\s+([\s\S]*))?$/.exec(message.trim());
+		if (!match) return undefined;
+		const name = match[1] ?? "";
+		const args = (match[2] ?? "").trim();
+		if (!session.commands.has(name)) await session.refreshCommands(true).catch(() => false);
+		if (session.commands.has(name)) {
+			const outcome = await session.request("command/run", { name, args });
+			if (!outcome.unknown) {
+				if (outcome.blocked)
+					return { output: `/${name} blocked${outcome.blocked.reason ? `: ${outcome.blocked.reason}` : "."}` };
+				return {
+					...(outcome.output !== undefined ? { output: outcome.output } : {}),
+					...(outcome.turn ? { started: true } : {}),
+				};
+			}
+		}
+		const { state: current } = session;
+		switch (name) {
+			case "compact": {
+				const result = await session.request("thread/compact", args === "" ? {} : { instructions: args });
+				return {
+					output: result.compacted ? `Compacted (was ~${result.tokensBefore ?? 0} tokens).` : "Nothing to compact.",
+				};
+			}
+			case "model": {
+				if (args === "") return { output: `Model: ${current.model}` };
+				try {
+					const result = await session.request("thread/setModel", { model: args });
+					return {
+						output: result.cancelled
+							? `Model switch cancelled${result.cancelled.reason ? `: ${result.cancelled.reason}` : "."}`
+							: `Model set to ${result.model}.`,
+					};
+				} catch (error) {
+					return { output: error instanceof Error ? error.message : String(error) };
+				}
+			}
+			case "thinking": {
+				if (args === "") return { output: `Reasoning effort: ${current.thinkingLevel ?? "default"}` };
+				const level = args === "default" ? undefined : args;
+				if (level !== undefined && !(THINKING_LEVELS as readonly string[]).includes(level))
+					return { output: `Unknown level "${args}".` };
+				await session.request("thread/setThinking", level !== undefined ? { level } : {});
+				return { output: `Reasoning effort: ${level ?? "default"}.` };
+			}
+			case "mode": {
+				if (args === "") return { output: `Permission mode: ${current.permissionMode}` };
+				if (!(MODES as readonly string[]).includes(args)) return { output: `Unknown mode "${args}".` };
+				await session.request("thread/setPermissionMode", { mode: args });
+				return { output: `Permission mode: ${args}.` };
+			}
+			case "name": {
+				if (!current.sessionFile || args === "") return { output: "Usage: /name <name>" };
+				await session.request("thread/setName", { name: args });
+				return { output: `Session named "${args}".` };
+			}
+			case "new": {
+				const result = await move(() => session.join("thread/start", { previousThreadId: session.id }));
+				return { output: result.cancelled ? "New session cancelled by an extension." : "New session." };
+			}
+			case "help":
+			case "hotkeys":
+			case "clear":
+			case "copy":
+			case "tools":
+			case "settings":
+			case "reasoning":
+			case "quit":
+			case "exit":
+				return { output: `/${name} is a terminal command; it does nothing here.` };
+			default:
+				return undefined;
+		}
+	};
+
+	const handle = async (record: Record<string, unknown>): Promise<void> => {
+		const id = record.id;
+		const type = typeof record.type === "string" ? record.type : "";
 		try {
 			switch (type) {
 				case "prompt": {
-					const message = text(command.message, "message");
+					const message = text(record.message, "message");
 					const behavior =
-						command.streamingBehavior === "steer" || command.streamingBehavior === "followUp"
-							? command.streamingBehavior
+						record.streamingBehavior === "steer" || record.streamingBehavior === "followUp"
+							? record.streamingBehavior
 							: undefined;
 					if (message.trim().startsWith("/")) {
-						const handled = await session.command(message);
+						const handled = await command(message);
 						if (handled) {
 							if (handled.output) bridge.ui.notify(handled.output, "info");
-							respond(id, type, { disposition: handled.run ? "started" : "handled" });
+							respond(id, type, { disposition: handled.started ? "started" : "handled" });
 							return;
 						}
 					}
-					const result = await session.submit(promptContent(message, command.images), behavior);
-					respond(id, type, { disposition: result.disposition });
+					const content = promptContent(message, record.images);
+					await session.drain();
+					if (turnActive) {
+						if (!behavior) throw new Error('The agent is running: pass streamingBehavior "steer" or "followUp".');
+						const input = content as ClientRequests["turn/steer"]["params"]["input"];
+						const result =
+							behavior === "steer"
+								? await session.request("turn/steer", { input })
+								: await session.request("turn/followUp", { input });
+						respond(id, type, { disposition: result.disposition ?? "queued" });
+						return;
+					}
+					await session.startTurn(content);
+					respond(id, type, { disposition: "started" });
 					return;
 				}
 				case "steer":
 				case "follow_up": {
-					const content = promptContent(text(command.message, "message"), command.images);
-					const disposition = await (type === "steer" ? session.agent.steer(content) : session.agent.followUp(content));
-					respond(id, type, { disposition });
+					const input = promptContent(
+						text(record.message, "message"),
+						record.images,
+					) as ClientRequests["turn/steer"]["params"]["input"];
+					const result =
+						type === "steer"
+							? await session.request("turn/steer", { input })
+							: await session.request("turn/followUp", { input });
+					respond(id, type, { disposition: result.disposition ?? "queued" });
 					return;
 				}
 				case "abort":
-					session.abort();
+				case "abort_bash":
+					await session.interrupt();
 					respond(id, type);
 					return;
-				case "clear_queue": {
-					const cleared = session.agent.clearQueue();
-					respond(id, type, {
-						steering: cleared.steering.map((message) => message.content),
-						followUp: cleared.followUp.map((message) => message.content),
-					});
+				case "clear_queue":
+					respond(id, type, await session.request("thread/clearQueue", {}));
 					return;
-				}
 				case "new_session":
-					respond(id, type, await session.newSession());
+					respond(id, type, await move(() => session.join("thread/start", { previousThreadId: session.id })));
 					return;
 				case "get_state":
 					respond(id, type, await state());
 					return;
 				case "get_messages":
-					respond(id, type, { messages: session.agent.messages });
+					await session.drain();
+					respond(id, type, { messages: messages() });
 					return;
 				case "set_model": {
 					const ref =
-						typeof command.provider === "string" && command.provider !== ""
-							? `${command.provider}/${text(command.modelId, "modelId")}`
-							: text(command.modelId, "modelId");
-					const result = session.setModel(ref);
-					if ("error" in result) fail(id, type, result.error);
-					else respond(id, type, { model: { id: session.agent.model, display: result.display } });
+						typeof record.provider === "string" && record.provider !== ""
+							? `${record.provider}/${text(record.modelId, "modelId")}`
+							: text(record.modelId, "modelId");
+					const result = await session.request("thread/setModel", { model: ref });
+					if (result.cancelled)
+						fail(id, type, `Model switch cancelled${result.cancelled.reason ? `: ${result.cancelled.reason}` : ""}`);
+					else respond(id, type, { model: { id: modelOf(result.model ?? ref).id, display: result.model ?? ref } });
 					return;
 				}
 				case "get_available_models":
 					respond(id, type, {
-						models: options.models.length > 0 ? options.models : [{ provider: "", id: session.agent.model }],
+						models:
+							options.models.length > 0 ? options.models : [{ provider: "", id: modelOf(session.state.model).id }],
 					});
 					return;
 				case "set_thinking_level": {
-					const level = command.level === "default" || command.level === "off" ? undefined : command.level;
+					const level = record.level === "default" || record.level === "off" ? undefined : record.level;
 					if (level !== undefined && !(THINKING_LEVELS as readonly unknown[]).includes(level)) {
-						fail(id, type, `Unknown thinking level: ${String(command.level)}`);
+						fail(id, type, `Unknown thinking level: ${String(record.level)}`);
 						return;
 					}
-					session.setThinking(level as ThinkingLevel | undefined);
+					await session.request("thread/setThinking", level !== undefined ? { level: level as string } : {});
 					respond(id, type);
 					return;
 				}
@@ -326,55 +516,76 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					respond(id, type, { levels: ["default", ...THINKING_LEVELS] });
 					return;
 				case "set_permission_mode": {
-					const mode = command.mode;
+					const mode = record.mode;
 					if (typeof mode !== "string" || !(MODES as readonly string[]).includes(mode)) {
 						fail(id, type, `Unknown permission mode: ${String(mode)}`);
 						return;
 					}
-					session.setPermissionMode(mode as PermissionMode);
+					await session.request("thread/setPermissionMode", { mode });
 					respond(id, type);
 					return;
 				}
 				case "get_permission_mode":
-					respond(id, type, { mode: session.agent.getPermissionMode() });
+					await session.drain();
+					respond(id, type, { mode: session.state.permissionMode as PermissionMode });
 					return;
 				case "compact": {
-					const result = await session.compact(
-						typeof command.customInstructions === "string" ? command.customInstructions : undefined,
+					const result = await session.request(
+						"thread/compact",
+						typeof record.customInstructions === "string" ? { instructions: record.customInstructions } : {},
 					);
-					respond(id, type, result ?? { compacted: false });
+					if (result.cancelled)
+						throw new Error(result.cancelled === "extension" ? "Compaction cancelled" : "Compaction aborted");
+					respond(
+						id,
+						type,
+						result.compacted ? { summary: result.summary, tokensBefore: result.tokensBefore } : { compacted: false },
+					);
 					return;
 				}
 				case "bash": {
-					const result = await session.bash(text(command.command, "command"));
-					respond(id, type, result);
+					const result = await session.request("thread/bash", {
+						command: text(record.command, "command"),
+						record: true,
+					});
+					respond(
+						id,
+						type,
+						result.cancelled
+							? { output: result.reason ?? "", exitCode: -1, cancelled: true }
+							: {
+									output: [result.stdout ?? "", result.stderr ?? ""]
+										.filter((part) => part !== "")
+										.join("\n")
+										.trimEnd(),
+									exitCode: result.exitCode,
+									cancelled: false,
+								},
+					);
 					return;
 				}
-				case "abort_bash":
-					session.abort();
-					respond(id, type);
-					return;
 				// P36a: background commands the model started (tau addition, for editor clients).
 				case "list_background_tasks":
-					respond(id, type, { tasks: session.options.workspace.background?.list() ?? [] });
+					respond(id, type, await session.request("thread/backgroundTasks", {}));
 					return;
-				case "stop_background_task": {
-					const background = session.options.workspace.background;
-					if (!background) throw new Error("This workspace has no background commands.");
-					respond(id, type, { task: await background.stop(text(command.taskId, "taskId")) });
+				case "stop_background_task":
+					respond(
+						id,
+						type,
+						await session.request("thread/stopBackgroundTask", { taskId: text(record.taskId, "taskId") }),
+					);
 					return;
-				}
 				case "get_session_stats": {
-					const usage = session.agent.getSessionUsage();
-					const messages = session.agent.messages;
-					const metadata = session.store ? await session.store.getMetadata() : undefined;
+					await session.drain();
+					const usage = usageOf(session.state);
+					const all = messages();
 					respond(id, type, {
-						...(metadata?.filePath ? { sessionFile: metadata.filePath } : {}),
-						sessionId: metadata?.id ?? "",
-						userMessages: messages.filter((message) => message.role === "user").length,
-						assistantMessages: messages.filter((message) => message.role === "assistant").length,
-						toolResults: messages.filter((message) => message.role === "toolResult").length,
-						totalMessages: messages.filter((message) => message.role !== "system").length,
+						...(session.state.sessionFile ? { sessionFile: session.state.sessionFile } : {}),
+						sessionId: session.id,
+						userMessages: all.filter((message) => message.role === "user").length,
+						assistantMessages: all.filter((message) => message.role === "assistant").length,
+						toolResults: all.filter((message) => message.role === "toolResult").length,
+						totalMessages: all.filter((message) => message.role !== "system").length,
 						tokens: {
 							input: usage.input,
 							output: usage.output,
@@ -387,18 +598,19 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					return;
 				}
 				case "export_html": {
-					const metadata = session.store ? await session.store.getMetadata() : undefined;
+					await session.drain();
 					const target = resolve(
 						options.cwd,
-						typeof command.outputPath === "string" && command.outputPath !== ""
-							? command.outputPath
-							: `tau-session-${(metadata?.id ?? "export").slice(0, 8)}.html`,
+						typeof record.outputPath === "string" && record.outputPath !== ""
+							? record.outputPath
+							: `tau-session-${(session.state.sessionFile ? session.id : "export").slice(0, 8)}.html`,
 					);
 					await writeFile(
 						target,
-						sessionHtml(session.agent.messages, {
-							title: metadata?.name ?? `tau session ${metadata?.id.slice(0, 8) ?? ""}`.trim(),
-							model: session.modelDisplay,
+						sessionHtml(messages(), {
+							title:
+								session.state.name ?? `tau session ${session.state.sessionFile ? session.id.slice(0, 8) : ""}`.trim(),
+							model: session.state.model,
 							cwd: options.cwd,
 							exportedAt: new Date().toISOString(),
 						}),
@@ -408,27 +620,26 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					return;
 				}
 				case "switch_session": {
-					const filePath = resolve(options.cwd, text(command.sessionPath, "sessionPath"));
-					const store = await session.options.workspace.sessionRepo.open({
-						id: "",
-						cwd: options.cwd,
-						timestamp: "",
-						filePath,
-					});
-					respond(id, type, await session.switchTo(store, "resume"));
+					const path = resolve(options.cwd, text(record.sessionPath, "sessionPath"));
+					respond(
+						id,
+						type,
+						await move(() => session.join("thread/import", { path, copy: false, previousThreadId: session.id })),
+					);
 					return;
 				}
 				case "fork":
 				case "clone": {
-					if (!session.store) throw new CommandError("No session file (--no-session)");
-					const metadata = await session.store.getMetadata();
-					const entryId = type === "fork" ? text(command.entryId, "entryId") : await session.store.getLeafId();
-					const forked = await session.options.workspace.sessionRepo.fork(
-						metadata,
-						entryId ? { entryId, position: type === "fork" ? "before" : "at" } : undefined,
+					if (!session.state.sessionFile) throw new CommandError("No session file (--no-session)");
+					const { entries, leafId } = await session.entries();
+					const entryId = type === "fork" ? text(record.entryId, "entryId") : leafId;
+					const entry = type === "fork" ? entries.find((candidate) => candidate.id === entryId) : undefined;
+					const result = await move(() =>
+						session.join("thread/fork", {
+							threadId: session.id,
+							...(entryId ? { entryId, position: type === "fork" ? ("before" as const) : ("at" as const) } : {}),
+						}),
 					);
-					const entry = type === "fork" && entryId ? await session.store.getEntry(entryId) : undefined;
-					const result = await session.switchTo(forked, "fork");
 					respond(id, type, {
 						...result,
 						...(entry?.type === "message" && entry.message.role === "user"
@@ -438,34 +649,34 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					return;
 				}
 				case "get_entries":
-					respond(id, type, { entries: session.store ? await session.store.getEntries() : [] });
+					respond(id, type, { entries: (await session.entries()).entries });
 					return;
 				case "get_tree": {
-					const entries = session.store ? await session.store.getEntries() : [];
+					const { entries, leafId } = await session.entries();
 					respond(id, type, {
-						leafId: session.store ? await session.store.getLeafId() : null,
+						leafId,
 						nodes: entries.map((entry) => ({ id: entry.id, parentId: entry.parentId, type: entry.type })),
 					});
 					return;
 				}
-				case "get_last_assistant_text":
-					respond(id, type, { text: session.lastAssistantText() ?? null });
-					return;
-				case "set_session_name": {
-					const name = text(command.name, "name");
-					if (!session.recorder) throw new CommandError("No session file (--no-session)");
-					await session.recorder.setName(name);
-					await session.extensions.notifySessionInfoChanged(name, session.agent.extensionContext());
-					respond(id, type);
+				case "get_last_assistant_text": {
+					await session.drain();
+					const last = messages().findLast((message) => message.role === "assistant");
+					respond(id, type, { text: last ? messageText(last) : null });
 					return;
 				}
+				case "set_session_name":
+					await session.request("thread/setName", { name: text(record.name, "name") });
+					respond(id, type);
+					return;
 				case "get_commands":
+					await session.refreshCommands(true).catch(() => false);
 					respond(id, type, {
-						commands: [...session.extensions.commands]
+						commands: [...session.commands]
 							.filter(([, entry]) => !entry.hidden)
 							.map(([name, entry]) => ({
 								name,
-								description: entry.description ?? "",
+								description: entry.description,
 								source: name.startsWith("skill:") ? "skill" : "extension",
 							})),
 					});
@@ -477,13 +688,6 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 			fail(id, type, error instanceof Error ? error.message : String(error));
 		}
 	};
-
-	// Events of the AgentEvent stream that have no extension hook (compaction, retries).
-	session.options.onEvent = ((previous) => (event) => {
-		previous?.(event);
-		const record = agentEventRecord(event);
-		if (record) out.write(record);
-	})(session.options.onEvent);
 
 	bridge.listen(options.input ?? process.stdin);
 	await new Promise<void>((done) => {
@@ -503,8 +707,7 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 					out.write({ type: "response", command: "parse", success: false, error: "A command must be a JSON object" });
 					return;
 				}
-				const record = value as Record<string, unknown>;
-				const task = handle(record).finally(() => inFlight.delete(task));
+				const task = handle(value as Record<string, unknown>).finally(() => inFlight.delete(task));
 				inFlight.add(task);
 			},
 			() => {
@@ -512,5 +715,4 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 			},
 		);
 	});
-	await session.stop();
 }

@@ -502,7 +502,10 @@ describe("P38c sessions and commands", () => {
 			await h.waitFor((f) => f.includes("Back before that message"), "the move");
 			assert.equal(h.controller.state.editor.text, "second question");
 			assert.deepEqual(
-				h.controller.agent.messages.filter((m) => m.role !== "system").map((m) => m.role),
+				h
+					.agent()
+					.messages.filter((m) => m.role !== "system")
+					.map((m) => m.role),
 				["user", "assistant"],
 			);
 		} finally {
@@ -542,7 +545,7 @@ describe("P38c sessions and commands", () => {
 					(h.controller.state.picker?.items.some((item) => item.label.includes("new name")) ?? false),
 				"the renamed session in the picker",
 			);
-			const sessions = await h.controller.options.sessionRepo.list();
+			const sessions = (await h.repo?.list()) ?? [];
 			assert.ok(sessions.some((session) => session.name === "new name"));
 			// Delete it: confirm with y.
 			const index = h.controller.state.picker?.items.findIndex((item) => item.label.includes("new name")) ?? -1;
@@ -553,7 +556,7 @@ describe("P38c sessions and commands", () => {
 			// The picker opens again at once, so the "deleted" flash stays under it: read the files.
 			let left = -1;
 			for (let waited = 0; waited < 10_000; waited += 20) {
-				left = (await h.controller.options.sessionRepo.list()).length;
+				left = ((await h.repo?.list()) ?? []).length;
 				if (left === 1) break;
 				await new Promise((resolve) => setTimeout(resolve, 20));
 			}
@@ -568,11 +571,11 @@ describe("P38c sessions and commands", () => {
 		try {
 			await h.submit("hello");
 			await h.waitFor((f) => /Worked for \d/.test(f), "the answer");
-			const before = (await h.controller.sessionStore?.getMetadata())?.id;
+			const before = (await h.metadata())?.id;
 			await h.submit("/clear");
 			await h.waitFor((f) => f.includes("New session"), "the new session");
-			assert.notEqual((await h.controller.sessionStore?.getMetadata())?.id, before);
-			assert.equal(h.controller.agent.messages.filter((m) => m.role !== "system").length, 0);
+			assert.notEqual((await h.metadata())?.id, before);
+			assert.equal(h.agent().messages.filter((m) => m.role !== "system").length, 0);
 		} finally {
 			h.cleanup();
 		}
@@ -588,7 +591,7 @@ describe("P38c sessions and commands", () => {
 			await h.submit("go");
 			await h.waitFor((f) => f.includes("bash(slow)"), "the running tool");
 			await h.submit("/mode read-only");
-			await h.waitFor(() => h.controller.agent.getPermissionMode() === "read-only", "the mode switch, at once");
+			await h.waitFor(() => h.agent().getPermissionMode() === "read-only", "the mode switch, at once");
 			await h.submit("/settings");
 			await h.waitFor((f) => f.includes("after this turn: /settings"), "the waiting command");
 			assert.equal(h.controller.state.picker, undefined);
