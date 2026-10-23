@@ -23,7 +23,9 @@ inject a small adapter instead of polyfilling globals.
   tau speaks the Anthropic Messages, OpenAI Responses and Gemini APIs natively;
   `--fallback-model` switches models when a request keeps failing.
 - **Coding tools** — read (images too), write, edit, bash (and `powershell` on
-  Windows) with background commands, grep / find / ls in pure ES. The CLI adds
+  Windows) with background commands, grep / find / ls in pure ES; Codex's
+  `apply_patch` on request (`--tools +apply_patch`). Checkpoints before every
+  prompt's file edits, restored with `/rewind`; optional loop detection. The CLI adds
   `todo_write`, long-term memory ([docs/memory.md](docs/memory.md)),
   `session_search`, `web_fetch` / `web_search`, `ask_user`, `/loop` and
   scheduled prompts, `monitor`, and `push_notification`.
@@ -79,6 +81,8 @@ its boundaries.
 | `@yophon/tau-ext-provider-google` | Gemini API `ChatTransport`: thinking levels and budgets, thought signatures | **No** — pure `Platform` |
 | `@yophon/tau-ext-web` | `web_fetch` (HTML to markdown) and BYOK `web_search` (Brave, Tavily, Exa, SearXNG) | **No** — pure `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`: BM25 over deferred tools, loading the matches | No — pure ES |
+| `@yophon/tau-ext-loop-detection` | Stops a run that keeps repeating the same tool call (Gemini CLI's check) | No — pure ES |
+| `@yophon/tau-ext-checkpoint` | Files kept before each prompt changes them; the TUI's `/rewind` restores them | No — pure ES over `FileSystem` |
 | `@yophon/tau-ext-lsp` | Language servers (Claude Code's `.lsp.json`): diagnostics after edits and the `lsp` tool | Yes — child processes (Node entry) |
 | `@yophon/tau-ext-codemode` | `codemode`: the model writes JavaScript that calls tools, in pi's QuickJS sandbox | Yes — worker threads (Node entry) |
 | `@yophon/tau-ext-resources` | pi-compatible skills and prompt templates | No direct runtime API |

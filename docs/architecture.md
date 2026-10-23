@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-23（P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-23（P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -21,6 +21,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 ├─ 扩展层（纯函数扩展，静态或动态注册）──────────────────────┤
 │  ext-subagents · ext-resources · ext-mcp-http（纯 ES）· ext-mcp（stdio）│
 │  ext-tool-search · ext-codemode · ext-web · ext-lsp                    │
+│  ext-loop-detection · ext-checkpoint（纯 ES 的运行保护）               │
 │  ext-provider-anthropic · -openai-responses · -google（纯 Platform 的协议）│
 │  ext-feishu                                                            │
 ├─ 内核层（禁止碰运行时，门禁强制）──────────────────────────┤
@@ -31,7 +32,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 
 ## 关键不变量（违反即架构回退）
 
-1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）过同一门禁。
+1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-loop-detection、ext-checkpoint、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）过同一门禁。
 2. **内核零 npm 依赖**。JSON Schema 等一律用结构化类型，不引 typebox。
 3. **可擦除 TypeScript**（`erasableSyntaxOnly`）：无 enum/namespace/参数属性，Node 原生 type-stripping 直接跑源码，开发期零构建。
 4. **能力可选**：内核任何路径不得假设某能力存在；宿主不提供就少注册工具。
@@ -50,6 +51,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `abort.ts` | `AbortHandle`：纯 ES 的中止手柄（内核不假设 AbortController 存在），`follow()` 单向接宿主信号 |
 | `errors.ts` | `TauError`（带 code）、`HttpError`、`FileError`、`ShellError`、`SessionError` |
 | `uuid.ts` · `utf8.ts` · `base64.ts` · `sse.ts` | uuidv7（随机数经 `Platform.randomBytes`）；纯 ES 增量 UTF-8 解码器（给没有 TextDecoder 的 weapp iOS、Hermes、裸 QuickJS）；Base64 编解码；增量 SSE 解析（任意分块边界、CRLF、多行 data、`onId`/`onRetry`） |
+| `apply-patch.ts` | Codex 的 apply_patch（移植自 codex-rs/apply-patch，Apache-2.0，见 CREDITS.md）：`parsePatch`（宽松解析）、`seekSequence`（精确 → 忽略行尾空白 → 忽略两端 → 标点归一）、`applyChunks`（每行保留自己的换行）、`applyPatch(fs, patch)` 按顺序应用、失败时已改的留着并在 `PatchApplyError` 里列出、`patchTargets`（补丁涉及的路径，权限与压缩用） |
 | `json.ts` | 照抄 pi 的 `repairJson`/`parseJsonWithRepair`（裸控制字符、非法转义、`\u` 后不足 4 位十六进制）；`parseToolCallArguments` 解析完整工具参数，不是对象时给 `argumentsError` |
 | **消息与协议** | |
 | `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序；回放用的 `thinkingSignature`、`textSignature`、`ToolCall.thoughtSignature`）、Usage/StopReason、消息级 timestamp；联合为 system/user/assistant/toolResult/custom，加上投影出的 branchSummary/compactionSummary。`messageText`/`toolCallsOf`/`userContentText`；`ModelPricing`/`computeUsageCost`（宿主给单价才算，tau 不带定价数据） |
@@ -77,12 +79,12 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | **工具** | |
 | `tools.ts` | `Tool = ToolDefinition + execute(args, signal, onUpdate?, ctx?)`、`ToolResult`（content/details/structuredContent/isError/terminate/usage）；pi 的工具面：`ToolExposure` 五档（direct/model-only/codemode/deferred/hidden）、namespace、`outputSchema`、`reachesTools`、`defaultActive`、`prepareLoadout`、`promptSnippet`/`promptGuidelines`、`ToolInfo`；`applyToolModifiers`；`assertToolSchema`、`validateToolArgs`（JSON Schema 子集，宽松放行未知关键字） |
 | `capabilities.ts` | 能力接口：`FileSystem`（读写、追加、列目录、stat、删除、cwd）、`Shell`（exec，流式回调）、`BackgroundShell`（start/stop/list，可选的前台 `run` 与 `moveToBackground`）、`ImageProcessor`。全部可选 |
-| `coding-tools.ts` | 缺省工具 read/grep/find/ls/write/edit/bash（Windows 上另有 powershell）：`createCodingTools({ fs?, shell?, powershell? }, { mode? })`。edit 是 pi 1.x 的 `edits[]`（每段唯一匹配、不重叠、全成或全不写），结果带带行号的 diff；read 读图片、`allow_large` 按上下文余量放宽；bash 有 `BackgroundShell.run` 时可 Ctrl+B 或超时转后台；`mode: "read-only"` 只注册读类工具 |
+| `coding-tools.ts` | 缺省工具 read/grep/find/ls/write/edit/bash（Windows 上另有 powershell），另有缺省不激活的 apply_patch（`defaultActive: false`，`--tools +apply_patch` 打开；一次锁住补丁涉及的每个文件）：`createCodingTools({ fs?, shell?, powershell? }, { mode? })`。edit 是 pi 1.x 的 `edits[]`（每段唯一匹配、不重叠、全成或全不写），结果带带行号的 diff；read 读图片、`allow_large` 按上下文余量放宽；bash 有 `BackgroundShell.run` 时可 Ctrl+B 或超时转后台；`mode: "read-only"` 只注册读类工具 |
 | `edit-diff.ts` · `search-tools.ts` | 只对改到的行做 LCS 的编辑 diff；grep/find/ls（参数与输出照 pi，纯 ES 遍历 FileSystem，照 `.gitignore` 过滤，`globToRegExp`/`parseGitignore`） |
 | `context-files.ts` | 项目上下文文件（照抄 pi）：全局目录，再从根到 cwd 每层取 `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` 中第一个，渲染为 `<project_context>` |
 | **权限** | |
-| `policy.ts` | 权限档位（read-only/supervised/ci/accept-edits/autonomous/bypass）× 风险（low/medium/high）→ allow/ask/deny（ci 的矩阵同 accept-edits，要问的由工具批次直接拒绝，P53）；`createDefaultPolicy` 的静态规则（保护路径、危险命令、accept-edits 放行 cwd 内的编辑）与权限规则（deny/ask 在所有档位生效，`deniesTool` 让被整体拒绝的工具从请求里消失）。内核缺省 autonomous，CLI 缺省 supervised |
-| `permission-rules.ts` | 权限规则（照抄 Claude Code，D40）：`parsePermissionRule`、`matchPermissionRules`（deny → ask → allow；bash 拆复合与嵌套命令，allow 要每段命中；gitignore 式路径；`domain:`；MCP 名字）、`canonicalPath` |
+| `policy.ts` | 权限档位（read-only/supervised/ci/accept-edits/autonomous/bypass）× 风险（low/medium/high）→ allow/ask/deny（ci 的矩阵同 accept-edits，要问的由工具批次直接拒绝，P53）；`createDefaultPolicy` 的静态规则（保护路径、危险命令、accept-edits 放行 cwd 内的编辑）与权限规则（deny/ask 在所有档位生效，`deniesTool` 让被整体拒绝的工具从请求里消失）。内核缺省 autonomous，CLI 缺省 supervised；write/edit/apply_patch 的目标路径（apply_patch 的取自补丁，`patchTargets`）判保护路径与 accept-edits 的工作目录 |
+| `permission-rules.ts` | 权限规则（照抄 Claude Code，D40）：`parsePermissionRule`、`matchPermissionRules`（deny → ask → allow；bash 拆复合与嵌套命令，allow 要每段命中；gitignore 式路径；`domain:`；MCP 名字）、`canonicalPath`；`Edit(...)` 规则也管 apply_patch 补丁里的每个路径 |
 | `powershell-command.ts` | PowerShell 命令拆段、别名还原成 cmdlet、重定向记为写入；拆不清时 allow 规则不生效 |
 | **扩展** | |
 | `extensions.ts` | 扩展系统，**API 形状照抄 pi**（见下节）：`ExtensionRegistry`、`ExtensionAPI`、`ExtensionContext`、事件类型、`UiCapability` |
@@ -150,6 +152,8 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 - **`@yophon/tau-ext-provider-anthropic`**（纯 Platform，零依赖）：`createAnthropicTransport(config, platform)`，手写 Anthropic Messages 流式协议，消息与事件映射照抄 pi：thinking 原生流式（signature、redacted）、`none` 在支持的模型上发 disabled、tool_result 图片、`cache_control` 打点、cacheRead/cacheWrite 用量。
 - **`@yophon/tau-ext-provider-openai-responses`**（纯 Platform，零依赖）：`createOpenAIResponsesTransport(config, platform)`，手写 OpenAI Responses 流式协议（`POST {baseUrl}/responses`），映射照抄 pi 的 shared：指令作 developer（推理模型）或 system 输入、function tools、`reasoning.effort` 按思考级别、`store: false` 加 `reasoning.encrypted_content`，推理项与消息项 id（`textSignature`）同模型原样回放，tool call id 是 `call_id|item_id`，用量减去缓存命中，`incomplete`/`failed` 映射到 stopReason。没有模型目录：`reasoning`、`input` 由配置给。
 - **`@yophon/tau-ext-provider-google`**（纯 Platform，零依赖）：`createGoogleTransport(config, platform)`，手写 Gemini API 流式协议（`models/{model}:streamGenerateContent?alt=sse`，`x-goog-api-key`），映射照抄 pi 的 google-shared：`systemInstruction`、user/model 内容与 `functionCall`/`functionResponse` 部件（Gemini 3 起带 id，一轮的结果合进一个 user 轮，图片在 3 起嵌进结果）、`parametersJsonSchema`、思考摘要与 `thoughtSignature` 同模型回放、思考级别按模型族（3 用 `thinkingLevel`，2.5 用 pi 的预算表）、finishReason 与用量。
+- **`@yophon/tau-ext-loop-detection`**（纯 ES）：Gemini CLI 的检测——同一个调用连续 5 次、或 2–5 个调用的循环重复 5 遍——拦下并结束这次运行；同一次回复里的同参调用只算一次、连续 3 次时给一次隐藏提醒（yo-agent）；`/loop-detection on|off|status`。
+- **`@yophon/tau-ext-checkpoint`**（纯 ES，经 FileSystem）：Claude Code 的 checkpoint：每次运行开始（叶子是用户消息）建一个，write/edit/apply_patch 第一次碰某文件前存下原样；`CheckpointBackend` 接口（begin、recordBefore、list、restore），现有「文件备份」后端（每个会话一个目录，`<id>.json` 加 `<id>.<n>.txt`）。不记 bash 的改动。
 - **`@yophon/tau-ext-feishu`**（Node，基于官方 SDK）：飞书长连接与 REST 桥、入站消息解析、媒体、进度卡片、发送工具。需要在扩展目录写 wrapper 引入。
 
 ## 宿主包
@@ -183,7 +187,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `workspace.ts` | 按一个工作目录装配的一切：扩展与项目信任、设置、文件系统与 shell（bash、PowerShell、后台命令）、权限、钩子、审计、项目上下文、会话库、建 Agent；`cwd` 可变（`moveTo` 搬全部依赖，下次空闲时重载扩展）；`sessionEnvironment` 给模型的命令带 `TAU_SESSION_*` |
 | `project-trust.ts` | 项目信任：`~/.tau/trust.json` 记下审过内容的摘要，内容变了重新问；`GATED_PROJECT_RESOURCES`/`presentGatedResources` 列出要信任才加载的项目资源 |
 | `extension-loading.ts` | 加载扩展（全局 → 信任后的项目 → 设置里的 → `-e`）与加载报告、扩展 flag、系统提示的来源（`--system-prompt`/`--append-system-prompt`、`SYSTEM.md`/`APPEND_SYSTEM.md`）、缺省系统提示 |
-| `builtins.ts` | 用户扩展之前加载的内置扩展：tool_search、codemode（都 inactive）、提示工具行（每次 run 按 `getDeclaredTools()` 重写）、技能与模板（ext-resources，约定目录与 `--skill`/`--prompt-template`/`-ns`/`-np`）、设置里的资源与 `images.blockImages`、secret guard（排第一）、subagent 与子 agent 的 worktree 隔离（`setSubagentIsolation`）、todo、记忆、web_fetch/web_search |
+| `builtins.ts` | 用户扩展之前加载的内置扩展：tool_search、codemode（都 inactive）、提示工具行（每次 run 按 `getDeclaredTools()` 重写）、技能与模板（ext-resources，约定目录与 `--skill`/`--prompt-template`/`-ns`/`-np`）、设置里的资源与 `images.blockImages`、secret guard（排第一）、subagent 与子 agent 的 worktree 隔离（`setSubagentIsolation`）、todo、记忆、web_fetch/web_search、循环检测（设置 `loopDetection`）与 checkpoint（设置 `checkpoints`，`checkpointBackend` 给出 `~/.tau/checkpoints/<会话>` 的后端，启动时清掉 30 天没动的） |
 | `permissions.ts` · `permission-commands.ts` | `WorkspacePermissions`：读用户、项目（allow 要信任）、`.tau/settings.local.json` 的规则与 `--allowed-tools`/`--disallowed-tools`/`--add-dir`，按修改时间重读交给内核策略；「总是允许」的规则怎么写（`alwaysOption`）；`/permissions`、`/add-dir` |
 | `hooks.ts` | 用户钩子（Claude Code 格式，用户与信任项目的 `settings.json`）：`HookRunner`（command/exec/http，并行、超时、后台、`onFailure`）与 `createHooksExtension`（把二十多个钩子事件翻译到内核事件）、`withHookApprovals`。使用说明见 [hooks.md](hooks.md) |
 | `mcp-config.ts` · `mcp-elicit.ts` | 用户级与信任项目的 `mcp.json`（项目级不得引用凭据），`withOAuth`，协议协商；elicitation 的钩子与对话框 |
@@ -236,7 +240,7 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
   - `sessions.ts`：切换会话并重放（`replay.ts`）、恢复会话的模型、重载扩展、切模型与思考等级。
 - **输入**（`input/`）：`stdin.ts` 过滤 Ink 读的 stdin，`keys.ts` 照 pi 拆序列并解析按键（传统 VT、xterm 修饰、kitty、Windows Terminal 的 win32-input-mode），`mouse.ts`（SGR 鼠标与焦点），`editor.ts`（字素簇编辑器）、`kill-ring.ts`、`paste.ts`、`history.ts`（`~/.tau/history.jsonl`）、`completion.ts`（`/` 与 `@` 补全）、`width.ts`。`keymap.ts` 按层路由，`keybindings.ts` 是 pi 的动作名与缺省键，`~/.tau/keybindings.json` 可改。
 - **渲染**（`render/`）：`lines.ts`（块按宽度渲染成终端行并缓存）、`wrap.ts`（wrap-ansi 在 Ink 那一档的移植，逐字节相同）、`markdown.ts`、`highlight.ts`、`diff.ts`、`tool-views.ts`（按工具的视图，读取合并，流式参数用 `partial-json.ts`）、`approval.ts`、`blocks.ts`、`bottom.ts`（底部区）、`list.ts`、`search.ts`（Ctrl+F，移植 pi）、`aside.ts`（`/btw` 浮层）、`git-diff.ts`、`row-meta.ts`、`spans.ts`。
-- **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`、`format.ts`、`ink-env.ts`。
+- **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先）、`rewind.ts`（`/rewind`：选一条消息，按 checkpoint 恢复代码，或经 `runs.navigate` 回到那条消息之前，或两者）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`、`format.ts`、`ink-env.ts`。
 - **交互面**：`›` 用户、markdown 回复、`● 工具(参数)` 加 `⎿` 结果（缺省折叠）、审批面板、活动行、状态栏、提示行；对话框占输入框的位置。命令表见 `/help`，键位见 `/hotkeys`。
 - **宿主契约**：先挂宿主动作再发 `session_start`（启动与 `/reload`）；压缩、bash、导航期间扩展的 `submitPrompt` 抛 `busy`；run 结束时排队文本回填编辑器。
 - **测试**：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent；`npm run smoke:tui` 在 tmux 里跑全部场景，缺省全屏，`SMOKE_TUI_MODE=inline` 再跑一遍（CI 两遍都跑，本机在 WSL 里跑 `scripts/smoke-tui-wsl.sh`）。

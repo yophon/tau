@@ -44,7 +44,7 @@
 | `*`、`mcp__*` | 只用于 deny、ask：所有工具、所有 MCP 工具 |
 | `工具(参数:值)` | 只用于 deny、ask：顶层参数，如 `Bash(run_in_background:true)` |
 
-**路径**（`Edit` 管 edit 和 write，`Read` 管 read、grep、find、ls；Read 的 deny 也拦写）：
+**路径**（`Edit` 管 edit、write 和 apply_patch——补丁里的每个文件都要过，`Read` 管 read、grep、find、ls；Read 的 deny 也拦写）：
 
 | 写法 | 指哪里 |
 |---|---|

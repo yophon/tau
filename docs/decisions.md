@@ -239,6 +239,12 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D57：apply_patch 照 Codex，循环检测照 Gemini CLI，checkpoint 照 Claude Code、后端可换（2026-10-23，P55，用户确认）
+
+- **apply_patch**：格式、解析的宽松程度、定位、换行处理、部分失败留下已改的文件，全部照 Codex 的 crate，Codex 的 25 个端到端用例原样作一致性测试。Codex 现在只有 freeform 工具，tau 做成一个字符串参数（`input`）的函数工具，描述用 Codex 教格式的那段。缺省不激活：格式是 Codex 的，别的模型不一定写得对，由用户按模型打开。权限按补丁里的每个路径判，和 edit 一样。
+- **循环检测**：可选包、CLI 缺省关（用户在 yo-agent 里遇到过误熔断）。判定照 Gemini CLI，要求**连续**重复；加 yo-agent 的「同一次回复里的同参调用只算一次」和「停之前提醒一次」。不做 Gemini CLI 的文字反复检测与模型自查。
+- **checkpoint**：可选包、CLI 缺省开（Claude Code 缺省开），只记文件工具的编辑（bash 的改动不记，界面里说明）。存储经 `CheckpointBackend`，现在只有文件备份；yo-agent 的影子 git 是以后按设置切换的第二个后端（用户：「影子 git 可以纳入备选，以后也许可以按用户喜好切换这两个」）。`/rewind` 是 TUI 的内置命令，因为扩展拿不到会话树的移动（同 `/handoff`）；恢复对话用的就是 `/tree` 回到用户消息的那一步。恢复代码后，更晚的 checkpoint 删掉。
+
 ## D56：两个新协议照 pi 手写，降级由 agent 在重试之后做，shim 是 transport 包装（2026-10-23，P54，用户确认）
 
 - **OpenAI Responses 与 Gemini 各一个纯 Platform 的包**，同 D21 的 Anthropic 扩展：不引 SDK（纯度门禁），照 pi 的映射手写线格式。tau 没有模型目录，模型会不会推理、收不收图片由配置给（models.json 的 `reasoning`、`input`，`reasoning` 照 pi 缺省 false；临时端点按推理模型处理）；思考级别到各家控制的映射按模型族写死（Responses 的 `max` 发 `xhigh`；Gemini 3 用级别、2.5 用 pi 的预算表），pi 是按目录逐个映射的。两家都没有密钥实测，标「未实测」。

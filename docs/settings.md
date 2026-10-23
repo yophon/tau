@@ -33,6 +33,8 @@ tau 读两份设置文件，键名尽量照 pi：
 | `compaction.model` | 压缩、轮次前半段、分支摘要改用另一个模型（`供应商/模型`，models.json 里的；照 yo-agent 的 `YO_COMPACT_MODEL`，P53）；写错的启动时报一句、照旧用当前模型 | 当前模型 | 是 | 启动、重读 |
 | `fallbackModels` | 请求在回答之前失败、重试用完后，按顺序换到这些模型（`供应商/模型`，models.json 里的；照 Claude Code 的 `--fallback-model` 与 yo-agent，P54）；换的时候打一行 `Model fallback: …`；`--fallback-model` 优先 | 无 | 是 | 启动、重读 |
 | `fallback.enabled`、`fallback.on` | 降级的开关；哪些失败会换：`rate_limit`、`overloaded`、`network`、`auth`、`billing`（只写 `["overloaded"]` 就是 Claude Code 的做法，P54） | true、全部五种 | 是 | 启动、重读 |
+| `loopDetection` | 模型连续 5 次同样的工具调用（或短循环重复 5 遍）时拦下并结束这一轮，第 3 次先提醒（照 Gemini CLI 与 yo-agent，P55）；`/loop-detection on`、`off` 只改这次会话 | false | 是 | 启动、重读 |
+| `checkpoints` | 每次提问前记下 write、edit、apply_patch 要改的文件，`/rewind` 能退回（照 Claude Code，P55）；存在 `~/.tau/checkpoints/<会话>`，30 天没动的启动时删掉；bash 的改动不记 | true | 是 | 启动、重读 |
 | `continueOnMaxTokens` | 回复（不含工具调用）被输出上限截断时，自动再请求一次接着写，连续最多 3 次（照 yo-agent，P53；pi 与 Claude Code 是截断即止） | true | 是 | 启动、重读 |
 | `branchSummary.reserveTokens` | `/tree` 换分支做摘要时留的 token（P40c，pi） | 同 `compaction.reserveTokens` | 是 | 启动、重读 |
 | `branchSummary.skipPrompt` | `/tree` 换分支时不问要不要摘要，直接不摘要（P40c，pi） | false | 是 | 重读 |

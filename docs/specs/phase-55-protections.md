@@ -1,6 +1,6 @@
 # Phase 55：运行保护（apply_patch、循环检测、checkpoint） 规格书
 
-> 状态：已确认（2026-10-23）。用户：「都做，按你的建议来，不过影子git可以纳入备选，以后也许可以按用户喜好切换这两个」——三项都做，「需要确认」按建议；checkpoint 的存储做成可换的后端，影子 git 作为以后的备选（见 55c）。
+> 状态：已完成（2026-10-23），实施记录见文末。确认于 2026-10-23。用户：「都做，按你的建议来，不过影子git可以纳入备选，以后也许可以按用户喜好切换这两个」——三项都做，「需要确认」按建议；checkpoint 的存储做成可换的后端，影子 git 作为以后的备选（见 55c）。
 > 对应 roadmap 阶段：Phase 55（复刻 yo-agent 能力的第三批，总计划见 [P53](phase-53-yo-agent-parity.md)）
 > 已定（P53 时）：循环熔断、checkpoint 做成可选的插件包，不进内核的缺省行为。
 
@@ -45,7 +45,7 @@
 - 每条用户消息开始一个 checkpoint；这一轮里 `write`、`edit`、`apply_patch` 第一次碰某个文件之前，把它原来的内容（或「原来不存在」）存下来。bash、PowerShell、外部的改动不记（同 Claude Code，界面里写明）。
 - 存放：`~/.tau/checkpoints/<会话 id>/<用户消息的条目 id>/`（索引 + 文件内容），会话恢复后照样能用；超过 30 天的启动时清掉（Claude Code 的缺省）。
 - **后端可换**（用户要求）：记录与恢复经一个 `CheckpointBackend` 接口（开始一个 checkpoint、编辑前记下文件、列出、恢复到某个 checkpoint、清理），这一阶段只实现「文件备份」后端（照 Claude Code）。yo-agent 的影子 git（连 bash 的改动一起退）以后作为第二个后端加，按用户设置切换；登记进 Backlog E。
-- `/rewind`：列出这个会话的用户消息（最近在上），每条标出之后改过的文件数；选中后三选一：恢复代码与对话、只恢复代码、只恢复对话。恢复代码 = 把这条消息之后改过的文件逐个写回它们在这条消息之前的内容（原来不存在的删掉）；恢复对话 = `navigateTo` 到这条消息（同 `/tree` 选中用户消息：文字回到输入框）。双击 Esc 仍是 `/tree`（pi），不改。
+- `/rewind`（TUI 的内置命令；tau 的扩展拿不到会话树的移动，同 `/handoff`）：列出这个会话的用户消息（最近在上），每条标出之后改过的文件数；选中后三选一：恢复代码与对话、只恢复代码、只恢复对话。恢复代码 = 把这条消息之后改过的文件逐个写回它们在这条消息之前的内容（原来不存在的删掉）；恢复对话 = `navigateTo` 到这条消息（同 `/tree` 选中用户消息：文字回到输入框）。双击 Esc 仍是 `/tree`（pi），不改。
 - CLI：设置 `checkpoints`（`true`/`false`），缺省开还是关见「需要确认」4；子 agent 的编辑记在父会话当前的 checkpoint 里。网关不加载。
 
 ## 范围外
@@ -57,12 +57,12 @@
 
 ## 验收清单
 
-- [ ] 55a：Codex 的全部 scenarios 通过；单测覆盖三级定位、`@@ 上下文`、`End of File`、改名、CRLF、部分失败的结果文字；权限：accept-edits 下工作目录外的路径要问、`Edit(...)` 规则对补丁里的每个路径生效。
-- [ ] 55a：mock 端到端（真 CLI）：`--tools +apply_patch`，模型一次补丁增删改三个文件；TUI 显示每个文件的 diff。
-- [ ] 55b：单测：连续 5 次相同调用在第 5 次被拦并结束这一轮，第 3 次有提醒；同批同参只算一次；不同参数不计；按会话关掉后不再拦。mock 端到端一条。
-- [ ] 55c：单测：一轮里先 edit 后 write 同一文件只存一份原内容；新建的文件恢复时删掉；只恢复代码不动对话、只恢复对话不动文件；会话恢复后 `/rewind` 仍能用；30 天清理。smoke-tui 加一个 `/rewind` 场景。
-- [ ] 真 DeepSeek：apply_patch 改两个文件；checkpoint 改坏后 `/rewind` 恢复；循环检测用 mock（真模型难以稳定复现循环）。
-- [ ] check（新包进纯度门禁）、全量测试、pack smoke、smoke-tui 全屏与 inline；push 后 CI 通过；D57；文档。
+- [x] 55a：Codex 的全部 scenarios 通过；单测覆盖三级定位、`@@ 上下文`、`End of File`、改名、CRLF、部分失败的结果文字；权限：accept-edits 下工作目录外的路径要问、`Edit(...)` 规则对补丁里的每个路径生效。
+- [x] 55a：mock 端到端（真 CLI）：`--tools +apply_patch`，模型一次补丁增删改三个文件；TUI 显示每个文件的 diff。
+- [x] 55b：单测：连续 5 次相同调用在第 5 次被拦并结束这一轮，第 3 次有提醒；同批同参只算一次；不同参数不计；按会话关掉后不再拦。mock 端到端一条。
+- [x] 55c：单测：一轮里先 edit 后 write 同一文件只存一份原内容；新建的文件恢复时删掉；只恢复代码不动对话、只恢复对话不动文件；会话恢复后 `/rewind` 仍能用；30 天清理。smoke-tui 加一个 `/rewind` 场景。
+- [x] 真 DeepSeek：apply_patch 改两个文件；checkpoint 改坏后 `/rewind` 恢复；循环检测用 mock（真模型难以稳定复现循环）。
+- [x] check（新包进纯度门禁）、全量测试、pack smoke、smoke-tui 全屏与 inline；push 后 CI 通过；D57；文档。
 
 ## 风险与开放问题
 
@@ -79,3 +79,18 @@
 2. **apply_patch 部分失败**：(a) 照 Codex：已改的文件留着，结果写明哪些成功、哪个失败；(b) 先把所有文件算一遍，全能应用才写（全有或全无）。建议 (a)：照抄标准，模型看到失败会接着改；(b) 更稳但和 Codex 的用例不一致。
 3. **循环检测照谁**：(a) Gemini CLI：**连续** 5 次相同调用（含短循环）即停，误报少；(b) yo-agent loose：30 次窗口里出现 10 次即停，不要求连续，能抓到穿插着别的调用的反复，但你在 yo-agent 里遇到过误熔断。建议 (a)，加上 yo-agent 的「先提醒一次」与「同批只算一次」。缺省关。
 4. **checkpoint**：(a) 照 Claude Code：只记工具编辑，纯 ES、浏览器也能用，缺省开（Claude Code 缺省开）；(b) 照 yo-agent：影子 git 拍整个工作区，连 bash 的改动也能退，但只能在 Node、要加 isomorphic-git 依赖、大仓库每轮拍快照有开销。建议 (a)、缺省开；若你更在意 bash 改动，可以 (a) 之外以后再加 (b) 作为选项。
+
+## 实施记录（2026-10-23）
+
+- 提交：5348236 规格、1658773 55a、3a03213 55b、851a64a 55c、aa1cdfb 补测试，加文档提交。
+- **55a**：内核 `apply-patch.ts` 照 Codex 的 crate 逐个函数移植（宽松解析含 heredoc 包裹与最后一行的修剪匹配、四级定位、`@@` 上下文、`End of File`、每行保留自己的换行、纯新增的块追加到文件末尾）。Codex 现在只有受语法约束的 freeform 工具，没有 JSON 版可抄：工具描述用 Codex GPT-5.1 提示词里教格式的那段，参数是 `input`。和规格的出入：失败时的结果除了 Codex 的错误信息，还列出已经改了的文件（规格里写了「写明哪些成功」）。另外压缩的文件清单把补丁里的文件算作改过的，TUI 的补丁结果按文件显示带行号的 diff（文件那一行在 diff 上方）、审批里显示补丁原文、`/tree` 里显示第一个文件名。Claude Code 风格的钩子匹配名 `Edit` 不覆盖 `apply_patch`，要匹配就写工具名。Codex 的 25 个用例原样放在 `test-fixtures/codex-apply-patch`（SOURCE.md、LICENSE），在真目录上全过；新增根目录 CREDITS.md 记 Codex 与 pi 的移植。
+- **55b**：照规格实现。到阈值后这次运行余下的调用都拦下（结束一轮需要整批结果都要求结束）；codemode 脚本发起的嵌套调用不计。提醒是隐藏的自定义消息，以 steer 送达（当前这批工具之后）。
+- **55c**：和规格的出入——`/rewind` 做成 TUI 的内置命令（扩展拿不到会话树的移动），记录与存储在 `@yophon/tau-ext-checkpoint`，经 `CheckpointBackend` 接口；只有「文件备份」后端，影子 git 登记进 Backlog E。checkpoint 在每次运行开始、叶子是用户消息时建（运行中插话的消息不另建）。恢复代码之后，比它晚的 checkpoint 删掉（文件已不是那时的样子）。REPL 与 `-p` 没有 `/rewind`。会话目录 30 天没动就在启动时删掉，按目录的修改时间。
+- 测试：全量 1469 个，1464 通过、5 跳过；新增内核 12、host-node 26（Codex 的 25 个用例）、ext-loop-detection 4、ext-checkpoint 3、CLI 4、TUI 5，改写 3（列出全部工具的断言加上 `apply_patch`）。check（三个新包进纯度门禁）通过。
+- 冒烟：pack smoke（23 个包）、浏览器 bundle 与运行（Edge）、QuickJS、QuickJS legacy 通过；smoke-tui 新增 p55 场景（模型写坏文件、`/rewind` 恢复），全屏、inline 各一遍全过。
+- 真 DeepSeek（yo-agent 的 config.env，临时 HOME）：
+  - apply_patch：`--tools +apply_patch`，要求一次补丁改 config.ini 的端口、app.py 的字符串、新建 NOTES.md：模型先读两个文件，再一次 apply_patch 改完三个文件，结果 `A NOTES.md / M config.ini / M app.py`；checkpoint 记下两个原文件和「NOTES.md 原来不存在」。
+  - `/rewind`（WSL tmux 里的 TUI）：模型用 write 把文件改成 CHANGED_BY_MODEL，`/rewind` 选这条消息、恢复代码与对话：文件回到 ORIGINAL_STORY，提示词回到输入框。
+  - 循环检测只用 mock（真模型难以稳定复现循环）。
+  - 回归：`-p`、REPL、rpc、TUI 各一轮读文件只回第二行，都答对。
+- 新登记的技术债：#32 `tui/commands.ts` 1485 行，结构门禁上限 1500（`/rewind` 因此放在单独的文件里）。

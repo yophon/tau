@@ -4,6 +4,20 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P55: apply_patch, loop detection, checkpoints)
+- Kernel: `apply_patch`, Codex's patch format (ported from codex-rs/apply-patch, Apache-2.0; Codex's
+  scenarios pass), provided by `createCodingTools` but not active by default (`--tools +apply_patch`).
+  Permissions, Edit rules and accept-edits check every file the patch names. `parsePatch`,
+  `applyPatch`, `patchTargets` and friends are exported.
+- `@yophon/tau-ext-loop-detection`: Gemini CLI's check (the same call five times in a row, or a short
+  cycle repeated five times) stops the run, after one reminder. CLI setting `loopDetection` (default
+  false), `/loop-detection on|off|status`.
+- `@yophon/tau-ext-checkpoint`: files kept before write, edit or apply_patch first change them in a
+  prompt, behind a `CheckpointBackend` interface (file backups now). CLI setting `checkpoints`
+  (default true), `~/.tau/checkpoints/<session>` cleaned after 30 days; the TUI's `/rewind` restores
+  the code, the conversation, or both.
+- CREDITS.md lists the third-party code tau ports.
+
 ### Added (P54: protocols, fallback, prompt shim)
 - `@yophon/tau-ext-provider-openai-responses`: a pure-Platform OpenAI Responses transport
   (reasoning effort per thinking level, `store: false` with encrypted reasoning replayed on the

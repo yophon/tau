@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P55**）
+> 最后更新：2026-10-23（P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P56 规格书**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -68,16 +68,13 @@
 | [P52](specs/phase-52-retrospective.md) | 项目现状复盘（[复盘文档](retrospectives/2026-10-23.md)），含对照 yo-agent 的 TUI | 2026-10-23 | |
 | [P53](specs/phase-53-yo-agent-parity.md) | 复刻 yo-agent 能力：总计划 P53–P59 与第一批（`-r/--resume`、`/tasks` 看子 agent、`/cwd`、截断续写、摘要模型、`ci` 档） | 2026-10-23 | D55 |
 | [P54](specs/phase-54-providers.md) | 协议补齐：OpenAI Responses 与 Gemini 两个纯 Platform 的 transport 包（未实测真端点）、模型降级（重试后换，触发条件可设）、prompt shim | 2026-10-23 | D56 |
+| [P55](specs/phase-55-protections.md) | 运行保护：apply_patch（Codex 格式，缺省不开）、循环检测包（照 Gemini CLI，缺省关）、checkpoint 包与 TUI 的 `/rewind`（照 Claude Code，缺省开） | 2026-10-23 | D57 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
 
-## Phase 55 🚧 运行保护：apply_patch、循环检测、checkpoint
-
-规格书（2026-10-23 确认；用户：「都做，按你的建议来，不过影子git可以纳入备选，以后也许可以按用户喜好切换这两个」）：[specs/phase-55-protections.md](specs/phase-55-protections.md)。
-
 ## 复刻 yo-agent 的后续阶段（P56–P59）⬜
 
-总计划见 [P53 规格书](specs/phase-53-yo-agent-parity.md)：P56 作为 MCP server 被调用、MCP sampling → P57 远程（WebSocket RPC、设备配对、断线续接）与 SQLite 会话库 → P58 浏览器（`createWebAgent`、`defineHttpTool`、IndexedDB、挂件、Web 控制台）→ P59 不可信插件宿主。每个阶段先写规格书，由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
+总计划见 [P53 规格书](specs/phase-53-yo-agent-parity.md)：**下一个是 P56**，先写规格书由用户判定。P56 作为 MCP server 被调用、MCP sampling → P57 远程（WebSocket RPC、设备配对、断线续接）与 SQLite 会话库 → P58 浏览器（`createWebAgent`、`defineHttpTool`、IndexedDB、挂件、Web 控制台）→ P59 不可信插件宿主。每个阶段先写规格书，由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
 
 ## 产品层后续 ⬜ 待定
 
@@ -124,11 +121,13 @@
   - 计划模式：只研究不动手，ExitPlanMode 交计划、批准后切权限模式开始改。P35 时用户裁决不做（一份 md 文档就能代替），保持。
   - Workflow：模型写 JS 脚本在后台编排大量子 agent（`agent()`、`parallel()`、`pipeline()`），可续跑；成本高。若做，可建在 ext-codemode 上，`agent()` 接 `runSubagent`。
   - Agent teams（实验功能）：组长加若干独立实例的队友，信箱互发消息，共用 Task 任务表（依赖、文件锁领任务）。依赖 Task 四件套与 SendMessage（P46）。
+- **checkpoint 的影子 git 后端**（yo-agent 的 ShadowGitCheckpointer，P55 用户：「影子 git 可以纳入备选，以后也许可以按用户喜好切换这两个」）：独立 gitdir 给整个工作区拍快照，连 bash 的改动也能退；作为 `CheckpointBackend` 的第二个实现，按设置切换。只能在 Node、要加 isomorphic-git 依赖、大仓库每轮拍快照有开销。
+- **apply_patch 的 freeform 工具**：Codex 给 GPT-5 系用的、受 lark 语法约束的 Responses 自定义工具；tau 的 Responses 扩展现在只发函数工具（P55 范围外）。
 - **远程执行**：工具跑在另一台机器上，会话与凭据留在本地（pi 的 ssh 示例与 pi-env）；与 D 组的 bash 沙箱、网关放在哪台机器一起考虑。
 - **扩展安装命令**：`tau install <包>` 生成 `.tau/extensions` 里的导入文件；有外部扩展之后再做。
 - **TUI 余项**（P33、P34 范围外）：按终端类型自动退回 inline、复制开关（滚动条、Ctrl+Z 挂起并入 P38）。
 - ~~P38 范围外的新功能~~：keybindings.json、Ctrl+B、`/btw`、`/diff`、会话树分支已进 P39。
-- 不做：预设、提示里内联命令（用户：没什么应用场景）；计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；`/review`、`/commit`；自动检查点（用户：「git 一般够了」）；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
+- 不做：预设、提示里内联命令（用户：没什么应用场景）；计划模式（用户：一份 md 文档就能代替，本项目至今没用过）；`/review`、`/commit`；内置浏览器自动化（接 Playwright MCP 即可，写进文档）；游戏、彩虹编辑器之类的演示扩展；主题（已否决）。
 
 ### F. 复盘列出的后续阶段候选（P52，2026-10-23）
 
@@ -153,5 +152,6 @@
 | 29 | rpc 启动时问项目信任（工作目录或上级有 `.agents/skills` 之类的项目资源），客户端还没回答就发 prompt，这次运行立刻以 aborted 结束（P54 验收发现，P54 之前同样复现） | 先发 prompt 再处理对话框的 rpc 客户端第一句话丢掉 | 查清 abort 从哪来；信任问题未答时 prompt 应排队等它 |
 | 30 | REPL 从管道一次读到「提示词 + exit」时，提示词还没跑完就退出（P54 验收发现，原有） | 脚本把多行一次灌给 `tau --repl` 时只有前面的话可能被执行 | 非 TTY 时逐行排队、上一句跑完再读下一句（pi 的 print 模式只收一句，可参照 Claude Code 的 stdin 处理） |
 | 31 | `kernel/agent.ts` 2497 行，结构门禁上限 2500（P54） | 下一个改主循环的阶段一定撞线 | 那个阶段先按 D54 拆（候选：压缩操作、重试与降级的收尾），不调高上限 |
+| 32 | `cli/src/tui/commands.ts` 1485 行，结构门禁上限 1500（P55） | 再加几个内置命令就撞线 | 下一个加命令的阶段先把一组命令（例如会话类）移到单独的文件，不调高上限 |
 
 （#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
