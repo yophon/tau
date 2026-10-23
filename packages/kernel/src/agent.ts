@@ -35,6 +35,7 @@ import {
 	type UIPromptKind,
 	type UiCapability,
 } from "./extensions.ts";
+import { createFallbackTransport, type FallbackOptions } from "./fallback.ts";
 import {
 	type AgentMessage,
 	type AssistantMessage,
@@ -187,6 +188,8 @@ export interface AgentOptions {
 	 * no tool calls) is continued with a request to go on. 0 (the default, pi) ends the run there.
 	 */
 	continueAfterLength?: number;
+	/** P54c (yo-agent, Claude Code's --fallback-model): routes a run's requests fall back to (fallback.ts). */
+	fallback?: FallbackOptions;
 	/** Auto-retry policy for failed LLM requests (pi defaults: enabled, 3 attempts, 2s base). Requires Platform.sleep. */
 	retry?: Partial<RetrySettings>;
 	/**
@@ -355,6 +358,7 @@ export class Agent {
 	private readonly branchSummaryReserveTokens: number | undefined;
 	private readonly summaryModel: SummaryModel | undefined;
 	private readonly continueAfterLength: number;
+	private readonly fallback: FallbackOptions | undefined;
 	private readonly retrySettings: RetrySettings;
 	private readonly pricing: AgentOptions["pricing"];
 	/** Model of this agent's requests (Agent.setModel; starts as config.model). */
@@ -445,6 +449,7 @@ export class Agent {
 		this.branchSummaryReserveTokens = options.branchSummary?.reserveTokens;
 		this.summaryModel = options.summaryModel;
 		this.continueAfterLength = Math.max(0, options.continueAfterLength ?? 0);
+		this.fallback = options.fallback && options.fallback.routes.length > 0 ? options.fallback : undefined;
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		this.pricing = options.pricing;
 		this.currentModel = options.config.model;
@@ -1810,6 +1815,14 @@ export class Agent {
 		let lengthStreak = 0;
 		/** P53c: replies cut off by the output cap continued in a row. */
 		let continuedReplies = 0;
+		// P54c: one fallback transport per run, over the model the run starts with; the route that
+		// starts answering keeps the run.
+		const transport = this.fallback
+			? createFallbackTransport(
+					{ transport: this.transport, model: this.currentModel, label: `${this.provider}/${this.currentModel}` },
+					this.fallback,
+				)
+			: this.transport;
 		let explicitContinue = false;
 		// Check for steering at start: the user may have typed while the run was starting (pi).
 		let pending: (UserMessage | CustomMessage)[] = this.steeringQueue.drain();
@@ -1912,7 +1925,7 @@ export class Agent {
 				// Awaited here, outside the stream: a failing headers handler is a bug, not a stream error.
 				const headers = await this.providerHeaders(ctx);
 				const hooks = this.providerEventHooks(ctx, this.currentModel);
-				const stream = this.transport({
+				const stream = transport({
 					messages: request,
 					signal,
 					model: this.currentModel,

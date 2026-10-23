@@ -13,7 +13,7 @@ import {
 	NodeImageProcessor,
 	NodeShell,
 } from "@yophon/tau-host-node";
-import type { SummaryModel, ToolExecutionMode } from "@yophon/tau-kernel";
+import type { FallbackOptions, FallbackRoute, SummaryModel, ToolExecutionMode } from "@yophon/tau-kernel";
 import {
 	Agent,
 	type AgentMessage,
@@ -67,7 +67,7 @@ import { createPushNotificationExtension } from "./push-notification.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { agentOptionsFromSettings, loadSettings, readSettings, type TauSettings, withoutP40Keys } from "./settings.ts";
 import { createStatusLineExtension } from "./statusline.ts";
-import { dim, userHome } from "./util.ts";
+import { dim, firstLine, userHome } from "./util.ts";
 import { followMainTrust, openWorktree, removeWorktree, type WorktreeSession, worktreeState } from "./worktree.ts";
 import { type CurrentWorktree, createWorktreeToolsExtension, type WorktreeHost } from "./worktree-tools.ts";
 
@@ -98,8 +98,8 @@ export interface WorkspaceContext {
 	modelTakesImages: () => boolean;
 	auditHost: AuditHost;
 	defaultTrigger: AuditTrigger;
-	/** P53c: settings' compaction.model (provider/id of a models.json model) as the summary model. */
-	resolveSummaryModel?: (ref: string) => SummaryModel | { error: string };
+	/** A models.json model (provider/id) as a transport and model, as /model resolves it without switching: compaction.model (P53c), fallback models (P54c). */
+	resolveModel?: (ref: string) => (SummaryModel & { label: string }) | { error: string };
 }
 
 /** One workspace's directory, UI and host-specific choices. */
@@ -637,6 +637,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 			// P53c (yo-agent): continue a cut-off reply; summaries on another model. The gateway is parked.
 			...(extended ? { continueAfterLength: workspaceSettings.continueOnMaxTokens === false ? 0 : 3 } : {}),
 			...(extended ? summaryModelOption(context, workspaceSettings.compaction?.model) : {}),
+			...(extended ? fallbackOption(context, workspaceSettings) : {}),
 			pricing,
 			thinkingLevel: run.thinkingLevel,
 			permissionMode: mode,
@@ -800,8 +801,8 @@ export function modelEnvironment(): Record<string, string> {
 /** compaction.model resolved to a summary model; a model that cannot be resolved is reported once and skipped. */
 const reportedSummaryModels = new Set<string>();
 function summaryModelOption(context: WorkspaceContext, ref: string | undefined): { summaryModel?: SummaryModel } {
-	if (ref === undefined || !context.resolveSummaryModel) return {};
-	const resolved = context.resolveSummaryModel(ref);
+	if (ref === undefined || !context.resolveModel) return {};
+	const resolved = context.resolveModel(ref);
 	if ("error" in resolved) {
 		if (!reportedSummaryModels.has(ref)) {
 			reportedSummaryModels.add(ref);
@@ -809,5 +810,36 @@ function summaryModelOption(context: WorkspaceContext, ref: string | undefined):
 		}
 		return {};
 	}
-	return { summaryModel: resolved };
+	const { label: _label, ...summaryModel } = resolved;
+	return { summaryModel };
+}
+
+/** --fallback-model (wins) or settings' fallbackModels, with fallback.on and fallback.enabled (P54c). */
+const reportedFallbackModels = new Set<string>();
+function fallbackOption(context: WorkspaceContext, settings: TauSettings): { fallback?: FallbackOptions } {
+	if (settings.fallback?.enabled === false || !context.resolveModel) return {};
+	const refs = context.options.fallbackModels ?? settings.fallbackModels ?? [];
+	const routes: FallbackRoute[] = [];
+	for (const ref of refs) {
+		const resolved = context.resolveModel(ref);
+		if ("error" in resolved) {
+			if (!reportedFallbackModels.has(ref)) {
+				reportedFallbackModels.add(ref);
+				console.error(dim(`fallback model "${ref}": ${resolved.error}; skipped.`));
+			}
+			continue;
+		}
+		routes.push({ transport: resolved.transport, model: resolved.model, label: resolved.label });
+	}
+	if (routes.length === 0) return {};
+	return {
+		fallback: {
+			routes,
+			...(settings.fallback?.on ? { on: settings.fallback.on } : {}),
+			onSwitch: (event) =>
+				console.error(
+					dim(`Model fallback: ${event.from} → ${event.to} (${event.reason}): ${firstLine(event.message)}`),
+				),
+		},
+	};
 }

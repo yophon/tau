@@ -4,7 +4,13 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
-import type { AgentOptions, RetrySettings, ThinkingLevel } from "@yophon/tau-kernel";
+import {
+	type AgentOptions,
+	FALLBACK_REASONS,
+	type FallbackReason,
+	type RetrySettings,
+	type ThinkingLevel,
+} from "@yophon/tau-kernel";
 
 export interface WebSearchSettings {
 	provider: "brave" | "tavily" | "exa" | "searxng";
@@ -55,6 +61,10 @@ export interface TauSettings {
 	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number; model?: string };
 	/** P53c (yo-agent): continue a reply the output cap cut off (default true, up to 3 times in a row). */
 	continueOnMaxTokens?: boolean;
+	/** P54c (yo-agent, Claude Code's --fallback-model): models.json models to fall back to, in order. */
+	fallbackModels?: string[];
+	/** P54c: when falling back happens (the user's ask: configurable). Default: enabled, on every reason. */
+	fallback?: { enabled?: boolean; on?: FallbackReason[] };
 	/** P40c (pi): branch summaries when /tree leaves a branch. */
 	branchSummary?: { reserveTokens?: number; skipPrompt?: boolean };
 	/** P40c (pi): automatic retries (TAU_MAX_RETRIES / TAU_RETRY_BASE_DELAY_MS still win). */
@@ -164,6 +174,22 @@ function readP40Keys(raw: Record<string, unknown>, settings: TauSettings, base: 
 	}
 	if (typeof raw.enableSkillCommands === "boolean") settings.enableSkillCommands = raw.enableSkillCommands;
 	if (typeof raw.continueOnMaxTokens === "boolean") settings.continueOnMaxTokens = raw.continueOnMaxTokens;
+	if (Array.isArray(raw.fallbackModels)) {
+		const models = raw.fallbackModels.filter(
+			(value): value is string => typeof value === "string" && value.trim() !== "",
+		);
+		if (models.length > 0) settings.fallbackModels = models.map((value) => value.trim());
+	}
+	if (isObject(raw.fallback)) {
+		const fallback: NonNullable<TauSettings["fallback"]> = {};
+		if (typeof raw.fallback.enabled === "boolean") fallback.enabled = raw.fallback.enabled;
+		if (Array.isArray(raw.fallback.on)) {
+			fallback.on = raw.fallback.on.filter((value): value is FallbackReason =>
+				(FALLBACK_REASONS as readonly unknown[]).includes(value),
+			);
+		}
+		if (Object.keys(fallback).length > 0) settings.fallback = fallback;
+	}
 	if (isObject(raw.images)) {
 		const { autoResize, blockImages } = raw.images;
 		const images: NonNullable<TauSettings["images"]> = {};
@@ -275,6 +301,8 @@ const P40_KEYS = [
 	"enableSkillCommands",
 	"images",
 	"continueOnMaxTokens",
+	"fallbackModels",
+	"fallback",
 ] as const;
 
 /** The settings without the keys P40 added (the gateway, parked, stays as it was). */

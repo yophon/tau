@@ -85,6 +85,9 @@ Options:
       --session <session>  Resume a session: a file path, or the id or name of one
                          of this directory's sessions (as /resume <session>)
       --session-dir <dir>  Keep sessions in this directory (settings.json sessionDir)
+      --fallback-model <model>  A models.json model to fall back to when a request fails before
+                         answering (rate limit, overload, network, key, credit); repeat for
+                         more. settings: fallbackModels, fallback.on, fallback.enabled
       --no-session       Do not persist this conversation
   -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
   -e,  --extension <path>  Load an extension file or directory for this run (repeatable)
@@ -146,6 +149,8 @@ export interface CliOptions {
 	resume?: boolean;
 	/** P40c (pi): --session-dir, where sessions are kept. */
 	sessionDir?: string;
+	/** P54c (Claude Code's --fallback-model, repeatable): models to fall back to. */
+	fallbackModels?: string[];
 	noSession: boolean;
 	noContextFiles?: boolean;
 	/** P41b (pi -e/--extension): extension files or directories for this run, resolved against the cwd. */
@@ -356,6 +361,9 @@ export function parseArgs(argv: string[]): CliOptions {
 			}
 			case "--session":
 				options.sessionPath = next();
+				break;
+			case "--fallback-model":
+				options.fallbackModels = [...(options.fallbackModels ?? []), next()];
 				break;
 			case "--session-dir":
 				options.sessionDir = next();

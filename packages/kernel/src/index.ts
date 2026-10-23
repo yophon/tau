@@ -218,6 +218,15 @@ export {
 	type UserBashEventResult,
 	type WidgetPlacement,
 } from "./extensions.ts";
+export {
+	createFallbackTransport,
+	FALLBACK_REASONS,
+	type FallbackOptions,
+	type FallbackReason,
+	type FallbackRoute,
+	type FallbackSwitch,
+	fallbackReasonOf,
+} from "./fallback.ts";
 export { parseJsonWithRepair, parseToolCallArguments, repairJson } from "./json.ts";
 export type { UserContent } from "./messages.ts";
 export {
