@@ -1,19 +1,8 @@
 #!/usr/bin/env node
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 
-/**
- * User-level tau directory root. Honors `HOME` when set (tests and sandboxes
- * override it); on Windows `os.homedir()` reads USERPROFILE and ignores HOME,
- * which made e2e runs load the real ~/.tau/extensions.
- */
-function userHome(): string {
-	const home = process.env.HOME?.trim();
-	return home ? home : homedir();
-}
+import { existsSync, realpathSync, statSync } from "node:fs";
 
-import { basename, dirname, join, relative, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
 	ANTHROPIC_DEFAULT_BASE_URL,
@@ -24,11 +13,7 @@ import {
 } from "@yophon/tau-ext-provider-anthropic";
 import { SUBAGENT_STOP_CHANNEL, type SubagentStopRequest } from "@yophon/tau-ext-subagents";
 import {
-	digestDirectory,
 	findPowerShell,
-	importExtensionFiles,
-	listExtensionFiles,
-	loadExtensionsFromDir,
 	NodeBackgroundShell,
 	NodeFileSystem,
 	NodeImageProcessor,
@@ -45,9 +30,8 @@ import {
 	createOpenAICompatTransport,
 	defaultPlatform,
 	type Extension,
-	ExtensionRegistry,
+	type ExtensionRegistry,
 	type FileSystem,
-	type InlineExtension,
 	JsonlSessionRepo,
 	loadProjectContextFiles,
 	type ModelPricing,
@@ -96,20 +80,19 @@ import {
 	createAuditExtension,
 } from "./audit.ts";
 import { createBackgroundExtension, MONITOR_MAX_MS, MONITOR_PRINT_MAX_MS } from "./background.ts";
-import {
-	attachPromptAgent,
-	builtinExtensions,
-	configureBuiltins,
-	setResourceFlags,
-	setSubagentIsolation,
-	toolLine,
-} from "./builtins.ts";
+import { attachPromptAgent, setResourceFlags, setSubagentIsolation } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import { dirtyRepoQuestion, uncommittedFiles } from "./dirty-repo.ts";
+import {
+	defaultSystemPrompt,
+	extensionFlags,
+	loadExtensionRegistry,
+	resolveExtensionFlags,
+	systemPromptSources,
+} from "./extension-loading.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
 import { shadowedContextFile } from "./git-paths.ts";
-import { createHooksExtension, HookRunner, loadHookConfig, postToolBatch, withHookApprovals } from "./hooks.ts";
-import type { LspHost } from "./lsp.ts";
+import { HookRunner, postToolBatch, withHookApprovals } from "./hooks.ts";
 import type { MemoryScope } from "./memory.ts";
 import {
 	availableModels,
@@ -132,12 +115,12 @@ import { RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
 import { createPermissionsExtension } from "./permission-commands.ts";
 import {
 	type HostApprovalRequest,
-	localSettingsIsRepoFile,
 	migrateLegacyPermissions,
 	openAlwaysOptions,
 	powershellAllowedBy,
 	WorkspacePermissions,
 } from "./permissions.ts";
+import { readTrustStore, saveProjectTrust } from "./project-trust.ts";
 import { createPushNotificationExtension, markActivity } from "./push-notification.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
 import { autoTitle, autoTitleOn } from "./session-title.ts";
@@ -154,6 +137,7 @@ import {
 } from "./settings.ts";
 import { createStatusLineExtension, StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/controller.ts";
+import { CLI_VERSION, cyan, dim, firstLine, red, userHome } from "./util.ts";
 import {
 	finishWorktreeSession,
 	openWorktree,
@@ -162,11 +146,6 @@ import {
 	worktreeState,
 } from "./worktree.ts";
 import { type CurrentWorktree, createWorktreeToolsExtension, type WorktreeHost } from "./worktree-tools.ts";
-
-/** The CLI package version (src/ and dist/ both sit one level below package.json). */
-const CLI_VERSION = (
-	JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string }
-).version;
 
 /**
  * The active tool names for --tools/--no-tools (pi 0.84.2 semantics): plain names
@@ -237,51 +216,6 @@ function uniqueStrings(values: string[]): string[] {
 	return [...new Set(values)];
 }
 
-/** Extension flag values, and the other words: messages to send (pi `pi [options] [messages...]`, P36c). */
-function resolveExtensionFlags(
-	registry: ExtensionRegistry,
-	extras: string[],
-): { values: Record<string, boolean | string>; messages: string[] } {
-	const values: Record<string, boolean | string> = {};
-	const messages: string[] = [];
-	for (let i = 0; i < extras.length; i++) {
-		const token = extras[i];
-		if (!token.startsWith("--")) {
-			messages.push(token);
-			continue;
-		}
-		const equals = token.indexOf("=", 2);
-		const name = token.slice(2, equals === -1 ? undefined : equals);
-		const flag = registry.flags.get(name);
-		if (!flag) {
-			console.error(`Unknown option: ${token}`);
-			process.exit(1);
-		}
-		if (flag.type === "boolean") {
-			if (equals !== -1) {
-				const inline = token.slice(equals + 1).toLowerCase();
-				if (inline !== "" && inline !== "true") {
-					console.error(`Boolean option ${token} does not accept a value other than true`);
-					process.exit(1);
-				}
-			}
-			values[name] = true;
-		} else {
-			const value = equals === -1 ? extras[++i] : token.slice(equals + 1);
-			if (value === undefined || value.startsWith("--")) {
-				console.error(`Missing value for ${token}`);
-				process.exit(1);
-			}
-			values[name] = value;
-		}
-	}
-	return { values, messages };
-}
-
-const dim = (text: string): string => `\x1b[2m${text}\x1b[0m`;
-const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
-const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
-
 type Readline = ReturnType<typeof createInterface>;
 
 /**
@@ -338,372 +272,6 @@ function createUi(readline: Readline): UiCapability {
 			console.log(paint(message));
 		},
 	};
-}
-
-// ---------------------------------------------------------------------------
-// Project trust gate: project extensions are arbitrary code, so loading them
-// from an untrusted directory would be remote code execution by `cd`. Since
-// P15 a trusted record also pins a content digest of the extensions directory;
-// changed content re-triggers the question (a trust decision covers what was
-// reviewed, not whatever lands there later).
-// ---------------------------------------------------------------------------
-
-/** Legacy entries were plain booleans (no digest); they are upgraded on first load. */
-type TrustEntry = boolean | { trusted: boolean; digest?: string };
-
-interface TrustStore {
-	trusted: Record<string, TrustEntry>;
-}
-
-function trustStorePath(): string {
-	return join(userHome(), ".tau", "trust.json");
-}
-
-function readTrustStore(): TrustStore {
-	try {
-		// Strip a BOM: an unreadable store reads as empty, and the next write would erase every other record.
-		const parsed = JSON.parse(readFileSync(trustStorePath(), "utf8").replace(/^\uFEFF/, "")) as TrustStore;
-		return { trusted: parsed.trusted ?? {} };
-	} catch {
-		return { trusted: {} };
-	}
-}
-
-function writeTrustStore(store: TrustStore): void {
-	const path = trustStorePath();
-	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(store, null, "\t")}\n`, "utf8");
-}
-
-/**
- * Project-local resources that load only from a trusted directory (P23c, pi): code,
- * settings that pick endpoints or credentials, and skills/prompts that reach the
- * system prompt.
- */
-const GATED_PROJECT_RESOURCES = [
-	".tau/extensions",
-	".tau/settings.json",
-	// P37a: the project's MCP servers were read only when trusted but never asked about.
-	".tau/mcp.json",
-	// P45: language servers are programs the project would start.
-	".tau/lsp.json",
-	".tau/skills",
-	".tau/prompts",
-	".pi/settings.json",
-	".pi/skills",
-	".pi/prompts",
-	// P41 (pi): the Agent Skills directory and the system prompt files.
-	".agents/skills",
-	".tau/SYSTEM.md",
-	".tau/APPEND_SYSTEM.md",
-] as const;
-
-function presentGatedResources(cwd: string): string[] {
-	const present: string[] = GATED_PROJECT_RESOURCES.filter((relative) => existsSync(join(cwd, relative)));
-	// P41a (pi hasTrustRequiringProjectResources): .agents/skills in a parent directory counts too,
-	// except the user's own ~/.agents/skills ($HOME's, and the system's home when HOME points elsewhere).
-	const userAgentsSkills = new Set([resolve(userHome(), ".agents", "skills"), resolve(homedir(), ".agents", "skills")]);
-	for (let dir = resolve(cwd); dirname(dir) !== dir; ) {
-		dir = dirname(dir);
-		const skills = join(dir, ".agents", "skills");
-		if (!userAgentsSkills.has(resolve(skills)) && existsSync(skills)) {
-			present.push(relative(cwd, skills).replaceAll("\\", "/"));
-		}
-	}
-	// The local permissions file counts when the repository supplies it (git tracks it, P37a).
-	if (localSettingsIsRepoFile(cwd)) present.push(".tau/settings.local.json");
-	return present;
-}
-
-/**
- * Content digest of the gated resources (D20-5: a change asks again). A project
- * with only .tau/extensions keeps the pre-P23 digest of that directory, so
- * existing trust records stay valid.
- */
-async function digestProjectResources(cwd: string, present: readonly string[]): Promise<string | undefined> {
-	if (present.length === 1 && present[0] === ".tau/extensions") return digestDirectory(join(cwd, ".tau/extensions"));
-	const hash = createHash("sha256");
-	for (const relative of present) {
-		const path = join(cwd, relative);
-		const digest = statSync(path).isDirectory()
-			? await digestDirectory(path)
-			: createHash("sha256").update(readFileSync(path)).digest("hex");
-		hash.update(`${relative}\0${digest ?? ""}\n`);
-	}
-	return hash.digest("hex");
-}
-
-async function isProjectTrusted(
-	registry: ExtensionRegistry,
-	cwd: string,
-	ui: UiCapability | undefined,
-	present: readonly string[],
-): Promise<boolean> {
-	const store = readTrustStore();
-	const digest = await digestProjectResources(cwd, present);
-	const recorded = store.trusted[cwd];
-	if (recorded !== undefined) {
-		const entry = typeof recorded === "boolean" ? { trusted: recorded } : recorded;
-		// A denial needs no integrity check — nothing was loaded, nothing changes that.
-		if (!entry.trusted) return false;
-		if (entry.digest === undefined) {
-			// Pre-P15 record: backfill the digest without re-asking, once.
-			store.trusted[cwd] = { trusted: true, digest };
-			writeTrustStore(store);
-			console.log(dim("Recorded a content digest for this project's extensions (older trust entry had none)."));
-			return true;
-		}
-		if (entry.digest === digest) return true;
-		console.log(dim("Project resources changed since they were last trusted — confirming again."));
-	}
-
-	// Global (always-trusted) extensions may decide via the project_trust event.
-	const decision = await registry.runProjectTrust(cwd, { ui, messages: [] });
-	if (decision.trusted !== "undecided") {
-		const trusted = decision.trusted === "yes";
-		if (decision.remember) {
-			store.trusted[cwd] = { trusted, digest };
-			writeTrustStore(store);
-		}
-		return trusted;
-	}
-
-	if (!ui) return false; // headless + no valid record = reject
-	const approved = await ui.confirm(
-		"Trust this directory and load its project resources?",
-		`${cwd}\n${present.join(", ")}`,
-	);
-	store.trusted[cwd] = { trusted: approved, digest };
-	writeTrustStore(store);
-	return approved;
-}
-
-/** Record a trust decision for the project's current resources (the TUI's /trust); applies from the next start or /reload. */
-async function saveProjectTrust(cwd: string, trusted: boolean): Promise<string[]> {
-	const projectFiles = await listExtensionFiles(join(cwd, ".tau", "extensions"));
-	const present = presentGatedResources(cwd).filter(
-		(relative) => relative !== ".tau/extensions" || projectFiles.length > 0,
-	);
-	const store = readTrustStore();
-	store.trusted[cwd] = { trusted, digest: await digestProjectResources(cwd, present) };
-	writeTrustStore(store);
-	return present;
-}
-
-/** The registry plus the trust decision for the project's gated resources (backs ctx.isProjectTrusted). */
-interface LoadedExtensions {
-	registry: ExtensionRegistry;
-	projectTrusted: boolean;
-	/** P46: the language servers of this load, which follow the session when it moves. */
-	lsp?: LspHost;
-}
-
-/** P41b (pi -e, -ne): extensions named on the command line, and whether the discovered and configured ones stay out. */
-const extensionFlags: { paths: string[]; none: boolean } = { paths: [], none: false };
-
-/** pi resolvePromptInput: the text of an existing file, else the value itself. */
-function promptInput(value: string): string {
-	try {
-		if (existsSync(value) && statSync(value).isFile()) return readFileSync(value, "utf8").replace(/^\uFEFF/, "");
-	} catch {
-		// Not a readable file: the value is the text.
-	}
-	return value;
-}
-
-/**
- * The system prompt's replacement and additions (P41b, pi): --system-prompt, else SYSTEM.md
- * (a trusted project's .tau/, else ~/.tau/); --append-system-prompt, else APPEND_SYSTEM.md the
- * same way. A trusted project's file wins over the user's; the two are not combined.
- */
-function systemPromptSources(
-	cwd: string,
-	home: string,
-	projectTrusted: boolean,
-	flags: { system?: string; append?: string[] },
-): { system?: string; append: string[] } {
-	const file = (name: string): string | undefined => {
-		const project = join(cwd, ".tau", name);
-		if (projectTrusted && existsSync(project)) return project;
-		const user = join(home, ".tau", name);
-		return existsSync(user) ? user : undefined;
-	};
-	const systemSource = flags.system ?? file("SYSTEM.md");
-	const appendSources = flags.append && flags.append.length > 0 ? flags.append : [file("APPEND_SYSTEM.md")];
-	return {
-		...(systemSource !== undefined ? { system: promptInput(systemSource) } : {}),
-		append: appendSources
-			.filter((source): source is string => source !== undefined)
-			.map(promptInput)
-			.filter((text) => text.trim() !== ""),
-	};
-}
-
-/** settings.json extensions (P40c, pi): extension files and directories; a missing one is reported and skipped. */
-async function loadSettingsExtensions(paths: readonly string[]): Promise<InlineExtension[]> {
-	const loaded: InlineExtension[] = [];
-	for (const path of paths) {
-		if (!existsSync(path)) {
-			console.log(dim(`Extension path not found: ${path}`));
-			continue;
-		}
-		loaded.push(
-			...(statSync(path).isDirectory() ? await loadExtensionsFromDir(path) : await importExtensionFiles([path])),
-		);
-	}
-	return loaded;
-}
-
-async function loadExtensionRegistry(
-	cwd: string,
-	ui: UiCapability | undefined,
-	hostExtensions: readonly Extension[] = [],
-	memory?: MemoryScope,
-	mcp = true,
-	audit?: Extension,
-	hooks?: HookRunner,
-	/** P40: false leaves out the settings keys P40 added (the gateway). */
-	extendedSettings = true,
-	/** P45: offer catalog language servers (the TUI, as Claude Code offers them in the terminal). */
-	recommendLsp = false,
-): Promise<LoadedExtensions> {
-	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
-	// schedule tools, P31), then the user's extensions.
-	configureBuiltins({ cwd, projectTrusted: false, home: userHome(), extendedSettings });
-	// P41b (pi): -ne keeps out the discovered and configured extensions; -e paths load either way.
-	const discovered = !(extendedSettings && extensionFlags.none);
-	const userSettingsExtensions =
-		extendedSettings && discovered ? (readSettings(join(userHome(), ".tau", "settings.json")).extensions ?? []) : [];
-	const registry = await ExtensionRegistry.load([
-		// P32c: the audit first, so it sees every call, including ones the guard blocks.
-		...(audit ? [audit] : []),
-		...builtinExtensions(memory !== undefined ? { memory } : {}),
-		...hostExtensions,
-		...(discovered ? await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")) : []),
-		...(await loadSettingsExtensions(userSettingsExtensions)),
-		...(extendedSettings ? await loadSettingsExtensions(extensionFlags.paths) : []),
-	]);
-	// A failing notification handler (an unreachable MCP server in session_start, a
-	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
-	registry.setErrorSink(({ event, error }) => {
-		process.stderr.write(`[extension error in ${event}] ${error.message}\n`);
-	});
-	const extensionsDir = join(cwd, ".tau", "extensions");
-	// List first, decide trust, and only then import: importing runs the modules' top-level
-	// code, so an untrusted directory must never get that far (cd into a repo ≠ run its code).
-	const projectFiles = discovered ? await listExtensionFiles(extensionsDir) : [];
-	// Any gated resource asks for the decision, not only extensions (P23c): project
-	// settings, skills and prompts are read only from a trusted directory.
-	const present = presentGatedResources(cwd).filter(
-		(relative) => relative !== ".tau/extensions" || projectFiles.length > 0,
-	);
-	let projectTrusted = false;
-	if (present.length > 0) {
-		projectTrusted = await isProjectTrusted(registry, cwd, ui, present);
-		if (projectTrusted) {
-			if (projectFiles.length > 0) await registry.add(await importExtensionFiles(projectFiles));
-			// P40c: the project's settings.json extensions, resolved against its .tau directory.
-			const listed =
-				extendedSettings && discovered ? (readSettings(join(cwd, ".tau", "settings.json")).extensions ?? []) : [];
-			if (listed.length > 0) await registry.add(await loadSettingsExtensions(listed));
-		} else {
-			if (projectFiles.length > 0) {
-				console.log(dim(`Skipped ${projectFiles.length} project extension(s): directory not trusted.`));
-			}
-			const ignored = present.filter((relative) => relative !== ".tau/extensions");
-			if (ignored.length > 0) console.log(dim(`Ignored ${ignored.join(", ")}: directory not trusted.`));
-		}
-	}
-	// Project codemode settings count only for a trusted directory.
-	configureBuiltins({ cwd, projectTrusted, home: userHome(), extendedSettings });
-	// Connectors (P32b): MCP servers from ~/.tau/mcp.json and, when trusted, the project's.
-	if (mcp) {
-		const { loadMcpConfig, mcpProtocolNegotiation, withOAuth } = await import("./mcp-config.ts");
-		const loadedMcp = loadMcpConfig({
-			home: userHome(),
-			cwd,
-			projectTrusted,
-			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
-		});
-		for (const diagnostic of loadedMcp.diagnostics) console.log(dim(`mcp: ${diagnostic}`));
-		if (loadedMcp.servers.length > 0) {
-			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
-			const { createElicitHandler } = await import("./mcp-elicit.ts");
-			const { openUrl } = await import("./open-url.ts");
-			await registry.add([
-				createMcpExtension({
-					servers: withOAuth(loadedMcp.servers, userHome()),
-					// P43 (pi): the working directory as the root, resource tools, images to the model;
-					// P44 (Claude Code): elicitation, prompt commands, `@` resources; P47 (Claude Code):
-					// servers are asked for MCP 2026-07-28 first. The gateway is parked and keeps what it
-					// had (the handshake only).
-					...(extendedSettings
-						? {
-								cwd,
-								elicit: createElicitHandler(hooks, openUrl),
-								protocolNegotiation: mcpProtocolNegotiation(process.env, (message) =>
-									console.error(dim(`mcp: ${message}`)),
-								),
-							}
-						: { resourceTools: false, images: false, promptCommands: false, resourceMentions: false, waitTool: false }),
-				}),
-			]);
-		}
-	}
-	// Language servers (P45, Claude Code): ~/.tau/lsp.json and, when trusted, the project's.
-	// The gateway is parked and gets none.
-	let lspHost: LspHost | undefined;
-	if (extendedSettings) {
-		const { createLspHost } = await import("./lsp.ts");
-		const lsp = createLspHost({
-			home: userHome(),
-			cwd,
-			projectTrusted,
-			clientVersion: CLI_VERSION,
-			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
-			recommend: recommendLsp,
-		});
-		for (const error of lsp.errors) console.log(dim(`lsp: ${error}`));
-		await registry.add([lsp.extension]);
-		lspHost = lsp;
-	}
-	// User hooks (P35): ~/.tau/settings.json and, when trusted, the project's.
-	if (hooks) {
-		hooks.configure(loadHookConfig({ home: userHome(), cwd, projectTrusted }));
-		for (const diagnostic of hooks.diagnostics) console.log(dim(`hooks: ${diagnostic}`));
-		await registry.add([createHooksExtension(hooks)]);
-	}
-	reportExtensionLoad(registry);
-	return { registry, projectTrusted, ...(lspHost ? { lsp: lspHost } : {}) };
-}
-
-/**
- * Extensions that failed to load were rolled back and skipped (pi); say which and
- * why, and name same-name registrations that lost to an earlier one (P23c).
- */
-function reportExtensionLoad(registry: ExtensionRegistry): void {
-	for (const { extension, error } of registry.loadErrors) {
-		process.stderr.write(`[extension failed to load, skipped] ${extension}: ${error.message}\n`);
-	}
-	for (const warning of registry.warnings) process.stderr.write(`[extension conflict] ${warning}\n`);
-}
-
-function defaultSystemPrompt(cwd: string, toolNames: readonly string[], extraDirs: readonly string[] = []): string {
-	// Name the tools actually loaded: read-only mode has no write/edit, and a prompt
-	// promising them invites calls that can only fail (HF-16). The built-in tool
-	// prompt keeps this line equal to the declared tools at each run (P24e).
-	return [
-		"You are tau, a coding agent running in a terminal.",
-		`Working directory: ${cwd}`,
-		...(extraDirs.length > 0 ? [`Additional working directories: ${extraDirs.join(", ")}`] : []),
-		toolLine(toolNames),
-		"Be direct and concise. Answer questions before making changes.",
-	].join("\n");
-}
-
-function firstLine(text: string, max = 120): string {
-	const line = text.split("\n")[0];
-	return line.length > max ? `${line.slice(0, max)}…` : line;
 }
 
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
