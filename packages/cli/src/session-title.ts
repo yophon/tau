@@ -111,3 +111,25 @@ export async function autoTitle(
 		return undefined;
 	}
 }
+
+/** A session by id, time, name, file or title: exact, then prefix, then (P34f) a piece of its title. */
+export function findSession(sessions: SessionMetadata[], selector: string): SessionMetadata | "ambiguous" | undefined {
+	const values = (session: SessionMetadata): string[] => {
+		const fileName = session.filePath?.split(/[\\/]/).at(-1);
+		return [session.id, session.timestamp, session.name, sessionLabel(session), session.filePath, fileName].filter(
+			(value): value is string => value !== undefined && value !== "",
+		);
+	};
+	const needle = selector.toLowerCase();
+	const tiers: Array<(value: string) => boolean> = [
+		(value) => value === selector,
+		(value) => value.startsWith(selector),
+		(value) => value.toLowerCase().includes(needle),
+	];
+	for (const test of tiers) {
+		const found = sessions.filter((session) => values(session).some(test));
+		if (found.length === 1) return found[0];
+		if (found.length > 1) return "ambiguous";
+	}
+	return undefined;
+}

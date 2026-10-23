@@ -24,6 +24,8 @@ export interface RunTuiOptions {
 	agent: Agent;
 	/** P36c: prompts from the command line (`tau @shot.png "why"`), run one after another at start. */
 	initialPrompts?: UserContent[];
+	/** P53a (-r/--resume, pi): open /resume's picker at start; command-line prompts go to the session picked. */
+	openResumePicker?: boolean;
 	extensions: ExtensionRegistry;
 	model: string;
 	modelChoices?: string[];

@@ -60,7 +60,7 @@ import { type HostApprovalRequest, migrateLegacyPermissions, openAlwaysOptions }
 import { saveProjectTrust } from "./project-trust.ts";
 import { markActivity } from "./push-notification.ts";
 
-import { autoTitleOn } from "./session-title.ts";
+import { autoTitleOn, findSession } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
 import { StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/format.ts";
@@ -174,7 +174,6 @@ async function main(): Promise<void> {
 		noSkills: options.noSkills === true,
 		noPrompts: options.noPrompts === true,
 	});
-	if (options.sessionPath) options.sessionPath = resolve(options.sessionPath);
 	if (options.sessionDir) options.sessionDir = resolve(options.sessionDir);
 	const userSettings = readSettings(userSettingsPath);
 	const valueResolver: ValueResolver = { env: process.env };
@@ -305,6 +304,24 @@ async function main(): Promise<void> {
 		options.print === undefined &&
 		!options.repl &&
 		(options.tui || terminal);
+	// -r/--resume (P53a, pi): the TUI opens /resume's picker; other modes name the session instead.
+	if (options.resume) {
+		const conflicting = [
+			options.continue ? "--continue" : undefined,
+			options.sessionPath !== undefined ? "--session" : undefined,
+			options.noSession ? "--no-session" : undefined,
+		].filter((flag): flag is string => flag !== undefined);
+		if (conflicting.length > 0) {
+			console.error(`Error: --resume cannot be combined with ${conflicting.join(", ")}`);
+			process.exit(1);
+		}
+		if (!useTui) {
+			console.error(
+				"Error: --resume picks a session in the TUI. Elsewhere name it with --session <id|name|path>, or use --continue for the latest.",
+			);
+			process.exit(1);
+		}
+	}
 	// The audit's host and default trigger (P32c); the gateway sets its own per conversation.
 	const auditHost: AuditHost =
 		options.gateway !== undefined
@@ -498,8 +515,23 @@ async function main(): Promise<void> {
 	let sessionReason: "startup" | "resume" = "startup";
 	let initialMessages = undefined as Awaited<ReturnType<typeof restoreSession>>["messages"] | undefined;
 	if (!options.noSession) {
-		if (options.sessionPath) {
-			store = await sessionRepo.open({ id: "", cwd, timestamp: "", filePath: resolve(options.sessionPath) });
+		if (options.sessionPath !== undefined) {
+			// A file path, else an id or name of this directory's sessions, matched as /resume <session> does (P53a, pi).
+			const filePath = resolve(options.sessionPath);
+			if (existsSync(filePath)) {
+				store = await sessionRepo.open({ id: "", cwd, timestamp: "", filePath });
+			} else {
+				const found = findSession(await sessionRepo.list(), options.sessionPath);
+				if (found === undefined || found === "ambiguous") {
+					console.error(
+						found === "ambiguous"
+							? `Error: several sessions match "${options.sessionPath}"; use a longer id or the file path.`
+							: `Error: no session matches "${options.sessionPath}" (a file path, or an id or name of this directory's sessions).`,
+					);
+					process.exit(1);
+				}
+				store = await sessionRepo.open(found);
+			}
 			sessionReason = "resume";
 		} else if (options.continue) {
 			const sessions = await sessionRepo.list();
@@ -591,6 +623,7 @@ async function main(): Promise<void> {
 			agent,
 			extensions,
 			...(firstPrompt !== undefined ? { initialPrompts: [firstPrompt, ...messages.slice(1)] } : {}),
+			...(options.resume ? { openResumePicker: true } : {}),
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(userSettingsPath, mode),
 			dirtyRepoGuard: workspace.settings().dirtyRepoGuard === true,

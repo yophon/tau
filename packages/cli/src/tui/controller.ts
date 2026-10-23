@@ -29,7 +29,7 @@ import { markActivity, presence } from "../push-notification.ts";
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 
-import { shortcutItems } from "./commands.ts";
+import { runCommand, shortcutItems } from "./commands.ts";
 import { TuiDialogs } from "./dialogs.ts";
 import { renderResultLines } from "./extensions.ts";
 import { conversationLength, errorText, type Tone } from "./format.ts";
@@ -325,10 +325,18 @@ export class TuiController {
 		await this.refreshSurfaces();
 		// Command-line prompts (P36c, pi initialMessage + initialMessages): the first now, the rest after it.
 		const [first, ...rest] = this.options.initialPrompts ?? [];
-		if (first !== undefined) {
+		const startPrompts = (): void => {
+			if (first === undefined) return;
 			this.runs.pendingStarts.push(...rest);
 			void this.runs.runPrompt(first);
-		}
+		};
+		// -r/--resume (P53a, pi): pick the session first, then the prompts run in it.
+		if (this.options.openResumePicker) {
+			void runCommand(this, "/resume").then(startPrompts, (error: unknown) => {
+				this.notice("error", `/resume failed: ${errorText(error)}`);
+				startPrompts();
+			});
+		} else startPrompts();
 	}
 
 	async stop(): Promise<void> {

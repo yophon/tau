@@ -81,7 +81,9 @@ Options:
                          --mode rpc/acp or the gateway. settings: worktree.baseRef
                          ("fresh" = origin's default branch, "head"), worktree.symlinkDirectories
   -c, --continue         Resume the most recent session for this directory
-      --session <path>   Resume a specific session file
+  -r, --resume           Pick a session to resume (the TUI opens /resume's picker)
+      --session <session>  Resume a session: a file path, or the id or name of one
+                         of this directory's sessions (as /resume <session>)
       --session-dir <dir>  Keep sessions in this directory (settings.json sessionDir)
       --no-session       Do not persist this conversation
   -nc, --no-context-files  Do not load AGENTS.md / CLAUDE.md into the system prompt
@@ -138,7 +140,10 @@ export interface CliOptions {
 	pricing?: ModelPricing;
 	permissionMode?: PermissionMode;
 	toolExecution?: ToolExecutionMode;
+	/** --session: a file path, or an id or name of this directory's sessions (P53a, pi). */
 	sessionPath?: string;
+	/** -r/--resume (P53a, pi): pick the session in the TUI's /resume picker. */
+	resume?: boolean;
 	/** P40c (pi): --session-dir, where sessions are kept. */
 	sessionDir?: string;
 	noSession: boolean;
@@ -277,6 +282,10 @@ export function parseArgs(argv: string[]): CliOptions {
 			case "-c":
 			case "--continue":
 				options.continue = true;
+				break;
+			case "-r":
+			case "--resume":
+				options.resume = true;
 				break;
 			case "-w":
 			case "--context-window": {
