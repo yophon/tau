@@ -60,12 +60,13 @@ import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./k
 import { approvalOptions, diagnosticsBlock, initialState, type TaskKind } from "./model.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { useMarkdownTransformers } from "./render/markdown.ts";
-import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
+import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
-import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
+import type { TranscriptRows } from "./transcript.ts";
+import { TuiTranscriptView } from "./transcript-view.ts";
 import type { RunTuiOptions, TuiDeps } from "./types.ts";
 
 // Kept importable from here (tests, P38).
@@ -91,16 +92,12 @@ type PointerTarget =
 	| { kind: "approval"; index: number }
 	| { kind: "widget"; index: number }
 	| { kind: "view"; index: 0 };
-
-/** Clicks this close together on the same row count as a double or triple click (pi). */
-const MULTI_CLICK_MS = 500;
-/** While a drag is past the view's edge, the view scrolls a row this often. */
-const AUTO_SCROLL_MS = 50;
 const FLASH_MS = 2000;
 /** A terminal that never reports focus gets a "done" notification only after a run this long. */
 const LONG_RUN_MS = 30_000;
 
 export class TuiController {
+	readonly view = new TuiTranscriptView(this);
 	readonly inputBox = new TuiInputBox(this);
 	readonly dialogs = new TuiDialogs(this);
 	readonly store: TuiStore;
@@ -257,7 +254,7 @@ export class TuiController {
 		this.store.dispatch(action);
 	}
 
-	private now(): number {
+	now(): number {
 		return this.deps.now?.() ?? Date.now();
 	}
 
@@ -621,31 +618,6 @@ export class TuiController {
 		}
 	}
 
-	// ── full-screen transcript view (P33) ──────────────────────────────────
-
-	private viewport: { height: number; total: number | (() => number) } = { height: 20, total: 0 };
-
-	/** The view's size, from the last layout: what scrolling clamps against (the total may be counted on demand). */
-	setViewport(height: number, total: number | (() => number)): void {
-		this.viewport = { height, total };
-	}
-
-	private maxTop(): number {
-		const { height, total } = this.viewport;
-		return Math.max(0, (typeof total === "function" ? total() : total) - height);
-	}
-
-	/** Move the view; reaching the end follows it again. */
-	scrollBy(delta: number): void {
-		const maxTop = this.maxTop();
-		const top = Math.min(maxTop, Math.max(0, (this.state.scroll.top ?? maxTop) + delta));
-		this.dispatch({ type: "scroll", ...(top >= maxTop ? {} : { top }) });
-	}
-
-	scrollTo(to: "top" | "bottom"): void {
-		this.dispatch({ type: "scroll", ...(to === "top" && this.maxTop() > 0 ? { top: 0 } : {}) });
-	}
-
 	// ── raw input (P34): reports and keys Ink must not see ─────────────────
 
 	/** Full screen: the default (the test harness renders without a screen option). */
@@ -656,7 +628,7 @@ export class TuiController {
 	/** Whether the terminal window has focus; undefined until the terminal reports it. */
 	focused: boolean | undefined;
 	/** Where the clickable parts are on screen, from the last full-screen layout. */
-	private layout: ScreenLayout = {};
+	layout: ScreenLayout = {};
 	/** The left button's press: where, and what was under it. */
 	private press: { x: number; y: number; target: PointerTarget | undefined } | undefined;
 
@@ -734,7 +706,7 @@ export class TuiController {
 	private handlePointer(event: PointerEvent): void {
 		if (event.kind === "wheel") {
 			if (this.listItemAt(event.y) !== undefined) this.moveList({ kind: "wheel", delta: event.delta });
-			else if (this.fullscreen) this.scrollBy(event.delta * WHEEL_ROWS);
+			else if (this.fullscreen) this.view.scrollBy(event.delta * WHEEL_ROWS);
 			return;
 		}
 		if (event.kind === "press") {
@@ -746,17 +718,17 @@ export class TuiController {
 			}
 			const target = this.targetAt(event.y);
 			this.press = { x: event.x, y: event.y, target };
-			if (target?.kind === "view") this.pressView(event.x, event.y);
+			if (target?.kind === "view") this.view.pressView(event.x, event.y);
 			return;
 		}
 		if (event.kind === "drag") {
-			if (this.dragging) this.dragView(event.x, event.y);
+			if (this.view.dragging) this.view.dragView(event.x, event.y);
 			return;
 		}
 		const press = this.press;
 		this.press = undefined;
-		if (this.dragging) {
-			this.releaseView(event.x, event.y);
+		if (this.view.dragging) {
+			this.view.releaseView(event.x, event.y);
 			return;
 		}
 		// A click: press and release on the same target.
@@ -766,146 +738,7 @@ export class TuiController {
 		else if (target.kind === "approval") this.clickApproval(target.index);
 		else if (target.kind === "widget") this.clickWidget(target.index);
 	}
-
-	// ── transcript: clicks, selection, prompts, search (P34a–d) ───────────
-
-	/** The whole transcript at the current width, from the full-screen view (built on demand). */
-	private transcriptSource: (() => TranscriptRows) | undefined;
-	private lastClick:
-		| { row: number; x: number; at: number; count: number; toggled?: { id: string; verbose: boolean } }
-		| undefined;
-	private dragging = false;
-	private dragMoved = false;
-	private lastPointer = { x: 0, y: 0 };
-	private autoScroll: { timer: ReturnType<typeof setInterval>; direction: -1 | 1 } | undefined;
 	private flashTimer: ReturnType<typeof setTimeout> | undefined;
-	private readonly searchIndex = new TranscriptSearch();
-
-	setTranscript(source: () => TranscriptRows): void {
-		this.transcriptSource = source;
-	}
-
-	/** The transcript row at the top of the view. */
-	private viewTop(total: number): number {
-		return this.state.scroll.top ?? Math.max(0, total - this.viewport.height);
-	}
-
-	/** The transcript point under a screen cell, clamped to the view's rows. */
-	private pointAt(transcript: TranscriptRows, x: number, y: number): TextPoint {
-		const view = this.layout.view ?? { top: 0, height: this.viewport.height };
-		const offset = Math.min(Math.max(y - view.top, 0), Math.max(0, view.height - 1));
-		const row = Math.min(this.viewTop(transcript.rows.length) + offset, transcript.rows.length - 1);
-		return { row: Math.max(0, row), col: Math.max(0, x) };
-	}
-
-	private pressView(x: number, y: number): void {
-		const now = this.now();
-		const last = this.lastClick;
-		let transcript = this.transcriptSource?.();
-		if (!transcript || transcript.rows.length === 0) return;
-		const row = this.pointAt(transcript, x, y).row;
-		const repeat =
-			last !== undefined && now - last.at <= MULTI_CLICK_MS && last.row === row && Math.abs(last.x - x) <= 1;
-		const count = repeat ? Math.min(3, last.count + 1) : 1;
-		// The first click of a double click opened or shut a tool block: that was not meant.
-		if (count === 2 && last?.toggled) {
-			this.dispatch({ type: "toggle-block", ...last.toggled });
-			transcript = this.transcriptSource?.() ?? transcript;
-		}
-		const point = this.pointAt(transcript, x, y);
-		this.lastClick = { row: point.row, x, at: now, count };
-		this.dispatch({
-			type: "selection",
-			selection: {
-				anchor: point,
-				focus: point,
-				granularity: count === 1 ? "character" : count === 2 ? "word" : "line",
-			},
-		});
-		this.dragging = true;
-		this.dragMoved = false;
-		this.lastPointer = { x, y };
-	}
-
-	private dragView(x: number, y: number): void {
-		const transcript = this.transcriptSource?.();
-		const selection = this.state.selection;
-		if (!transcript || !selection) return;
-		this.lastPointer = { x, y };
-		this.dragMoved = true;
-		const view = this.layout.view ?? { top: 0, height: this.viewport.height };
-		this.setAutoScroll(y < view.top ? -1 : y >= view.top + view.height ? 1 : 0);
-		this.dispatch({ type: "selection", selection: { ...selection, focus: this.pointAt(transcript, x, y) } });
-	}
-
-	/** Past the view's edge a drag keeps scrolling, the selection following to the edge row. */
-	private setAutoScroll(direction: -1 | 0 | 1): void {
-		if (direction === this.autoScroll?.direction) return;
-		if (this.autoScroll) clearInterval(this.autoScroll.timer);
-		this.autoScroll = undefined;
-		if (direction === 0) return;
-		const timer = setInterval(() => {
-			this.scrollBy(direction);
-			const transcript = this.transcriptSource?.();
-			const selection = this.state.selection;
-			if (transcript && selection) {
-				const focus = this.pointAt(transcript, this.lastPointer.x, this.lastPointer.y);
-				this.dispatch({ type: "selection", selection: { ...selection, focus } });
-			}
-		}, AUTO_SCROLL_MS);
-		this.autoScroll = { timer, direction };
-	}
-
-	private releaseView(x: number, y: number): void {
-		this.dragging = false;
-		this.setAutoScroll(0);
-		const transcript = this.transcriptSource?.();
-		let selection = this.state.selection;
-		if (!transcript || !selection) return;
-		// Where the button came up ends the selection (a quick drag may report no motion).
-		const focus = this.pointAt(transcript, x, y);
-		if (focus.row !== selection.focus.row || focus.col !== selection.focus.col) {
-			selection = { ...selection, focus };
-			this.dispatch({ type: "selection", selection });
-			this.dragMoved = true;
-		}
-		const range = selectionRange(selection, transcript.rows);
-		if (range && (this.dragMoved || selection.granularity !== "character")) {
-			void this.copySelection(rangeText(transcript.rows, range, transcript.meta));
-			return;
-		}
-		// A click: no selection; on a link it opens the link (pi); on a tool block's title row (or a
-		// reasoning block) it opens or shuts that block.
-		this.dispatch({ type: "selection" });
-		if (this.lastClick?.count !== 1) return;
-		const url = linkAt(transcript.rows[selection.anchor.row] ?? "", selection.anchor.col);
-		if (url !== undefined) {
-			(this.deps.openUrl ?? openUrl)(url);
-			return;
-		}
-		const hit = blockAt(transcript, selection.anchor.row);
-		const toggles = hit?.block.kind === "tool" || hit?.block.kind === "group" || hit?.block.kind === "diagnostics";
-		if (hit && toggles && selection.anchor.row === hit.start + 1) {
-			this.dispatch({ type: "toggle-block", id: hit.block.id, verbose: this.state.verbose });
-			this.lastClick.toggled = { id: hit.block.id, verbose: this.state.verbose };
-		} else if (hit?.block.kind === "reasoning") {
-			// The whole run opens or shuts, whichever of its paragraphs was clicked.
-			const id = hit.block.head ?? hit.block.id;
-			this.dispatch({ type: "toggle-block", id, verbose: this.state.showReasoning });
-			this.lastClick.toggled = { id, verbose: this.state.showReasoning };
-		}
-	}
-
-	async copySelection(text: string): Promise<void> {
-		if (text === "") return;
-		try {
-			await this.copyText(text);
-			const count = [...text].length;
-			this.flash(`Copied ${count} character${count === 1 ? "" : "s"}`);
-		} catch (error) {
-			this.flash(`Copy failed: ${errorText(error)}`);
-		}
-	}
 
 	/** A short message in the hint line. */
 	flash(text: string): void {
@@ -916,86 +749,6 @@ export class TuiController {
 			this.dispatch({ type: "flash" });
 			this.store.flush();
 		}, FLASH_MS);
-	}
-
-	/** Show this transcript row at the top of the view (following the end when it is near it). */
-	private scrollToRow(row: number): void {
-		const maxTop = this.maxTop();
-		const top = Math.min(Math.max(0, row), maxTop);
-		this.dispatch({ type: "scroll", ...(top >= maxTop ? {} : { top }) });
-	}
-
-	/** Work out these rows' search pieces ahead of a search (P42d: the full-screen view, while idle). */
-	warmSearch(rows: readonly string[]): void {
-		this.searchIndex.warm(rows);
-	}
-
-	/** Add these rows, the transcript's from row `at` on, to the search corpus ahead of a search (P42d). */
-	prepareSearch(at: number, rows: readonly string[]): void {
-		this.searchIndex.prepare(at, rows);
-	}
-
-	/** Forget the search pieces of rows no longer shown (a new width or session, P42d). */
-	resetSearchPieces(): void {
-		this.searchIndex.reset();
-	}
-
-	/** Search matches in these rows (the full-screen view asks while rendering). */
-	searchMatches(rows: readonly string[]): SearchMatch[] {
-		const search = this.state.search;
-		return search ? this.searchIndex.search(rows, search.query).matches : [];
-	}
-
-	/** Ctrl+F (P34b): search the transcript; inline mode has the terminal's own search. */
-	openSearch(query = ""): void {
-		if (!this.fullscreen) {
-			this.notice("dim", "Search is in the full-screen view; in --inline use your terminal's search.");
-			return;
-		}
-		this.dispatch({ type: "search", search: { query, current: 0 } });
-		this.pickNearestMatch();
-	}
-
-	private editSearch(query: string): void {
-		if (!this.state.search) return;
-		this.dispatch({ type: "search", search: { query, current: 0 } });
-		this.pickNearestMatch();
-	}
-
-	/** The match nearest the bottom of what is shown (searching upward from there), shown. */
-	private pickNearestMatch(): void {
-		const transcript = this.transcriptSource?.();
-		const search = this.state.search;
-		if (!transcript || !search) return;
-		const matches = this.searchMatches(transcript.rows);
-		const bottom = this.viewTop(transcript.rows.length) + this.viewport.height;
-		let current = 0;
-		for (const [index, match] of matches.entries()) if ((match.segments[0]?.row ?? 0) < bottom) current = index;
-		this.dispatch({ type: "search", search: { ...search, current } });
-		this.revealMatch();
-	}
-
-	private stepSearch(delta: 1 | -1): void {
-		const transcript = this.transcriptSource?.();
-		const search = this.state.search;
-		if (!transcript || !search) return;
-		const count = this.searchMatches(transcript.rows).length;
-		if (count === 0) return;
-		this.dispatch({ type: "search", search: { ...search, current: (search.current + delta + count) % count } });
-		this.revealMatch();
-	}
-
-	/** Scroll the current match into view, a third of the way down, unless it is already shown. */
-	private revealMatch(): void {
-		const transcript = this.transcriptSource?.();
-		const search = this.state.search;
-		if (!transcript || !search) return;
-		const row = this.searchMatches(transcript.rows)[search.current]?.segments[0]?.row;
-		if (row === undefined) return;
-		const top = this.viewTop(transcript.rows.length);
-		const height = this.viewport.height;
-		if (row >= top && row < top + height) return;
-		this.scrollToRow(row - Math.floor(height / 3));
 	}
 
 	private targetAt(y: number): PointerTarget | undefined {
@@ -1027,26 +780,6 @@ export class TuiController {
 		const window = listWindow(list.count, list.selected, this.listHeight, list.start);
 		const offset = y - shown.top;
 		return offset >= 0 && offset < window.end - window.start ? window.start + offset : undefined;
-	}
-
-	/** Ctrl+↑/↓ (P34d): the previous or next message you sent at the top of the view; past the last, back to the end. */
-	private jumpToPrompt(direction: -1 | 1): boolean {
-		const transcript = this.transcriptSource?.();
-		if (!transcript) return false;
-		const top = this.viewTop(transcript.rows.length);
-		// A user block's first row is the blank row above it: the message is the row after.
-		const prompts = transcript.blocks.flatMap((block, index) =>
-			block.kind === "user" ? [(transcript.starts[index] as number) + 1] : [],
-		);
-		if (direction < 0) {
-			const target = prompts.filter((row) => row < top).at(-1);
-			this.scrollToRow(target ?? 0);
-		} else {
-			const target = prompts.find((row) => row > top);
-			if (target === undefined) this.scrollTo("bottom");
-			else this.scrollToRow(target);
-		}
-		return true;
 	}
 
 	private handleKey(ch: string, key: KeyLike): void {
@@ -1210,13 +943,13 @@ export class TuiController {
 				void this.stop();
 				return;
 			case "scroll-page":
-				this.scrollBy(command.direction * Math.max(1, this.viewport.height - 2));
+				this.view.scrollBy(command.direction * Math.max(1, this.view.viewport.height - 2));
 				return;
 			case "scroll-edge":
-				this.scrollTo(command.to);
+				this.view.scrollTo(command.to);
 				return;
 			case "jump-prompt":
-				this.jumpToPrompt(command.direction);
+				this.view.jumpToPrompt(command.direction);
 				return;
 			case "list-edge":
 				this.moveList({ kind: "edge", to: command.to });
@@ -1259,7 +992,7 @@ export class TuiController {
 				return;
 			case "aside-copy": {
 				const shown = state.aside ? state.asides[state.aside.index] : undefined;
-				if (shown && shown.answer !== "") void this.copySelection(shown.answer);
+				if (shown && shown.answer !== "") void this.view.copySelection(shown.answer);
 				return;
 			}
 			case "aside-clear":
@@ -1304,17 +1037,17 @@ export class TuiController {
 				this.moveList({ kind: "page", direction: command.direction });
 				return;
 			case "search-open":
-				this.openSearch(state.search?.query ?? "");
+				this.view.openSearch(state.search?.query ?? "");
 				return;
 			case "search-insert":
-				if (state.search) this.editSearch(state.search.query + command.text);
+				if (state.search) this.view.editSearch(state.search.query + command.text);
 				return;
 			case "search-backspace":
-				if (state.search) this.editSearch([...state.search.query].slice(0, -1).join(""));
+				if (state.search) this.view.editSearch([...state.search.query].slice(0, -1).join(""));
 				return;
 			case "search-next":
 			case "search-prev":
-				this.stepSearch(command.type === "search-next" ? 1 : -1);
+				this.view.stepSearch(command.type === "search-next" ? 1 : -1);
 				return;
 			case "search-close":
 				this.dispatch({ type: "search" });
@@ -2354,6 +2087,45 @@ export class TuiController {
 		);
 		await this.refreshStatus();
 		this.notice("dim", `Thinking level set to ${decision.level ?? "default"}.`);
+	}
+
+	// ── transcript view (transcript-view.ts) ─────────────────────────────────
+
+	// What the renderer, commands and tests call on the controller (P50: the view lives in transcript-view.ts).
+	setViewport(height: number, total: number | (() => number)): void {
+		this.view.setViewport(height, total);
+	}
+
+	scrollBy(delta: number): void {
+		this.view.scrollBy(delta);
+	}
+
+	scrollTo(to: "top" | "bottom"): void {
+		this.view.scrollTo(to);
+	}
+
+	setTranscript(source: () => TranscriptRows): void {
+		this.view.setTranscript(source);
+	}
+
+	warmSearch(rows: readonly string[]): void {
+		this.view.warmSearch(rows);
+	}
+
+	prepareSearch(at: number, rows: readonly string[]): void {
+		this.view.prepareSearch(at, rows);
+	}
+
+	resetSearchPieces(): void {
+		this.view.resetSearchPieces();
+	}
+
+	searchMatches(rows: readonly string[]): SearchMatch[] {
+		return this.view.searchMatches(rows);
+	}
+
+	openSearch(query = ""): void {
+		this.view.openSearch(query);
 	}
 
 	// ── input box (input-box.ts) ─────────────────────────────────────────────

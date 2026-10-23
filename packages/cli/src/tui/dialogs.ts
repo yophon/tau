@@ -156,7 +156,7 @@ export class TuiDialogs {
 			case "app.message.copy": {
 				const text = view.copyText();
 				if (text === undefined) this.host.flash("Nothing to copy in that entry");
-				else void this.host.copySelection(text);
+				else void this.host.view.copySelection(text);
 				return;
 			}
 			case "app.tree.editLabel": {
