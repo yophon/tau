@@ -5,16 +5,14 @@
  * stays a thin view (the logic the P8 TUI kept in one closure).
  */
 import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve as resolvePath } from "node:path";
+
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
 	type Agent,
 	type AgentEvent,
 	type AgentMessage,
-	type AutocompleteProvider,
-	type AutocompleteProviderFactory,
 	type CustomMessage,
 	commandPromptContent,
 	type ExtensionRegistry,
@@ -37,27 +35,19 @@ import { markActivity, presence } from "../push-notification.ts";
 import { autoTitle } from "../session-title.ts";
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
-import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
-import { commandList, runCommand, shortcutItems, whenCommandRuns } from "./commands.ts";
+
+import { runCommand, shortcutItems, whenCommandRuns } from "./commands.ts";
 import { TuiDialogs } from "./dialogs.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, type Tone } from "./format.ts";
-import {
-	acceptCompletion,
-	type Completion,
-	type CompletionItem,
-	type CompletionSources,
-	computeCompletion,
-	fromLines,
-	listFiles,
-	toLines,
-} from "./input/completion.ts";
+import { acceptCompletion } from "./input/completion.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
 import { InputSplitter, type InputToken } from "./input/keys.ts";
-import { KillRing } from "./input/kill-ring.ts";
+
 import { inputReport, type PointerEvent, WHEEL_ROWS } from "./input/mouse.ts";
-import { expandPastes, foldPaste, markerAfter, markerBefore, newPasteStore } from "./input/paste.ts";
+import { expandPastes } from "./input/paste.ts";
+import { type PendingInput, queuedInput, TuiInputBox } from "./input-box.ts";
 import {
 	getKeybindings,
 	Keybindings,
@@ -67,14 +57,12 @@ import {
 	setKeybindings,
 } from "./keybindings.ts";
 import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
-import { approvalOptions, diagnosticsBlock, initialState, type QueuedInput, type TaskKind } from "./model.ts";
-
+import { approvalOptions, diagnosticsBlock, initialState, type TaskKind } from "./model.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { useMarkdownTransformers } from "./render/markdown.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
-
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
@@ -82,16 +70,7 @@ import type { RunTuiOptions, TuiDeps } from "./types.ts";
 
 // Kept importable from here (tests, P38).
 export { filterItems } from "./dialogs.ts";
-
-/** Image types models take as they are (P36b); others are converted to PNG before saving. */
-const PASTEABLE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-
-/** A pasted image as `tau-clipboard-<uuid>.<ext>` in the system temp directory (pi); returns the path. */
-function saveClipboardImage(bytes: Uint8Array, extension: string): string {
-	const path = join(tmpdir(), `tau-clipboard-${randomUUID()}.${extension}`);
-	writeFileSync(path, bytes);
-	return path;
-}
+export { applyEditorCommand, completePathAt } from "./input-box.ts";
 
 const ARM_WINDOW_MS = 3000;
 
@@ -122,6 +101,7 @@ const FLASH_MS = 2000;
 const LONG_RUN_MS = 30_000;
 
 export class TuiController {
+	readonly inputBox = new TuiInputBox(this);
 	readonly dialogs = new TuiDialogs(this);
 	readonly store: TuiStore;
 	readonly options: RunTuiOptions;
@@ -137,34 +117,10 @@ export class TuiController {
 	/** Extension shortcuts shadowed by a built-in key (/diagnostics). */
 	shortcutConflicts: string[] = [];
 
-	private readonly deps: TuiDeps;
+	readonly deps: TuiDeps;
 	private readonly splitter = new InputSplitter();
 	/** pi's 50 ms wait for the rest of an escape sequence cut off at the end of a read. */
 	private splitTimer: ReturnType<typeof setTimeout> | undefined;
-	/** Editor snapshots for Ctrl+Z / Ctrl+- (pi's undo stack). */
-	private readonly undoStack: ed.EditorState[] = [];
-	private readonly killRing = new KillRing();
-	/** pi's lastAction: typing a word is one undo step, consecutive kills accumulate, Alt+Y follows a yank. */
-	private lastEdit: "type-word" | "kill" | "yank" | undefined;
-	/** The text the last yank inserted, ending at the cursor (Alt+Y replaces it). */
-	private lastYank = "";
-	/** The draft put aside when ↑ starts browsing history, back past the newest entry (pi). */
-	private historyDraft: ed.EditorState | undefined;
-	/** The draft Ctrl+C cleared, for ↑ in an empty input before the history (P49, Claude Code); the last one only. */
-	private clearedDraft: ed.EditorState | undefined;
-	private readonly pastes = newPasteStore();
-	private readonly history: PersistentHistory;
-	private historyIndex: number;
-	private files: string[] | undefined;
-	private filesLoading = false;
-	/** Where the `@` token the file list was loaded for starts. */
-	private fileTokenStart: number | undefined;
-	private menuCache:
-		| { text: string; cursor: number; files: unknown; suppressed: unknown; result: Completion | undefined }
-		| undefined;
-	private lastToken: string | undefined;
-	/** Settled argument completions by name and prefix; undefined while a promise is pending. */
-	private readonly argumentCache = new Map<string, readonly CompletionItem[] | undefined>();
 	private controller: AbortController | undefined;
 	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
 	private readonly pendingStarts: (UserContent | null)[] = [];
@@ -207,8 +163,8 @@ export class TuiController {
 		this.modelChoices = unique([options.model, ...(options.modelChoices ?? [])]);
 		this.thinkingLevel = options.thinkingLevel;
 		this.lastSessionStart = options.sessionReason;
-		this.history = PersistentHistory.load(deps.historyFile, options.cwd);
-		this.historyIndex = this.history.list().length;
+		this.inputBox.history = PersistentHistory.load(deps.historyFile, options.cwd);
+		this.inputBox.historyIndex = this.inputBox.history.list().length;
 		this.done = new Promise((resolve) => {
 			this.resolveDone = resolve;
 		});
@@ -267,7 +223,7 @@ export class TuiController {
 			},
 			form: (form, options) => this.dialogs.blocked(form.title, this.dialogs.form(form, options?.signal)),
 			// pi ui.addAutocompleteProvider: stacked on the built-in completion, in order.
-			addAutocompleteProvider: (factory) => this.addAutocompleteProvider(factory),
+			addAutocompleteProvider: (factory) => this.inputBox.addAutocompleteProvider(factory),
 			notify: (message, level) => {
 				this.notice(level === "error" ? "error" : level === "warning" ? "warn" : "info", message);
 				// What a widget shows may follow what the extension just did (ask_user's waiting question).
@@ -620,7 +576,7 @@ export class TuiController {
 		if (picker) {
 			return { kind: "picker", count: picker.items.length, selected: picker.selected, start: picker.start ?? 0 };
 		}
-		const completion = this.completion();
+		const completion = this.inputBox.completion();
 		if (!completion || completion.items.length === 0) return undefined;
 		const count = completion.items.length;
 		return { kind: "menu", count, selected: Math.min(menu.selected, count - 1), start: menu.start };
@@ -740,7 +696,7 @@ export class TuiController {
 
 	private handleTokens(tokens: readonly InputToken[]): void {
 		for (const token of tokens) {
-			if (token.kind === "paste") this.insertPaste(token.text);
+			if (token.kind === "paste") this.inputBox.insertPaste(token.text);
 			else if (token.kind === "text") this.handleText(token.text);
 			else if (token.kind === "key") this.handleKey(token.ch, token.key);
 			else this.handleSequence(token.sequence);
@@ -785,7 +741,7 @@ export class TuiController {
 			if (event.button !== 0) {
 				this.press = undefined;
 				// Full screen holds the mouse, so Windows Terminal's right-click paste never fires: paste here (pi).
-				if (event.button === 2 && (this.deps.platform ?? process.platform) === "win32") void this.pasteText();
+				if (event.button === 2 && (this.deps.platform ?? process.platform) === "win32") void this.inputBox.pasteText();
 				return;
 			}
 			const target = this.targetAt(event.y);
@@ -1093,19 +1049,6 @@ export class TuiController {
 		return true;
 	}
 
-	/** A bracketed paste (or Alt+V text): folded when large (pi), one undo step. */
-	private insertPaste(text: string): void {
-		if (this.state.approval || this.state.picker || this.state.aside) return;
-		if (this.state.search) {
-			this.execute({ type: "search-insert", text: text.replace(/\s+/g, " ") });
-			return;
-		}
-		this.pushUndo();
-		this.lastEdit = undefined;
-		this.leaveHistory();
-		this.setEditor(ed.insert(this.state.editor, foldPaste(this.pastes, ed.sanitize(text))));
-	}
-
 	private handleKey(ch: string, key: KeyLike): void {
 		const state = this.state;
 		const idle =
@@ -1127,7 +1070,7 @@ export class TuiController {
 				}
 			}
 		}
-		const menu = this.completion();
+		const menu = this.inputBox.completion();
 		const command = routeKey(ch, key, {
 			approvalOpen: state.approval !== undefined,
 			pickerOpen: state.picker !== undefined,
@@ -1141,7 +1084,7 @@ export class TuiController {
 			running: state.task !== undefined,
 			foregroundCommand: (this.options.background?.foregroundCount ?? 0) > 0,
 			bufferEmpty: state.editor.text === "",
-			...this.cursorRows(),
+			...this.inputBox.cursorRows(),
 			platform: this.deps.platform ?? process.platform,
 		});
 		if (!command) return;
@@ -1149,117 +1092,9 @@ export class TuiController {
 		this.execute(command);
 	}
 
-	/** Whether the cursor is on the input's first or last visual row (↑/↓ leave it for history there). */
-	private cursorRows(): { cursorAtFirstRow: boolean; cursorAtLastRow: boolean } {
-		const { row, rows } = ed.visualPosition(this.state.editor, ed.inputTextWidth(this.columns()));
-		return { cursorAtFirstRow: row === 0, cursorAtLastRow: row === rows - 1 };
-	}
-
-	private pushUndo(): void {
-		this.undoStack.push(this.state.editor);
-		if (this.undoStack.length > 200) this.undoStack.shift();
-	}
-
-	/** Editing the text ends history browsing (pi exitHistoryBrowsing): ↑ starts again from the newest entry. */
-	private leaveHistory(): void {
-		this.historyIndex = this.history.list().length;
-		this.historyDraft = undefined;
-	}
-
-	/**
-	 * Editing keys around the pure editor functions (pi's editor): undo snapshots (typing a
-	 * word is one step), the kill ring, paste markers that move and delete whole, ↑/↓ by
-	 * visual row. False for commands that are not editing.
-	 */
-	private editCommand(command: KeyCommand): boolean {
-		const current = this.state.editor;
-		switch (command.type) {
-			case "undo": {
-				const previous = this.undoStack.pop();
-				if (previous) this.setEditor(previous);
-				this.lastEdit = undefined;
-				return true;
-			}
-			case "yank": {
-				const text = this.killRing.peek();
-				if (text === undefined) return true;
-				this.pushUndo();
-				this.leaveHistory();
-				this.setEditor(ed.insert(current, text));
-				this.lastYank = text;
-				this.lastEdit = "yank";
-				return true;
-			}
-			case "yank-pop": {
-				if (this.lastEdit !== "yank" || this.killRing.length <= 1) return true;
-				this.pushUndo();
-				const start = Math.max(0, current.cursor - this.lastYank.length);
-				const without = { text: current.text.slice(0, start) + current.text.slice(current.cursor), cursor: start };
-				this.killRing.rotate();
-				const text = this.killRing.peek() ?? "";
-				this.setEditor(ed.insert(without, text));
-				this.lastYank = text;
-				this.lastEdit = "yank";
-				return true;
-			}
-			case "cursor-up":
-			case "cursor-down": {
-				const moved = ed.moveVisual(current, ed.inputTextWidth(this.columns()), command.type === "cursor-up" ? -1 : 1);
-				if (moved) this.setEditor(moved);
-				this.lastEdit = undefined;
-				return true;
-			}
-		}
-		const next =
-			this.markerEdit(current, command) ?? applyEditorCommand(current, command, [...this.pastes.entries.keys()]);
-		if (next === undefined) return false;
-		if (next.text === current.text) {
-			if (next.cursor !== current.cursor) this.lastEdit = undefined;
-			this.setEditor(next);
-			return true;
-		}
-		const kill = KILLS[command.type];
-		if (command.type === "insert") {
-			if (/\s/.test(command.text) || this.lastEdit !== "type-word") this.pushUndo();
-			this.lastEdit = "type-word";
-		} else {
-			this.pushUndo();
-			if (kill) {
-				const removed = current.text.length - next.text.length;
-				const killed =
-					kill === "back"
-						? current.text.slice(next.cursor, current.cursor)
-						: current.text.slice(current.cursor, current.cursor + removed);
-				this.killRing.push(killed, { prepend: kill === "back", accumulate: this.lastEdit === "kill" });
-			}
-			this.lastEdit = kill ? "kill" : undefined;
-		}
-		this.leaveHistory();
-		this.setEditor(next);
-		return true;
-	}
-
-	/** A paste marker next to the cursor moves and deletes as one unit (pi's atomic segments). */
-	private markerEdit(current: ed.EditorState, command: KeyCommand): ed.EditorState | undefined {
-		const { text, cursor } = current;
-		if (command.type === "backspace" || command.type === "cursor-left") {
-			const length = markerBefore(this.pastes, text, cursor);
-			if (length === 0) return undefined;
-			if (command.type === "cursor-left") return { text, cursor: cursor - length };
-			return { text: text.slice(0, cursor - length) + text.slice(cursor), cursor: cursor - length };
-		}
-		if (command.type === "delete-forward" || command.type === "cursor-right") {
-			const length = markerAfter(this.pastes, text, cursor);
-			if (length === 0) return undefined;
-			if (command.type === "cursor-right") return { text, cursor: cursor + length };
-			return { text: text.slice(0, cursor) + text.slice(cursor + length), cursor };
-		}
-		return undefined;
-	}
-
 	setEditor(editor: ed.EditorState): void {
 		this.dispatch({ type: "editor", editor });
-		this.syncMenu();
+		this.inputBox.syncMenu();
 	}
 
 	setInput(text: string): void {
@@ -1276,7 +1111,7 @@ export class TuiController {
 	 */
 	private escape(): void {
 		if (this.state.editor.text !== "") {
-			this.clearDraft();
+			this.inputBox.clearDraft();
 			this.lastEscapeAt = 0;
 			return;
 		}
@@ -1291,18 +1126,6 @@ export class TuiController {
 			return;
 		}
 		this.lastEscapeAt = now;
-	}
-
-	/** Clear the input; a draft goes into history so ↑ brings it back (Claude Code), blank lines just go. */
-	private clearDraft(): void {
-		// Kept aside, not in the history (P49, Claude Code): ↑ in the empty input brings it back
-		// whole, paste markers included; the next ↑ is the history.
-		const current = this.state.editor;
-		if (current.text.trim() !== "") this.clearedDraft = current;
-		this.pushUndo();
-		this.leaveHistory();
-		this.lastEdit = undefined;
-		this.setEditor(ed.EMPTY);
 	}
 
 	/**
@@ -1370,250 +1193,6 @@ export class TuiController {
 		this.notice("info", "Handoff ready. Edit it, then press Enter to send.");
 	}
 
-	/** Completion for the current input (cached per text/cursor/files/suppression). */
-	completion(): Completion | undefined {
-		const { editor, menu } = this.state;
-		if (this.state.approval || this.state.picker) return undefined;
-		const cache = this.menuCache;
-		if (
-			cache &&
-			cache.text === editor.text &&
-			cache.cursor === editor.cursor &&
-			cache.files === this.files &&
-			cache.suppressed === menu.suppressedToken
-		) {
-			return cache.result;
-		}
-		const computed = this.rawCompletion();
-		const result = computed && computed.token !== menu.suppressedToken ? computed : undefined;
-		this.menuCache = {
-			text: editor.text,
-			cursor: editor.cursor,
-			files: this.files,
-			suppressed: menu.suppressedToken,
-			result,
-		};
-		return result;
-	}
-
-	/** The completion for the input before Esc's suppression, computed once per input state (P38d). */
-	private rawCompletion(): Completion | undefined {
-		const { text, cursor } = this.state.editor;
-		const last = this.rawCache;
-		if (
-			last &&
-			last.text === text &&
-			last.cursor === cursor &&
-			last.files === this.files &&
-			last.version === this.completionVersion &&
-			last.extensions === this.extensions
-		) {
-			return last.result;
-		}
-		const builtin = computeCompletion(text, cursor, this.completionSources());
-		const result = this.providerCompletion(text, cursor, builtin);
-		this.rawCache = {
-			text,
-			cursor,
-			files: this.files,
-			version: this.completionVersion,
-			extensions: this.extensions,
-			result,
-		};
-		return result;
-	}
-
-	private rawCache:
-		| {
-				text: string;
-				cursor: number;
-				files: unknown;
-				version: number;
-				extensions: unknown;
-				result: Completion | undefined;
-		  }
-		| undefined;
-	/** Bumped when argument completions settle (their results feed the completion). */
-	private completionVersion = 0;
-
-	/** Extension autocomplete providers (P44, pi ui.addAutocompleteProvider), for the registry that added them. */
-	private autocompleteFactories: AutocompleteProviderFactory[] = [];
-	/** Bumped when the `@` file list loads: the providers see the new files. */
-	private filesEpoch = 0;
-	private autocompleteOwner: unknown;
-	private autocompleteChain: AutocompleteProvider | undefined;
-	/** The providers' answer for one input state; pending while `result` is absent. */
-	private providerAnswer: { key: string; result?: Completion | null; abort: AbortController } | undefined;
-
-	addAutocompleteProvider(factory: AutocompleteProviderFactory): void {
-		// /reload loads the extensions again: their providers start over.
-		if (this.autocompleteOwner !== this.extensions) {
-			this.autocompleteFactories = [];
-			this.autocompleteOwner = this.extensions;
-		}
-		this.autocompleteFactories.push(factory);
-		this.autocompleteChain = undefined;
-		this.providerAnswer = undefined;
-		this.rawCache = undefined;
-		this.menuCache = undefined;
-	}
-
-	/** The built-in completion as pi's provider shape, the bottom of the chain. */
-	private builtinProvider(): AutocompleteProvider {
-		return {
-			getSuggestions: async (lines, line, col) => {
-				const { text, cursor } = fromLines(lines, line, col);
-				const completion = computeCompletion(text, cursor, this.completionSources());
-				if (!completion) return null;
-				return {
-					items: completion.items.map((item) => ({
-						value: item.value,
-						label: item.label,
-						...(item.hint !== undefined ? { description: item.hint } : {}),
-					})),
-					prefix: completion.token,
-				};
-			},
-			applyCompletion: (lines, line, col, item, prefix) => {
-				const { text, cursor } = fromLines(lines, line, col);
-				const completion = computeCompletion(text, cursor, this.completionSources()) ?? {
-					kind: "file" as const,
-					tokenStart: cursor - prefix.length,
-					token: prefix,
-					items: [],
-				};
-				const next = acceptCompletion(text, completion, { value: item.value, label: item.label });
-				const back = toLines(next.text, next.cursor);
-				return { lines: back.lines, cursorLine: back.line, cursorCol: back.col };
-			},
-		};
-	}
-
-	/**
-	 * With extension providers, their answer for this input once it settles (the built-in
-	 * completion shows meanwhile); without any, the built-in completion.
-	 */
-	private providerCompletion(text: string, cursor: number, builtin: Completion | undefined): Completion | undefined {
-		if (this.autocompleteFactories.length === 0 || this.autocompleteOwner !== this.extensions) return builtin;
-		this.autocompleteChain ??= this.autocompleteFactories.reduce<AutocompleteProvider>(
-			(current, factory) => factory(current),
-			this.builtinProvider(),
-		);
-		const chain = this.autocompleteChain;
-		const key = `${cursor}\u0000${this.completionVersion}\u0000${this.filesEpoch}\u0000${text}`;
-		const answer = this.providerAnswer;
-		if (answer?.key === key) return answer.result === undefined ? builtin : (answer.result ?? undefined);
-		answer?.abort.abort();
-		const abort = new AbortController();
-		const pending: { key: string; result?: Completion | null; abort: AbortController } = { key, abort };
-		this.providerAnswer = pending;
-		const { lines, line, col } = toLines(text, cursor);
-		void chain.getSuggestions(lines, line, col, { signal: abort.signal }).then(
-			(suggestions) => {
-				if (abort.signal.aborted || this.providerAnswer !== pending) return;
-				pending.result =
-					suggestions && suggestions.items.length > 0
-						? {
-								kind: builtin?.kind ?? "file",
-								tokenStart: cursor - suggestions.prefix.length,
-								token: suggestions.prefix,
-								items: suggestions.items.map((item) => ({
-									value: item.value,
-									label: item.label,
-									...(item.description !== undefined ? { hint: item.description } : {}),
-								})),
-								apply: (item) => {
-									const applied = chain.applyCompletion(
-										lines,
-										line,
-										col,
-										{ value: item.value, label: item.label },
-										suggestions.prefix,
-									);
-									return fromLines(applied.lines, applied.cursorLine, applied.cursorCol);
-								},
-							}
-						: null;
-				this.rawCache = undefined;
-				this.menuCache = undefined;
-				this.dispatch({ type: "menu-refresh" });
-				this.store.flush();
-			},
-			() => {
-				if (this.providerAnswer === pending) pending.result = builtin ?? null;
-			},
-		);
-		return builtin;
-	}
-
-	private completionSources(): CompletionSources {
-		return {
-			commands: commandList(this.extensions, this),
-			files: this.files,
-			argumentCompletions: (name, prefix) => this.argumentCompletions(name, prefix),
-		};
-	}
-
-	/**
-	 * A command's argument completions. Synchronous results show at once; a promise
-	 * (an extension's, or one that lists sessions) fills a cache and redraws the menu
-	 * when it settles, if the input still asks for it.
-	 */
-	private argumentCompletions(name: string, prefix: string): readonly CompletionItem[] | undefined {
-		const key = `${name}\u0000${prefix}`;
-		if (this.argumentCache.has(key)) return this.argumentCache.get(key);
-		const command = commandList(this.extensions, this).find((entry) => entry.name === `/${name}`);
-		if (!command?.complete) return undefined;
-		let result: ReturnType<NonNullable<typeof command.complete>>;
-		try {
-			result = command.complete(prefix);
-		} catch {
-			return undefined;
-		}
-		if (!(result instanceof Promise)) return result ?? undefined;
-		if (this.argumentCache.size > 50) this.argumentCache.clear();
-		this.argumentCache.set(key, undefined);
-		void result.then(
-			(items) => {
-				this.argumentCache.set(key, items ?? undefined);
-				this.completionVersion++;
-				this.menuCache = undefined;
-				this.syncMenu();
-				this.dispatch({ type: "menu-select", index: this.state.menu.selected });
-			},
-			() => undefined,
-		);
-		return undefined;
-	}
-
-	/** A new token resets the selection and lifts a suppression; `@` loads the file list once. */
-	private syncMenu(): void {
-		const completion = this.rawCompletion();
-		const token = completion?.token;
-		if (token !== this.lastToken) {
-			this.lastToken = token;
-			this.dispatch({ type: "menu-select", index: 0 });
-			if (token !== this.state.menu.suppressedToken) this.dispatch({ type: "menu-suppress", token: undefined });
-		}
-		// Each new `@` lists the files again (pi runs fd per query): files created since show up.
-		const fileToken = completion?.kind === "file" ? completion.tokenStart : undefined;
-		const freshToken = fileToken !== undefined && fileToken !== this.fileTokenStart;
-		this.fileTokenStart = fileToken;
-		if (completion?.kind === "file" && (this.files === undefined || freshToken) && !this.filesLoading) {
-			this.filesLoading = true;
-			void (this.deps.fileLister ?? listFiles)(this.options.cwd)
-				.catch(() => [] as string[])
-				.then((files) => {
-					this.files = files;
-					this.filesEpoch++;
-					this.filesLoading = false;
-					this.menuCache = undefined;
-					this.dispatch({ type: "menu-select", index: this.state.menu.selected });
-					this.store.flush();
-				});
-		}
-	}
-
 	execute(command: KeyCommand): void {
 		const state = this.state;
 		// Esc on an idle input (P37b): clears a draft into history, or counts toward Esc twice.
@@ -1622,10 +1201,10 @@ export class TuiController {
 			return;
 		}
 		this.lastEscapeAt = 0;
-		if (this.editCommand(command)) return;
+		if (this.inputBox.editCommand(command)) return;
 		switch (command.type) {
 			case "clear-draft":
-				this.clearDraft();
+				this.inputBox.clearDraft();
 				return;
 			case "exit":
 				void this.stop();
@@ -1643,7 +1222,7 @@ export class TuiController {
 				this.moveList({ kind: "edge", to: command.to });
 				return;
 			case "history-search":
-				void this.searchHistory();
+				void this.inputBox.searchHistory();
 				return;
 			case "redraw":
 				if (!this.fullscreen) this.redraw();
@@ -1654,7 +1233,7 @@ export class TuiController {
 				void this.dialogs.pick("Keyboard shortcuts", shortcutItems(this.extensions));
 				return;
 			case "complete-path":
-				this.completePath();
+				this.inputBox.completePath();
 				return;
 			case "suspend":
 				this.deps.suspend?.();
@@ -1827,7 +1406,7 @@ export class TuiController {
 				this.moveList({ kind: "step", delta: command.type === "menu-up" ? -1 : 1 });
 				return;
 			case "menu-accept": {
-				const completion = this.completion();
+				const completion = this.inputBox.completion();
 				const item = completion?.items[Math.min(state.menu.selected, completion.items.length - 1)];
 				if (!completion || !item) return;
 				const runs = command.submit === true && (completion.kind === "slash" || completion.kind === "argument");
@@ -1837,14 +1416,14 @@ export class TuiController {
 					return;
 				}
 				const next = completion.apply ? completion.apply(item) : acceptCompletion(state.editor.text, completion, item);
-				this.pushUndo();
-				this.leaveHistory();
+				this.inputBox.pushUndo();
+				this.inputBox.leaveHistory();
 				this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
 				if (runs) this.submit();
 				return;
 			}
 			case "menu-close": {
-				const completion = this.completion();
+				const completion = this.inputBox.completion();
 				if (completion) this.dispatch({ type: "menu-suppress", token: completion.token });
 				this.dispatch({ type: "menu-select", index: 0 });
 				return;
@@ -1888,70 +1467,16 @@ export class TuiController {
 				this.openExternalEditor();
 				return;
 			case "paste-clipboard":
-				void this.pasteClipboard();
+				void this.inputBox.pasteClipboard();
 				return;
 			case "history-prev":
-				this.historyPrev();
+				this.inputBox.historyPrev();
 				return;
 			case "history-next":
-				this.historyNext();
+				this.inputBox.historyNext();
 				return;
 			default:
 				return;
-		}
-	}
-
-	/**
-	 * The paste key (P36b, pi handleClipboardPaste): copied files go in as their paths
-	 * (one per line, or quoted on one line in a `!` command), an image is saved to a
-	 * temporary file and its path goes in (the model reads it), else the text.
-	 */
-	async pasteClipboard(): Promise<void> {
-		try {
-			const content = await (this.deps.readClipboard ?? readClipboard)();
-			if (!content) return;
-			if (content.kind === "text") {
-				this.insertPaste(content.text);
-				return;
-			}
-			let inserted: string;
-			if (content.kind === "files") {
-				if (content.paths.some((path) => /\p{Cc}/u.test(path))) {
-					throw new Error("Clipboard file path contains control characters");
-				}
-				inserted = this.state.editor.text.trimStart().startsWith("!")
-					? content.paths.map(quoteIfNeeded).join(" ")
-					: content.paths.join("\n");
-				const { text, cursor } = this.state.editor;
-				const before = text[cursor - 1] ?? "";
-				const after = text[cursor] ?? "";
-				inserted = `${before && !/\s/.test(before) ? " " : ""}${inserted}${after && !/\s/.test(after) ? " " : ""}`;
-			} else {
-				let { bytes, mimeType } = content;
-				if (!PASTEABLE_IMAGES.has(mimeType)) {
-					// The Windows DIB/BMP kind: models take none of these (pi converts to PNG).
-					const { convertImageToPng } = await import("@yophon/tau-host-node");
-					const png = await convertImageToPng(bytes);
-					if (!png) throw new Error(`unsupported image type ${mimeType}`);
-					bytes = png;
-					mimeType = "image/png";
-				}
-				inserted = (this.deps.saveImage ?? saveClipboardImage)(bytes, imageExtension(mimeType));
-			}
-			this.pushUndo();
-			this.setEditor(ed.insert(this.state.editor, inserted));
-		} catch (error) {
-			this.notice("error", `Failed to paste from clipboard: ${errorText(error)}`);
-		}
-	}
-
-	/** Right-click paste (P38b, pi): the clipboard's text, as a paste. */
-	private async pasteText(): Promise<void> {
-		try {
-			const content = await (this.deps.readClipboard ?? readClipboard)();
-			if (content?.kind === "text") this.insertPaste(content.text);
-		} catch (error) {
-			this.notice("error", `Failed to paste from clipboard: ${errorText(error)}`);
 		}
 	}
 
@@ -2011,7 +1536,7 @@ export class TuiController {
 	 */
 	openExternalEditor(): void {
 		if (this.state.approval || this.state.picker) return;
-		const text = expandPastes(this.pastes, this.state.editor.text);
+		const text = expandPastes(this.inputBox.pastes, this.state.editor.text);
 		let edited: string | undefined;
 		try {
 			const edit = () =>
@@ -2022,8 +1547,8 @@ export class TuiController {
 			return;
 		}
 		if (edited === undefined) return;
-		this.pushUndo();
-		this.leaveHistory();
+		this.inputBox.pushUndo();
+		this.inputBox.leaveHistory();
 		this.setEditor(ed.fromText(edited.replace(/\r\n/g, "\n").replace(/\n+$/, "")));
 	}
 
@@ -2031,93 +1556,6 @@ export class TuiController {
 		if (this.exitTimer) clearTimeout(this.exitTimer);
 		this.exitTimer = undefined;
 		if (this.state.exitArmed) this.dispatch({ type: "armed", exit: false });
-	}
-
-	private historyPrev(): void {
-		const state = this.state;
-		// Queued input and an empty editor: ↑ takes the queue back for editing (pi Alt+Up).
-		if (state.queued.length > 0 && state.editor.text === "") {
-			this.takeBackQueued();
-			return;
-		}
-		const items = this.history.list();
-		if (this.clearedDraft && state.editor.text === "" && this.historyIndex >= items.length) {
-			const draft = this.clearedDraft;
-			this.clearedDraft = undefined;
-			this.pushUndo();
-			this.setEditor(draft);
-			this.lastEdit = undefined;
-			return;
-		}
-		if (this.historyIndex > 0) {
-			// Entering history keeps the draft for the way back (pi historyDraft).
-			if (this.historyIndex >= items.length) {
-				this.historyDraft = this.state.editor;
-				this.pushUndo();
-			}
-			this.historyIndex -= 1;
-			// Going up puts the cursor at the start, so the next ↑ goes further back (pi).
-			this.setEditor(ed.fromText(items[this.historyIndex] ?? "", 0));
-			this.lastEdit = undefined;
-		}
-	}
-
-	private historyNext(): void {
-		const items = this.history.list();
-		if (this.historyIndex < items.length) {
-			this.historyIndex += 1;
-			if (this.historyIndex < items.length) {
-				this.setEditor(ed.fromText(items[this.historyIndex] ?? ""));
-			} else {
-				this.setEditor(this.historyDraft ?? ed.EMPTY);
-				this.historyDraft = undefined;
-			}
-			this.lastEdit = undefined;
-		}
-	}
-
-	/**
-	 * ↑ on an empty input (pi Alt+Up): the queue back for editing. Input waiting behind a
-	 * command comes back one item at a time, the last first: commands joined into one input
-	 * would run as one command with the others as its arguments.
-	 */
-	private takeBackQueued(): void {
-		const last = this.pending.pop();
-		if (!last) {
-			this.restoreQueuedInput();
-			return;
-		}
-		this.dispatch({ type: "queue-remove", input: queuedInput(last) });
-		this.setEditor(ed.fromText(last.text));
-	}
-
-	/** Take steering and follow-ups back into the editor; waiting commands stay queued and run after the turn. */
-	private restoreQueuedInput(): void {
-		const { steering, followUp } = this.agent.clearQueue();
-		const texts = [...steering, ...followUp]
-			.filter((message) => message.role === "user")
-			.map((message) => userContentText(message.content))
-			.filter((text) => text !== "");
-		this.dispatch({ type: "queue-clear" });
-		for (const item of this.pending) this.dispatch({ type: "queue-add", input: queuedInput(item) });
-		if (texts.length === 0) return;
-		const current = this.state.editor.text;
-		this.setEditor(ed.fromText([...texts, ...(current.trim() === "" ? [] : [current])].join("\n")));
-	}
-
-	private takeInput(): string {
-		const text = expandPastes(this.pastes, this.state.editor.text).trim();
-		this.setEditor(ed.EMPTY);
-		this.forgetEdits();
-		// What a command lists (sessions for /resume) may have changed by the next time it is typed.
-		this.argumentCache.clear();
-		return text;
-	}
-
-	/** What was sent is not undone into the next draft (pi submitValue clears its undo stack). */
-	private forgetEdits(): void {
-		this.undoStack.length = 0;
-		this.lastEdit = undefined;
 	}
 
 	submit(): void {
@@ -2131,17 +1569,17 @@ export class TuiController {
 		}
 		const prompt = this.state.prompt;
 		if (prompt) {
-			const text = expandPastes(this.pastes, this.state.editor.text).trim();
+			const text = expandPastes(this.inputBox.pastes, this.state.editor.text).trim();
 			if (text === "" && prompt.kind === "tell") return;
-			this.forgetEdits();
+			this.inputBox.forgetEdits();
 			this.dialogs.closePrompt(prompt.id);
 			this.dialogs.settlePrompt(prompt.id, text === "" ? undefined : text);
 			return;
 		}
-		const text = this.takeInput();
+		const text = this.inputBox.takeInput();
 		if (text === "") return;
-		this.history.push(text);
-		this.historyIndex = this.history.list().length;
+		this.inputBox.history.push(text);
+		this.inputBox.historyIndex = this.inputBox.history.list().length;
 		const task = this.state.task;
 		if (task === undefined && (text === "exit" || text === "quit")) {
 			void this.stop();
@@ -2184,10 +1622,10 @@ export class TuiController {
 			this.submit();
 			return;
 		}
-		const text = this.takeInput();
+		const text = this.inputBox.takeInput();
 		if (text === "") return;
-		this.history.push(text);
-		this.historyIndex = this.history.list().length;
+		this.inputBox.history.push(text);
+		this.inputBox.historyIndex = this.inputBox.history.list().length;
 		if (text.startsWith("/") && whenCommandRuns(this, text) !== "unknown") {
 			this.queueCommand(text);
 			return;
@@ -2204,7 +1642,7 @@ export class TuiController {
 	 * Input waiting for the running task to end, run in order then (P38c): slash commands, and
 	 * follow-ups queued after one (Claude Code runs its queue in order).
 	 */
-	private readonly pending: PendingInput[] = [];
+	readonly pending: PendingInput[] = [];
 	private runningCommands = false;
 
 	private queueCommand(text: string): void {
@@ -2323,8 +1761,8 @@ export class TuiController {
 	private async reloadIfMoved(): Promise<void> {
 		if (this.state.task !== undefined || !this.options.consumeReload?.()) return;
 		(this.options as { cwd: string }).cwd = process.cwd();
-		this.files = undefined;
-		this.filesEpoch++;
+		this.inputBox.files = undefined;
+		this.inputBox.filesEpoch++;
 		await this.reloadExtensions();
 	}
 
@@ -2357,7 +1795,7 @@ export class TuiController {
 			if (signal.aborted) interrupted = true;
 			// Queues survive an abort (kernel contract): put queued text back in the editor
 			// instead of replaying it into the next prompt (pi restoreQueuedMessagesToEditor).
-			this.restoreQueuedInput();
+			this.inputBox.restoreQueuedInput();
 		});
 		const last = this.agent.messages.findLast((message) => message.role === "assistant");
 		if (interrupted || (last?.role === "assistant" && last.stopReason === "aborted")) {
@@ -2846,7 +2284,7 @@ export class TuiController {
 				// throws instead of reaching the new agent (pi runtime invalidate).
 				previousExtensions.invalidate();
 				this.lastSessionStart = "reload";
-				this.menuCache = undefined;
+				this.inputBox.menuCache = undefined;
 				this.checkShortcuts();
 				this.notice("info", "Extensions reloaded.");
 			} catch (error) {
@@ -2918,6 +2356,13 @@ export class TuiController {
 		this.notice("dim", `Thinking level set to ${decision.level ?? "default"}.`);
 	}
 
+	// ── input box (input-box.ts) ─────────────────────────────────────────────
+
+	/** The completion menu for the input as it is (the renderer draws it). */
+	completion(): ReturnType<TuiInputBox["completion"]> {
+		return this.inputBox.completion();
+	}
+
 	// ── dialogs (dialogs.ts) ─────────────────────────────────────────────────
 
 	// The dialogs commands, extensions and tests open through the controller (P50: they live in dialogs.ts).
@@ -2985,152 +2430,10 @@ export class TuiController {
 						: "tau · failed";
 		(this.deps.notify ?? notifyDesktop)(heading, body || heading);
 	}
-
-	/** Ctrl+R (Claude Code): the prompt history, newest first; typing filters; the pick goes into the input box. */
-	async searchHistory(): Promise<void> {
-		if (this.state.approval || this.state.picker || this.state.prompt) return;
-		const entries = [...new Set([...this.history.list()].reverse())].slice(0, 1000);
-		if (entries.length === 0) {
-			this.flash("No history yet.");
-			return;
-		}
-		const items = entries.map((text, index) => ({ label: text.replace(/\s*\n\s*/g, " ↵ "), value: String(index) }));
-		const choice = await this.dialogs.pick("Search history", items);
-		if (choice === undefined) return;
-		this.pushUndo();
-		this.leaveHistory();
-		this.setEditor(ed.fromText(entries[Number(choice)] ?? ""));
-	}
-
-	/** Tab with no menu (pi): complete the path before the cursor as far as it is unambiguous, list the rest. */
-	completePath(): void {
-		const { text, cursor } = this.state.editor;
-		const result = completePathAt(text, cursor, this.options.cwd, this.deps.listDirectory ?? listDirectory);
-		if (!result) return;
-		if (result.insert !== "") {
-			this.pushUndo();
-			this.leaveHistory();
-			this.setEditor({
-				text: text.slice(0, cursor) + result.insert + text.slice(cursor),
-				cursor: cursor + result.insert.length,
-			});
-		}
-		if (result.candidates.length > 1) {
-			const shown = result.candidates.slice(0, 12).join("  ");
-			this.flash(result.candidates.length > 12 ? `${shown}  … ${result.candidates.length - 12} more` : shown);
-		}
-	}
 }
-
-/** Directory entries (names; directories end with "/"); empty when it cannot be read. */
-function listDirectory(dir: string): string[] {
-	try {
-		return readdirSync(dir, { withFileTypes: true }).map((entry) =>
-			entry.isDirectory() ? `${entry.name}/` : entry.name,
-		);
-	} catch {
-		return [];
-	}
-}
-
-/**
- * Shell-style completion of the path-like word before the cursor (./, ../, ~/, or with a
- * slash): the common prefix of the matching entries to insert, and the names that match.
- */
-export function completePathAt(
-	text: string,
-	cursor: number,
-	cwd: string,
-	list: (dir: string) => string[],
-): { insert: string; candidates: string[] } | undefined {
-	const word = /(?:^|\s)@?([^\s@]*)$/.exec(text.slice(0, cursor))?.[1] ?? "";
-	if (!/^(?:\.{1,2}\/|~\/)|\//.test(word)) return undefined;
-	const slash = word.lastIndexOf("/");
-	const dirPart = word.slice(0, slash + 1);
-	const prefix = word.slice(slash + 1);
-	const base = dirPart.startsWith("~/") ? join(homedir(), dirPart.slice(2)) : resolvePath(cwd, dirPart || ".");
-	const names = list(base)
-		.filter(
-			(name) =>
-				name.toLowerCase().startsWith(prefix.toLowerCase()) && (prefix.startsWith(".") || !name.startsWith(".")),
-		)
-		.sort();
-	if (names.length === 0) return undefined;
-	let common = names[0] as string;
-	for (const name of names) {
-		let i = 0;
-		while (i < common.length && i < name.length && common[i]?.toLowerCase() === name[i]?.toLowerCase()) i++;
-		common = common.slice(0, i);
-	}
-	return { insert: common.slice(prefix.length), candidates: names };
-}
-
-/** Kills that go to the kill ring, and which way they delete (pi). */
-const KILLS: Partial<Record<KeyCommand["type"], "back" | "forward">> = {
-	"kill-line-start": "back",
-	"delete-word-back": "back",
-	"kill-line-end": "forward",
-	"delete-word-forward": "forward",
-};
 
 function customKey(message: CustomMessage): string {
 	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
-}
-
-/** Input waiting for the running task to end (P38c). */
-interface PendingInput {
-	kind: "command" | "prompt";
-	text: string;
-}
-
-function queuedInput(item: PendingInput): QueuedInput {
-	return { kind: item.kind === "command" ? "command" : "followUp", text: item.text };
-}
-
-/** Pure editor commands → the next editor state; undefined for everything else. */
-export function applyEditorCommand(
-	current: ed.EditorState,
-	command: KeyCommand,
-	atoms: readonly string[] = [],
-): ed.EditorState | undefined {
-	switch (command.type) {
-		case "newline":
-			return ed.newline(current);
-		case "clear-input":
-			return ed.EMPTY;
-		case "kill-line-start":
-			return ed.killToLineStart(current);
-		case "cursor-home":
-			return ed.lineHome(current);
-		case "cursor-end":
-			return ed.lineEnd(current);
-		case "cursor-left":
-			return ed.left(current);
-		case "cursor-right":
-			return ed.right(current);
-		case "cursor-up":
-			return ed.up(current) ?? current;
-		case "cursor-down":
-			return ed.down(current) ?? current;
-		case "word-left":
-			return ed.wordLeft(current, atoms);
-		case "word-right":
-			return ed.wordRight(current, atoms);
-		case "delete-word-back":
-			return ed.deleteWordBack(current, atoms);
-		case "delete-word-forward":
-			return ed.deleteWordForward(current, atoms);
-		case "kill-line-end":
-			return ed.killToLineEnd(current);
-		case "delete-forward":
-			return ed.deleteForward(current);
-		case "backspace":
-			return ed.backspace(current);
-		case "insert":
-			return ed.insert(current, command.text);
-		default:
-			return undefined;
-	}
 }
 
 /** Conversation messages for user-facing counts (system messages are prompt state, P22). */
