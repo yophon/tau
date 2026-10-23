@@ -9,6 +9,7 @@
  * Pure ES: hosts read and write the settings files, the kernel only matches.
  */
 
+import { patchTargets } from "./apply-patch.ts";
 import { canonicalPowerShellPattern, parsePowerShellCommand } from "./powershell-command.ts";
 
 export type PermissionRuleKind = "allow" | "ask" | "deny";
@@ -61,7 +62,7 @@ const TOOL_ALIASES: Record<string, readonly string[]> = {
 	powershell: ["powershell"],
 	// P45: Claude Code applies Read rules to its LSP tool.
 	read: ["read", "grep", "find", "ls", "lsp"],
-	edit: ["edit", "write"],
+	edit: ["edit", "write", "apply_patch"],
 	write: ["write"],
 	grep: ["grep"],
 	glob: ["find"],
@@ -86,7 +87,7 @@ const BASH_TOOLS = new Set(["bash", "monitor"]);
 /** P40b: Claude Code's PowerShell rules (same shape as Bash; aliases resolved; case ignored). */
 const POWERSHELL_TOOLS = new Set(["powershell"]);
 const READ_PATH_TOOLS = new Set(["read", "grep", "find", "ls", "lsp"]);
-const EDIT_PATH_TOOLS = new Set(["edit", "write"]);
+const EDIT_PATH_TOOLS = new Set(["edit", "write", "apply_patch"]);
 /** Main content fields a parameter rule may not name (Claude Code). */
 const MAIN_FIELDS = new Set(["command", "file_path", "path", "notebook_path", "url"]);
 const PATH_KEYS = ["path", "file_path", "filePath", "file", "filename", "dest", "target"] as const;
@@ -293,6 +294,8 @@ function commandOf(args: Record<string, unknown>): string | undefined {
 }
 
 function pathTargets(call: PermissionRuleCall): string[] {
+	// P55a: apply_patch names its files in the patch; Edit rules apply to each.
+	if (call.toolName === "apply_patch") return patchTargets(call.args.input);
 	const targets: string[] = [];
 	for (const key of PATH_KEYS) {
 		const value = call.args[key];

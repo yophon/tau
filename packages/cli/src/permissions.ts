@@ -62,7 +62,7 @@ export interface HostApprovalRequest extends ApprovalRequest {
 export const openAlwaysOptions = new Map<string, AlwaysOption>();
 
 const KINDS: readonly PermissionRuleKind[] = ["allow", "ask", "deny"];
-const EDIT_TOOLS = new Set(["write", "edit"]);
+const EDIT_TOOLS = new Set(["write", "edit", "apply_patch"]);
 const RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
 export const LOCAL_SETTINGS = join(".tau", "settings.local.json");
 const LOCAL_EXCLUDE = "**/.tau/settings.local.json";

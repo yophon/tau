@@ -75,7 +75,29 @@ function head(lines: string[], n: number): StyledLine[] {
 const FULL = 2000;
 
 /** Rows a collapsed edit or write shows before "… N more lines" (Ctrl+O or a click shows all). */
-export const FILE_PREVIEW_ROWS = { edit: 16, write: 10 };
+export const FILE_PREVIEW_ROWS = { edit: 16, write: 10, apply_patch: 24 };
+
+/** How many files a patch names (its Add, Delete and Update headers). */
+function patchFileCount(patch: string): number {
+	return (patch.match(/^\s*\*\*\* (?:Add|Delete|Update) File: /gm) ?? []).length;
+}
+
+/** A patch as written, its added and removed lines colored (approvals, and a call still running). */
+export function patchLines(patch: string): StyledLine[] {
+	return patch
+		.replace(/\r/g, "")
+		.split("\n")
+		.filter((line) => !/^\s*\*\*\* (?:Begin|End) Patch\s*$/.test(line))
+		.map((line) =>
+			line.startsWith("+")
+				? plainLine(line, { color: "green" })
+				: line.startsWith("-")
+					? plainLine(line, { color: "red" })
+					: line.startsWith("***")
+						? plainLine(line, { underline: true })
+						: plainLine(line, { dim: true }),
+		);
+}
 
 function clip(rows: StyledLine[], n: number): StyledLine[] {
 	if (rows.length <= n) return rows;
@@ -188,6 +210,15 @@ const RENDERERS: Record<string, Renderer> = {
 		// The result's numbered diff (file line numbers); before it, the arguments' own diff.
 		const rows = tool.diff !== undefined ? renderNumberedDiff(tool.diff) : editDiff(editPairs(tool.args));
 		return { ...view, body: verbose ? rows : clip(rows, FILE_PREVIEW_ROWS.edit) };
+	},
+
+	// P55a: the result's diffs file by file; before the result, the patch itself.
+	apply_patch: (tool, verbose) => {
+		const files = patchFileCount(str(tool.args, "input"));
+		const view = { head: `apply_patch(${files} file${files === 1 ? "" : "s"})`, body: [] as StyledLine[] };
+		if (tool.status === "error") return { ...view, body: errorBody(tool, verbose) };
+		const rows = tool.diff !== undefined ? renderNumberedDiff(tool.diff) : patchLines(str(tool.args, "input"));
+		return { ...view, body: verbose ? rows : clip(rows, FILE_PREVIEW_ROWS.apply_patch) };
 	},
 
 	grep: (tool, verbose) => {

@@ -72,7 +72,7 @@ test("coding tools work end-to-end against the node host", async () => {
 	await withTempDir(async (dir) => {
 		const tools = createCodingTools({ fs: new NodeFileSystem(dir), shell: new NodeShell(dir) });
 		const byName = new Map(tools.map((tool) => [tool.name, tool]));
-		assert.deepEqual([...byName.keys()].sort(), ["bash", "edit", "find", "grep", "ls", "read", "write"]);
+		assert.deepEqual([...byName.keys()].sort(), ["apply_patch", "bash", "edit", "find", "grep", "ls", "read", "write"]);
 
 		await byName.get("write")?.execute({ path: "a.txt", content: "one\ntwo\nthree" });
 		const read = await byName.get("read")?.execute({ path: "a.txt", offset: 2, limit: 1 });

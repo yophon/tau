@@ -1,3 +1,4 @@
+import { patchTargets } from "./apply-patch.ts";
 import { TauError } from "./errors.ts";
 import {
 	type AgentMessage,
@@ -623,6 +624,11 @@ export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOp
 }
 
 function addFileOp(toolName: string, args: Record<string, unknown> | undefined, fileOps: FileOperations): void {
+	// P55a: a patch edits every file it names.
+	if (toolName === "apply_patch") {
+		for (const target of patchTargets(args?.input)) fileOps.edited.add(target);
+		return;
+	}
 	const path = typeof args?.path === "string" ? args.path : undefined;
 	if (!path) return;
 	if (toolName === "read") fileOps.read.add(path);

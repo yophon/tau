@@ -104,7 +104,7 @@ async function report(text) {
 try {
 	const fs = new OpfsFileSystem({ cwd: "/tau-browser-runtime-smoke" });
 	const tools = createCodingTools({ fs });
-	if (tools.map((tool) => tool.name).join(",") !== "read,grep,find,ls,write,edit") {
+	if (tools.map((tool) => tool.name).join(",") !== "read,grep,find,ls,write,edit,apply_patch") {
 		throw new Error("unexpected tools: " + tools.map((tool) => tool.name).join(","));
 	}
 	const agent = new Agent({

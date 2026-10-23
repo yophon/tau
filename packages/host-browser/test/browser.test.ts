@@ -62,7 +62,7 @@ test("browser host fs tools run an agent loop without registering bash", async (
 	const tools = createCodingTools({ fs });
 	assert.deepEqual(
 		tools.map((tool) => tool.name),
-		["read", "grep", "find", "ls", "write", "edit"],
+		["read", "grep", "find", "ls", "write", "edit", "apply_patch"],
 	);
 
 	const platform = fakePlatform([

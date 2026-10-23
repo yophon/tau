@@ -9,6 +9,7 @@
  * pattern exhaustiveness.
  */
 
+import { patchTargets } from "./apply-patch.ts";
 import {
 	canonicalPath,
 	deniesWholeTool,
@@ -174,9 +175,9 @@ const PATH_PROBE_KEYS = ["path", "file_path", "file", "filename", "dest", "targe
 const COMMAND_PROBE_KEYS = ["command", "cmd", "script"] as const;
 
 const READ_TOOLS = new Set(["read", "listDir", "grep", "find", "ls"]);
-const WRITE_TOOLS = new Set(["write", "edit"]);
+const WRITE_TOOLS = new Set(["write", "edit", "apply_patch"]);
 /** Tools accept-edits allows without asking (inside the working directory, off protected paths). */
-const ACCEPT_EDITS_TOOLS = new Set(["write", "edit", "memory_write"]);
+const ACCEPT_EDITS_TOOLS = new Set(["write", "edit", "apply_patch", "memory_write"]);
 
 /**
  * Whether a target path stays inside `cwd`: relative without escaping, or absolute
@@ -246,6 +247,11 @@ function pathHitsEntry(segments: string[], entrySegments: string[]): boolean {
 	return false;
 }
 
+/** The files an edit-shaped call writes: apply_patch names them in its patch (P55a), the others in path arguments. */
+function editTargets(call: Pick<ToolPolicyCall, "toolName" | "args">): string[] {
+	return call.toolName === "apply_patch" ? patchTargets(call.args.input) : probeStrings(call.args, PATH_PROBE_KEYS);
+}
+
 function probeStrings(args: Record<string, unknown>, keys: readonly string[]): string[] {
 	const found: string[] = [];
 	for (const key of keys) {
@@ -292,7 +298,7 @@ export function createDefaultPolicy(options?: DefaultPolicyOptions): ToolPolicy 
 	const classify = (call: ToolPolicyCall): { risk: RiskLevel; reason?: string; protectedPath?: string } => {
 		if (READ_TOOLS.has(call.toolName)) return { risk: "low" };
 		if (WRITE_TOOLS.has(call.toolName)) {
-			for (const target of probeStrings(call.args, PATH_PROBE_KEYS)) {
+			for (const target of editTargets(call)) {
 				const segments = pathSegments(target);
 				for (const { entry, segments: entrySegments } of protectedEntries) {
 					if (pathHitsEntry(segments, entrySegments)) {
@@ -345,7 +351,7 @@ export function createDefaultPolicy(options?: DefaultPolicyOptions): ToolPolicy 
 				}
 			}
 			if ((mode === "accept-edits" || mode === "ci") && risk !== "high" && ACCEPT_EDITS_TOOLS.has(call.toolName)) {
-				const targets = probeStrings(call.args, PATH_PROBE_KEYS);
+				const targets = editTargets(call);
 				const extra = workingDirectories();
 				if (targets.every((target) => isInsideWorkingDirectories(target, call.cwd, extra))) {
 					return { ...base, action: "allow", reason };

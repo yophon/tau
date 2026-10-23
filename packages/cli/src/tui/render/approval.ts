@@ -6,7 +6,7 @@
  */
 import type { ApprovalRequest } from "@yophon/tau-kernel";
 import { plainLine, type StyledLine, span } from "./spans.ts";
-import { displayToolName, editDiff, editPairs } from "./tool-views.ts";
+import { displayToolName, editDiff, editPairs, patchLines } from "./tool-views.ts";
 
 const MAX_LINES = 20;
 
@@ -41,6 +41,9 @@ export function approvalBody(request: ApprovalRequest, max = MAX_LINES): StyledL
 					max,
 				),
 			);
+			break;
+		case "apply_patch":
+			lines.push(...cap(patchLines(str(args, "input")), max));
 			break;
 		case "edit":
 			lines.push(plainLine(str(args, "path"), { underline: true }));

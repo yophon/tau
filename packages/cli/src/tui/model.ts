@@ -516,9 +516,18 @@ export function readableError(text: string): string {
 	return line.split("\n")[0] ?? "";
 }
 
-/** The numbered diff an edit result carries in its details (pi). */
+/** The numbered diff an edit result carries in its details (pi); apply_patch's, file by file under a header line (P55a). */
 export function resultDiff(details: unknown): string | undefined {
-	const diff = (details as { diff?: unknown } | null | undefined)?.diff;
+	const record = details as { diff?: unknown; files?: unknown } | null | undefined;
+	if (Array.isArray(record?.files)) {
+		const files = record.files as Array<{ kind?: string; path?: string; movePath?: string; diff?: string }>;
+		const parts = files.map(
+			(file) =>
+				`${file.kind === "add" ? "A" : file.kind === "delete" ? "D" : "M"} ${file.path}${file.movePath ? ` → ${file.movePath}` : ""}${file.diff ? `\n${file.diff}` : ""}`,
+		);
+		return parts.length > 0 ? parts.join("\n") : undefined;
+	}
+	const diff = record?.diff;
 	return typeof diff === "string" && diff !== "" ? diff : undefined;
 }
 

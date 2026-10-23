@@ -1,3 +1,4 @@
+import { applyPatch, PatchApplyError, patchTargets } from "./apply-patch.ts";
 import { encodeBase64 } from "./base64.ts";
 import type { BackgroundShell, FileSystem, ImageProcessor, Shell } from "./capabilities.ts";
 import { estimateStringTokens } from "./compaction.ts";
@@ -139,6 +140,18 @@ async function withFileMutationQueue<T>(path: string, cwd: string | undefined, f
 		release();
 		if (fileMutationQueues.get(key) === tail) fileMutationQueues.delete(key);
 	}
+}
+
+/** Hold the queues of several files at once, in key order so two calls never wait on each other. */
+async function withFileMutationQueues<T>(
+	paths: readonly string[],
+	cwd: string | undefined,
+	fn: () => Promise<T>,
+): Promise<T> {
+	const keys = [...new Set(paths.map((path) => mutationQueueKey(path, cwd)))].sort();
+	const hold = (index: number): Promise<T> =>
+		index === keys.length ? fn() : withFileMutationQueue(keys[index] as string, undefined, () => hold(index + 1));
+	return hold(0);
 }
 
 const IMAGE_TYPES: Record<string, string> = {
@@ -488,6 +501,76 @@ function createEditTool(fs: FileSystem): Tool {
 	};
 }
 
+/** Codex's apply_patch instructions (codex-rs/core/gpt_5_1_prompt.md), as the tool description. */
+const APPLY_PATCH_DESCRIPTION = `Use the \`apply_patch\` tool to edit files. Your patch language is a stripped-down, file-oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high-level envelope:
+
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
+
+Within that envelope, you get a sequence of file operations.
+You MUST include a header to specify the action you are taking.
+Each operation starts with one of three headers:
+
+*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
+*** Delete File: <path> - remove an existing file. Nothing follows.
+*** Update File: <path> - patch an existing file in place (optionally with a rename).
+
+Example patch:
+
+\`\`\`
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print("Hi")
++print("Hello, world!")
+*** Delete File: obsolete.txt
+*** End Patch
+\`\`\`
+
+It is important to remember:
+
+- You must include a header with your intended action (Add/Delete/Update)
+- You must prefix new lines with \`+\` even when creating a new file`;
+
+/**
+ * P55a: Codex's apply_patch (apply-patch.ts). Not active by default: `--tools +apply_patch`,
+ * settings' defaultTools or setActiveTools turn it on.
+ */
+function createApplyPatchTool(fs: FileSystem): Tool {
+	return {
+		name: "apply_patch",
+		promptSnippet: "Edit, add, delete or rename several files in one patch (Codex's format)",
+		description: APPLY_PATCH_DESCRIPTION,
+		parameters: {
+			type: "object",
+			properties: {
+				input: {
+					type: "string",
+					description: "The entire contents of the patch, from *** Begin Patch to *** End Patch",
+				},
+			},
+			required: ["input"],
+		},
+		defaultActive: false,
+		execute: wrapExecute(async (args) => {
+			const input = requireString(args, "input");
+			return withFileMutationQueues(patchTargets(input), fs.cwd, async () => {
+				try {
+					const result = await applyPatch(fs, input);
+					return textResult(result.summary, { files: result.files.map((file) => ({ ...file })) });
+				} catch (error) {
+					if (error instanceof PatchApplyError) return errorResult(error.message);
+					throw error;
+				}
+			});
+		}),
+	};
+}
+
 /** What bash returns for a command started in the background (Claude Code's wording). */
 export function backgroundStartedText(id: string, outputPath: string): string {
 	return `Command running in background with ID: ${id}. Output is being written to: ${outputPath}`;
@@ -712,7 +795,13 @@ export function createCodingTools(
 		);
 		// Searching and listing only read, so read-only keeps them (P26a).
 		tools.push(createGrepTool(capabilities.fs), createFindTool(capabilities.fs), createLsTool(capabilities.fs));
-		if (!readOnly) tools.push(createWriteTool(capabilities.fs), createEditTool(capabilities.fs));
+		if (!readOnly) {
+			tools.push(
+				createWriteTool(capabilities.fs),
+				createEditTool(capabilities.fs),
+				createApplyPatchTool(capabilities.fs),
+			);
+		}
 	}
 	if (capabilities.shell && !readOnly) {
 		// P36a: background commands come with the shell; read-only has neither.

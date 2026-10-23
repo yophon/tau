@@ -112,6 +112,11 @@ export function formatToolCall(name: string, args: Record<string, unknown>): str
 			return `[write: ${path}]`;
 		case "edit":
 			return `[edit: ${path}]`;
+		case "apply_patch": {
+			const files = String(args.input ?? "").match(/^\s*\*\*\* (?:Add|Delete|Update) File: .*$/gm) ?? [];
+			const first = files[0]?.replace(/^\s*\*\*\* \w+ File: /, "") ?? "";
+			return `[apply_patch: ${shortenPath(first)}${files.length > 1 ? ` +${files.length - 1}` : ""}]`;
+		}
 		case "bash":
 		case "powershell": {
 			const raw = String(args.command ?? "");

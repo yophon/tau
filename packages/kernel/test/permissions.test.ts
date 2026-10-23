@@ -160,7 +160,7 @@ test("createCodingTools read-only mode registers only the reading tools", () => 
 	);
 	assert.deepEqual(
 		createCodingTools(caps).map((tool) => tool.name),
-		["read", "grep", "find", "ls", "write", "edit", "bash"],
+		["read", "grep", "find", "ls", "write", "edit", "apply_patch", "bash"],
 	);
 });
 

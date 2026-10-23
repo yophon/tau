@@ -7,6 +7,19 @@ export {
 	type SetModelOptions,
 	type SummaryModel,
 } from "./agent.ts";
+export {
+	type AppliedFile,
+	applyChunks,
+	applyPatch,
+	PatchApplyError,
+	type PatchChunk,
+	type PatchHunk,
+	PatchParseError,
+	type PatchResult,
+	parsePatch,
+	patchTargets,
+	seekSequence,
+} from "./apply-patch.ts";
 export { decodeBase64, encodeBase64 } from "./base64.ts";
 export {
 	BRANCH_SUMMARY_MAX_TOKENS,
