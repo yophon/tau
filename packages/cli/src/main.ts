@@ -241,6 +241,15 @@ function modelEnvironment(): Record<string, string> {
 	return scrubEnv(process.env, readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow);
 }
 
+/** The endpoint a session runs on (P50: one object, so /model's switch reaches every reader). */
+interface ActiveEndpoint {
+	/** The table entry; undefined on the ad-hoc / env path. */
+	activeModel: ConfiguredModel | undefined;
+	config: OpenAICompatConfig;
+	anthropic: AnthropicTransportConfig | undefined;
+	transport: ChatTransport | undefined;
+}
+
 async function main(): Promise<void> {
 	// P40a (pi): HTTP_PROXY / HTTPS_PROXY / NO_PROXY and settings.json httpProxy apply to every
 	// request, subcommands included. The gateway is parked and stays as it was.
@@ -349,7 +358,7 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 	/** The table entry the session runs on; undefined on the ad-hoc / env path. */
-	let activeModel: ConfiguredModel | undefined = startup.kind === "configured" ? startup.model : undefined;
+	const activeModel: ConfiguredModel | undefined = startup.kind === "configured" ? startup.model : undefined;
 	const model =
 		startup.kind === "configured"
 			? (startup.requestedId ?? startup.model.id)
@@ -499,8 +508,13 @@ async function main(): Promise<void> {
 		headers: activeModel ? resolveHeaders(activeModel, valueResolver) : {},
 		...(activeModel ? { input: activeModel.input ?? ["text"] } : {}),
 	});
-	let config = startupEndpoint.config;
-	let anthropicConfig = startupEndpoint.anthropic;
+	/** The endpoint the session runs on now; /model's commit replaces it (P28). */
+	const endpoint: ActiveEndpoint = {
+		activeModel,
+		config: startupEndpoint.config,
+		anthropic: startupEndpoint.anthropic,
+		transport: startupEndpoint.anthropic ? createAnthropicTransport(startupEndpoint.anthropic, platform) : undefined,
+	};
 	// The thinking level travels with every request (P23d); /thinking changes it on the agent.
 	let thinkingLevel: ThinkingLevel | undefined = userSettings.defaultThinkingLevel;
 	let fixedPricing = options.pricing;
@@ -518,8 +532,9 @@ async function main(): Promise<void> {
 	const pricing = (forModel: string): ModelPricing | undefined => {
 		if (fixedPricing && forModel === pricedModel) return fixedPricing;
 		const entry =
-			configuredModels.find((candidate) => candidate.provider === activeModel?.provider && candidate.id === forModel) ??
-			configuredModels.find((candidate) => candidate.id === forModel);
+			configuredModels.find(
+				(candidate) => candidate.provider === endpoint.activeModel?.provider && candidate.id === forModel,
+			) ?? configuredModels.find((candidate) => candidate.id === forModel);
 		return entry ? modelPricing(entry) : undefined;
 	};
 	let permissionMode = options.permissionMode;
@@ -631,9 +646,6 @@ async function main(): Promise<void> {
 			: readline && process.stdin.isTTY
 				? createUi(readline)
 				: undefined;
-	let transport: ChatTransport | undefined = anthropicConfig
-		? createAnthropicTransport(anthropicConfig, platform)
-		: undefined;
 	/**
 	 * Resolve a /model choice (P28): a table model switches endpoint and protocol
 	 * along with the id (D21 addendum); without a table, or for an id the table
@@ -645,22 +657,22 @@ async function main(): Promise<void> {
 		const found = findModel(configuredModels, requested);
 		if (found === "ambiguous") return { error: `"${requested}" exists on several providers; use provider/id.` };
 		if (!found) {
-			const prefix = activeModel ? `${activeModel.provider}/` : undefined;
+			const prefix = endpoint.activeModel ? `${endpoint.activeModel.provider}/` : undefined;
 			const id = prefix && requested.startsWith(prefix) ? requested.slice(prefix.length) : requested;
 			return {
 				model: id,
-				display: activeModel ? modelRef({ provider: activeModel.provider, id }) : id,
+				display: endpoint.activeModel ? modelRef({ provider: endpoint.activeModel.provider, id }) : id,
 				options: {},
 				commit: () => {
-					config.model = id;
-					if (anthropicConfig) anthropicConfig.model = id;
+					endpoint.config.model = id;
+					if (endpoint.anthropic) endpoint.anthropic.model = id;
 				},
 			};
 		}
 		const key = resolveConfigValue(found.apiKey, valueResolver);
 		const kind: ProviderKind = found.api === "anthropic-messages" ? "anthropic" : "openai";
 		const window = options.contextWindow ?? found.contextWindow;
-		const endpoint = buildEndpoint({
+		const next = buildEndpoint({
 			kind,
 			label: found.provider,
 			baseUrl: found.baseUrl,
@@ -671,23 +683,23 @@ async function main(): Promise<void> {
 			headers: resolveHeaders(found, valueResolver),
 			input: found.input ?? ["text"],
 		});
-		const nextTransport = endpoint.anthropic ? createAnthropicTransport(endpoint.anthropic, platform) : undefined;
+		const nextTransport = next.anthropic ? createAnthropicTransport(next.anthropic, platform) : undefined;
 		return {
 			model: found.id,
 			display: modelRef(found),
 			options: {
-				transport: nextTransport ?? createOpenAICompatTransport(platform, endpoint.config),
-				provider: endpoint.config.provider ?? "openai-compat",
-				api: endpoint.config.api ?? "openai-completions",
+				transport: nextTransport ?? createOpenAICompatTransport(platform, next.config),
+				provider: next.config.provider ?? "openai-compat",
+				api: next.config.api ?? "openai-completions",
 				contextWindow: window,
-				maxOutputTokens: endpoint.config.maxOutputTokens,
+				maxOutputTokens: next.config.maxOutputTokens,
 			},
 			// Agents built later (/reload, /resume) start from the switched endpoint.
 			commit: () => {
-				activeModel = found;
-				config = endpoint.config;
-				anthropicConfig = endpoint.anthropic;
-				transport = nextTransport;
+				endpoint.activeModel = found;
+				endpoint.config = next.config;
+				endpoint.anthropic = next.anthropic;
+				endpoint.transport = nextTransport;
 			},
 		};
 	};
@@ -724,7 +736,8 @@ async function main(): Promise<void> {
 		approvalPromptRef.current = readlineApprovalPrompt;
 	}
 	/** Whether the current model takes images (P36d: read says so when it does not). */
-	const modelTakesImages = (): boolean => config.input === undefined || config.input.includes("image");
+	const modelTakesImages = (): boolean =>
+		endpoint.config.input === undefined || endpoint.config.input.includes("image");
 	/**
 	 * Everything rooted at one working directory (P29): the extensions and the
 	 * project trust decision, the filesystem and shell, the project context, the
@@ -1201,8 +1214,8 @@ async function main(): Promise<void> {
 				}
 			}
 			const built = new Agent({
-				config,
-				transport,
+				config: endpoint.config,
+				transport: endpoint.transport,
 				platform,
 				systemPrompt: [
 					promptSources.system ??
@@ -1324,7 +1337,9 @@ async function main(): Promise<void> {
 	};
 	type Workspace = Awaited<ReturnType<typeof openWorkspace>>;
 	const modelDisplay = (): string =>
-		activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model;
+		endpoint.activeModel
+			? modelRef({ provider: endpoint.activeModel.provider, id: endpoint.config.model })
+			: endpoint.config.model;
 	const tableEntries = configuredModels.map((entry) => ({
 		provider: entry.provider,
 		id: entry.id,
@@ -1335,8 +1350,8 @@ async function main(): Promise<void> {
 	}));
 	const hostSetters = {
 		setHostModel: (nextModel: string) => {
-			config.model = nextModel;
-			if (anthropicConfig) anthropicConfig.model = nextModel;
+			endpoint.config.model = nextModel;
+			if (endpoint.anthropic) endpoint.anthropic.model = nextModel;
 		},
 		setHostThinking: (nextLevel: ThinkingLevel | undefined) => {
 			thinkingLevel = nextLevel;
@@ -1356,7 +1371,7 @@ async function main(): Promise<void> {
 			modelDisplay,
 			modelChoices,
 			...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
-			supportsImages: () => activeModel?.input?.includes("image") === true,
+			supportsImages: () => endpoint.activeModel?.input?.includes("image") === true,
 		});
 		return;
 	}
@@ -1443,7 +1458,7 @@ async function main(): Promise<void> {
 				const entry = configuredModels.find(
 					(candidate) => candidate.provider === last.provider && candidate.id === last.modelId,
 				);
-				if (entry && (entry.provider !== activeModel?.provider || entry.id !== config.model)) {
+				if (entry && (entry.provider !== endpoint.activeModel?.provider || entry.id !== endpoint.config.model)) {
 					const restoredModel = resolveModelSwitch(modelRef(entry));
 					if (!("error" in restoredModel)) restoredModel.commit();
 				}
@@ -1532,7 +1547,7 @@ async function main(): Promise<void> {
 			statusLineContext: () => ({
 				projectDir: cwd,
 				addedDirs: workspace.permissions?.workingDirectories() ?? [],
-				provider: activeModel?.provider ?? config.provider ?? "openai-compat",
+				provider: endpoint.activeModel?.provider ?? endpoint.config.provider ?? "openai-compat",
 				version: CLI_VERSION,
 				...(worktreeSession
 					? {
@@ -1553,7 +1568,9 @@ async function main(): Promise<void> {
 			autoTitle: autoTitleOn(workspace.settings().autoTitle),
 			notify: userSettings.tuiNotify ?? "auto",
 			terminalTitle: userSettings.tuiTitle !== false,
-			model: activeModel ? modelRef({ provider: activeModel.provider, id: config.model }) : config.model,
+			model: endpoint.activeModel
+				? modelRef({ provider: endpoint.activeModel.provider, id: endpoint.config.model })
+				: endpoint.config.model,
 			modelChoices,
 			...(configuredModels.length > 0
 				? {
@@ -1567,9 +1584,9 @@ async function main(): Promise<void> {
 						},
 					}
 				: {}),
-			baseUrl: config.baseUrl,
+			baseUrl: endpoint.config.baseUrl,
 			cwd,
-			contextWindow: config.contextWindow,
+			contextWindow: endpoint.config.contextWindow,
 			permissionMode,
 			sessionRepo,
 			shell,
@@ -1578,8 +1595,8 @@ async function main(): Promise<void> {
 			thinkingLevel,
 			setModel: (nextModel) => {
 				// Agents built later (/reload, /resume) start from the switched model.
-				config.model = nextModel;
-				if (anthropicConfig) anthropicConfig.model = nextModel;
+				endpoint.config.model = nextModel;
+				if (endpoint.anthropic) endpoint.anthropic.model = nextModel;
 			},
 			setThinkingLevel: (nextLevel) => {
 				thinkingLevel = nextLevel;
