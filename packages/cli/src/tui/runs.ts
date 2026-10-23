@@ -12,20 +12,55 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 import { autoTitle } from "../session-title.ts";
+import type { CommandHost } from "./commands.ts";
 import { runCommand, whenCommandRuns } from "./commands.ts";
 import type { TuiController } from "./controller.ts";
+import type { TuiDialogs } from "./dialogs.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
 import { conversationLength, errorText, firstLine, fmtCost, fmtElapsed, fmtInt } from "./format.ts";
 import * as ed from "./input/editor.ts";
 import { expandPastes } from "./input/paste.ts";
+import type { TuiInputBox } from "./input-box.ts";
 import { type PendingInput, queuedInput } from "./input-box.ts";
 import { diagnosticsBlock, type TaskKind } from "./model.ts";
 import type { StyledLine } from "./render/spans.ts";
+import type { TuiSessions } from "./sessions.ts";
+
+/** What runs use from the controller and the other parts (P51). Runs execute commands, so they need all a command may use. */
+export type RunsHost = CommandHost &
+	Pick<
+		TuiController,
+		| "attention"
+		| "columns"
+		| "dispatch"
+		| "now"
+		| "refreshStatus"
+		| "refreshWidgets"
+		| "setEditor"
+		| "setInput"
+		| "stopped"
+		| "terminalStatus"
+		| "turnFailed"
+	> & {
+		readonly dialogs: Pick<TuiDialogs, "closePrompt" | "nextDialogId" | "settleOpenApprovals" | "settlePrompt">;
+		readonly inputBox: Pick<
+			TuiInputBox,
+			| "files"
+			| "filesEpoch"
+			| "forgetEdits"
+			| "history"
+			| "historyIndex"
+			| "pastes"
+			| "restoreQueuedInput"
+			| "takeInput"
+		>;
+		readonly sessions: Pick<TuiSessions, "reloadExtensions" | "showSession">;
+	};
 
 export class TuiRuns {
-	private readonly host: TuiController;
+	private readonly host: RunsHost;
 
-	constructor(host: TuiController) {
+	constructor(host: RunsHost) {
 		this.host = host;
 	}
 

@@ -32,16 +32,64 @@ import { getKeybindings } from "./keybindings.ts";
 import type { PickerItem } from "./model.ts";
 import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
+import type { TuiRuns } from "./runs.ts";
 import { buildTree } from "./session-tree.ts";
+import type { TuiSessions } from "./sessions.ts";
+
+/** What a command's argument completer reads (the input box offers completions through it). */
+export type CompletionHost = Pick<TuiController, "agent" | "model" | "modelChoices" | "options">;
+
+/** What the built-in commands use: controller members, and the runs and session switches they start (P51). */
+export type CommandHost = Pick<
+	TuiController,
+	| "agent"
+	| "ask"
+	| "askAside"
+	| "copyText"
+	| "editKeybindings"
+	| "execute"
+	| "extensions"
+	| "flash"
+	| "guardDirty"
+	| "lastSessionStart"
+	| "lines"
+	| "model"
+	| "modelChoices"
+	| "notice"
+	| "openAside"
+	| "openSearch"
+	| "options"
+	| "pick"
+	| "pickTree"
+	| "pickWithActions"
+	| "pickWithAlt"
+	| "recorder"
+	| "refreshSurfaces"
+	| "runHandoff"
+	| "sessionStore"
+	| "setMode"
+	| "settings"
+	| "shortcutConflicts"
+	| "state"
+	| "stop"
+	| "thinkingLevel"
+	| "ui"
+> & {
+	readonly runs: Pick<
+		TuiRuns,
+		"navigate" | "promptWhenFree" | "renderNewMessages" | "runCompact" | "runPrompt" | "sendQueued"
+	>;
+	readonly sessions: Pick<TuiSessions, "reloadExtensions" | "switchModel" | "switchSession" | "switchThinking">;
+};
 
 export interface BuiltinCommand {
 	name: string;
 	aliases?: string[];
 	args?: string;
 	description: string;
-	run(tui: TuiController, args: string): Promise<void> | void;
+	run(tui: CommandHost, args: string): Promise<void> | void;
 	/** Completions for the text after "/name " (filtered by the command). */
-	complete?(tui: TuiController, prefix: string): CompletionItem[] | Promise<CompletionItem[]>;
+	complete?(tui: CompletionHost, prefix: string): CompletionItem[] | Promise<CompletionItem[]>;
 }
 
 /** A command as the completion menu and the argument completer see it. */
@@ -64,7 +112,7 @@ export const PERMISSION_MODES: ReadonlyArray<{ mode: PermissionMode; hint: strin
 ];
 
 /** The /model choices: table models with their hints, or the configured ids. */
-function modelItems(tui: TuiController): CompletionItem[] {
+function modelItems(tui: CompletionHost): CompletionItem[] {
 	const hints = tui.options.modelHints ?? {};
 	return tui.modelChoices.map((model) => {
 		const hint = [model === tui.model ? "current" : "", hints[model] ?? ""].filter((part) => part !== "").join(" · ");
@@ -802,7 +850,7 @@ export function codeBlocks(markdown: string): Array<{ language: string; code: st
 }
 
 /** /settings → Double Esc (P37b, pi doubleEscapeAction): saved as tui.doubleEscapeAction. */
-async function pickDoubleEscape(tui: TuiController): Promise<void> {
+async function pickDoubleEscape(tui: CommandHost): Promise<void> {
 	const picked = await tui.pick(
 		"Esc twice on an empty input",
 		[
@@ -819,7 +867,7 @@ async function pickDoubleEscape(tui: TuiController): Promise<void> {
 }
 
 /** /settings → Uncommitted-changes check (P37b, pi dirty-repo-guard): saved as session.dirtyRepoGuard. */
-async function pickDirtyGuard(tui: TuiController): Promise<void> {
+async function pickDirtyGuard(tui: CommandHost): Promise<void> {
 	const picked = await tui.pick(
 		"Ask before switching sessions with uncommitted changes",
 		[
@@ -835,7 +883,7 @@ async function pickDirtyGuard(tui: TuiController): Promise<void> {
 }
 
 /** /settings → Screen (P33): saved as tui.mode; the screen changes on the next start. */
-async function pickScreen(tui: TuiController): Promise<void> {
+async function pickScreen(tui: CommandHost): Promise<void> {
 	const current = tui.options.screen ?? "fullscreen";
 	const modes = ["fullscreen", "inline"] as const;
 	const picked = await tui.pick(
@@ -862,7 +910,7 @@ function findBuiltin(name: string): BuiltinCommand | undefined {
 }
 
 /** Every command for completion: built-ins first, then extension commands that do not clash. */
-export function commandList(extensions: ExtensionRegistry, tui?: TuiController): CommandEntry[] {
+export function commandList(extensions: ExtensionRegistry, tui?: CompletionHost): CommandEntry[] {
 	const list: CommandEntry[] = BUILTINS.map((command) => {
 		const complete = command.complete;
 		return {
@@ -894,7 +942,7 @@ export function commandList(extensions: ExtensionRegistry, tui?: TuiController):
 }
 
 /** /tools: a picker of every tool; picking one turns it on or off, Esc closes. */
-async function toggleTools(tui: TuiController): Promise<void> {
+async function toggleTools(tui: CommandHost): Promise<void> {
 	let selected = 0;
 	for (;;) {
 		const active = new Set(tui.agent.getActiveTools());
@@ -988,7 +1036,7 @@ export function usageLines(messages: readonly AgentMessage[], session: Usage): S
 }
 
 /** /context: the window and an estimate of what fills it. */
-function contextLines(tui: TuiController): StyledLine[] {
+function contextLines(tui: CommandHost): StyledLine[] {
 	const context = tui.agent.getContextUsage();
 	const window = context.contextWindow;
 	const groups = new Map<string, number>();
@@ -1078,7 +1126,10 @@ const RUNS_DURING_A_TURN = new Set([
 ]);
 
 /** When a slash command may run while a task works: now, after it, or not a command at all. */
-export function whenCommandRuns(tui: TuiController, text: string): "now" | "later" | "unknown" {
+export function whenCommandRuns(
+	tui: Pick<TuiController, "extensions" | "state">,
+	text: string,
+): "now" | "later" | "unknown" {
 	const parsed = parseCommandLine(text);
 	if (!parsed) return "unknown";
 	const builtin = findBuiltin(parsed.name);
@@ -1091,7 +1142,7 @@ export function whenCommandRuns(tui: TuiController, text: string): "now" | "late
 	return tui.extensions.commands.has(parsed.name) ? "now" : "unknown";
 }
 
-export async function runCommand(tui: TuiController, text: string): Promise<boolean> {
+export async function runCommand(tui: CommandHost, text: string): Promise<boolean> {
 	const parsed = parseCommandLine(text);
 	if (!parsed) return false;
 	const builtin = findBuiltin(parsed.name);
@@ -1126,7 +1177,7 @@ export async function runCommand(tui: TuiController, text: string): Promise<bool
 
 /** A session entry as a picker item, through extension entry renderers first. */
 async function presentEntry(
-	tui: TuiController,
+	tui: CommandHost,
 	entry: SessionEntry,
 	fallback: { label: string; hint?: string } | undefined,
 ): Promise<{ label: string; hint?: string } | undefined> {
@@ -1162,7 +1213,7 @@ function sessionHint(session: SessionMetadata): string {
  * messages, the current session marked, same titles told apart by their id, Ctrl+R to
  * rename and Ctrl+D to delete. Undefined when nothing is chosen (or only the current one).
  */
-async function chooseSession(tui: TuiController, initial: SessionMetadata[]): Promise<SessionMetadata | undefined> {
+async function chooseSession(tui: CommandHost, initial: SessionMetadata[]): Promise<SessionMetadata | undefined> {
 	let sessions = initial;
 	const current = tui.sessionStore ? await tui.sessionStore.getMetadata() : undefined;
 	for (;;) {
@@ -1366,7 +1417,7 @@ function hotkeyLines(extensions: ExtensionRegistry): StyledLine[] {
 	return lines;
 }
 
-async function diagnosticsLines(tui: TuiController): Promise<StyledLine[]> {
+async function diagnosticsLines(tui: CommandHost): Promise<StyledLine[]> {
 	const extensions = tui.extensions;
 	const count = (n: number, what: string): string => `${n} ${what}${n === 1 ? "" : "s"}`;
 	const lines: StyledLine[] = [

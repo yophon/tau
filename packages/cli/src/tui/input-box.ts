@@ -9,8 +9,10 @@ import { homedir, tmpdir } from "node:os";
 import { join, resolve as resolvePath } from "node:path";
 import { type AutocompleteProvider, type AutocompleteProviderFactory, userContentText } from "@yophon/tau-kernel";
 import { imageExtension, quoteIfNeeded, readClipboard } from "./clipboard-read.ts";
+import type { CompletionHost } from "./commands.ts";
 import { commandList } from "./commands.ts";
 import type { TuiController } from "./controller.ts";
+import type { TuiDialogs } from "./dialogs.ts";
 import { errorText } from "./format.ts";
 import {
 	acceptCompletion,
@@ -28,11 +30,22 @@ import { KillRing } from "./input/kill-ring.ts";
 import { expandPastes, foldPaste, markerAfter, markerBefore, newPasteStore } from "./input/paste.ts";
 import type { KeyCommand } from "./keymap.ts";
 import type { QueuedInput } from "./model.ts";
+import type { TuiRuns } from "./runs.ts";
+
+/** What the input box uses from the controller and the other parts (P51); completions go through the commands' CompletionHost. */
+export type InputBoxHost = CompletionHost &
+	Pick<
+		TuiController,
+		"columns" | "deps" | "dispatch" | "execute" | "extensions" | "flash" | "notice" | "setEditor" | "state" | "store"
+	> & {
+		readonly dialogs: Pick<TuiDialogs, "pick">;
+		readonly runs: Pick<TuiRuns, "pending">;
+	};
 
 export class TuiInputBox {
-	private readonly host: TuiController;
+	private readonly host: InputBoxHost;
 
-	constructor(host: TuiController) {
+	constructor(host: InputBoxHost) {
 		this.host = host;
 	}
 

@@ -8,10 +8,16 @@ import { errorText } from "./format.ts";
 import { type SearchMatch, TranscriptSearch } from "./render/search.ts";
 import { blockAt, linkAt, rangeText, selectionRange, type TextPoint, type TranscriptRows } from "./transcript.ts";
 
-export class TuiTranscriptView {
-	private readonly host: TuiController;
+/** What the transcript view uses from the controller (P51). */
+export type TranscriptViewHost = Pick<
+	TuiController,
+	"copyText" | "deps" | "dispatch" | "flash" | "fullscreen" | "layout" | "notice" | "now" | "state"
+>;
 
-	constructor(host: TuiController) {
+export class TuiTranscriptView {
+	private readonly host: TranscriptViewHost;
+
+	constructor(host: TranscriptViewHost) {
 		this.host = host;
 	}
 

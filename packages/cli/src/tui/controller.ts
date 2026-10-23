@@ -92,11 +92,11 @@ const FLASH_MS = 2000;
 const LONG_RUN_MS = 30_000;
 
 export class TuiController {
-	readonly sessions = new TuiSessions(this);
-	readonly runs = new TuiRuns(this);
-	readonly view = new TuiTranscriptView(this);
-	readonly inputBox = new TuiInputBox(this);
-	readonly dialogs = new TuiDialogs(this);
+	readonly sessions: TuiSessions = new TuiSessions(this);
+	readonly runs: TuiRuns = new TuiRuns(this);
+	readonly view: TuiTranscriptView = new TuiTranscriptView(this);
+	readonly inputBox: TuiInputBox = new TuiInputBox(this);
+	readonly dialogs: TuiDialogs = new TuiDialogs(this);
 	readonly store: TuiStore;
 	readonly options: RunTuiOptions;
 	agent: Agent;

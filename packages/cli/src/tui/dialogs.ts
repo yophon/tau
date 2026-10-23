@@ -28,14 +28,36 @@ import {
 	type PromptView,
 } from "./model.ts";
 import { approvalBody, approvalTitle } from "./render/approval.ts";
+import type { TuiRuns } from "./runs.ts";
 import { SessionTreeView, type TreeNode, type TreeRow } from "./session-tree.ts";
 import type { BlockedKind } from "./terminal-status.ts";
+import type { TuiTranscriptView } from "./transcript-view.ts";
 import type { ApprovalAnswer } from "./types.ts";
 
-export class TuiDialogs {
-	private readonly host: TuiController;
+/** What the dialogs use from the controller and the other parts (P51). */
+export type DialogsHost = Pick<
+	TuiController,
+	| "agent"
+	| "attention"
+	| "dispatch"
+	| "flash"
+	| "listHeight"
+	| "notice"
+	| "setEditor"
+	| "setMode"
+	| "settings"
+	| "state"
+	| "store"
+	| "terminalStatus"
+> & {
+	readonly runs: Pick<TuiRuns, "sendQueued">;
+	readonly view: Pick<TuiTranscriptView, "copySelection">;
+};
 
-	constructor(host: TuiController) {
+export class TuiDialogs {
+	private readonly host: DialogsHost;
+
+	constructor(host: DialogsHost) {
 		this.host = host;
 	}
 

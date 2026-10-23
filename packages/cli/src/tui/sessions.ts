@@ -10,12 +10,41 @@ import {
 } from "@yophon/tau-kernel";
 import type { TuiController } from "./controller.ts";
 import { conversationLength, errorText } from "./format.ts";
+import type { TuiInputBox } from "./input-box.ts";
 import { messagesToBlocks } from "./replay.ts";
+import type { TuiRuns } from "./runs.ts";
+
+/** What session switches use from the controller and the other parts (P51). */
+export type SessionsHost = Pick<
+	TuiController,
+	| "agent"
+	| "attachHostActions"
+	| "checkShortcuts"
+	| "clearScreen"
+	| "dispatch"
+	| "extensions"
+	| "lastSessionStart"
+	| "loadKeybindings"
+	| "model"
+	| "modelChoices"
+	| "notice"
+	| "options"
+	| "recorder"
+	| "refreshStatus"
+	| "refreshSurfaces"
+	| "sessionStore"
+	| "state"
+	| "thinkingLevel"
+	| "ui"
+> & {
+	readonly inputBox: Pick<TuiInputBox, "menuCache">;
+	readonly runs: Pick<TuiRuns, "markCustomShown" | "runTask">;
+};
 
 export class TuiSessions {
-	private readonly host: TuiController;
+	private readonly host: SessionsHost;
 
-	constructor(host: TuiController) {
+	constructor(host: SessionsHost) {
 		this.host = host;
 	}
 
