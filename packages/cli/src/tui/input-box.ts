@@ -566,7 +566,7 @@ export class TuiInputBox {
 	 * would run as one command with the others as its arguments.
 	 */
 	private takeBackQueued(): void {
-		const last = this.host.pending.pop();
+		const last = this.host.runs.pending.pop();
 		if (!last) {
 			this.restoreQueuedInput();
 			return;
@@ -583,7 +583,7 @@ export class TuiInputBox {
 			.map((message) => userContentText(message.content))
 			.filter((text) => text !== "");
 		this.host.dispatch({ type: "queue-clear" });
-		for (const item of this.host.pending) this.host.dispatch({ type: "queue-add", input: queuedInput(item) });
+		for (const item of this.host.runs.pending) this.host.dispatch({ type: "queue-add", input: queuedInput(item) });
 		if (texts.length === 0) return;
 		const current = this.host.state.editor.text;
 		this.host.setEditor(ed.fromText([...texts, ...(current.trim() === "" ? [] : [current])].join("\n")));

@@ -11,10 +11,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
 	type Agent,
-	type AgentEvent,
-	type AgentMessage,
-	type CustomMessage,
-	commandPromptContent,
 	type ExtensionRegistry,
 	type PermissionMode,
 	restoreSession,
@@ -24,22 +20,20 @@ import {
 	TauError,
 	type ThinkingLevel,
 	type UiCapability,
-	type UserContent,
-	userContentText,
 } from "@yophon/tau-kernel";
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
 import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
 import { openUrl } from "../open-url.ts";
 import { markActivity, presence } from "../push-notification.ts";
-import { autoTitle } from "../session-title.ts";
+
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 
-import { runCommand, shortcutItems, whenCommandRuns } from "./commands.ts";
+import { shortcutItems } from "./commands.ts";
 import { TuiDialogs } from "./dialogs.ts";
-import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
-import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt, type Tone } from "./format.ts";
+import { renderResultLines } from "./extensions.ts";
+import { errorText, type Tone } from "./format.ts";
 import { acceptCompletion } from "./input/completion.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
@@ -47,7 +41,7 @@ import { InputSplitter, type InputToken } from "./input/keys.ts";
 
 import { inputReport, type PointerEvent, WHEEL_ROWS } from "./input/mouse.ts";
 import { expandPastes } from "./input/paste.ts";
-import { type PendingInput, queuedInput, TuiInputBox } from "./input-box.ts";
+import { TuiInputBox } from "./input-box.ts";
 import {
 	getKeybindings,
 	Keybindings,
@@ -57,12 +51,13 @@ import {
 	setKeybindings,
 } from "./keybindings.ts";
 import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
-import { approvalOptions, diagnosticsBlock, initialState, type TaskKind } from "./model.ts";
+import { approvalOptions, initialState } from "./model.ts";
 import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
 import { useMarkdownTransformers } from "./render/markdown.ts";
 import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
+import { conversationLength, isAbortError, TuiRuns } from "./runs.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import type { TranscriptRows } from "./transcript.ts";
@@ -72,6 +67,7 @@ import type { RunTuiOptions, TuiDeps } from "./types.ts";
 // Kept importable from here (tests, P38).
 export { filterItems } from "./dialogs.ts";
 export { applyEditorCommand, completePathAt } from "./input-box.ts";
+export { conversationLength, parseUserBash } from "./runs.ts";
 
 const ARM_WINDOW_MS = 3000;
 
@@ -97,6 +93,7 @@ const FLASH_MS = 2000;
 const LONG_RUN_MS = 30_000;
 
 export class TuiController {
+	readonly runs = new TuiRuns(this);
 	readonly view = new TuiTranscriptView(this);
 	readonly inputBox = new TuiInputBox(this);
 	readonly dialogs = new TuiDialogs(this);
@@ -118,18 +115,8 @@ export class TuiController {
 	private readonly splitter = new InputSplitter();
 	/** pi's 50 ms wait for the rest of an escape sequence cut off at the end of a read. */
 	private splitTimer: ReturnType<typeof setTimeout> | undefined;
-	private controller: AbortController | undefined;
-	/** Runs requested while a task ran (extension submits, agent_settled races): started after it (P23e). */
-	private readonly pendingStarts: (UserContent | null)[] = [];
-	/**
-	 * Custom messages already drawn (by content key). One that arrives between runs
-	 * (a background subagent's result) is drawn before the next run; counting
-	 * messages instead races with a result landing while a turn wraps up.
-	 */
-	private readonly shownCustom = new Set<string>();
 	/** The widget each row above the input box belongs to, for clicks (P35). */
 	private widgetRows: string[] = [];
-	private readonly toolOutput = new Map<string, string>();
 	private exitTimer: ReturnType<typeof setTimeout> | undefined;
 	/** When the last Esc on an empty, idle input came (pi's double-Esc window, P37b); 0 when none counts. */
 	private lastEscapeAt = 0;
@@ -137,7 +124,7 @@ export class TuiController {
 	private statusLineRunner: { trigger(input: () => unknown): void; stop(): void } | undefined;
 	private sessionMeta: SessionMetadata | undefined;
 	private readonly startedAt: number;
-	private stopped = false;
+	stopped = false;
 	private resolveDone: (() => void) | undefined;
 	readonly done: Promise<void>;
 	readonly ui: UiCapability;
@@ -329,25 +316,25 @@ export class TuiController {
 		if (this.agent.messages.some((message) => message.role !== "system")) {
 			this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
 		}
-		this.markCustomShown();
+		this.runs.markCustomShown();
 		this.checkShortcuts();
 		// session_start after the host actions are in place (P23e, pi bindExtensions order).
 		await this.extensions.notifySessionStart(this.options.sessionReason, this.agent.extensionContext());
 		// A resumed session may have moved back into its worktree (P46).
-		await this.reloadIfMoved();
+		await this.runs.reloadIfMoved();
 		await this.refreshSurfaces();
 		// Command-line prompts (P36c, pi initialMessage + initialMessages): the first now, the rest after it.
 		const [first, ...rest] = this.options.initialPrompts ?? [];
 		if (first !== undefined) {
-			this.pendingStarts.push(...rest);
-			void this.runPrompt(first);
+			this.runs.pendingStarts.push(...rest);
+			void this.runs.runPrompt(first);
 		}
 	}
 
 	async stop(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
-		this.controller?.abort();
+		this.runs.controller?.abort();
 		this.clearTimers();
 		this.statusLineRunner?.stop();
 		try {
@@ -370,18 +357,18 @@ export class TuiController {
 			submitPrompt: (content) => {
 				// A finishing turn: run next. Other tasks refuse loudly so the caller can retry (ext-feishu re-queues).
 				if (this.state.task === "turn") {
-					this.pendingStarts.push(content);
+					this.runs.pendingStarts.push(content);
 					return;
 				}
 				if (this.state.task !== undefined) throw new TauError("busy", `a ${this.state.task} task is running`);
-				void this.runPrompt(content);
+				void this.runs.runPrompt(content);
 			},
 			resumeTurn: () => {
 				if (this.state.task !== undefined) {
-					if (!this.pendingStarts.includes(null)) this.pendingStarts.push(null);
+					if (!this.runs.pendingStarts.includes(null)) this.runs.pendingStarts.push(null);
 					return;
 				}
-				void this.runPrompt(null);
+				void this.runs.runPrompt(null);
 			},
 			shutdown: () => {
 				void this.stop();
@@ -490,7 +477,7 @@ export class TuiController {
 		};
 	}
 
-	private async refreshWidgets(): Promise<void> {
+	async refreshWidgets(): Promise<void> {
 		const above: StyledLine[][] = [];
 		const below: StyledLine[][] = [];
 		const rows: string[] = [];
@@ -797,7 +784,7 @@ export class TuiController {
 			if (id !== undefined && !builtinKeys().has(id)) {
 				for (const shortcut of this.extensions.shortcuts.values()) {
 					if ((normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()) === id) {
-						void this.runShortcut(shortcut.name);
+						void this.runs.runShortcut(shortcut.name);
 						return;
 					}
 				}
@@ -855,7 +842,7 @@ export class TuiController {
 		const now = this.now();
 		if (this.lastEscapeAt !== 0 && now - this.lastEscapeAt < TuiController.DOUBLE_ESCAPE_MS) {
 			this.lastEscapeAt = 0;
-			void this.runSlash(`/${action}`);
+			void this.runs.runSlash(`/${action}`);
 			return;
 		}
 		this.lastEscapeAt = now;
@@ -902,7 +889,7 @@ export class TuiController {
 			return;
 		}
 		let prompt: string | undefined;
-		await this.runTask("handoff", "Generating handoff prompt", async (signal) => {
+		await this.runs.runTask("handoff", "Generating handoff prompt", async (signal) => {
 			try {
 				prompt = await generateHandoffPrompt(this.agent, this.agent.messages, goal, signal);
 				if (prompt === "") this.notice("error", "Handoff failed: the model returned an empty prompt.");
@@ -1145,14 +1132,14 @@ export class TuiController {
 				const runs = command.submit === true && (completion.kind === "slash" || completion.kind === "argument");
 				// Enter on a command or argument completes and runs it in one step (pi, Claude Code).
 				if (runs && item.value === completion.token) {
-					this.submit();
+					this.runs.submit();
 					return;
 				}
 				const next = completion.apply ? completion.apply(item) : acceptCompletion(state.editor.text, completion, item);
 				this.inputBox.pushUndo();
 				this.inputBox.leaveHistory();
 				this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
-				if (runs) this.submit();
+				if (runs) this.runs.submit();
 				return;
 			}
 			case "menu-close": {
@@ -1162,7 +1149,7 @@ export class TuiController {
 				return;
 			}
 			case "interrupt":
-				this.interrupt();
+				this.runs.interrupt();
 				return;
 			case "exit-request":
 				if (state.exitArmed) {
@@ -1176,10 +1163,10 @@ export class TuiController {
 				this.cycleMode();
 				return;
 			case "queue":
-				this.queueFollowUp();
+				this.runs.queueFollowUp();
 				return;
 			case "submit":
-				this.submit();
+				this.runs.submit();
 				return;
 			case "toggle-verbose":
 				this.dispatch({ type: "toggle-verbose" });
@@ -1291,589 +1278,6 @@ export class TuiController {
 		if (this.state.exitArmed) this.dispatch({ type: "armed", exit: false });
 	}
 
-	submit(): void {
-		// Sending something brings the full-screen view back to the end.
-		if (this.state.scroll.top !== undefined) this.dispatch({ type: "scroll" });
-		const raw = this.state.editor.text;
-		// A trailing backslash continues the line (Claude Code habit).
-		if (raw.endsWith("\\")) {
-			this.setEditor(ed.fromText(`${raw.slice(0, -1)}\n`));
-			return;
-		}
-		const prompt = this.state.prompt;
-		if (prompt) {
-			const text = expandPastes(this.inputBox.pastes, this.state.editor.text).trim();
-			if (text === "" && prompt.kind === "tell") return;
-			this.inputBox.forgetEdits();
-			this.dialogs.closePrompt(prompt.id);
-			this.dialogs.settlePrompt(prompt.id, text === "" ? undefined : text);
-			return;
-		}
-		const text = this.inputBox.takeInput();
-		if (text === "") return;
-		this.inputBox.history.push(text);
-		this.inputBox.historyIndex = this.inputBox.history.list().length;
-		const task = this.state.task;
-		if (task === undefined && (text === "exit" || text === "quit")) {
-			void this.stop();
-			return;
-		}
-		if (text.startsWith("/")) {
-			// While a task works, only commands that show something run now; the rest wait (P38c).
-			if (task !== undefined && whenCommandRuns(this, text) === "later") {
-				this.queueCommand(text);
-				return;
-			}
-			void this.runSlash(text);
-			return;
-		}
-		// `#fact` saves a memory instead of prompting (yo-agent #remember, P26c).
-		if (/^#[^#\s]/.test(text) && !text.includes("\n") && this.extensions.commands.has("remember")) {
-			void this.runSlash(`/remember ${text.slice(1).trim()}`);
-			return;
-		}
-		if (task === "turn") {
-			this.sendQueued("steer", text);
-			return;
-		}
-		if (task !== undefined) {
-			this.setEditor(ed.fromText(text));
-			this.notice("dim", `A ${task} task is running. Press Esc to interrupt it; your input stays in the editor.`);
-			return;
-		}
-		const bash = parseUserBash(text);
-		if (bash) {
-			void this.runUserBash(bash.command, bash.record);
-			return;
-		}
-		void this.runPrompt(text);
-	}
-
-	private queueFollowUp(): void {
-		// An open prompt (deny and tell, a question) is answered: the turn is waiting for it.
-		if (this.state.prompt) {
-			this.submit();
-			return;
-		}
-		const text = this.inputBox.takeInput();
-		if (text === "") return;
-		this.inputBox.history.push(text);
-		this.inputBox.historyIndex = this.inputBox.history.list().length;
-		if (text.startsWith("/") && whenCommandRuns(this, text) !== "unknown") {
-			this.queueCommand(text);
-			return;
-		}
-		// Behind a waiting command a follow-up waits too: the queue runs in the order it shows.
-		if (this.pending.length > 0) {
-			this.queuePending({ kind: "prompt", text });
-			return;
-		}
-		this.sendQueued("followUp", text);
-	}
-
-	/**
-	 * Input waiting for the running task to end, run in order then (P38c): slash commands, and
-	 * follow-ups queued after one (Claude Code runs its queue in order).
-	 */
-	readonly pending: PendingInput[] = [];
-	private runningCommands = false;
-
-	private queueCommand(text: string): void {
-		this.queuePending({ kind: "command", text });
-	}
-
-	private queuePending(item: PendingInput): void {
-		this.pending.push(item);
-		this.dispatch({ type: "queue-add", input: queuedInput(item) });
-	}
-
-	private async runPendingCommands(): Promise<void> {
-		if (this.runningCommands) return;
-		this.runningCommands = true;
-		try {
-			while (this.pending.length > 0 && this.state.task === undefined && !this.stopped) {
-				const item = this.pending.shift() as PendingInput;
-				this.dispatch({ type: "queue-remove", input: queuedInput(item) });
-				if (item.kind === "command") await this.runSlash(item.text);
-				else await this.runPrompt(item.text);
-			}
-		} finally {
-			this.runningCommands = false;
-			this.startPending();
-		}
-	}
-
-	sendQueued(kind: "steer" | "followUp", text: string): void {
-		// Extension commands cannot be queued as model input (pi _throwIfExtensionCommand).
-		const name = text.startsWith("/") ? text.slice(1).split(/\s/, 1)[0] : undefined;
-		if (name !== undefined && this.extensions.commands.has(name)) {
-			this.setEditor(ed.fromText(text));
-			this.notice("dim", `/${name} is an extension command; run it when the turn ends.`);
-			return;
-		}
-		this.dispatch({ type: "queue-add", input: { kind, text } });
-		// Input handlers see queued input first and may consume it (pi 0.86.0).
-		void (kind === "followUp" ? this.agent.followUp(text) : this.agent.steer(text)).then(
-			(disposition) => {
-				if (disposition === "handled") {
-					this.dispatch({ type: "queue-clear" });
-					this.notice("dim", `Handled by an extension: ${text}`);
-				}
-			},
-			(error: unknown) => this.notice("error", `Input failed: ${errorText(error)}`),
-		);
-	}
-
-	private async runSlash(text: string): Promise<void> {
-		try {
-			const handled = await runCommand(this, text);
-			if (handled) return;
-		} catch (error) {
-			this.notice("error", `${text.split(/\s/, 1)[0]} failed: ${errorText(error)}`);
-			return;
-		}
-		// Not a command: send it as a prompt (a path such as /etc/hosts, say).
-		if (this.state.task === "turn") this.sendQueued("steer", text);
-		else if (this.state.task === undefined) void this.runPrompt(text);
-	}
-
-	interrupt(): void {
-		if (this.controller) {
-			this.controller.abort();
-			this.dispatch({ type: "activity", text: "Interrupting" });
-		}
-	}
-
-	// ── tasks ────────────────────────────────────────────────────────────────
-
-	/** Hold the task slot for `run`; one task at a time. */
-	async runTask(task: TaskKind, activity: string, run: (signal: AbortSignal) => Promise<void>): Promise<void> {
-		const controller = new AbortController();
-		this.controller = controller;
-		this.dispatch({ type: "task-start", task, activity, at: this.now() });
-		this.terminalStatus?.running();
-		try {
-			await run(controller.signal);
-		} finally {
-			this.controller = undefined;
-			this.dialogs.settleOpenApprovals();
-			this.dispatch({ type: "task-end" });
-			this.terminalStatus?.idle(this.turnFailed);
-			this.turnFailed = false;
-			await this.refreshSurfaces().catch(() => undefined);
-			this.startPending();
-		}
-	}
-
-	/** A prompt an extension command or shortcut asked for: now, or once the running task ends. */
-	async promptWhenFree(text: UserContent): Promise<void> {
-		if (this.state.task === undefined) await this.runPrompt(text);
-		else this.pendingStarts.push(text);
-	}
-
-	private startPending(): void {
-		if (this.state.task !== undefined || this.stopped) return;
-		if (this.pending.length > 0) {
-			void this.runPendingCommands();
-			return;
-		}
-		if (this.runningCommands) return;
-		const next = this.pendingStarts.shift();
-		if (next !== undefined) void this.runPrompt(next);
-	}
-
-	async runPrompt(input: UserContent | null): Promise<void> {
-		await this.runPromptOnce(input);
-		await this.reloadIfMoved();
-	}
-
-	/**
-	 * P46: the session moved into or out of a worktree during the turn: its settings, AGENTS.md
-	 * and extensions follow now, and the TUI's own directory (footer, completion, `!` commands).
-	 */
-	private async reloadIfMoved(): Promise<void> {
-		if (this.state.task !== undefined || !this.options.consumeReload?.()) return;
-		(this.options as { cwd: string }).cwd = process.cwd();
-		this.inputBox.files = undefined;
-		this.inputBox.filesEpoch++;
-		await this.reloadExtensions();
-	}
-
-	private async runPromptOnce(input: UserContent | null): Promise<void> {
-		const before = this.agent.getSessionUsage();
-		const startedAt = this.now();
-		let interrupted = false;
-		let failure: string | undefined;
-		// The slot is taken before anything is awaited: whoever checks state.task next (a queued
-		// command, /follow) sees this turn and waits for it.
-		await this.runTask("turn", "Thinking", async (signal) => {
-			// Messages that arrived since the last run (a background subagent's result) show first.
-			await this.renderUnshownMessages();
-			if (input !== null) {
-				const images = typeof input === "string" ? 0 : input.filter((part) => part.type === "image").length;
-				this.dispatch({ type: "user", text: userContentText(input), images });
-			}
-			try {
-				// input null = an extension-triggered continuation without new user input.
-				const stream = input === null ? this.agent.resume(signal) : this.agent.prompt(input, signal);
-				for await (const event of stream) await this.handleEvent(event);
-			} catch (error) {
-				if (isAbortError(error)) interrupted = true;
-				else {
-					this.turnFailed = true;
-					failure = errorText(error);
-					this.notice("error", `Error: ${failure}`);
-				}
-			}
-			if (signal.aborted) interrupted = true;
-			// Queues survive an abort (kernel contract): put queued text back in the editor
-			// instead of replaying it into the next prompt (pi restoreQueuedMessagesToEditor).
-			this.inputBox.restoreQueuedInput();
-		});
-		const last = this.agent.messages.findLast((message) => message.role === "assistant");
-		if (interrupted || (last?.role === "assistant" && last.stopReason === "aborted")) {
-			this.notice("warn", "■ Interrupted");
-			return;
-		}
-		const elapsed = this.now() - startedAt;
-		if (failure !== undefined || last?.stopReason === "error") {
-			this.attention("error", failure ?? (last?.role === "assistant" ? (last.errorMessage ?? "") : ""), elapsed);
-		} else if (this.pendingStarts.length === 0) {
-			const text =
-				last?.role === "assistant"
-					? last.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" ")
-					: "";
-			this.attention("done", firstLine(text).slice(0, 80), elapsed);
-		}
-		const after = this.agent.getSessionUsage();
-		// Claude Code's past-tense line after a turn, with what it used.
-		const parts = [`Worked for ${fmtElapsed(this.now() - startedAt)}`];
-		const inTokens =
-			after.input + after.cacheRead + after.cacheWrite - (before.input + before.cacheRead + before.cacheWrite);
-		const outTokens = after.output - before.output;
-		if (inTokens > 0 || outTokens > 0) parts.push(`↑${fmtInt(inTokens)} ↓${fmtInt(outTokens)}`);
-		const cost = fmtCost(after.cost.total - before.cost.total);
-		if (cost) parts.push(cost);
-		this.notice("dim", parts.join(" · "));
-		void this.titleSession();
-	}
-
-	/** Session ids whose title was already requested (P34f). */
-	private readonly titled = new Set<string>();
-
-	/** After a turn: the model names a session that has no name yet, in the background (P34f). */
-	private async titleSession(): Promise<void> {
-		const recorder = this.recorder;
-		if (this.options.autoTitle === false || !recorder) return;
-		// console.log goes to the TUI log only: a failed title is not worth a notice.
-		const title = await autoTitle(this.agent, recorder, this.titled, (message) => console.log(message));
-		if (!title || recorder !== this.recorder) return;
-		await this.extensions.notifySessionInfoChanged(title, this.agent.extensionContext());
-		await this.refreshSurfaces().catch(() => undefined);
-	}
-
-	private async handleEvent(event: AgentEvent): Promise<void> {
-		const at = this.now();
-		switch (event.type) {
-			case "assistant_message": {
-				this.dispatch({ type: "agent-event", event, at });
-				const lines = await this.renderMessage(event.message);
-				if (lines) this.dispatch({ type: "assistant-rendered", lines });
-				void this.refreshStatus().catch(() => undefined);
-				return;
-			}
-			case "user_message": {
-				if (event.message.role === "custom") {
-					await this.showMessage(event.message);
-					return;
-				}
-				this.dispatch({ type: "agent-event", event, at });
-				return;
-			}
-			case "tool_result": {
-				// The result rendering lands before the block finishes: a finished block is committed and final.
-				const lines = await this.renderTool(event);
-				if (lines) this.dispatch({ type: "tool-rendered", callId: event.toolCall.id, lines });
-				this.dispatch({ type: "agent-event", event, at });
-				// A tool may have changed what a widget shows (the todo list, say).
-				if (this.extensions.widgets.size > 0) void this.refreshWidgets().catch(() => undefined);
-				return;
-			}
-			case "tool_start":
-			case "tool_update": {
-				this.dispatch({ type: "agent-event", event, at });
-				const lines = await this.renderTool(event);
-				if (lines) this.dispatch({ type: "tool-rendered", callId: event.toolCall.id, lines });
-				return;
-			}
-			default:
-				this.dispatch({ type: "agent-event", event, at });
-		}
-	}
-
-	/** A custom message: an extension renderer's output, else its text when it is meant for display. */
-	private async showMessage(message: CustomMessage | AgentMessage): Promise<void> {
-		if (message.role === "custom") this.shownCustom.add(customKey(message));
-		const diagnostics = diagnosticsBlock(message);
-		if (diagnostics) {
-			this.dispatch({ type: "diagnostics", ...diagnostics });
-			return;
-		}
-		const lines = await this.renderMessage(message);
-		if (lines) this.lines(lines);
-		else if (message.role === "custom" && message.display) this.notice("dim", userContentText(message.content));
-	}
-
-	/** Messages an extension command or shortcut appended outside a run (sendMessage while idle). */
-	async renderNewMessages(start: number): Promise<void> {
-		await this.agent.flush();
-		for (const message of this.agent.messages.slice(start)) {
-			if (message.role === "custom" && !this.shownCustom.has(customKey(message))) await this.showMessage(message);
-		}
-	}
-
-	/** Custom messages in the context that were never drawn. */
-	private async renderUnshownMessages(): Promise<void> {
-		await this.agent.flush();
-		for (const message of this.agent.messages) {
-			if (message.role === "custom" && !this.shownCustom.has(customKey(message))) await this.showMessage(message);
-		}
-	}
-
-	/** Everything in the context counts as shown (a session's history is replayed, not re-announced). */
-	private markCustomShown(): void {
-		for (const message of this.agent.messages) {
-			if (message.role === "custom") this.shownCustom.add(customKey(message));
-		}
-	}
-
-	private async renderMessage(message: AgentMessage): Promise<StyledLine[] | undefined> {
-		for (const renderer of this.extensions.messageRenderers.values()) {
-			if (!messageRendererMatches(renderer, message)) continue;
-			try {
-				const lines = renderResultLines(
-					await renderer.handler(message, this.agent.extensionContext()),
-					this.columns() - 2,
-				);
-				if (lines) return lines;
-			} catch (error) {
-				this.notice("error", `Message renderer ${renderer.name} failed: ${errorText(error)}`);
-				return undefined;
-			}
-		}
-		return undefined;
-	}
-
-	private async renderTool(
-		event: AgentEvent & { type: "tool_start" | "tool_update" | "tool_result" },
-	): Promise<StyledLine[] | undefined> {
-		if (this.extensions.toolRenderers.size === 0) return undefined;
-		const id = event.toolCall.id;
-		if (event.type === "tool_update") this.toolOutput.set(id, (this.toolOutput.get(id) ?? "") + event.partialOutput);
-		const liveOutput = this.toolOutput.get(id);
-		const renderEvent =
-			event.type === "tool_start"
-				? { phase: "start" as const, toolCall: event.toolCall }
-				: event.type === "tool_update"
-					? {
-							phase: "update" as const,
-							toolCall: event.toolCall,
-							partialOutput: event.partialOutput,
-							...(event.stream !== undefined ? { stream: event.stream } : {}),
-							...(liveOutput !== undefined ? { liveOutput } : {}),
-						}
-					: {
-							phase: "result" as const,
-							toolCall: event.toolCall,
-							result: event.result,
-							...(liveOutput !== undefined ? { liveOutput } : {}),
-							...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
-						};
-		if (event.type === "tool_result") this.toolOutput.delete(id);
-		for (const renderer of this.extensions.toolRenderers.values()) {
-			if (!toolRendererMatches(renderer, renderEvent)) continue;
-			try {
-				const lines = renderResultLines(
-					await renderer.handler(renderEvent, this.agent.extensionContext()),
-					this.columns() - 4,
-				);
-				if (lines) return lines;
-			} catch (error) {
-				this.notice("error", `Tool renderer ${renderer.name} failed: ${errorText(error)}`);
-				return undefined;
-			}
-		}
-		return undefined;
-	}
-
-	async runShortcut(name: string): Promise<void> {
-		const shortcut = this.extensions.shortcuts.get(name);
-		if (!shortcut) return;
-		try {
-			await this.agent.flush();
-			const start = this.agent.messages.length;
-			const output = await shortcut.handler(this.agent.extensionContext());
-			await this.renderNewMessages(start);
-			await this.refreshSurfaces();
-			if (typeof output === "string") this.notice("info", output);
-			else if (output?.action === "prompt") await this.promptWhenFree(commandPromptContent(output));
-		} catch (error) {
-			this.notice("error", `Shortcut ${name} failed: ${errorText(error)}`);
-		}
-	}
-
-	/** `!cmd` runs and records the output in context; `!!cmd` only shows it. */
-	async runUserBash(command: string, record: boolean): Promise<void> {
-		if (command === "") {
-			this.notice("error", record ? "Usage: !<command>" : "Usage: !!<command>");
-			return;
-		}
-		const decision = await this.extensions.runUserBash(
-			{ command, recordInContext: record, cwd: this.options.cwd },
-			this.agent.extensionContext(),
-		);
-		if (decision.cancel) {
-			this.notice("dim", `Command cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
-			return;
-		}
-		const effective = decision.command.trim();
-		if (effective === "") {
-			this.notice("dim", "Command cancelled: empty command.");
-			return;
-		}
-		const callId = `user-bash-${this.dialogs.nextDialogId++}`;
-		const call = { type: "toolCall" as const, id: callId, name: "bash", arguments: { command: effective } };
-		await this.runTask("bash", "Running command", async (signal) => {
-			this.dispatch({ type: "agent-event", event: { type: "tool_start", toolCall: call }, at: this.now() });
-			try {
-				const result = await this.options.shell.exec(effective, {
-					signal,
-					onStdout: (chunk) =>
-						this.dispatch({
-							type: "agent-event",
-							event: { type: "tool_update", toolCall: call, partialOutput: chunk, stream: "stdout" },
-							at: this.now(),
-						}),
-					onStderr: (chunk) =>
-						this.dispatch({
-							type: "agent-event",
-							event: { type: "tool_update", toolCall: call, partialOutput: chunk, stream: "stderr" },
-							at: this.now(),
-						}),
-				});
-				const output = formatShellOutput(result);
-				this.dispatch({
-					type: "agent-event",
-					event: {
-						type: "tool_result",
-						toolCall: call,
-						result: {
-							content: [{ type: "text", text: output }],
-							isError: result.exitCode !== 0,
-							structuredContent: { exit_code: result.exitCode },
-						} as never,
-					},
-					at: this.now(),
-				});
-				if (decision.recordInContext) {
-					await this.agent.appendMessage({
-						role: "custom",
-						customType: "user_bash",
-						content: [`$ ${effective}`, output].join("\n\n"),
-						display: true,
-						details: { command: effective, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode },
-						timestamp: Date.now(),
-					});
-					this.notice("dim", "Output added to the context.");
-				}
-			} catch (error) {
-				if (!isAbortError(error)) this.notice("error", `Command failed: ${errorText(error)}`);
-			}
-		});
-	}
-
-	async runCompact(instructions: string | undefined): Promise<void> {
-		const startedAt = this.now();
-		const messagesBefore = conversationLength(this.agent.messages);
-		const tokensBefore = this.agent.getContextUsage().tokens;
-		await this.runTask("compaction", `Compacting ${messagesBefore} messages`, async (signal) => {
-			try {
-				const result = await this.agent.compact(instructions, "manual", signal);
-				if (!result) {
-					this.notice("dim", "Nothing to compact.");
-					return;
-				}
-				const tokensAfter = this.agent.getContextUsage().tokens;
-				const kept = this.agent.messages.filter(
-					(message) => message.role !== "system" && message.role !== "compactionSummary",
-				).length;
-				this.notice(
-					"info",
-					`Compacted ~${fmtInt(Math.max(result.tokensBefore, tokensBefore))} → ~${fmtInt(tokensAfter)} tokens · ${kept}/${messagesBefore} messages kept · ${fmtElapsed(this.now() - startedAt)}`,
-				);
-			} catch (error) {
-				this.notice(
-					isAbortError(error) || (error instanceof TauError && error.code === "cancelled") ? "dim" : "error",
-					isAbortError(error)
-						? "Compaction interrupted."
-						: error instanceof TauError && error.code === "cancelled"
-							? "Compaction cancelled."
-							: `Compaction failed: ${errorText(error)}`,
-				);
-			}
-		});
-	}
-
-	/**
-	 * Move to another entry of the session tree with the task slot held (Esc
-	 * cancels the branch summary). A failed summary offers moving without one (P23e).
-	 */
-	/**
-	 * Move in the session tree (pi navigateTree). Back to one of your messages, its text
-	 * returns to the input box to edit and send again.
-	 */
-	async navigate(entryId: string, options: { summarize?: boolean; customInstructions?: string } = {}): Promise<void> {
-		const summarize = options.summarize !== false;
-		await this.runTask("navigate", summarize ? "Summarizing the branch" : "Moving", async (signal) => {
-			try {
-				let result: { cancelled: boolean; editorText?: string };
-				try {
-					result = await this.agent.navigateTo(entryId, {
-						signal,
-						summarize,
-						...(options.customInstructions !== undefined ? { customInstructions: options.customInstructions } : {}),
-					});
-				} catch (error) {
-					if (!(error instanceof TauError && error.code === "compaction_failed")) throw error;
-					const without = await this.ui.confirm("Branch summary failed. Navigate without a summary?", error.message);
-					if (!without) {
-						this.notice("dim", "Navigation cancelled.");
-						return;
-					}
-					result = await this.agent.navigateTo(entryId, { summarize: false, signal });
-				}
-				if (result.cancelled) {
-					this.flash("Navigation cancelled.");
-					return;
-				}
-				const count = conversationLength(this.agent.messages);
-				if (result.editorText !== undefined) {
-					this.showSession(`Back before that message (${count} messages in context); it is in the input box.`);
-					// pi puts it in the editor; a draft typed meanwhile stays after it.
-					const draft = this.state.editor.text;
-					this.setInput(draft.trim() === "" ? result.editorText : `${result.editorText}\n${draft}`);
-				} else {
-					this.showSession(`Moved (${count} messages in context).`);
-				}
-			} catch (error) {
-				this.notice(
-					isAbortError(error) ? "dim" : "error",
-					isAbortError(error) ? "Navigation cancelled." : `/tree failed: ${errorText(error)}`,
-				);
-			}
-		});
-	}
-
 	/** Clear the visible screen and the scrollback; <Static> then starts over. */
 	clearScreen(): void {
 		if (this.deps.clearScreen) this.deps.clearScreen();
@@ -1938,11 +1342,11 @@ export class TuiController {
 	}
 
 	/** A fresh screen with the current conversation, then a note. */
-	private showSession(note: string): void {
+	showSession(note: string): void {
 		this.clearScreen();
 		this.dispatch({ type: "reset" });
 		this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
-		this.markCustomShown();
+		this.runs.markCustomShown();
 		this.notice("dim", note);
 	}
 
@@ -2000,7 +1404,7 @@ export class TuiController {
 		let previousShutdown = false;
 		// pi reads keybindings.json again on /reload too (P39e).
 		this.loadKeybindings();
-		await this.runTask("reload", "Reloading extensions", async () => {
+		await this.runs.runTask("reload", "Reloading extensions", async () => {
 			try {
 				await previousExtensions.notifySessionShutdown("quit", previousAgent.extensionContext());
 				previousShutdown = true;
@@ -2089,6 +1493,13 @@ export class TuiController {
 		this.notice("dim", `Thinking level set to ${decision.level ?? "default"}.`);
 	}
 
+	// ── runs (runs.ts) ───────────────────────────────────────────────────────
+
+	/** Run a prompt now (P50: runs.ts; tests call it here). */
+	runPrompt(...args: Parameters<TuiRuns["runPrompt"]>): ReturnType<TuiRuns["runPrompt"]> {
+		return this.runs.runPrompt(...args);
+	}
+
 	// ── transcript view (transcript-view.ts) ─────────────────────────────────
 
 	// What the renderer, commands and tests call on the controller (P50: the view lives in transcript-view.ts).
@@ -2175,7 +1586,7 @@ export class TuiController {
 	terminalStatus:
 		| (Pick<TerminalStatus, "running" | "waiting" | "idle"> & Partial<Pick<TerminalStatus, "active">>)
 		| undefined;
-	private turnFailed = false;
+	turnFailed = false;
 
 	setTerminalStatus(
 		status: Pick<TerminalStatus, "running" | "waiting" | "idle"> & Partial<Pick<TerminalStatus, "active">>,
@@ -2204,40 +1615,8 @@ export class TuiController {
 	}
 }
 
-function customKey(message: CustomMessage): string {
-	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
-}
-
-/** Conversation messages for user-facing counts (system messages are prompt state, P22). */
-export function conversationLength(messages: readonly { role: string }[]): number {
-	return messages.filter((message) => message.role !== "system").length;
-}
-
-/** `!cmd` records the output in context, `!!cmd` does not. */
-export function parseUserBash(input: string): { command: string; record: boolean } | undefined {
-	if (input.startsWith("!!")) return { command: input.slice(2).trim(), record: false };
-	if (input.startsWith("!")) return { command: input.slice(1).trim(), record: true };
-	return undefined;
-}
-
-function formatShellOutput(result: { stdout: string; stderr: string; exitCode: number }): string {
-	const parts: string[] = [];
-	if (result.stdout !== "") parts.push(result.stdout.trimEnd());
-	if (result.stderr !== "") parts.push(result.stderr.trimEnd());
-	let output = parts.filter((part) => part !== "").join("\n");
-	if (output === "") output = "(no output)";
-	if (result.exitCode !== 0) output += `\nExit code ${result.exitCode}`;
-	return output;
-}
-
 function unique(values: string[]): string[] {
 	return [...new Set(values.filter((value) => value !== ""))];
-}
-
-function isAbortError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	if (error.name === "AbortError") return true;
-	return "code" in error && error.code === "aborted";
 }
 
 /** The git branch, best effort: the ref name in .git/HEAD, a short sha when detached. */

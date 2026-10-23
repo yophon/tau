@@ -242,7 +242,7 @@ export class TuiDialogs {
 					this.host.dispatch({ type: "approval-open", id: pending.id, request: pending.request });
 					return;
 				}
-				this.host.sendQueued("steer", text);
+				this.host.runs.sendQueued("steer", text);
 				this.settleApproval(pending.id, "deny");
 			});
 			return;

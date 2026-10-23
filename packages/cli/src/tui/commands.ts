@@ -103,7 +103,7 @@ const BUILTINS: BuiltinCommand[] = [
 		name: "compact",
 		args: "[instructions]",
 		description: "Summarize older conversation context",
-		run: (tui, args) => tui.runCompact(args === "" ? undefined : args),
+		run: (tui, args) => tui.runs.runCompact(args === "" ? undefined : args),
 	},
 	{
 		name: "model",
@@ -241,7 +241,7 @@ const BUILTINS: BuiltinCommand[] = [
 				return;
 			}
 			if (args !== "") {
-				await tui.navigate(args);
+				await tui.runs.navigate(args);
 				return;
 			}
 			// P39f: pi's tree selector, every entry with its branches, opened at the current leaf.
@@ -263,7 +263,7 @@ const BUILTINS: BuiltinCommand[] = [
 			// pi: whether to summarize the branch being left, no summary first; settings'
 			// branchSummary.skipPrompt (P40c) takes no summary without asking.
 			if (tui.settings.branchSummary?.skipPrompt === true) {
-				await tui.navigate(picked, { summarize: false });
+				await tui.runs.navigate(picked, { summarize: false });
 				return;
 			}
 			const choice = await tui.pick("Summarize branch?", [
@@ -283,7 +283,7 @@ const BUILTINS: BuiltinCommand[] = [
 					return;
 				}
 			}
-			await tui.navigate(picked, {
+			await tui.runs.navigate(picked, {
 				summarize: choice !== "none",
 				...(customInstructions !== undefined ? { customInstructions } : {}),
 			});
@@ -606,10 +606,10 @@ const BUILTINS: BuiltinCommand[] = [
 			}
 			if (tui.state.task !== "turn") {
 				tui.notice("dim", "No turn is running; sending it now.");
-				void tui.runPrompt(args);
+				void tui.runs.runPrompt(args);
 				return;
 			}
-			tui.sendQueued("followUp", args);
+			tui.runs.sendQueued("followUp", args);
 		},
 	},
 	{
@@ -711,7 +711,7 @@ const BUILTINS: BuiltinCommand[] = [
 				tui.notice("dim", "A task is running; run /init when it ends.");
 				return;
 			}
-			void tui.runPrompt(INIT_PROMPT);
+			void tui.runs.runPrompt(INIT_PROMPT);
 		},
 	},
 	{
@@ -1106,7 +1106,7 @@ export async function runCommand(tui: TuiController, text: string): Promise<bool
 		await tui.agent.flush();
 		const start = tui.agent.messages.length;
 		const output = await command.handler(parsed.args, tui.agent.extensionContext());
-		await tui.renderNewMessages(start);
+		await tui.runs.renderNewMessages(start);
 		await tui.refreshSurfaces();
 		if (typeof output === "string") tui.notice("info", output);
 		else if (output?.action === "prompt") {
@@ -1117,7 +1117,7 @@ export async function runCommand(tui: TuiController, text: string): Promise<bool
 			);
 			if (expansion.cancel)
 				tui.notice("warn", `/${parsed.name} blocked${expansion.reason ? `: ${expansion.reason}` : "."}`);
-			else await tui.promptWhenFree(commandPromptContent(output));
+			else await tui.runs.promptWhenFree(commandPromptContent(output));
 		}
 	} catch (error) {
 		tui.notice("error", `/${parsed.name} failed: ${errorText(error)}`);
