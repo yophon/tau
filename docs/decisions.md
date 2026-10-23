@@ -239,6 +239,15 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D53：整理只搬不改，内核只拆独立块，完成记录以规格书为准（2026-10-22，P50，用户确认）
+
+- **拆分只是搬运**：不加功能、不改行为，现有测试一条不删、断言不改，每个模块一个提交。闭包捕获的变量改成显式对象传递（CLI 的 `ActiveEndpoint`、`RunState`、`WorkspaceContext`），可变状态仍只有一份。
+- **CLI 照 pi 的 `cli/` 目录分文件**：`args.ts`、`util.ts`、`project-trust.ts`、`extension-loading.ts`、`endpoint.ts`、`workspace.ts`、`modes/repl.ts`，worktree 的收尾回 `worktree.ts`。main.ts 不静态引入 Ink 的约束照旧。
+- **TUI 控制器对外仍是一个对象**：拆出的 `dialogs.ts`、`input-box.ts`、`transcript-view.ts`、`runs.ts`、`sessions.ts` 经控制器互相访问，状态只在一处；测试会替换的方法（`warmSearch`/`prepareSearch`）留在控制器上。
+- **内核只拆和主循环耦合不深的四块**（`tool-state.ts`、`subagent-spawn.ts`、`aside.ts`、`navigation.ts`），主循环与压缩留在 agent.ts，P23 的偏差照旧。拆出的模块经 Agent 内部建的 getter 适配器读它的私有状态，`Agent` 不新增公开成员；模块只引入 Agent 的类型，建子 agent 用回调，避免循环引用；新模块的导出列进 barrel 测试的 INTERNAL。agent.ts 从 2862 行到 2509 行，没到规格写的 2200：四块合起来比估计的小，再往下就要拆压缩或主循环，超出确认的范围。`completeText` 留在 Agent：它是 compaction.ts 同名函数外面的几行包装，搬进 aside.ts 要改名，没有收益。
+- **文档写现状**：architecture.md 按包和模块写，以后的阶段改现状、不追加按阶段的段落；roadmap 的已完成阶段是一张表，完成记录以规格书的「实施记录」为准，旧版原样归档到 `docs/archive/2026-10-22/`（早期阶段有的规格书没有实施记录，以旧版 roadmap 为准）；README 的功能清单每块两三行，细节链到 docs。development.md 的归档步骤随之改写。
+- **两个偶发测试没复现**（各单独 20 遍、p41 场景 12 路并发 60 次、全量 3 遍）：tui-p38 的等待由 3 秒放宽到 10 秒；p41 的那次是子进程约 0.4 秒就退出、没发请求，同一轮里 `tau -v` 都要 1 秒，像是满载下进程没起来，测试辅助函数改为打出非零退出码与输出，下次出现时能看到原因。
+
 ## D52：Claude Code 新出的几个小功能（2026-10-22，P49，用户确认）
 
 - **子 agent 的 frontmatter**：照 Claude Code 加 `effort`、`autoCompactWindow`、`disallowedTools`、`maxTurns`、`background`；工具每一步可带 `effort`，优先于定义，续接沿用第一次的。写错的值不生效、在 `/agents` 里标出。`background: true` 的 agent 出现在一次调用里，整次调用就在后台跑（等于每次都带 `background`）。

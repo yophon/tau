@@ -4,7 +4,7 @@
 
 ## 环境与命令
 
-- Node ≥ 22.19（原生 type-stripping，**开发期**零构建直接跑源码；P8 引入 `@earendil-works/pi-tui` 后的最低版本。发布物是 dist JS——Node 拒绝 strip node_modules 里的 .ts，见 D17）
+- Node ≥ 22.19（原生 type-stripping，**开发期**零构建直接跑源码。发布物是 dist JS——Node 拒绝 strip node_modules 里的 .ts，见 D17）
 - `npm install --ignore-scripts` — 安装依赖
 - `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁** + 依赖钉死 + shrinkwrap 校验。改完代码必跑，全绿才算完
 - `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试 + CLI e2e）
@@ -21,7 +21,7 @@
 - pi 快照位于本仓库同级目录 `../pi`，**tag v1.4.0**（D51，2026-10-22 重锚；此前为 v1.2.0，见 D23，更早为 v0.80.3，见 D11）。快照不在仓库里，丢失或换机后用 `git clone --depth 1 --branch v1.4.0 https://github.com/earendil-works/pi ../pi` 重建（上游已由 `pi-mono` 更名为 `pi`）。核对：`../pi/packages/coding-agent/package.json` 的 version 为 1.4.0
 - "先读 pi / 照抄 pi" 一律以该快照为准。只照抄打过 tag 的版本，Unreleased 与 main 只作信息。升级快照 = 在 decisions.md 追加记录，并重跑 `node scripts/check-pi-parity.mjs`（从快照 `types.ts` 抽取扩展面成员，与 pi-parity.md 三张表比对；不进 `npm run check`，CI 没有快照）
 - CLI 的 TUI 基于 Ink（D31），不随参照快照走；TUI 的单测和集成测试用 ink-testing-library（`packages/cli/test/tui-*.test.ts`），真终端行为由 `npm run smoke:tui`（tmux）覆盖。Windows 本机在 WSL 里跑：`wsl.exe -e bash scripts/smoke-tui-wsl.sh`（P48，原技术债 #22：先把仓库 rsync 到 WSL 自己的 `~/.cache/tau-smoke/tau` 再跑，不经 `/mnt/d`；环境变量这样带进去：`wsl.exe -e env SMOKE_TUI_MODE=inline SMOKE_ONLY=p47 bash scripts/smoke-tui-wsl.sh`）
-- roadmap 每个阶段列有"先读 pi"的具体文件清单；读了清单之外的关键文件，补记进该阶段规格书
+- 每个阶段的规格书列有"先读 pi"的具体文件清单；读了清单之外的关键文件，补记进规格书
 
 ## 硬规则
 
@@ -54,8 +54,9 @@
 - [ ] 规格书的验收清单逐项勾掉
 
 **4. 归档（完成才算数）**
-- [ ] roadmap.md：状态 ✅ + 完成记录（测试数、e2e 方式、与规格的偏差）
-- [ ] architecture.md：代码地图与相关小节更新，"最后更新"改日期
+- [ ] 规格书的「实施记录」：完成记录（测试数、e2e 方式、与规格的偏差）
+- [ ] roadmap.md：阶段从进行中移进「已完成阶段」表（链接规格书、一句内容、日期、决策），下一阶段成为当前工作
+- [ ] architecture.md：按包和模块把代码地图与相关小节改成现状（不追加按阶段的段落），"最后更新"改日期
 - [ ] pi-parity.md：涉及的 pi 特性状态更新
 - [ ] decisions.md：新决策/推翻追加（不删旧条目）
 - [ ] 规格书顶部标注"已完成 (日期)"
