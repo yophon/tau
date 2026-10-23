@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-22（P50 整理：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P50**）
+> 最后更新：2026-10-23（P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**下一阶段待定**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -63,12 +63,9 @@
 | [P47](specs/phase-47-mcp-2026-07-28.md) | MCP 2026-07-28 新规范 | 2026-10-22 | D50 |
 | [P48](specs/phase-48-pi-1-4.md) | 跟进 pi 1.3 / 1.4，补齐 OAuth | 2026-10-22 | D51 |
 | [P49](specs/phase-49-claude-code-small-features.md) | 补 Claude Code 新出的几个小功能 | 2026-10-22 | D52 |
+| [P50](specs/phase-50-consolidation.md) | 修整：文档写成现状，CLI `main.ts`、TUI 控制器、内核 `agent.ts` 按职责拆开，两个偶发测试 | 2026-10-23 | D53 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
-
-## Phase 50 🚧 修整：文档与代码结构
-
-规格书（2026-10-22 确认；用户：「可以，做吧」）：[specs/phase-50-consolidation.md](specs/phase-50-consolidation.md)。不加功能、不改行为：architecture.md 重写成现状、roadmap 已完成阶段压成表、README 精简；CLI 的 `main.ts`、TUI 的 `controller.ts` 按职责拆开，内核 `agent.ts` 拆出独立块；查清两个偶发失败的测试。
 
 ## 产品层后续 ⬜ 待定
 

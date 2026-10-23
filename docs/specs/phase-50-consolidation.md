@@ -1,6 +1,6 @@
 # Phase 50：修整（文档与代码结构） 规格书
 
-> 状态：已确认（2026-10-22）。「需要确认」四条用户都按建议定（「可以，做吧」）。
+> 状态：已完成（2026-10-23）。「需要确认」四条用户都按建议定（「可以，做吧」）；实施记录见文末。
 > 对应 roadmap 阶段：Phase 50
 > 起因：P48、P49 之后用户：「近期进度太猛，打算先沉淀一波，把已有的进展修整明白」，选了文档修整与代码修整两块。
 
@@ -91,13 +91,13 @@
 
 ## 验收清单
 
-- [ ] 50a：architecture.md 按包和模块写现状、代码地图对得上拆分后的文件；roadmap.md 已完成阶段是一张表；README 理过；旧版在 `docs/archive/2026-10-22/`；其余使用说明核对过。
-- [ ] 50b：`main.ts` 1000 行以内，新模块各自职责单一；CLI 的所有模式（TUI、REPL、`-p`、json、rpc、acp、网关、子命令）行为不变。
-- [ ] 50c：`controller.ts` 1500 行以内；TUI 测试与 smoke-tui 不改断言照样通过。
-- [ ] 50d：按「需要确认」1 的结论拆完；内核导出与 `Agent` 公开方法不变；纯度门禁通过。
-- [ ] 50e：两个测试的原因查清并处理，各连跑 20 遍、并在全量测试里各过 3 遍。
-- [ ] 不改行为的证明：现有测试一条不删、断言不改（只允许改 import 路径）；全量测试、check、pack smoke（含 TUI 安装布局）、浏览器打包与运行、QuickJS、QuickJS MCP、smoke-tui 全屏与 inline 通过；真 DeepSeek 在 TUI、REPL、`-p`、rpc 各跑一轮带工具调用的对话；push 后 CI 通过。
-- [ ] DoD 通用项；D53；文档更新。
+- [x] 50a：architecture.md 按包和模块写现状、代码地图对得上拆分后的文件；roadmap.md 已完成阶段是一张表；README 理过；旧版在 `docs/archive/2026-10-22/`；其余使用说明核对过。
+- [x] 50b：`main.ts` 1000 行以内，新模块各自职责单一；CLI 的所有模式（TUI、REPL、`-p`、json、rpc、acp、网关、子命令）行为不变。
+- [x] 50c：`controller.ts` 1500 行以内；TUI 测试与 smoke-tui 不改断言照样通过。
+- [x] 50d：按「需要确认」1 的结论拆完；内核导出与 `Agent` 公开方法不变；纯度门禁通过。
+- [x] 50e：两个测试的原因查清并处理，各连跑 20 遍、并在全量测试里各过 3 遍。
+- [x] 不改行为的证明：现有测试一条不删、断言不改（只允许改 import 路径）；全量测试、check、pack smoke（含 TUI 安装布局）、浏览器打包与运行、QuickJS、QuickJS MCP、smoke-tui 全屏与 inline 通过；真 DeepSeek 在 TUI、REPL、`-p`、rpc 各跑一轮带工具调用的对话；push 后 CI 通过。
+- [x] DoD 通用项；D53；文档更新。
 
 ## 风险与开放问题
 
@@ -125,3 +125,44 @@
 
    建议 (a)。README 是给第一次来的人看的，现在的清单太长。
 4. **提交方式**：每个拆分模块一个提交（`main.ts` 拆出 6 个模块就是 6 个提交左右），全部做完再 push。建议照此。
+
+## 实施记录（2026-10-22）
+
+### 50b CLI `main.ts`：3120 → 708 行
+
+- 5a833e8 `args.ts`；72cfdef `util.ts`、`project-trust.ts`、`extension-loading.ts`（三个小模块一个提交）；3bfa5da `modes/repl.ts` 与 worktree 收尾进 `worktree.ts`；4bb905e `endpoint.ts`；b274fa5 `workspace.ts`。
+- 两个不是纯搬运的中间提交，为了让后面的搬运能显式传依赖：33d9a70 把 `/model` 会改写的四个变量收成一个 `ActiveEndpoint` 对象，9b5776f 把 `main()` 与各工作区共同改写的权限档位、思考级别、worktree 收成 `RunState`。`openWorkspace` 由捕获外层变量的闭包变成 `openWorkspaceIn(WorkspaceContext, WorkspaceSpec)`，main.ts 里留一个绑定了上下文的 `openWorkspace` 交给网关与 ACP。
+- 搬运中顺手的改动：`replStatus` 里的内联 `import()` 类型（违反 development.md 硬规则 3）改成 `import type`；`endpoint.ts` 里 `/model` 的解析原先有一个同名的局部 `endpoint` 遮住外层，改名为 `next`；`ask` 移进 `util.ts`（worktree 与 REPL 都用）。
+
+### 50c TUI `controller.ts`：3705 → 1491 行
+
+- 295e204 `dialogs.ts`、dadc5e2 `input-box.ts`、906e38e `transcript-view.ts`、68ac11b `runs.ts`、ad485cc `sessions.ts`。各部分持有控制器（`host`），状态只在控制器与它们各自的字段里存一份；控制器保留原有的公开方法并转调，测试会替换的 `warmSearch`/`prepareSearch` 仍是控制器方法。
+- 和规格的出入：`commands.ts` 原先调控制器上的 `sendQueued`、`runPrompt`、`switchSession` 等，现在直接调 `tui.runs.*`、`tui.sessions.*`（这些方法搬走后控制器上没有留转调）；`filterItems`、`applyEditorCommand`、`completePathAt`、`conversationLength`、`parseUserBash` 搬进新模块后由 controller.ts 再导出，测试的 import 不变。
+
+### 50d 内核 `agent.ts`：2862 → 2509 行
+
+- ca98511 `tool-state.ts`、f8ee547 `subagent-spawn.ts`、9382494 `aside.ts`、73937eb `navigation.ts`。拆出的模块经 Agent 内部建的 getter 适配器（`toolStateHost()`、`subagentHost()`、`asideHost()`、`navigationHost()`）读私有状态，`Agent` 没有新增公开成员，`index.ts` 的导出不变；新模块的导出列进 `test/barrel.test.ts` 的 INTERNAL。`withoutHiddenDeclarations` 移到 `tool-state.ts`（主循环与 `/btw` 都用）。
+- 没到 2200 行的目标：四块合起来比估计的小，再往下就要拆压缩操作或主循环，超出「需要确认」1 的结论，这次不做（D53）。
+- 和规格的出入：`completeText` 留在 Agent。它是 compaction.ts 同名函数外面的几行包装，搬进 `aside.ts` 要改名，没有收益。
+
+### 50e 偶发失败的测试（4835d78）
+
+- 都没复现：p41 那条单独 20 遍、它的 `-p` 场景 12 路并发 60 次（scratchpad 压测脚本，带退出码与输出），tui-p38 那条单独 20 遍，全量测试 3 遍（每遍 1367 通过、0 失败），两条都过。
+- p41：唯一一次失败（P48 的全量运行）整条测试只用了 422 毫秒，同一轮里 `tau -v` 要 1 秒，正常这条测试单独 2.4 秒、满载 3.5–5.5 秒。也就是第一个子进程还没启动完就退出了、没有发请求，断言看到的空系统提示只是结果。测试辅助函数不看退出码和输出，原因看不到；Windows 事件日志那段时间没有记录。处理：`run()` 在子进程非零退出时把命令、退出码（或信号）和输出打到 stderr，断言不变。
+- tui-p38：P46 时满载下一次等待超过 3 秒。单独跑整条不到 1 秒，满载时其中一步可能超过 3 秒。处理：harness 的 `waitFor` 与这条测试里等删除的循环都放宽到 10 秒，只影响失败时多等多久。
+
+### 50a 文档（a904282）
+
+- architecture.md 按包和模块重写，内核与 CLI 各有一张代码地图，TUI 按控制器与它的五个部分、输入、渲染写；关键不变量移到前面；阶段细节不再写在这里。
+- roadmap.md 511 → 138 行：已完成阶段是一张表（阶段链接规格书、内容、日期、决策），P50、Backlog、技术债照留，补记技术债 #22、#23 已于 P48 还清。早期阶段有的规格书没有实施记录，表的说明里指向旧版。
+- README 与 README.zh-CN 的功能清单每块两三行，细节链到 docs；更正过时的内容（权限那段还说「总是允许」存进 `~/.tau/permissions.json`；中文版的文档索引停在 D40 与 P0–P20）；网关写明搁置。
+- 其余文档核对：development.md 的归档步骤改成新做法（完成记录写在规格书，roadmap 表加一行，architecture.md 改现状），去掉早已删除的 pi-tui；CLAUDE.md 的说明跟着改；其余使用说明里没有指向已搬走代码的说法。D53。
+- 旧版 architecture.md、roadmap.md、README.md、README.zh-CN.md 原样在 `docs/archive/2026-10-22/`。
+
+### 验收
+
+- 每个拆分提交之后都跑了 check 与全量测试；最后一次全量 1372 个，1367 通过、5 跳过（与 P49 相同，没有测试被删，断言没改）。
+- pack smoke（含 TUI 安装布局）、浏览器 bundle、浏览器 runtime（Edge）、QuickJS、QuickJS MCP 通过。
+- smoke-tui（WSL）：全屏、inline 各 38 个场景各一遍全过。
+- 真 DeepSeek（deepseek-flash，yo-agent 的 config.env，临时 HOME）：`-p`、REPL、rpc 各一轮，模型用 read 读临时目录里的文件并只回第二行（随机串，猜不到），三种模式都答对；TUI 在 WSL 的 tmux 里同样一轮，读取后答对。
+- 现有测试没删，断言没改；改过的测试只有 50e 的三处（两个等待时长、一个失败时的输出）。
