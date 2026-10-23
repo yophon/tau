@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-23（P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-23（P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -170,7 +170,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 
 ### 启动
 
-`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）→ 进入模式：TUI（交互终端缺省，`--tui` 显式要求）、REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|rpc|acp`、`tau serve`（会话中枢，`server/`）。网关、ACP 与 `tau serve` 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
+`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 进入模式。TUI（交互终端缺省，`--tui` 显式要求，`tui-hub.ts`）与 `--mode rpc`（`rpc-hub.ts`）在本进程起一个会话中枢、经进程内通道连上（`local-hub.ts`：中枢、会话客户端、照旧选第一个会话——新的、`-c` 最近的、`--session` 指定的），由中枢为会话开工作区；`tau serve`（`server/`）是同一个中枢。其余模式为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）：REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|acp`。网关与 ACP 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
 
 ### 代码地图
 
@@ -210,16 +210,20 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | **子命令** | |
 | `tool-commands.ts` | `tau credentials`、`tau mcp list/login/logout`、`tau audit` |
 | `gateway.ts` | `tau gateway`：给网关提供 `openConversation`（工作区加 `HeadlessSession`） |
-| **会话中枢（server/，P56）** | 常驻多客户端的第一步，协议见 [protocol.md](protocol.md) |
-| `server/hub.ts` | `SessionHub`：已加载的会话与连接（`HubConnection`，每个是一个 `JsonRpcPeer`），协议方法的分发（未 `initialize` 拒绝），存档会话的列出与读取（一个不起 MCP 的工作区），按需加载、空闲 60 秒卸载 |
-| `server/thread.ts` | `HubThread`：一个工作区 + 一个 `HeadlessSession`（同网关的对话）；推送编号（`seq`）并保留 20000 条，订阅者，`thread/resume` 的补齐或快照；审批与对话框发给所有订阅者、先答为准、其余收到 `serverRequest/resolved`、没人接着时等待；`turn/start` 排队、steer、interrupt；会话自己发起的运行也算一轮 |
-| `server/items.ts` | AgentEvent → 条目与推送（`ItemTracker`），对话 → 条目快照（`itemsFromMessages`） |
+| **会话中枢（server/，P56–P57）** | 一个 tau 持有会话、多个客户端接上同一个会话；TUI 与 `--mode rpc` 也是它的客户端。协议见 [protocol.md](protocol.md) |
+| `server/hub.ts` | `SessionHub`：已加载的会话与连接（`HubConnection`：一个 `JsonRpcPeer`，加上它声明的能力——原样数据、pi 事件记录、宽度），协议方法的分发（未 `initialize` 拒绝），换会话（`previousThreadId`：先问 `session_before_switch`，只有这个客户端持有且闲着时把工作区交给新会话），存档会话的列出、读取、改名、删除（借已加载会话的工作区，没有时开一个不起 MCP 的），按需加载、空闲 60 秒卸载，扩展要求退出时卸下 |
+| `server/thread.ts` | `HubThread`：一个工作区 + 一个 `HeadlessSession`（同网关的对话）；推送编号（`seq`）并保留 20000 条，只发给部分客户端的推送（原样数据、pi 事件记录）也占编号；订阅者与加入结果（补齐或快照，原样客户端拿对话与状态）；打开会话的客户端在扩展启动前就订阅、信任问题问它；审批与对话框发给所有订阅者、先答为准、其余收到 `serverRequest/resolved`、没人接着时等待，对话框可带信号与超时；一次一件事（`runTask`：轮之外的压缩、移动、`!` 命令、重载、交接），`turn/start` 排在后面；会话自己发起的运行也算一轮；一轮结束后 worktree 移动触发重载、无名会话取标题；`handover` 把工作区与扩展交给客户端移去的会话；自动补全 provider 链（底层是客户端送来的自己的补全） |
+| `server/control.ts` | 会话控制，照 TUI 原来的代码：换模型与推理强度（经扩展钩子）、权限模式、命名、条目、压缩与 `/tree` 移动（任务）、`!` 命令（任务，输出作为 `bash` 调用的工具事件推出）、`/btw`、取回排队、重载（失败时恢复旧扩展）、交接、检查点 |
+| `server/ui.ts` | 扩展的界面在中枢一侧：会话的 `UiCapability`（对话框成为 `ui/request`，含表单、超时、登录页），工具/消息/条目渲染器、组件、状态项、诊断、Markdown 变换的结果以数据发出（组件按客户端给的宽度画成行），扩展命令与快捷键、参数补全 |
+| `server/native.ts` | 原样数据：对话镜像（按消息身份比较，追加或重置）与会话状态（`ThreadState`） |
+| `server/items.ts` | AgentEvent → 条目与推送（`ItemTracker`，`turn/start` 的那句话在一轮开始时成为条目），对话 → 条目快照（`itemsFromMessages`） |
 | `server/serve.ts` | `tau serve --listen stdio`：stdin/stdout 上的行分帧传输 |
+| `local-hub.ts` · `tui-hub.ts` · `rpc-hub.ts` | 本进程的中枢（P57）：起中枢与一个会话客户端、选第一个会话；TUI 与 rpc 各自接上去（信任问题在 TUI 上屏前走启动对话框，rpc 走 `extension_ui_request`） |
 | **模式（modes/）** | |
 | `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态 |
-| `headless.ts` | `HeadlessSession`：一个会话的运行（一次一个，排队的输入 steer/followUp）、会话切换、无界面的斜杠命令 |
+| `headless.ts` | `HeadlessSession`：一个会话的运行（一次一个，排队的输入 steer/followUp）、会话切换、无界面的斜杠命令；中枢的会话、ACP 与网关用它（重载后换注册表、扩展报错与退出交给宿主） |
 | `json.ts` · `jsonl.ts` · `events.ts` | 一次运行的事件流与退出码；严格按 LF 分帧；把扩展事件写成 pi 线格式 |
-| `rpc.ts` | pi 的 RPC 命令集与 `extension_ui_request` 子协议；桥一建好就读 stdin。协议说明见 [rpc.md](rpc.md) |
+| `rpc.ts` | pi 的 RPC 命令集与 `extension_ui_request` 子协议；桥一建好就读 stdin。P57 起是协议上的适配层：命令映射到中枢的方法，事件来自 `thread/sessionEvent`（pi 的 JSON 模式记录）与 `thread/event`（压缩、重试）。协议说明见 [rpc.md](rpc.md) |
 | `acp.ts` | ACP v1 agent 侧：文件读写经客户端、审批走 `session/request_permission`、权限档位对应会话模式、session/load 回放 |
 
 无界面的三种模式（json、rpc、acp）下 stdout 只写协议记录，`console.log` 改道 stderr。
@@ -236,20 +240,22 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
 
 基于 Ink 5 + React 18（D31）。main.ts 不静态引入 Ink（有测试检查），TUI 只在进入时动态加载。
 
+P57 起 TUI 是会话中枢的客户端（D59）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。
+
 - **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
 - **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者；`types.ts` 是共用类型。
-- **控制器**：`controller.ts` 不依赖 Ink，持有 Agent、会话与扩展注册表，把事件与扩展渲染派发成 action，对外是一个对象；它的几块各自成文件，状态只放在一处。每一块导出自己的 host 类型（`DialogsHost`、`InputBoxHost`、`TranscriptViewHost`、`RunsHost`、`SessionsHost`）：`Pick<TuiController, 它用到的成员>` 加上它调用的其他部分的方法（例如 `{ readonly runs: Pick<TuiRuns, "sendQueued"> }`），控制器传 `this`，编译器保证不越界。`commands.ts` 的命令收 `CommandHost`，参数补全器只收 `CompletionHost`；runs 会执行任意命令，所以 `RunsHost` 包含 `CommandHost`：
-  - `dialogs.ts`：审批、选择器与多选、输入框里的提问、表单、会话树选择器，以及对话框叠放；
-  - `input-box.ts`：输入框编辑（撤销、kill ring、粘贴折叠）、历史（含 Ctrl+C 清掉的草稿）、补全与路径补全、剪贴板粘贴；
+- **控制器**：`controller.ts` 不依赖 Ink，持有会话客户端（`session`），把会话的推送与扩展渲染的结果派发成 action，对外是一个对象；它的几块各自成文件，状态只放在一处。每一块导出自己的 host 类型（`DialogsHost`、`InputBoxHost`、`TranscriptViewHost`、`RunsHost`、`SessionsHost`）：`Pick<TuiController, 它用到的成员>` 加上它调用的其他部分的方法（例如 `{ readonly runs: Pick<TuiRuns, "sendQueued"> }`），控制器传 `this`，编译器保证不越界。`commands.ts` 的命令收 `CommandHost`，参数补全器只收 `CompletionHost`；runs 会执行任意命令，所以 `RunsHost` 包含 `CommandHost`：
+  - `dialogs.ts`：审批、选择器与多选、输入框里的提问、表单、会话树选择器，以及对话框叠放；中枢发来的审批与对话框（`answerApproval`、`answerRequest`），别的客户端先答了（`serverRequest/resolved`）就关掉；
+  - `input-box.ts`：输入框编辑（撤销、kill ring、粘贴折叠）、历史（含 Ctrl+C 清掉的草稿）、补全与路径补全（扩展的自动补全经 `completion/request`，送去自己的补全作链的底层）、剪贴板粘贴；
   - `transcript-view.ts`：全屏对话区的滚动、点选与拖选复制、搜索、跳到上一条提示；
-  - `runs.ts`：提交与排队（轮中输入的 steer、follow-up 与命令）、一次一个任务（轮、压缩、`!` 命令、跳转、重载）、事件处理与消息渲染；
-  - `sessions.ts`：切换会话并重放（`replay.ts`）、恢复会话的模型、重载扩展、切模型与思考等级。
+  - `runs.ts`：提交与排队（轮中输入的 steer、follow-up 与命令）；会话的推送：轮（不论哪个客户端发起）与任务的开始结束、内核事件、工具与消息渲染（请求中枢）、提示、不在任务中加进对话的扩展消息；自己发起的任务先占住任务槽（`runJob`），中枢的推送结束它；
+  - `sessions.ts`：切换会话（中枢做，扩展可拒绝）并重放（`replay.ts`）、重载扩展、切模型与思考等级。
 - **输入**（`input/`）：`stdin.ts` 过滤 Ink 读的 stdin，`keys.ts` 照 pi 拆序列并解析按键（传统 VT、xterm 修饰、kitty、Windows Terminal 的 win32-input-mode），`mouse.ts`（SGR 鼠标与焦点），`editor.ts`（字素簇编辑器）、`kill-ring.ts`、`paste.ts`、`history.ts`（`~/.tau/history.jsonl`）、`completion.ts`（`/` 与 `@` 补全）、`width.ts`。`keymap.ts` 按层路由，`keybindings.ts` 是 pi 的动作名与缺省键，`~/.tau/keybindings.json` 可改。
 - **渲染**（`render/`）：`lines.ts`（块按宽度渲染成终端行并缓存）、`wrap.ts`（wrap-ansi 在 Ink 那一档的移植，逐字节相同）、`markdown.ts`、`highlight.ts`、`diff.ts`、`tool-views.ts`（按工具的视图，读取合并，流式参数用 `partial-json.ts`）、`approval.ts`、`blocks.ts`、`bottom.ts`（底部区）、`list.ts`、`search.ts`（Ctrl+F，移植 pi）、`aside.ts`（`/btw` 浮层）、`git-diff.ts`、`row-meta.ts`、`spans.ts`。
-- **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先）、`rewind.ts`（`/rewind`：选一条消息，按 checkpoint 恢复代码，或经 `runs.navigate` 回到那条消息之前，或两者）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`、`format.ts`、`ink-env.ts`。
+- **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先；扩展命令在中枢运行）、`rewind.ts`（`/rewind`：选一条消息，按中枢的 checkpoint 恢复代码，或经 `runs.navigate` 回到那条消息之前，或两者）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`（中枢送来的渲染结果与组件 → 终端行）、`format.ts`、`ink-env.ts`。
 - **交互面**：`›` 用户、markdown 回复、`● 工具(参数)` 加 `⎿` 结果（缺省折叠）、审批面板、活动行、状态栏、提示行；对话框占输入框的位置。命令表见 `/help`，键位见 `/hotkeys`。
-- **宿主契约**：先挂宿主动作再发 `session_start`（启动与 `/reload`）；压缩、bash、导航期间扩展的 `submitPrompt` 抛 `busy`；run 结束时排队文本回填编辑器。
-- **测试**：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent；`npm run smoke:tui` 在 tmux 里跑全部场景，缺省全屏，`SMOKE_TUI_MODE=inline` 再跑一遍（CI 两遍都跑，本机在 WSL 里跑 `scripts/smoke-tui-wsl.sh`）。
+- **宿主契约**（在中枢一侧）：先挂宿主动作再发 `session_start`（启动与 `/reload`）；一次一件事，轮排在任务之后；run 结束时排队文本回填编辑器（`thread/clearQueue`）。
+- **测试**：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent，TUI 经进程内中枢连上（`tui-harness.ts`；`join` 再接一个 TUI 到同一会话，`p57-tui-multi.test.ts`）；`npm run smoke:tui` 在 tmux 里跑全部场景，缺省全屏，`SMOKE_TUI_MODE=inline` 再跑一遍（CI 两遍都跑，本机在 WSL 里跑 `scripts/smoke-tui-wsl.sh`）。
 
 ## 网关（搁置）
 

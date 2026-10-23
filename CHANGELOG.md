@@ -4,6 +4,24 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P57: the TUI and `--mode rpc` over tau's protocol)
+- The TUI is a client of a session hub in its own process (as Codex's TUI is of its app-server):
+  it no longer holds the agent, the extensions or the session file, and everything it does goes
+  through `tau/1`. Behavior is unchanged; two TUIs can now be on one session (P58 makes the hub
+  resident).
+- `--mode rpc` is an adapter over the protocol; its commands and records are unchanged (docs/rpc.md).
+- A reload the session does by itself after moving into or out of a worktree is reported in the TUI.
+
+### Added (P57)
+- `tau/1`: native data for full clients (kernel messages, events and the session state), pi's
+  JSON-mode records for clients that ask, session control (model and reasoning with their hooks,
+  permission mode, names, labels, tools, entries, queues, import, fork, delete, checkpoints, background
+  tasks), jobs one at a time (compaction, moves in the tree, `!` commands, reload, handoff) with
+  `thread/task/started|ended`, the extensions' side of the screen as data (renderers, widgets, status
+  items, diagnostics, commands, shortcuts, completion, markdown transformers), forms, timeouts and
+  sign-in pages in dialogs, moving between sessions with the extensions handed over, `thread/closed`.
+  Light clients now get the prompt of a turn as a `userMessage` item. See docs/protocol.md.
+
 ### Added (P56: one session, many clients — the first step)
 - `@yophon/tau-protocol`: tau's client protocol `tau/1` (after Codex's app-server protocol: threads,
   turns, items; approvals and dialogs as requests to the clients, `serverRequest/resolved`), a

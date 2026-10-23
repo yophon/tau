@@ -152,7 +152,8 @@ the terminal's scrollback). Keys follow pi and can be changed in
 `~/.tau/keybindings.json`; `/btw` asks a side question while the agent works,
 Ctrl+B moves a running command to the background, `/diff` shows uncommitted
 changes. `TAU_KEYBOARD=legacy` turns extended key reporting off for unusual
-terminals.
+terminals. The TUI is a client of tau's own protocol: it runs a session hub in
+its process and talks to it as any other client would (docs/protocol.md).
 
 The CLI and TUI default to `--permission-mode supervised`: bash commands and
 file writes ask for approval in a terminal and are denied in headless runs.

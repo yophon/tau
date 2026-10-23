@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P57（TUI 改走协议）**）
+> 最后更新：2026-10-23（P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P58 规格书（常驻服务与本机 socket）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -70,16 +70,13 @@
 | [P54](specs/phase-54-providers.md) | 协议补齐：OpenAI Responses 与 Gemini 两个纯 Platform 的 transport 包（未实测真端点）、模型降级（重试后换，触发条件可设）、prompt shim | 2026-10-23 | D56 |
 | [P55](specs/phase-55-protections.md) | 运行保护：apply_patch（Codex 格式，缺省不开）、循环检测包（照 Gemini CLI，缺省关）、checkpoint 包与 TUI 的 `/rewind`（照 Claude Code，缺省开） | 2026-10-23 | D57 |
 | [P56](specs/phase-56-session-hub.md) | 常驻 tau 第一步：客户端协议 tau/1（`@yophon/tau-protocol`，照 Codex app-server 的形状）与会话中枢（多客户端、按 seq 补齐、审批发给所有人先答为准、没人接着时等待），`tau serve --listen stdio` | 2026-10-23 | D58 |
+| [P57](specs/phase-57-tui-over-protocol.md) | 常驻 tau 第二步：TUI 与 `--mode rpc` 成为会话中枢的客户端（进程内），协议补齐 TUI 所需——原样的内核消息、事件与状态，会话控制，一次一件事，扩展的界面以数据发出，换会话时交接工作区；两个 TUI 可接同一会话 | 2026-10-23 | D59 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
 
-## Phase 57 🚧 TUI 改走协议
-
-规格书（2026-10-23 确认；用户：「push 按你的想法来」）：[specs/phase-57-tui-over-protocol.md](specs/phase-57-tui-over-protocol.md)。分 57a 协议补充与中枢、57b TUI 切换、57c `--mode rpc` 适配层三步提交，做完一起验收。
-
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
-总计划见 [resident-tau-plan.md](specs/resident-tau-plan.md)（2026-10-23 确认；用户：「我想要那个『一个常驻 tau，TUI、编辑器、手机同时接上同一个会话』」「都按你的建议来，去做吧」）：P56 协议与会话中枢（✅）→ **下一个是 P57** TUI 改走协议 → P58 常驻服务与本机 socket → P59 远程与手机（WebSocket、配对、网页客户端）→ P60 编辑器（ACP 接常驻会话）。每个阶段先写规格书由用户判定。
+总计划见 [resident-tau-plan.md](specs/resident-tau-plan.md)（2026-10-23 确认；用户：「我想要那个『一个常驻 tau，TUI、编辑器、手机同时接上同一个会话』」「都按你的建议来，去做吧」）：P56 协议与会话中枢（✅）→ P57 TUI 改走协议（✅）→ **下一个是 P58** 常驻服务与本机 socket → P59 远程与手机（WebSocket、配对、网页客户端）→ P60 编辑器（ACP 接常驻会话）。每个阶段先写规格书由用户判定。
 
 复刻 yo-agent 的其余阶段（原 P56 MCP server 与 sampling、P57 的 SQLite 会话库、P58 的 `createWebAgent`/`defineHttpTool`/IndexedDB/挂件、P59 不可信插件宿主）搁置，见 Backlog G；原 P57 的远程配对与 P58 的网页控制台并进 P59。把 yo-agent 换成 tau 的 CLI 的迁移草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md) 照旧搁置。
 
@@ -165,9 +162,10 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 | 25 | 依赖落后大版本（P52）：Ink 5.2 → 8.0、React 18 → 19、string-width 7 → 8、wrap-ansi 9 → 10（highlight.js 10 与 TypeScript 5.9 属有意） | 越晚升越难；`render/wrap.ts` 是 wrap-ansi 9 的移植 | 复盘候选 E，单独一个阶段，跑全部 smoke 与真机 |
 | 27 | 同包内的重复实现（P52）：内核两份 `globToRegExp`、CLI 四份 `git()` 包装、`readGitBranch` 在 controller.ts 与 git-paths.ts 各一份等，全表见复盘 52b | 修一处漏一处 | 复盘候选 F |
 | 28 | 真机验收欠 16 个阶段（P34–P49）：P35、P37 的验收清单各 14、20 条手工场景，P34、P36、P38 各 1 条，P39–P49 规格书写着待用户执行（P52 登记） | 真实终端、输入法、剪贴板、通知、MCP 网页登录等自动化测不到的交互没人试过；真端点验收曾多次查出潜伏的 bug | 复盘候选 A：合并成一份清单，一次走完 |
-| 29 | rpc 启动时问项目信任（工作目录或上级有 `.agents/skills` 之类的项目资源），客户端还没回答就发 prompt，这次运行立刻以 aborted 结束（P54 验收发现，P54 之前同样复现） | 先发 prompt 再处理对话框的 rpc 客户端第一句话丢掉 | 查清 abort 从哪来；信任问题未答时 prompt 应排队等它 |
 | 30 | REPL 从管道一次读到「提示词 + exit」时，提示词还没跑完就退出（P54 验收发现，原有） | 脚本把多行一次灌给 `tau --repl` 时只有前面的话可能被执行 | 非 TTY 时逐行排队、上一句跑完再读下一句（pi 的 print 模式只收一句，可参照 Claude Code 的 stdin 处理） |
 | 31 | `kernel/agent.ts` 2497 行，结构门禁上限 2500（P54） | 下一个改主循环的阶段一定撞线 | 那个阶段先按 D54 拆（候选：压缩操作、重试与降级的收尾），不调高上限 |
-| 32 | `cli/src/tui/commands.ts` 1485 行，结构门禁上限 1500（P55） | 再加几个内置命令就撞线 | 下一个加命令的阶段先把一组命令（例如会话类）移到单独的文件，不调高上限 |
+| 32 | `cli/src/tui/commands.ts` 1482 行、`tui/controller.ts` 1494 行，结构门禁上限都是 1500（P55、P57） | 再加几个内置命令或控制器方法就撞线 | 下一个动它们的阶段先拆：一组命令（例如会话类）移到单独的文件，控制器的指针与键盘处理移出去；不调高上限 |
+| 33 | 扩展的 Markdown 变换只作用于写完的文字：流式中的文字照原样画，变换结果按文字写完时的宽度取（P57，变换改在中枢运行） | 依赖 `isStreaming` 或宽度的变换器在流式时看不到效果，调宽度后用旧宽度的结果 | 出现真要流式变换的扩展时，按段增量取；宽度变化时重取 |
+| 34 | rpc 客户端收到的 `extension_ui_request` 不会因别的客户端先回答而撤回（pi 的 rpc 没有撤回记录，P57） | 只在多个客户端接同一会话时出现（P58 起）：rpc 客户端留着一个已经没用的对话框，回答被忽略 | P58 定：加一条 tau 自己的撤回记录，或 rpc 会话不与别的客户端共享 |
 
 （#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
