@@ -27,7 +27,7 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 - **模型与设置**——供应商与模型写在 `~/.tau/models.json`（pi 格式），`/model` 会话中途
   切换、协议不同也行；设置在 `~/.tau/settings.json`，键名照 pi（[docs/settings.md](docs/settings.md)）。
   `HTTP_PROXY` / `HTTPS_PROXY` 对所有请求生效。
-- **会话**——磁盘上是 pi v3 JSONL：`--continue`、`/tree`、`/fork`、pi 算法的自动压缩、
+- **会话**——磁盘上是 pi v3 JSONL：`--continue`、`-r`（选一个）、`--session <id|名字>`、`/tree`、`/fork`、pi 算法的自动压缩、
   `/handoff`；`tau --worktree` 与 `enter_worktree` 让会话在单独的 git worktree 里跑
   （[docs/worktrees.md](docs/worktrees.md)）。
 - **子 agent**——单个、并行、串联或后台，按 Markdown 定义；`send_message` 续接；
@@ -127,7 +127,7 @@ TUI 缺省全屏，对话自己滚动、可搜索（`--inline`、`TAU_TUI_MODE=i
 
 CLI 与 TUI 缺省 `--permission-mode supervised`：bash 命令与文件写入在终端里先审批，
 无界面运行时直接拒绝。`autonomous`（或 `TAU_PERMISSION_MODE=autonomous`）不问直接跑，
-`read-only` 只保留读工具，`bypass` 关掉权限门。内核库缺省是 `autonomous`。
+`read-only` 只保留读工具，`ci` 从不询问（项目里的编辑放行、其余拒绝，给无人值守用），`bypass` 关掉权限门。内核库缺省是 `autonomous`。
 
 ### 模型
 
@@ -253,7 +253,7 @@ export default guard;
 - [docs/architecture.md](docs/architecture.md)——按包和模块写的当前架构、代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——已完成阶段、当前工作、Backlog、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D54）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D55）
 - [docs/settings.md](docs/settings.md)——settings.json 的每个键、缺省值、项目能否设置
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件

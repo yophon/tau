@@ -81,16 +81,17 @@
 2. 规则：先看 deny，再看 ask，最后看 allow，第一个命中的决定。
 3. 没有规则命中时，按权限档位（`/mode`、Shift+Tab）。
 
-| | read-only | supervised | accept-edits | autonomous | bypass |
-|---|---|---|---|---|---|
-| 命中 deny | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 拒绝 |
-| 命中 ask | 问 | 问 | 问 | 问 | 问 |
-| 命中 allow | 仍只读 | 不问 | 不问 | 不问 | 不问 |
+| | read-only | supervised | ci | accept-edits | autonomous | bypass |
+|---|---|---|---|---|---|---|
+| 命中 deny | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 拒绝 | 拒绝 |
+| 命中 ask | 问 | 问 | 拒绝 | 问 | 问 | 问 |
+| 命中 allow | 仍只读 | 不问 | 不问 | 不问 | 不问 | 不问 |
 
 - allow 也放行 tau 归为危险的命令（`rm -rf`、`git push --force`……）。只想放行普通 push 时，另写 `ask: ["Bash(git push --force *)"]`。
 - allow 不能放行对 `.git`、`.ssh`、`.env*`、`.tau/settings*.json` 等内置保护路径的写，那些总是要问。
 - 钩子返回 `permissionDecision: "allow"` 越不过 deny 和 ask 规则（照 Claude Code）。
 - 没有界面（`-p` 加管道、`--mode json`）时，要问的调用按拒绝处理。
+- **ci**（P53，照 yo-agent 的无人值守档、Claude Code 的 `dontAsk`）：放行的和 accept-edits 一样（读、工作目录里的编辑），其余要问的一律拒绝、从不弹审批，有界面时也一样。只能用 `--permission-mode ci`、`/mode` 或 `defaultMode` 选，Shift+Tab 不会循环到它。
 
 ## 审批时的「总是允许」
 
@@ -110,7 +111,7 @@
 - `/permissions`：按 Allow、Ask、Deny、Working directories 列出规则和它们来自哪个文件；能加（选存到本地、项目或用户设置）、能删；写不通的规则列在 Problems 里。没有界面时输出文字列表。
 - `/add-dir <目录>`、`--add-dir <目录>`（可重复）、`additionalDirectories`：把别的目录也算作工作目录。accept-edits 下在这些目录里改文件不再问，系统提示里会写明。`/add-dir` 可以只对这次会话，或记进本地设置。
 - `--allowed-tools <规则>`、`--disallowed-tools <规则>`（也认 `--allowedTools`、`--disallowedTools`）：逗号分隔或重复写，只对这一次运行有效，如 `tau -p "跑测试" --allowed-tools "Bash(npm test *)"`。
-- `defaultMode`：启动档位，tau 的名字或 Claude Code 的 `default`、`acceptEdits`、`plan`、`bypassPermissions`。项目文件不能设 autonomous、bypass。`--permission-mode` 与 `TAU_PERMISSION_MODE` 优先。
+- `defaultMode`：启动档位，tau 的名字或 Claude Code 的 `default`、`acceptEdits`、`plan`、`dontAsk`（即 ci）、`bypassPermissions`。项目文件不能设 autonomous、bypass。`--permission-mode` 与 `TAU_PERMISSION_MODE` 优先。
 
 ## 审计
 

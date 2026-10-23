@@ -56,11 +56,12 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `transform.ts` | `transformMessages()`：pi 的跨模型回放规则——同模型按原字段回放推理，换模型或协议时丢掉 thinking，跳过 error/aborted 轮，给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Anthropic 扩展共用 |
 | `retry.ts` | 错误分类逐字照抄 pi 1.4（先排除额度与上下文溢出，再匹配瞬态失败；413 算溢出）与 `RetrySettings`（缺省开、3 次、2 s 指数退避）。策略在 agent 循环里执行 |
 | **Agent** | |
-| `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。下面五个文件是从它拆出的独立块，经 `agent-internals.ts` 读它的私有状态，`Agent` 的公开方法不变 |
+| `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。tool-state、subagent-spawn、aside、navigation 是从它拆出的独立块（P50），经 `agent-internals.ts` 读它的私有状态；pending-queue 是 P53 拆出的队列，`Agent` 的公开方法不变 |
 | `agent-internals.ts` | `AgentInternals`：拆出的模块可以读的 Agent 状态与方法。Agent 里只有一个适配器（`exposeInternals`，getter 读当前值、方法转调），建一次；各模块的 host 类型是它的 `Pick`（`ToolStateHost` 等），所以每个模块碰了 Agent 的什么一眼可见，`Agent` 的公开面不因此变宽 |
 | `tool-state.ts` | 工具集（`ToolState`）：已注册工具的合并（基础工具，扩展工具按名覆盖）、active 集（声明给模型的那些）、从转录恢复的名字等它注册（pi `_pendingToolNames`）、`setDefaultTools` 的 `+/-`、按请求算 loadout（`prepareLoadout` 改描述、隐藏声明）；`withoutHiddenDeclarations` 把隐藏的声明滤出请求 |
 | `tool-batch.ts` | `ToolBatchRunner`：逐个 preflight（tool_call 钩子 → 参数校验 → 策略与审批 → tool_execution_start）、sequential/parallel 执行与更新泵、tool_result 钩子；按请求时的工具快照分派，结果按源序提交 |
 | `nested-calls.ts` | 嵌套工具调用（照抄 pi）：`ctx.executeTool` 背后的运行器，嵌套 id `<parent>/<n>`，走同一条 preflight 管线，记在调用方 `ToolResultMessage.nestedCalls` 并累加用量；`NESTED_CALL_LIMITS` |
+| `pending-queue.ts` | steering 与 follow-up 队列（照抄 pi 的 PendingMessageQueue，`QueueMode`）；P53 结构门禁到线时从 agent.ts 拆出 |
 | `subagent-spawn.ts` | `runSubagent`（`ctx.runSubagent`）：建子 Agent（继承端点、策略与审批，权限取父子更严）、父会话扩展对子 agent 工具调用的钩子、`subagent_start`/`subagent_stop`，返回子 agent 的文字、消息与用量 |
 | `aside.ts` | `askAside`（/btw）：按下一次请求的同一前缀加问题发一次请求（暖的 prompt cache 能命中），不进对话、不跑工具，用量记成 `usage` 条目 |
 | `navigation.ts` | `runNavigation`（`navigateTo` 的实际工作）：`session_before_tree`、分支摘要、移动叶子并记 `branch_summary`、目标是用户消息时把文字交回编辑器、恢复新分支的工具集、`session_tree` |
@@ -77,7 +78,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `edit-diff.ts` · `search-tools.ts` | 只对改到的行做 LCS 的编辑 diff；grep/find/ls（参数与输出照 pi，纯 ES 遍历 FileSystem，照 `.gitignore` 过滤，`globToRegExp`/`parseGitignore`） |
 | `context-files.ts` | 项目上下文文件（照抄 pi）：全局目录，再从根到 cwd 每层取 `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` 中第一个，渲染为 `<project_context>` |
 | **权限** | |
-| `policy.ts` | 权限档位（read-only/supervised/accept-edits/autonomous/bypass）× 风险（low/medium/high）→ allow/ask/deny；`createDefaultPolicy` 的静态规则（保护路径、危险命令、accept-edits 放行 cwd 内的编辑）与权限规则（deny/ask 在所有档位生效，`deniesTool` 让被整体拒绝的工具从请求里消失）。内核缺省 autonomous，CLI 缺省 supervised |
+| `policy.ts` | 权限档位（read-only/supervised/ci/accept-edits/autonomous/bypass）× 风险（low/medium/high）→ allow/ask/deny（ci 的矩阵同 accept-edits，要问的由工具批次直接拒绝，P53）；`createDefaultPolicy` 的静态规则（保护路径、危险命令、accept-edits 放行 cwd 内的编辑）与权限规则（deny/ask 在所有档位生效，`deniesTool` 让被整体拒绝的工具从请求里消失）。内核缺省 autonomous，CLI 缺省 supervised |
 | `permission-rules.ts` | 权限规则（照抄 Claude Code，D40）：`parsePermissionRule`、`matchPermissionRules`（deny → ask → allow；bash 拆复合与嵌套命令，allow 要每段命中；gitignore 式路径；`domain:`；MCP 名字）、`canonicalPath` |
 | `powershell-command.ts` | PowerShell 命令拆段、别名还原成 cmdlet、重定向记为写入；拆不清时 allow 规则不生效 |
 | **扩展** | |
@@ -93,6 +94,8 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 - **工具执行前**依次过 tool_call 钩子、参数校验、权限门（`policy.assess` → allow/ask/deny；ask 走 `onApproval` ?? `ui.confirm`，都没有则 deny）。工具批次分 sequential（显式配置或批次里有工具要求）与 parallel（缺省，preflight 按源序逐个，执行并发，结果按源序入日志）；write/edit 对同一文件互斥。
 - **事件全序**（有约束力，照抄 pi runLoop；hooks.test.ts / loop-steps.test.ts / parallel-tools.test.ts 断言）：`input → before_agent_start → agent_start` 在循环前；run 开始先拉一次 steering；每轮 `[压缩（手动请求优先，否则阈值）] → 若无待处理消息再拉 steering → turn_start → 提交待处理消息 → context → message_start → message_update* → message_end → 工具批次 → finishTurn → turn_end → 拉 steering`；无工具调用且无 steering 时拉 follow-up，都没有则 `agent_end`；队列非空则续跑一个 run（再发 agent_start），否则 `agent_before_settle`（可再要一个 run），最后 `agent_settled`。**扩展先于宿主收到事件**（可改写内容）。
 - **溢出恢复**：请求报上下文溢出时，跳过失败的那次、压缩（`overflow`），重跑这一轮。
+- **截断续写**（P53，照 yo-agent）：`continueAfterLength` 大于 0 时，回复（不含工具调用）被输出上限截断后，追加一条不显示的自定义消息（`continue_after_length`）请模型接着写，连续最多这么多次；缺省 0，同 pi 截断即止。
+- **摘要模型**（P53）：`summaryModel`（transport、模型、输出上限）给了时，压缩、轮次前半段与分支摘要的请求走它，不带 agent 模型的思考等级。
 
 ### 会话日志是唯一事实
 
@@ -165,7 +168,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 |---|---|
 | **启动与端点** | |
 | `main.ts` | 入口：上面的启动顺序、各模式的装配 |
-| `args.ts` | 用法文本、`CliOptions`、`parseArgs`/`parseGatewayArgs`，参数与环境变量取的数字、定价、档位值 |
+| `args.ts` | 用法文本、`CliOptions`、`parseArgs`/`parseGatewayArgs`，参数与环境变量取的数字、定价、档位值；`-r/--resume` 让 TUI 启动即打开 `/resume` 的选择器，`--session` 认文件路径或会话 id、名字（P53，照 pi） |
 | `util.ts` | `~/.tau` 所在（`userHome`）、`CLI_VERSION`、终端颜色、`firstLine`、`ask` |
 | `endpoint.ts` | 会话跑在哪个模型与端点上：启动时的选择（`-m` → settings 缺省 → 第一个可用模型 → 环境变量；`-b`/`-k`/`--provider` 是只对一种协议生效的临时端点）、`buildEndpoint`（按 `api` 建 OpenAI 兼容或 Anthropic transport，填 `maxOutputTokens`）、`createPricing`、`createModelSwitch`（TUI 的 `/model`，跨供应商） |
 | `models.ts` | `~/.tau/models.json`（pi 格式子集：供应商 `baseUrl`/`api`/`apiKey`/`headers`，模型 `contextWindow`/`maxTokens`/`cost`/`input`；`apiKey` 支持 `$NAME`、`!command`、`${cred:…}`），只列密钥可用的模型；`--list-models` |

@@ -34,7 +34,7 @@ inject a small adapter instead of polyfilling globals.
   format), `/model` switches mid-session across protocols; settings in
   `~/.tau/settings.json` with pi's key names ([docs/settings.md](docs/settings.md)).
   `HTTP_PROXY` / `HTTPS_PROXY` reach every request.
-- **Sessions** — pi v3 JSONL on disk: `--continue`, `/tree`, `/fork`, automatic
+- **Sessions** — pi v3 JSONL on disk: `--continue`, `-r` (pick one), `--session <id|name>`, `/tree`, `/fork`, automatic
   compaction with pi's algorithm, `/handoff`; `tau --worktree` and
   `enter_worktree` for a session in its own git worktree
   ([docs/worktrees.md](docs/worktrees.md)).
@@ -147,7 +147,8 @@ terminals.
 The CLI and TUI default to `--permission-mode supervised`: bash commands and
 file writes ask for approval in a terminal and are denied in headless runs.
 `autonomous` (or `TAU_PERMISSION_MODE=autonomous`) runs without asking,
-`read-only` strips mutating tools, `bypass` turns the gate off. The kernel
+`read-only` strips mutating tools, `ci` never asks (edits in the project run, the
+rest is denied — for unattended runs), `bypass` turns the gate off. The kernel
 library default is `autonomous`.
 
 ### Models
@@ -284,7 +285,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture by package and module, code maps, glossary
 - [docs/roadmap.md](docs/roadmap.md) — completed phases, current work, backlog, tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D54)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D55)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins

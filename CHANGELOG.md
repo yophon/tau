@@ -4,6 +4,27 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P53: from yo-agent)
+- CLI: `-r`/`--resume` opens the session picker when the TUI starts (command-line prompts go to
+  the session picked); other modes refuse it. `--session` takes a file path, or an id or name of
+  this directory's sessions.
+- `/tasks`: a running background subagent shows its latest activity (tool calls, the end of each
+  reply); ext-subagents reports it on the `subagents:task` channel (`BackgroundTask.recent`).
+- `/cwd`.
+- Kernel `continueAfterLength`: a reply cut off by the output cap (no tool calls) is continued
+  with a hidden `continue_after_length` custom message; the CLI turns it on (`continueOnMaxTokens`,
+  default true, 3 in a row). The kernel default stays 0 (pi).
+- Kernel `summaryModel`: compaction, turn prefixes and branch summaries on another transport and
+  model; the CLI reads `compaction.model` (a models.json model).
+- Permission mode `ci`: what accept-edits allows runs, what would ask is denied without asking
+  (yo-agent's ci, Claude Code's `dontAsk`, accepted in `defaultMode`).
+
+### Changed (P53)
+- Kernel: the pending message queue moved to `pending-queue.ts` (`QueueMode` still exported).
+
+### Fixed (P53)
+- The tui-p38 `/resume` rename test raced: it waited for text the rename prompt already showed.
+
 ### Added (P49: Claude Code)
 - ext-subagents: agent frontmatter `effort`, `autoCompactWindow`,
   `disallowedTools`, `maxTurns`, `background` (`AgentDefinition.warnings`

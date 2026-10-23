@@ -1,6 +1,6 @@
 # Phase 53：复刻 yo-agent 的能力（总计划与第一批） 规格书
 
-> 状态：已确认（2026-10-23）。用户：「没毛病，先写着吧，每个阶段我再判定这个东西到底要不要」——「需要确认」按建议执行；P54 之后每个阶段的规格书由用户逐个判定做不做。
+> 状态：已完成（2026-10-23），实施记录见文末。确认于 2026-10-23。用户：「没毛病，先写着吧，每个阶段我再判定这个东西到底要不要」——「需要确认」按建议执行；P54 之后每个阶段的规格书由用户逐个判定做不做。
 > 对应 roadmap 阶段：Phase 53（总计划覆盖 P53–P59）
 > 起因：P52 复盘对照 yo-agent 之后，用户先想把 yo-agent 的代码换成 tau 的 CLI；考虑之后：「先别急着迁了，打算先把 yoagent 已有能力基本复刻出来再说」。迁移的草案留在 [draft-yo-agent-migration.md](draft-yo-agent-migration.md)，以后再定。此前已定：四组能力都补，循环熔断、checkpoint 做成可选的插件包。
 
@@ -82,10 +82,10 @@ yo-agent 一侧的出处：`docs/DESIGN.md`、各 `PHASE-*.md`、README 与 `pac
 
 ## 验收清单
 
-- [ ] 53a：`tau -r` 打开选择器、`tau -r <名字>` 直接恢复、`tau -p "…" -r` 不带参数报错；技术债 #26 销账。
-- [ ] 53b：运行中的子 agent 在 `/tasks` 里显示最近进度，结束后显示最后消息；单测与一个 smoke-tui 场景。
-- [ ] 53c：`/cwd`；正文截断后自动续写（mock 服务器先回 `length` 再回 `stop`），上限生效；`compaction.model` 让摘要请求发到另一个模型；`ci` 档拒绝待审调用且不弹审批。
-- [ ] check、全量测试、pack smoke、smoke-tui 全屏与 inline、真 DeepSeek 各模式一轮；push 后 CI 通过；决策与文档更新。
+- [x] 53a：`tau -r` 打开选择器、`tau -r <名字>` 直接恢复、`tau -p "…" -r` 不带参数报错；技术债 #26 销账。
+- [x] 53b：运行中的子 agent 在 `/tasks` 里显示最近进度，结束后显示最后消息；单测与一个 smoke-tui 场景。
+- [x] 53c：`/cwd`；正文截断后自动续写（mock 服务器先回 `length` 再回 `stop`），上限生效；`compaction.model` 让摘要请求发到另一个模型；`ci` 档拒绝待审调用且不弹审批。
+- [x] check、全量测试、pack smoke、smoke-tui 全屏与 inline、真 DeepSeek 各模式一轮；push 后 CI 通过；决策与文档更新。
 
 ## 需要确认（2026-10-23 已按建议确认）
 
@@ -95,3 +95,18 @@ yo-agent 一侧的出处：`docs/DESIGN.md`、各 `PHASE-*.md`、README 与 `pac
 4. **顺序**：P53 第一批 → P54 协议 → P55 运行保护 → P56 MCP server → P57 远程与 SQLite → P58 浏览器 → P59 插件宿主。有要提前的告诉我。
 5. **Web 控制台与挂件放哪**：(a) 先放 tau 的 `examples/`（和现在的浏览器示例一起），将来迁移时再搬；(b) 等迁移后直接做在 yo-agent 里。建议 (a)。
 6. **`max_tokens` 续写偏离 pi**：pi 截断即结束，yo-agent 会续写（Claude Code 的做法实现前再查）。建议续写、缺省开、可关。
+
+## 实施记录（2026-10-23）
+
+- 提交：a21bd6e 53a、78c5c42 53b、329289a tui-p38 竞态修复、c541c29 53c、e6fba88 smoke 场景，加文档提交。
+- **53a**：和规格的出入——`-r/--resume` 照 pi 是不带参数的开关，带参数的恢复由 `--session` 扩展成认 id 与名字（D55）。`findSession` 从 TUI 的命令表移到 `session-title.ts`，main.ts 解析 `--session` 时用它（结构门禁不许 main.ts 静态引入 TUI）。技术债 #26 随之还清。
+- **53b**：ext-subagents 给每个后台子 agent 记最近 18 行（工具调用、每次回复的最后 6 行），随 `subagents:task` 频道交给 `/tasks`；只有后台子 agent 进 `/tasks`（前台的进度本来就在对话里逐行显示）。
+- **53c**：`ci` 档的定义比规格写的具体：以 accept-edits 为底（D55）；`/mode` 里放在最后，原来按顺序选档位的测试不受影响。agent.ts 撞上结构门禁（2509/2500），按 D54 拆出 `pending-queue.ts`，没有调高上限。
+- **P50 那个偶发测试找到原因了**：tui-p38「/resume renames with Ctrl+R」在全量运行里又失败了一次，这次等待已是 10 秒，说明不是负载：改名后测试等屏幕上出现「new name」，而改名输入框里刚敲的字就满足了条件，接下来的 Ctrl+D 落在输入框换回选择器的空当里丢了。改成等选择器回来且列着改过名的那一行（329289a）。另：53b 的提交（78c5c42）是在这次失败的全量运行之后做的，当时没先修，应先修再提交。
+- 测试：全量 1384 个，1379 通过、5 跳过；新增内核 4、ext-subagents 1、CLI 7，改写 2（policy 矩阵加 ci 一行、tui-p38 的等待条件）。check（含结构门禁）通过。
+- 冒烟：pack smoke、浏览器 bundle 与运行（Edge）、QuickJS、QuickJS MCP 通过；smoke-tui 新增 p53 场景（`-r` 选中并恢复会话、`/cwd`、`/tasks` 里看运行中的后台子 agent）。全屏、inline 各 39 个场景各一遍全过。
+- 真 DeepSeek（yo-agent 的 config.env，临时 HOME）：
+  - 截断续写：OpenAI 兼容端点的对话请求不带 `max_tokens`，压不出截断；改走 DeepSeek 的 Anthropic 兼容端点、`TAU_MAX_TOKENS=160`：第一次回复 `length`，自动续写一次后 `stop`，答案完整（写到 one hundred），退出码 0。上限 60 时思考占满每次的额度，续写 3 次后带着「不完整」的提示以退出码 1 结束（与原来截断时的行为一致）。
+  - `compaction.model`：两个供应商都指向 DeepSeek，`cheap` 经本地计数代理；RPC 里 `compact` 后，摘要请求（系统提示是压缩的那段）只经过代理，模型 `deepseek-flash`、`max_tokens` 3000（`cheap` 的上限）。
+  - `ci`：让模型先跑 `echo` 再写文件：bash 被拒（模型看到 ci mode never asks），文件写出，没有询问。
+  - 回归：`-p`、REPL、rpc、TUI（WSL tmux）各一轮读文件并只回第二行的随机串，都答对。

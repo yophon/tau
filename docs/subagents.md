@@ -9,7 +9,7 @@
 | 单个 | `{agent?, task, name?, isolation?, effort?}` | `agent` 缺省是 `worker` |
 | 并行 | `{tasks: [{agent, task, name?, isolation?, effort?}, ...]}` | 最多 8 个，同时跑 4 个 |
 | 链式 | `{chain: [{agent, task, name?, isolation?, effort?}, ...]}` | 任务里的 `{previous}` 换成上一步的输出 |
-| 后台 | 以上任一种加 `background: true` | 工具立刻返回，结果之后作为后续消息送回；`/tasks` 里能看到 |
+| 后台 | 以上任一种加 `background: true` | 工具立刻返回，结果之后作为后续消息送回；`/tasks` 里能看到，运行中选「View」看它最近的工具调用与回复末尾（最近 18 行，P53，照 yo-agent 的任务面板），结束后看它的回答 |
 
 子 agent 从父会话的工具里挑（永远不带 `subagent`，不能再派子 agent），权限模式取父子里更严的那个，审批框里写明是哪个子 agent 发起的。
 

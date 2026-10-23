@@ -30,6 +30,8 @@ tau 读两份设置文件，键名尽量照 pi：
 | `shellPath` | bash 的路径，开头的 `~` 是家目录；文件不存在时启动报错（P40b，pi） | 自动找（Windows 上找 Git Bash） | 是 | 启动、重读 |
 | `shellCommandPrefix` | 放在每条 bash 命令和 `!` 命令前面的一段（单独一行），例如加载别名；PowerShell 和钩子不加（P40b，pi） | 无 | 是 | 启动、重读 |
 | `compaction.enabled`、`compaction.reserveTokens`、`compaction.keepRecentTokens` | 自动压缩的开关、给回复留的 token、压缩后保留的最近 token（P40c，pi） | true、16384、20000 | 是 | 启动、重读 |
+| `compaction.model` | 压缩、轮次前半段、分支摘要改用另一个模型（`供应商/模型`，models.json 里的；照 yo-agent 的 `YO_COMPACT_MODEL`，P53）；写错的启动时报一句、照旧用当前模型 | 当前模型 | 是 | 启动、重读 |
+| `continueOnMaxTokens` | 回复（不含工具调用）被输出上限截断时，自动再请求一次接着写，连续最多 3 次（照 yo-agent，P53；pi 与 Claude Code 是截断即止） | true | 是 | 启动、重读 |
 | `branchSummary.reserveTokens` | `/tree` 换分支做摘要时留的 token（P40c，pi） | 同 `compaction.reserveTokens` | 是 | 启动、重读 |
 | `branchSummary.skipPrompt` | `/tree` 换分支时不问要不要摘要，直接不摘要（P40c，pi） | false | 是 | 重读 |
 | `retry.enabled`、`retry.maxRetries`、`retry.baseDelayMs`、`retry.maxAgentDelayMs` | 请求失败后的自动重试；环境变量 `TAU_MAX_RETRIES`、`TAU_RETRY_BASE_DELAY_MS` 优先（P40c，pi） | true、3、2000、60000 | 是 | 启动、重读 |

@@ -176,3 +176,7 @@
 - **「其余使用说明核对过」当时只 grep 了旧文件名**：这次逐份核对 settings、hooks、connectors、permissions、subagents、worktrees、memory、audit、statusline、rpc、gateway：文档里反引号中的名字（标识符、文件名、设置键、环境变量、参数）都在代码里找到了，找不到的几个都是写明「不支持」的 Claude Code / pi 项；时长、上限、缺省值逐个对过代码，没有不一致。
 - **过时的注释**：`modes/headless.ts` 写「main.ts openWorkspace」、`worktree.ts` 写「main.ts asks」，改成现在的位置。
 - **`conversationLength` 的位置**：`main.ts` 与 REPL 为了这个三行函数静态引入整个 TUI 控制器（连带拆出的五块；P50 之前就是这样），移到不依赖 Ink 的 `tui/format.ts`，`-p`、REPL 启动不再加载控制器。
+
+### 补记（2026-10-23，P53）
+
+tui-p38 那个偶发测试的原因后来找到了：是测试自己的等待条件有竞态（改名输入框里刚敲的字就满足了「屏幕上出现 new name」），不是负载。P53 改成等选择器回来且列着改过名的那一行，详见 P53 实施记录。

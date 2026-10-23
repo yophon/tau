@@ -239,6 +239,15 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D55：复刻 yo-agent 的能力：接口照 pi / Claude Code，行为照 yo-agent（2026-10-23，P53，用户确认）
+
+- **范围与做法**：只复刻 yo-agent 真正实现了的能力（它只预留接口的 docker、ssh 执行后端，设计里的 OTel 不做）；有 pi、Claude Code、Codex 对应物的照它们，没有的照 yo-agent。P53 做第一批，P54–P59 的规格书由用户逐个判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案，搁置。
+- **`-r/--resume` 照 pi 是不带参数的开关**（TUI 启动即打开 `/resume` 的选择器，命令行提示词发到选中的会话）；带参数的恢复用 `--session <路径|id|名字>`，匹配规则同 `/resume <会话>`。规格书原想照 yo-agent 让 `--resume` 带可选参数，但 tau 的位置参数是提示词，`tau -r 修一下` 分不清，所以改照 pi。非 TUI 模式不接受 `-r`。
+- **截断续写**：回复（不含工具调用）被输出上限截断时，追加一条不显示的自定义消息（`continue_after_length`，进日志）请模型接着写。内核缺省 0（同 pi 截断即止），CLI 缺省开、连续 3 次（`continueOnMaxTokens`）。偏离 pi 与 Claude Code（Claude Code 报错，让用户自己说「继续」），照 yo-agent 与 Anthropic 文档的续写做法。工具调用被截断照旧作错误结果。OpenAI 兼容协议的对话请求本来不带 `max_tokens`（P48），所以那里只在服务器自己的上限截断时触发。
+- **摘要模型**：`summaryModel` 是独立的 transport 与模型，压缩、轮次前半段、分支摘要都走它，不带 agent 模型的思考等级；CLI 只认 models.json 里的模型（`compaction.model`），解析不了的报一句并用当前模型。
+- **ci 档**：accept-edits 的放行（读、工作目录里的编辑）加上「要问的直接拒绝、从不询问」，等同 Claude Code 的 `dontAsk` 加 `acceptEdits`。yo-agent 的 ci 是「读与低中风险编辑放行、命令恒拒」；tau 的 bash 是中风险，以 autonomous 为底会放行命令，所以以 accept-edits 为底（命令因为要问而被拒）。严格度排在 supervised 与 accept-edits 之间；`/mode` 里列在最后，Shift+Tab 不循环到它；网关（搁置）不接受它。
+- **结构门禁第一次挡下增长**：agent.ts 到 2509 行，按 D54 先拆（steering 与 follow-up 队列移到 `pending-queue.ts`），没有调高上限。
+
 ## D54：拆开的部分只收窄接口，内核一份适配器，结构由门禁守（2026-10-23，P51，用户确认）
 
 - **TUI 的窄接口用 `Pick`**：拆出的五块与命令表各自导出 host 类型，等于 `Pick<TuiController, 用到的成员>` 加上调用的其他部分的 `Pick`。控制器的成员本来就公开，不需要内核那样的适配器；编译器保证每块只碰列出的成员，新用到一个成员就得加进类型，依赖一眼可见。不走「控制器给每个跨部分调用加转调」：转调只是把依赖藏起来，还让控制器超过 1500 行。

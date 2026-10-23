@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P53**）
+> 最后更新：2026-10-23（P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**下一阶段待定**：P54 规格书待写，由用户判定做不做）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -66,12 +66,13 @@
 | [P50](specs/phase-50-consolidation.md) | 修整：文档写成现状，CLI `main.ts`、TUI 控制器、内核 `agent.ts` 按职责拆开，两个偶发测试 | 2026-10-23 | D53 |
 | [P51](specs/phase-51-structure-followup.md) | P50 的结构收尾：TUI 各部分与命令表收窄接口，内核一份 `AgentInternals`，结构门禁 | 2026-10-23 | D54 |
 | [P52](specs/phase-52-retrospective.md) | 项目现状复盘（[复盘文档](retrospectives/2026-10-23.md)），含对照 yo-agent 的 TUI | 2026-10-23 | |
+| [P53](specs/phase-53-yo-agent-parity.md) | 复刻 yo-agent 能力：总计划 P53–P59 与第一批（`-r/--resume`、`/tasks` 看子 agent、`/cwd`、截断续写、摘要模型、`ci` 档） | 2026-10-23 | D55 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
 
-## Phase 53 🚧 复刻 yo-agent 的能力：总计划与第一批
+## 复刻 yo-agent 的后续阶段（P54–P59）⬜
 
-规格书（2026-10-23 确认；用户：「没毛病，先写着吧，每个阶段我再判定这个东西到底要不要」）：[specs/phase-53-yo-agent-parity.md](specs/phase-53-yo-agent-parity.md)。总计划 P53–P59：P53 第一批（`-r/--resume`、`/tasks` 看子 agent、`/cwd`、截断后自动续写、压缩换模型、`ci` 权限档）→ P54 协议（Responses、Gemini、降级链、prompt shim）→ P55 运行保护（`apply_patch`、可选的循环熔断与 checkpoint）→ P56 MCP server → P57 远程与 SQLite → P58 浏览器 → P59 不可信插件宿主；P54 起每阶段由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
+总计划见 [P53 规格书](specs/phase-53-yo-agent-parity.md)：P54 协议（OpenAI Responses、Gemini、降级链、prompt shim）→ P55 运行保护（`apply_patch`、可选的循环熔断与 checkpoint）→ P56 作为 MCP server 被调用、MCP sampling → P57 远程（WebSocket RPC、设备配对、断线续接）与 SQLite 会话库 → P58 浏览器（`createWebAgent`、`defineHttpTool`、IndexedDB、挂件、Web 控制台）→ P59 不可信插件宿主。每个阶段先写规格书，由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
 
 ## 产品层后续 ⬜ 待定
 
@@ -142,8 +143,7 @@
 | 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
 | 24 | `npm audit` 4 个高危（P52）：`@larksuiteoapi/node-sdk` 经 axios、follow-redirects（NO_PROXY 绕过致 SSRF、原型污染、跨域不清凭据头）；`@modelcontextprotocol/sdk` 只是根目录开发依赖 | ext-feishu、channel-feishu 的使用者会装上有漏洞的 axios；MCP SDK 不进发布物 | 绑定发布阶段（复盘候选 C）：发布前升级飞书 SDK 或锁定修复版 axios；不发布时随 ext-feishu 的去留处理 |
 | 25 | 依赖落后大版本（P52）：Ink 5.2 → 8.0、React 18 → 19、string-width 7 → 8、wrap-ansi 9 → 10（highlight.js 10 与 TypeScript 5.9 属有意） | 越晚升越难；`render/wrap.ts` 是 wrap-ansi 9 的移植 | 复盘候选 E，单独一个阶段，跑全部 smoke 与真机 |
-| 26 | tau 没有 `--resume` 参数，但 `loop.ts` 给模型的说明（cron 工具、`/loop`）和 D47 里写着「`--resume` 恢复」（P52 发现；subagents.md、worktrees.md 已改） | 模型可能建议用户用一个不存在的参数 | 复盘候选 F：照 pi 加 `-r/--resume`（yo-agent 也有），或改提示文字 |
 | 27 | 同包内的重复实现（P52）：内核两份 `globToRegExp`、CLI 四份 `git()` 包装、`readGitBranch` 在 controller.ts 与 git-paths.ts 各一份等，全表见复盘 52b | 修一处漏一处 | 复盘候选 F |
 | 28 | 真机验收欠 16 个阶段（P34–P49）：P35、P37 的验收清单各 14、20 条手工场景，P34、P36、P38 各 1 条，P39–P49 规格书写着待用户执行（P52 登记） | 真实终端、输入法、剪贴板、通知、MCP 网页登录等自动化测不到的交互没人试过；真端点验收曾多次查出潜伏的 bug | 复盘候选 A：合并成一份清单，一次走完 |
 
-（#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
+（#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
