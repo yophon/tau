@@ -54,7 +54,7 @@ Options:
                          "in=0.5,out=2,cacheRead=0.05,cacheWrite=0.625"
                          (cache keys optional and uncounted when omitted;
                          env: TAU_PRICING). Enables real cost in the footer.
-      --permission-mode <mode>  read-only | supervised | accept-edits | autonomous | bypass
+      --permission-mode <mode>  read-only | supervised | ci | accept-edits | autonomous | bypass
                          (default: settings permissions.defaultMode, else supervised;
                          env: TAU_PERMISSION_MODE).
                          supervised asks before medium/high-risk tools;
@@ -492,6 +492,7 @@ export function splitList(value: string | undefined): string[] {
 export const PERMISSION_MODES: readonly PermissionMode[] = [
 	"read-only",
 	"supervised",
+	"ci",
 	"accept-edits",
 	"autonomous",
 	"bypass",

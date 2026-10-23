@@ -366,6 +366,14 @@ export class ToolBatchRunner {
 		// A hook's "allow" skips risk-based approvals but not an ask rule (Claude Code, P37a).
 		const askRule = policyDecision.rule?.kind === "ask";
 		const ask = askRule || (permission === undefined ? policyDecision.action === "ask" : permission === "ask");
+		if (ask && this.host.permissionMode === "ci") {
+			// P53c (yo-agent's ci, Claude Code's dontAsk): nothing asks; what would ask is denied.
+			return {
+				kind: "immediate",
+				toolCall,
+				result: errorResult(`Denied by policy: approval required (${riskText}), and ci mode never asks`),
+			};
+		}
 		if (ask) {
 			const handler = this.host.onApproval ?? this.uiApprovalHandler();
 			if (!handler) {

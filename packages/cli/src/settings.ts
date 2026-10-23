@@ -52,7 +52,9 @@ export interface TauSettings {
 	/** P40c (pi): the tools on at start, written like --tools (names replace the built-ins, +name/-name change them). */
 	defaultTools?: string[];
 	/** P40c (pi): automatic compaction. */
-	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number };
+	compaction?: { enabled?: boolean; reserveTokens?: number; keepRecentTokens?: number; model?: string };
+	/** P53c (yo-agent): continue a reply the output cap cut off (default true, up to 3 times in a row). */
+	continueOnMaxTokens?: boolean;
 	/** P40c (pi): branch summaries when /tree leaves a branch. */
 	branchSummary?: { reserveTokens?: number; skipPrompt?: boolean };
 	/** P40c (pi): automatic retries (TAU_MAX_RETRIES / TAU_RETRY_BASE_DELAY_MS still win). */
@@ -116,11 +118,13 @@ function readP40Keys(raw: Record<string, unknown>, settings: TauSettings, base: 
 	const tools = stringList(raw.defaultTools);
 	if (tools) settings.defaultTools = tools;
 	if (isObject(raw.compaction)) {
-		const { enabled, reserveTokens, keepRecentTokens } = raw.compaction;
+		const { enabled, reserveTokens, keepRecentTokens, model } = raw.compaction;
 		const compaction: NonNullable<TauSettings["compaction"]> = {};
 		if (typeof enabled === "boolean") compaction.enabled = enabled;
 		if (wholeNumber(reserveTokens, 0) !== undefined) compaction.reserveTokens = reserveTokens as number;
 		if (wholeNumber(keepRecentTokens, 0) !== undefined) compaction.keepRecentTokens = keepRecentTokens as number;
+		// P53c (yo-agent's YO_COMPACT_MODEL): provider/id of a models.json model for summaries.
+		if (typeof model === "string" && model.trim() !== "") compaction.model = model.trim();
 		if (Object.keys(compaction).length > 0) settings.compaction = compaction;
 	}
 	if (isObject(raw.branchSummary)) {
@@ -159,6 +163,7 @@ function readP40Keys(raw: Record<string, unknown>, settings: TauSettings, base: 
 		});
 	}
 	if (typeof raw.enableSkillCommands === "boolean") settings.enableSkillCommands = raw.enableSkillCommands;
+	if (typeof raw.continueOnMaxTokens === "boolean") settings.continueOnMaxTokens = raw.continueOnMaxTokens;
 	if (isObject(raw.images)) {
 		const { autoResize, blockImages } = raw.images;
 		const images: NonNullable<TauSettings["images"]> = {};
@@ -234,7 +239,7 @@ export function agentOptionsFromSettings(
 > {
 	return {
 		retry: { ...settings.retry, ...envRetry },
-		...(settings.compaction ? { compaction: { ...settings.compaction } } : {}),
+		...(settings.compaction ? { compaction: compactionOptions(settings.compaction) } : {}),
 		...(settings.branchSummary?.reserveTokens !== undefined
 			? { branchSummary: { reserveTokens: settings.branchSummary.reserveTokens } }
 			: {}),
@@ -242,6 +247,14 @@ export function agentOptionsFromSettings(
 		...(settings.followUpMode ? { followUpMode: settings.followUpMode } : {}),
 		...(settings.maxTurnsPerPrompt !== undefined ? { maxTurnsPerPrompt: settings.maxTurnsPerPrompt } : {}),
 	};
+}
+
+/** The kernel's compaction settings: compaction.model is resolved by the workspace (P53c). */
+function compactionOptions(
+	compaction: NonNullable<TauSettings["compaction"]>,
+): NonNullable<AgentOptions["compaction"]> {
+	const { model: _model, ...rest } = compaction;
+	return rest;
 }
 
 const P40_KEYS = [
@@ -261,6 +274,7 @@ const P40_KEYS = [
 	"prompts",
 	"enableSkillCommands",
 	"images",
+	"continueOnMaxTokens",
 ] as const;
 
 /** The settings without the keys P40 added (the gateway, parked, stays as it was). */

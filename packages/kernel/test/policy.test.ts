@@ -14,6 +14,8 @@ test("mode × risk matrix covers every combination", () => {
 	const expected: Record<PermissionMode, Record<RiskLevel, PolicyAction>> = {
 		"read-only": { low: "allow", medium: "deny", high: "deny" },
 		supervised: { low: "allow", medium: "ask", high: "ask" },
+		// P53c: the matrix asks; the tool batch denies instead of asking in ci.
+		ci: { low: "allow", medium: "ask", high: "ask" },
 		"accept-edits": { low: "allow", medium: "ask", high: "ask" },
 		autonomous: { low: "allow", medium: "allow", high: "ask" },
 		bypass: { low: "allow", medium: "allow", high: "allow" },

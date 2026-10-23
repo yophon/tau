@@ -73,7 +73,7 @@ export interface RunOutcome {
 }
 
 export const THINKING_LEVELS: readonly ThinkingLevel[] = ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
-const MODES: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
+const MODES: readonly PermissionMode[] = ["read-only", "supervised", "ci", "accept-edits", "autonomous", "bypass"];
 
 export class HeadlessSession {
 	agent: Agent;

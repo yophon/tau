@@ -63,6 +63,7 @@ import {
 	type OpenAICompatConfig,
 	type TransportRequest,
 } from "./openai.ts";
+import { PendingMessageQueue, type QueueMode } from "./pending-queue.ts";
 import { defaultPlatform, type Platform, type TauAbortSignal } from "./platform.ts";
 import { type ApprovalRequest, createDefaultPolicy, type PermissionMode, type ToolPolicy } from "./policy.ts";
 import {
@@ -108,43 +109,6 @@ import {
 	type ToolUpdateStream,
 } from "./tools.ts";
 import { uuidv7 } from "./uuid.ts";
-
-/** How queued steering/follow-up messages are drained, as in pi. */
-export type QueueMode = "one-at-a-time" | "all";
-
-/** Mirrors pi's PendingMessageQueue (packages/agent/src/agent.ts). Custom messages may queue too (sendMessage deliverAs). */
-class PendingMessageQueue {
-	private readonly items: (UserMessage | CustomMessage)[] = [];
-	readonly mode: QueueMode;
-
-	constructor(mode: QueueMode) {
-		this.mode = mode;
-	}
-
-	enqueue(message: UserMessage | CustomMessage): void {
-		this.items.push(message);
-	}
-
-	hasItems(): boolean {
-		return this.items.length > 0;
-	}
-
-	drain(): (UserMessage | CustomMessage)[] {
-		if (this.items.length === 0) return [];
-		if (this.mode === "all") return this.items.splice(0);
-		return this.items.splice(0, 1);
-	}
-
-	/** Put messages polled but never committed back at the front (an abort between poll and commit). */
-	restore(messages: (UserMessage | CustomMessage)[]): void {
-		this.items.unshift(...messages);
-	}
-
-	/** Empty the queue and return what was in it (pi clearQueue: hosts restore it to the editor). */
-	clear(): (UserMessage | CustomMessage)[] {
-		return this.items.splice(0);
-	}
-}
 
 /**
  * What holds the agent. One at a time (pi: a run, a manual compaction and a
@@ -213,6 +177,16 @@ export interface AgentOptions {
 	compaction?: Partial<CompactionSettings>;
 	/** pi's branchSummary.reserveTokens (P40c): tokens kept free when a branch is summarized; default compaction's. */
 	branchSummary?: { reserveTokens?: number };
+	/**
+	 * P53c (yo-agent's YO_COMPACT_MODEL): summaries — compaction, turn prefixes, branch summaries — go to
+	 * this model instead of the agent's. Absent: the agent's model.
+	 */
+	summaryModel?: SummaryModel;
+	/**
+	 * P53c (yo-agent): how many times in a row a reply cut off by the output cap (stopReason "length",
+	 * no tool calls) is continued with a request to go on. 0 (the default, pi) ends the run there.
+	 */
+	continueAfterLength?: number;
 	/** Auto-retry policy for failed LLM requests (pi defaults: enabled, 3 attempts, 2s base). Requires Platform.sleep. */
 	retry?: Partial<RetrySettings>;
 	/**
@@ -379,6 +353,8 @@ export class Agent {
 	private readonly session: SessionRecorder;
 	private readonly compactionSettings: CompactionSettings;
 	private readonly branchSummaryReserveTokens: number | undefined;
+	private readonly summaryModel: SummaryModel | undefined;
+	private readonly continueAfterLength: number;
 	private readonly retrySettings: RetrySettings;
 	private readonly pricing: AgentOptions["pricing"];
 	/** Model of this agent's requests (Agent.setModel; starts as config.model). */
@@ -467,6 +443,8 @@ export class Agent {
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.compactionSettings = { ...DEFAULT_COMPACTION_SETTINGS, ...options.compaction };
 		this.branchSummaryReserveTokens = options.branchSummary?.reserveTokens;
+		this.summaryModel = options.summaryModel;
+		this.continueAfterLength = Math.max(0, options.continueAfterLength ?? 0);
 		this.retrySettings = { ...DEFAULT_RETRY_SETTINGS, ...options.retry };
 		this.pricing = options.pricing;
 		this.currentModel = options.config.model;
@@ -1238,18 +1216,23 @@ export class Agent {
 	 * the before_provider_headers changes — pi runs the hook for every provider call.
 	 */
 	private summaryTransport(): ChatTransport {
-		const inner = this.transport;
+		// P53c: a separate summary model has its own transport; the thinking level is the agent model's.
+		const separate = this.summaryModel;
+		const inner = separate?.transport ?? this.transport;
 		const agent = this;
 		const transport: ChatTransport = (request) =>
 			(async function* () {
 				const ctx = agent.extensionContext();
+				const model = separate?.model ?? agent.currentModel;
 				const headers = await agent.providerHeaders(ctx);
-				const hooks = agent.providerEventHooks(ctx, agent.currentModel);
+				const hooks = agent.providerEventHooks(ctx, model);
 				yield* inner({
 					...request,
-					model: agent.currentModel,
+					model,
 					cacheRetention: "none",
-					...(agent.currentThinkingLevel !== undefined ? { thinkingLevel: agent.currentThinkingLevel } : {}),
+					...(!separate && agent.currentThinkingLevel !== undefined
+						? { thinkingLevel: agent.currentThinkingLevel }
+						: {}),
 					...(headers ? { headers } : {}),
 					...hooks,
 				});
@@ -1257,6 +1240,11 @@ export class Agent {
 		transport.supportsHeaders = inner.supportsHeaders;
 		transport.supportsProviderEvents = inner.supportsProviderEvents;
 		return transport;
+	}
+
+	/** The output cap for summary requests: the summary model's when there is one (P53c), else the agent model's. */
+	private summaryMaxTokens(): number | undefined {
+		return this.summaryModel ? this.summaryModel.maxOutputTokens : this.config.maxOutputTokens;
 	}
 
 	/**
@@ -1452,7 +1440,7 @@ export class Agent {
 					customInstructions,
 					signal,
 					this.summarizationRetry({ source: "compaction", reason }, onEvent),
-					this.config.maxOutputTokens,
+					this.summaryMaxTokens(),
 				));
 			throwIfAborted(signal);
 			if (result.usage) result.usage = this.priced(result.usage);
@@ -1820,6 +1808,8 @@ export class Agent {
 		/** P40d (pi): an overflow was compacted and its turn retried; reset by a request that goes through. */
 		let overflowRecoveryAttempted = false;
 		let lengthStreak = 0;
+		/** P53c: replies cut off by the output cap continued in a row. */
+		let continuedReplies = 0;
 		let explicitContinue = false;
 		// Check for steering at start: the user may have typed while the run was starting (pi).
 		let pending: (UserMessage | CustomMessage)[] = this.steeringQueue.drain();
@@ -2173,6 +2163,18 @@ export class Agent {
 				}
 				explicitContinue = boundaryContinue;
 				pending = this.steeringQueue.drain();
+				// P53c (yo-agent): a reply the output cap cut off goes on with one more request, not an error.
+				const cutOff = assistantMessage.stopReason === "length" && toolCalls.length === 0;
+				continuedReplies = cutOff ? continuedReplies + 1 : 0;
+				if (cutOff && continuedReplies <= this.continueAfterLength && pending.length === 0) {
+					pending.push({
+						role: "custom",
+						customType: CONTINUE_AFTER_LENGTH,
+						content: CONTINUE_AFTER_LENGTH_TEXT,
+						display: false,
+						timestamp: Date.now(),
+					});
+				}
 				if (hasMoreToolCalls || pending.length > 0) explicitContinue = false;
 			}
 
@@ -2372,6 +2374,7 @@ export class Agent {
 			},
 			summarizationRetry: (source, emit) => agent.summarizationRetry(source, emit),
 			summaryTransport: () => agent.summaryTransport(),
+			summaryMaxTokens: () => agent.summaryMaxTokens(),
 			get systemPrompt() {
 				return agent.systemPrompt;
 			},
@@ -2437,6 +2440,19 @@ async function* pumpEvents<T>(work: (emit: (event: AgentEvent) => void) => Promi
 
 /** Consecutive turns whose tool calls were cut off by the output cap before the run ends (tau guard). */
 const MAX_LENGTH_TRUNCATED_TURNS = 3;
+
+/** P53c: the hidden message that asks for the rest of a reply the output cap cut off (yo-agent's "请继续"). */
+const CONTINUE_AFTER_LENGTH = "continue_after_length";
+const CONTINUE_AFTER_LENGTH_TEXT =
+	"Your previous reply was cut off by the output limit. Continue exactly where it stopped, without repeating what you already wrote.";
+
+/** P53c: a separate model for summaries (compaction, turn prefixes, branch summaries). */
+export interface SummaryModel {
+	transport: ChatTransport;
+	model: string;
+	/** Its output cap, for the summary request's max_tokens (pi 1.4); absent: the reserve-based size. */
+	maxOutputTokens?: number;
+}
 
 /** Error text for a tool call of a length-truncated response, verbatim from pi 0.80.4. */
 function truncatedToolCallText(toolName: string): string {

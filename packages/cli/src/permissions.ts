@@ -71,6 +71,7 @@ const LOCAL_EXCLUDE = "**/.tau/settings.local.json";
 const MODE_ALIASES: Record<string, PermissionMode> = {
 	"read-only": "read-only",
 	supervised: "supervised",
+	ci: "ci",
 	"accept-edits": "accept-edits",
 	autonomous: "autonomous",
 	bypass: "bypass",
@@ -78,6 +79,8 @@ const MODE_ALIASES: Record<string, PermissionMode> = {
 	manual: "supervised",
 	acceptedits: "accept-edits",
 	plan: "read-only",
+	// P53c: Claude Code's dontAsk denies what is not pre-approved; tau's ci also runs edits in the project.
+	dontask: "ci",
 	bypasspermissions: "bypass",
 };
 

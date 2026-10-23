@@ -21,6 +21,7 @@ import {
 	type Usage,
 } from "@yophon/tau-kernel";
 import { type GitDiff, gitDiff } from "../git-diff.ts";
+import { mainCheckoutOf } from "../git-paths.ts";
 import { findSession, relativeTime, sessionLabel } from "../session-title.ts";
 import type { TuiController } from "./controller.ts";
 import { sessionHtml } from "./export-html.ts";
@@ -109,6 +110,8 @@ export const PERMISSION_MODES: ReadonlyArray<{ mode: PermissionMode; hint: strin
 	{ mode: "accept-edits", hint: "file edits in this directory run; commands still ask" },
 	{ mode: "autonomous", hint: "tool calls run without asking" },
 	{ mode: "bypass", hint: "every approval skipped, policy rules included" },
+	// P53c: last, so the picker keeps its order; Shift+Tab never reaches it.
+	{ mode: "ci", hint: "nothing asks: reads and edits in this directory run, the rest is denied (unattended)" },
 ];
 
 /** The /model choices: table models with their hints, or the configured ids. */
@@ -425,6 +428,17 @@ const BUILTINS: BuiltinCommand[] = [
 			);
 			const result = await tui.sessions.switchSession(copy, "fork");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the copy was kept).");
+		},
+	},
+	{
+		name: "cwd",
+		description: "Show the working directory",
+		run: (tui) => {
+			const main = mainCheckoutOf(tui.options.cwd);
+			tui.notice(
+				"dim",
+				main && main !== tui.options.cwd ? `${tui.options.cwd}\nmain checkout: ${main}` : tui.options.cwd,
+			);
 		},
 	},
 	{

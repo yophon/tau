@@ -1,7 +1,7 @@
 // What the modules split out of agent.ts read from an Agent (P51; P50 split them out with one
 // adapter each). Agent builds one object of getters and forwarding methods over its private state,
 // so nothing here is part of Agent's public surface; each module takes a Pick of it.
-import type { Agent, AgentEvent, AgentOptions, QueueMode } from "./agent.ts";
+import type { Agent, AgentEvent, AgentOptions } from "./agent.ts";
 import type { ImageProcessor } from "./capabilities.ts";
 import type { CompactionSettings, SummarizationRetry } from "./compaction.ts";
 import type {
@@ -14,6 +14,7 @@ import type {
 } from "./extensions.ts";
 import type { AgentMessage, ModelPricing, Usage } from "./messages.ts";
 import type { ChatTransport, OpenAICompatConfig, TransportRequest } from "./openai.ts";
+import type { QueueMode } from "./pending-queue.ts";
 import type { Platform } from "./platform.ts";
 import type { ApprovalRequest, PermissionMode, ToolPolicy } from "./policy.ts";
 import type { RetrySettings } from "./retry.ts";
@@ -73,6 +74,8 @@ export interface AgentInternals {
 		emit?: (event: AgentEvent) => void,
 	): SummarizationRetry;
 	summaryTransport(): ChatTransport;
+	/** The output cap for summary requests (P53c: the summary model's when there is one). */
+	summaryMaxTokens(): number | undefined;
 	readonly systemPrompt: string | undefined;
 	readonly toolExecution: ToolExecutionMode;
 	readonly transport: ChatTransport;

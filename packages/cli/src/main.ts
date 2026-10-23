@@ -410,6 +410,19 @@ async function main(): Promise<void> {
 		modelTakesImages,
 		auditHost,
 		defaultTrigger,
+		// P53c: compaction.model, resolved as /model would (without switching).
+		resolveSummaryModel: (ref) => {
+			const resolved = resolveModelSwitch(ref);
+			if ("error" in resolved) return resolved;
+			if (!resolved.options.transport) return { error: "not a model in ~/.tau/models.json" };
+			return {
+				transport: resolved.options.transport,
+				model: resolved.model,
+				...(resolved.options.maxOutputTokens !== undefined
+					? { maxOutputTokens: resolved.options.maxOutputTokens }
+					: {}),
+			};
+		},
 	};
 	const openWorkspace = (spec: WorkspaceSpec) => openWorkspaceIn(workspaceContext, spec);
 	const modelDisplay = (): string =>

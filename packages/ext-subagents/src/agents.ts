@@ -40,7 +40,7 @@ export interface AgentDefinition {
 	filePath?: string;
 }
 
-const MODES: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
+const MODES: readonly PermissionMode[] = ["read-only", "supervised", "ci", "accept-edits", "autonomous", "bypass"];
 
 /** Claude Code's effort levels, each a tau thinking level of the same name. */
 export type AgentEffort = Extract<ThinkingLevel, "low" | "medium" | "high" | "xhigh" | "max">;

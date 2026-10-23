@@ -4,8 +4,8 @@ export {
 	type AgentEvent,
 	type AgentOperation,
 	type AgentOptions,
-	type QueueMode,
 	type SetModelOptions,
+	type SummaryModel,
 } from "./agent.ts";
 export { decodeBase64, encodeBase64 } from "./base64.ts";
 export {
@@ -279,6 +279,7 @@ export {
 	type TransportRequest,
 	withStallTimeout,
 } from "./openai.ts";
+export type { QueueMode } from "./pending-queue.ts";
 export {
 	bashPatternMatches,
 	canonicalPath,

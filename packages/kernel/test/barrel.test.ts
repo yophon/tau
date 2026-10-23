@@ -26,6 +26,8 @@ const INTERNAL = new Set([
 	// Spawning a child agent (P50 split); extensions reach it through ctx.runSubagent.
 	"subagent-spawn.ts:SubagentHost",
 	"subagent-spawn.ts:runSubagent",
+	// The agent's steering and follow-up queues (P53c split); hosts use steer/followUp.
+	"pending-queue.ts:PendingMessageQueue",
 	// The /btw request (P50 split); hosts call agent.askAside.
 	"aside.ts:AsideHost",
 	"aside.ts:askAside",

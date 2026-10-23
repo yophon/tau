@@ -24,7 +24,7 @@ import { type RecordWriter, readRecords } from "./jsonl.ts";
 export type ApprovalChoice = "once" | "always" | "deny";
 
 const APPROVAL_OPTIONS = ["Allow once", "Always allow", "Deny"] as const;
-const MODES: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
+const MODES: readonly PermissionMode[] = ["read-only", "supervised", "ci", "accept-edits", "autonomous", "bypass"];
 
 /** The client side of ctx.ui and approvals: requests out, responses in. */
 export class RpcUiBridge {

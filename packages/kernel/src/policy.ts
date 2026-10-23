@@ -18,7 +18,7 @@ import {
 } from "./permission-rules.ts";
 
 /** How much the host trusts the agent. Kernel default: autonomous; interactive hosts should pick supervised. */
-export type PermissionMode = "read-only" | "supervised" | "accept-edits" | "autonomous" | "bypass";
+export type PermissionMode = "read-only" | "supervised" | "ci" | "accept-edits" | "autonomous" | "bypass";
 
 export type RiskLevel = "low" | "medium" | "high";
 
@@ -76,8 +76,11 @@ export interface ApprovalRequest {
 	detached?: boolean;
 }
 
-/** Modes from strictest to most permissive. */
-const MODE_ORDER: readonly PermissionMode[] = ["read-only", "supervised", "accept-edits", "autonomous", "bypass"];
+/**
+ * Modes from strictest to most permissive. ci allows what accept-edits does but never asks, so it sits
+ * between supervised and accept-edits: a ci parent keeps an accept-edits child from asking (P53c).
+ */
+const MODE_ORDER: readonly PermissionMode[] = ["read-only", "supervised", "ci", "accept-edits", "autonomous", "bypass"];
 
 /** The stricter of two permission modes (a subagent never outranks its parent). */
 export function stricterMode(a: PermissionMode, b: PermissionMode | undefined): PermissionMode {
@@ -89,7 +92,8 @@ export function stricterMode(a: PermissionMode, b: PermissionMode | undefined): 
  * mode × risk → action. read-only denies everything non-read, supervised asks
  * for medium and high, autonomous asks only for high, bypass allows all.
  * accept-edits is supervised here; the default policy additionally allows file
- * edits inside the working directory in it (P26d, yo-agent / Claude Code).
+ * edits inside the working directory in it (P26d, yo-agent / Claude Code). ci (P53c,
+ * yo-agent's unattended mode) is accept-edits whose asks are denied instead (the tool batch).
  */
 export function resolvePolicyAction(mode: PermissionMode, risk: RiskLevel): PolicyAction {
 	switch (mode) {
@@ -98,6 +102,7 @@ export function resolvePolicyAction(mode: PermissionMode, risk: RiskLevel): Poli
 		case "read-only":
 			return risk === "low" ? "allow" : "deny";
 		case "supervised":
+		case "ci":
 		case "accept-edits":
 			return risk === "low" ? "allow" : "ask";
 		case "autonomous":
@@ -339,7 +344,7 @@ export function createDefaultPolicy(options?: DefaultPolicyOptions): ToolPolicy 
 					return { ...base, action: "allow", reason: reason ?? `${rule.text} (allow rule${from})`, rule };
 				}
 			}
-			if (mode === "accept-edits" && risk !== "high" && ACCEPT_EDITS_TOOLS.has(call.toolName)) {
+			if ((mode === "accept-edits" || mode === "ci") && risk !== "high" && ACCEPT_EDITS_TOOLS.has(call.toolName)) {
 				const targets = probeStrings(call.args, PATH_PROBE_KEYS);
 				const extra = workingDirectories();
 				if (targets.every((target) => isInsideWorkingDirectories(target, call.cwd, extra))) {

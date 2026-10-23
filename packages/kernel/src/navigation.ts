@@ -26,6 +26,7 @@ export type NavigationHost = Pick<
 	| "restoreToolsFromTranscript"
 	| "session"
 	| "summarizationRetry"
+	| "summaryMaxTokens"
 	| "summaryTransport"
 >;
 
@@ -78,7 +79,7 @@ export async function runNavigation(
 				customInstructions: hook.customInstructions ?? options?.customInstructions,
 				...(replaceInstructions !== undefined ? { replaceInstructions } : {}),
 				contextWindow: host.config.contextWindow,
-				...(host.config.maxOutputTokens !== undefined ? { maxTokens: host.config.maxOutputTokens } : {}),
+				...(host.summaryMaxTokens() !== undefined ? { maxTokens: host.summaryMaxTokens() } : {}),
 				reserveTokens: host.branchSummaryReserveTokens ?? host.effectiveCompactionSettings().reserveTokens,
 				signal,
 				retry: host.summarizationRetry({ source: "branchSummary" }, options?.onEvent),

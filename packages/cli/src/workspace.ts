@@ -13,7 +13,7 @@ import {
 	NodeImageProcessor,
 	NodeShell,
 } from "@yophon/tau-host-node";
-import type { ToolExecutionMode } from "@yophon/tau-kernel";
+import type { SummaryModel, ToolExecutionMode } from "@yophon/tau-kernel";
 import {
 	Agent,
 	type AgentMessage,
@@ -98,6 +98,8 @@ export interface WorkspaceContext {
 	modelTakesImages: () => boolean;
 	auditHost: AuditHost;
 	defaultTrigger: AuditTrigger;
+	/** P53c: settings' compaction.model (provider/id of a models.json model) as the summary model. */
+	resolveSummaryModel?: (ref: string) => SummaryModel | { error: string };
 }
 
 /** One workspace's directory, UI and host-specific choices. */
@@ -632,6 +634,9 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 			session,
 			// P40c (pi): settings' retry, compaction, branch summary, queue modes and turn cap; the env wins for retries.
 			...agentOptionsFromSettings(workspaceSettings, retry),
+			// P53c (yo-agent): continue a cut-off reply; summaries on another model. The gateway is parked.
+			...(extended ? { continueAfterLength: workspaceSettings.continueOnMaxTokens === false ? 0 : 3 } : {}),
+			...(extended ? summaryModelOption(context, workspaceSettings.compaction?.model) : {}),
 			pricing,
 			thinkingLevel: run.thinkingLevel,
 			permissionMode: mode,
@@ -790,4 +795,19 @@ export function modelEnvironment(): Record<string, string> {
 		// A broken store is reported by tau credentials; the guard still masks what it knows.
 	}
 	return scrubEnv(process.env, readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow);
+}
+
+/** compaction.model resolved to a summary model; a model that cannot be resolved is reported once and skipped. */
+const reportedSummaryModels = new Set<string>();
+function summaryModelOption(context: WorkspaceContext, ref: string | undefined): { summaryModel?: SummaryModel } {
+	if (ref === undefined || !context.resolveSummaryModel) return {};
+	const resolved = context.resolveSummaryModel(ref);
+	if ("error" in resolved) {
+		if (!reportedSummaryModels.has(ref)) {
+			reportedSummaryModels.add(ref);
+			console.error(dim(`settings: compaction.model "${ref}": ${resolved.error}; summaries use the current model.`));
+		}
+		return {};
+	}
+	return { summaryModel: resolved };
 }

@@ -1,8 +1,8 @@
 // P53: what yo-agent had and tau lacked — -r/--resume and --session by id or name (53a),
-// a background subagent's activity in /tasks (53b).
+// a background subagent's activity in /tasks (53b), /cwd, the ci mode and two settings (53c).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, readdirSync } from "node:fs";
+import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type MockOpenAI, mockTextTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
 import { parseArgs } from "../src/args.ts";
 import { subagentText } from "../src/background.ts";
+import { agentOptionsFromSettings, readSettings, withoutP40Keys } from "../src/settings.ts";
 import { ESC, harness } from "./tui-harness.ts";
 
 const CLI_PATH = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -135,5 +136,36 @@ describe("P53b /tasks shows a subagent's activity", () => {
 			subagentText({ ...base, status: "done", result: "all good", recent: ["● read(x)"] }),
 			"sub-1 (worker) done:\n\nall good",
 		);
+	});
+});
+
+describe("P53c small items in the CLI", () => {
+	it("reads continueOnMaxTokens and compaction.model; the kernel's compaction options leave the model out", () => {
+		const dir = mkdtempSync(join(tmpdir(), "tau-p53-settings-"));
+		const path = join(dir, "settings.json");
+		writeFileSync(
+			path,
+			JSON.stringify({ continueOnMaxTokens: false, compaction: { reserveTokens: 1000, model: " deepseek/cheap " } }),
+		);
+		const settings = readSettings(path);
+		assert.equal(settings.continueOnMaxTokens, false);
+		assert.deepEqual(settings.compaction, { reserveTokens: 1000, model: "deepseek/cheap" });
+		assert.deepEqual(agentOptionsFromSettings(settings).compaction, { reserveTokens: 1000 });
+		assert.equal(withoutP40Keys(settings).continueOnMaxTokens, undefined, "the parked gateway does not see it");
+	});
+
+	it("takes --permission-mode ci", () => {
+		assert.equal(parseArgs(["--permission-mode", "ci"]).permissionMode, "ci");
+	});
+
+	it("/cwd shows the working directory", async () => {
+		const h = await harness({ responses: [] });
+		try {
+			await h.submit("/cwd");
+			const cwd = h.controller.options.cwd;
+			await h.waitFor((f) => f.replace(/\s+/g, "").includes(cwd.replace(/\s+/g, "")), "the working directory");
+		} finally {
+			h.cleanup();
+		}
 	});
 });
