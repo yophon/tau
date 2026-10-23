@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-22（P50 整理：按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-23（P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -36,6 +36,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 4. **能力可选**：内核任何路径不得假设某能力存在；宿主不提供就少注册工具。
 5. **设计先抄 pi**：新模块动手前先读 pi 对应实现（`../pi`，tag v1.4.0），照抄接口形状，只在运行时耦合处偏离并注释原因（D7/D23）。
 6. **权限无静默放行**（D20）：supervised 及以下档位，medium/high 风险工具执行必经审批或拒绝；没有审批处理器时 ask 降级为 deny，绝不降级为 allow；deny 是普通 isError 工具结果，不中断循环。
+7. **结构门禁**（D54）：`npm run check:structure` 守住文件行数（缺省 1000 行，超过的文件各有上限）与依赖方向（CLI 根目录与 `modes/` 不得静态引入 TUI 控制器）。到了上限就拆，或者在脚本里写明原因调高。
 
 ## 内核（packages/kernel/src/）
 
@@ -55,7 +56,8 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `transform.ts` | `transformMessages()`：pi 的跨模型回放规则——同模型按原字段回放推理，换模型或协议时丢掉 thinking，跳过 error/aborted 轮，给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Anthropic 扩展共用 |
 | `retry.ts` | 错误分类逐字照抄 pi 1.4（先排除额度与上下文溢出，再匹配瞬态失败；413 算溢出）与 `RetrySettings`（缺省开、3 次、2 s 指数退避）。策略在 agent 循环里执行 |
 | **Agent** | |
-| `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。下面五个文件是从它拆出的独立块，经 Agent 内部建的只读适配器访问它的私有状态，`Agent` 的公开方法不变 |
+| `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。下面五个文件是从它拆出的独立块，经 `agent-internals.ts` 读它的私有状态，`Agent` 的公开方法不变 |
+| `agent-internals.ts` | `AgentInternals`：拆出的模块可以读的 Agent 状态与方法。Agent 里只有一个适配器（`exposeInternals`，getter 读当前值、方法转调），建一次；各模块的 host 类型是它的 `Pick`（`ToolStateHost` 等），所以每个模块碰了 Agent 的什么一眼可见，`Agent` 的公开面不因此变宽 |
 | `tool-state.ts` | 工具集（`ToolState`）：已注册工具的合并（基础工具，扩展工具按名覆盖）、active 集（声明给模型的那些）、从转录恢复的名字等它注册（pi `_pendingToolNames`）、`setDefaultTools` 的 `+/-`、按请求算 loadout（`prepareLoadout` 改描述、隐藏声明）；`withoutHiddenDeclarations` 把隐藏的声明滤出请求 |
 | `tool-batch.ts` | `ToolBatchRunner`：逐个 preflight（tool_call 钩子 → 参数校验 → 策略与审批 → tool_execution_start）、sequential/parallel 执行与更新泵、tool_result 钩子；按请求时的工具快照分派，结果按源序提交 |
 | `nested-calls.ts` | 嵌套工具调用（照抄 pi）：`ctx.executeTool` 背后的运行器，嵌套 id `<parent>/<n>`，走同一条 preflight 管线，记在调用方 `ToolResultMessage.nestedCalls` 并累加用量；`NESTED_CALL_LIMITS` |
@@ -218,7 +220,7 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
 
 - **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
 - **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者；`types.ts` 是共用类型。
-- **控制器**：`controller.ts` 不依赖 Ink，持有 Agent、会话与扩展注册表，把事件与扩展渲染派发成 action，对外是一个对象；它的几块各自成文件，经窄接口访问控制器，状态只放在一处：
+- **控制器**：`controller.ts` 不依赖 Ink，持有 Agent、会话与扩展注册表，把事件与扩展渲染派发成 action，对外是一个对象；它的几块各自成文件，状态只放在一处。每一块导出自己的 host 类型（`DialogsHost`、`InputBoxHost`、`TranscriptViewHost`、`RunsHost`、`SessionsHost`）：`Pick<TuiController, 它用到的成员>` 加上它调用的其他部分的方法（例如 `{ readonly runs: Pick<TuiRuns, "sendQueued"> }`），控制器传 `this`，编译器保证不越界。`commands.ts` 的命令收 `CommandHost`，参数补全器只收 `CompletionHost`；runs 会执行任意命令，所以 `RunsHost` 包含 `CommandHost`：
   - `dialogs.ts`：审批、选择器与多选、输入框里的提问、表单、会话树选择器，以及对话框叠放；
   - `input-box.ts`：输入框编辑（撤销、kill ring、粘贴折叠）、历史（含 Ctrl+C 清掉的草稿）、补全与路径补全、剪贴板粘贴；
   - `transcript-view.ts`：全屏对话区的滚动、点选与拖选复制、搜索、跳到上一条提示；

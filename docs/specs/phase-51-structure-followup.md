@@ -1,6 +1,6 @@
 # Phase 51：P50 的结构收尾（窄接口、内核适配器、防回涨） 规格书
 
-> 状态：已确认（2026-10-23）。P50 完成后复查，列出没做好的六条，用户：「都做」。下面「需要确认」按建议执行。
+> 状态：已完成（2026-10-23）。P50 完成后复查，列出没做好的六条，用户：「都做」。下面「需要确认」按建议执行；实施记录见文末。
 > 对应 roadmap 阶段：Phase 51
 > 起因：P50 把 TUI 控制器与内核 agent.ts 拆成了几个文件，但只是文件变短，依赖没收窄；内核为保持私有加了四份重复的适配器；也没有任何东西防止这几个文件再长回去。
 
@@ -60,11 +60,11 @@
 
 ## 验收清单
 
-- [ ] 51a：五个部分与 `commands.ts` 都只收窄接口；`tsc` 通过即证明没有越界；TUI 测试、smoke-tui 照样通过。
-- [ ] 51b：Agent 里只剩一个适配器；四个模块的 host 类型来自 `AgentInternals`；内核导出与 `Agent` 公开成员不变；纯度门禁、barrel 测试通过。
-- [ ] 51c：`npm run check` 包含结构检查；故意把一个文件加到超上限、或让 `modes/repl.ts` 静态引入控制器，检查会失败（验证后撤掉）。
-- [ ] 不改行为的证明：全量测试、check、pack smoke、smoke-tui 全屏与 inline、真 DeepSeek（TUI、REPL、`-p`、rpc）；push 后 CI 通过。
-- [ ] D54；architecture.md（TUI 一节写清各部分的窄接口与跨部分依赖、内核的 `AgentInternals`）、development.md 更新；P51 进 roadmap 表。
+- [x] 51a：五个部分与 `commands.ts` 都只收窄接口；`tsc` 通过即证明没有越界；TUI 测试、smoke-tui 照样通过。
+- [x] 51b：Agent 里只剩一个适配器；四个模块的 host 类型来自 `AgentInternals`；内核导出与 `Agent` 公开成员不变；纯度门禁、barrel 测试通过。
+- [x] 51c：`npm run check` 包含结构检查；故意把一个文件加到超上限、或让 `modes/repl.ts` 静态引入控制器，检查会失败（验证后撤掉）。
+- [x] 不改行为的证明：全量测试、check、pack smoke、smoke-tui 全屏与 inline、真 DeepSeek（TUI、REPL、`-p`、rpc）；push 后 CI 通过。
+- [x] D54；architecture.md（TUI 一节写清各部分的窄接口与跨部分依赖、内核的 `AgentInternals`）、development.md 更新；P51 进 roadmap 表。
 
 ## 风险与开放问题
 
@@ -77,3 +77,31 @@
 2. **命令表**：(a) 也收窄接口，直接调 runs、sessions 的方法，依赖写在接口里；(b) 控制器为这十个方法加转调（P50 规格原先的写法），控制器会超过 1500 行。建议 (a)。
 3. **内核是否继续拆**：(a) 只合并适配器，不再拆，目标按实际；(b) 再拆压缩操作。建议 (a)，与 P50 的结论一致。
 4. **上限放在哪**：(a) 独立脚本进 `npm run check`；(b) 写成测试。建议 (a)，和纯度门禁一样在 check 里，CI gate 跟着跑。
+
+## 实施记录（2026-10-23）
+
+### 51a TUI 窄接口（e3ab6fa）
+
+- host 类型由脚本按代码里实际的 `this.host.x`、`tui.x` 生成（TypeScript 语法树，不靠手写），再由 `tsc` 验证：`DialogsHost` 12 个控制器成员加 `view.copySelection`、`runs.sendQueued`；`InputBoxHost` 10 个加 `CompletionHost`、`runs.pending`、`dialogs.pick`；`TranscriptViewHost` 9 个；`RunsHost` 11 个加 `CommandHost`、inputBox 8 个方法、dialogs 4 个、sessions 2 个；`SessionsHost` 19 个加 runs 2 个、`inputBox.menuCache`；`CommandHost` 32 个加 runs 6 个、sessions 4 个；`CompletionHost` 4 个（`agent`、`model`、`modelChoices`、`options`）。
+- 和规格的出入：`whenCommandRuns` 只收 `Pick<TuiController, "extensions" | "state">`，`commandList` 只收 `CompletionHost`（它只把 host 交给补全器）。控制器的五个部分字段加了显式类型：host 类型引用控制器自身，不写类型时 TypeScript 推不出来（循环推断）。
+- 行数：五个部分与 commands.ts 各多出类型声明的十几到五十行（commands.ts 1436 → 1487）。
+
+### 51b 内核一份适配器（c38e7e5）
+
+- `agent-internals.ts`（80 行）的 `AgentInternals` 由四个旧接口合并（43 个成员，同名的类型一致；`baseTools` 取 `Tool[]`，子 agent 要把它交给新 Agent）。四个 host 类型改成 `Pick`，Agent 里一个 `exposeInternals()`，字段 `internals` 在 `toolState` 之前建一次。agent.ts 2509 → 2457 行。barrel 测试 INTERNAL 加 `agent-internals.ts:AgentInternals`。
+
+### 51c 结构门禁（fbb1510）
+
+- `scripts/check-structure.mjs`，`npm run check:structure`，进 `npm run check`。上限见脚本里的表；依赖方向沿静态 import 广度优先走，打出到达控制器的那条链。
+- 验证：把 `modes/repl.ts` 改回从控制器引入 `conversationLength`，报出 `modes/repl.ts → tui/controller.ts` 和 `main.ts → modes/repl.ts → tui/controller.ts` 两条；给 main.ts 加到 1008 行，报超上限；两处都已撤回。
+
+### 文档
+
+- architecture.md：关键不变量加第 7 条（结构门禁）；内核代码地图加 `agent-internals.ts`；TUI 控制器一节写明各部分的 host 类型与跨部分依赖。development.md：`npm run check` 的说明与硬规则 11。D54。README 两份与 CLAUDE.md 的决策范围改到 D54。
+
+### 验收
+
+- check（含结构门禁）、全量测试 1372 个（1367 通过、5 跳过，与 P50 相同；测试只动了 barrel 测试的 INTERNAL 列表，断言没改）。
+- pack smoke（含 TUI 安装布局）、浏览器 bundle、浏览器 runtime（Edge）、QuickJS、QuickJS MCP 通过。
+- smoke-tui（WSL）：全屏、inline 各 38 个场景各一遍全过。
+- 真 DeepSeek（deepseek-flash）：`-p`、REPL、rpc、TUI（WSL tmux）各一轮，模型用 read 读临时文件、只回第二行的随机串，四种都答对。

@@ -6,7 +6,7 @@
 
 - Node ≥ 22.19（原生 type-stripping，**开发期**零构建直接跑源码。发布物是 dist JS——Node 拒绝 strip node_modules 里的 .ts，见 D17）
 - `npm install --ignore-scripts` — 安装依赖
-- `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁** + 依赖钉死 + shrinkwrap 校验。改完代码必跑，全绿才算完
+- `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁** + **结构门禁**（`check:structure`，见硬规则 11）+ 依赖钉死 + shrinkwrap 校验。改完代码必跑，全绿才算完
 - `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试 + CLI e2e）
 - `npm run tau` — 跑 CLI（需 TAU_BASE_URL / TAU_API_KEY / TAU_MODEL 环境变量或对应 flag）
 - smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁：载体真实性 + 无 polyfill 预期失败 + 有 polyfill 全绿，polyfill 单源 `test-fixtures/quickjs/polyfills.ts`）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（weapp demo bundle 无 Node 泄漏）· `smoke:pack`（内核 tarball 在裸消费者项目安装/运行/类型检查）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）· `demo:weapp`（生成小程序 demo 的 lib/tau.js）
@@ -35,6 +35,7 @@
 8. **适配器信号桥接义务**（P10，原技术债 #7）：内核造的 `TauAbortSignal` 是结构子集，原生传输层普遍拒收（undici/expo fetch 要真 `AbortSignal`；wx 要 `RequestTask.abort()`）。写新 `Platform` 适配器必须按需双向桥接，且 abort 后 pending read 必须 reject（abort 才能传回内核转成 aborted 消息）。参照实现：kernel `platform.ts` 的 `bridgeSignal`、`host-rn`（正向）、`host-weapp`（反向）。
 9. **扩展工具默认并发执行**（P18/D22）：多工具批次默认 parallel，工具 `execute` 可能与同批其他工具并发跑——execute 内部的共享状态与主动 `ctx.ui` 调用由工具作者自负并发安全；需要独占执行的工具声明 `executionMode: "sequential"`（整批降级）。preflight（tool_call 钩子/审批）恒串行，无需担心审批并发；P24c 起这条覆盖工具经 `ctx.executeTool()` 发起的嵌套调用与子 agent：一棵 Agent 树共用一把 preflight 锁（`PreflightLock`，`runSubagent` 传给子 Agent），宿主若让多个 Agent 共用一个审批 UI，也应共用一把锁（`AgentOptions.preflightLock`）。
 10. **扩展作者规则**（P21）：扩展工厂可以是 async，宿主逐个 await；工厂里只注册，不启动进程、socket、timer——连接与资源放进 `session_start`，在 `session_shutdown` 里关闭（含在途连接）。工具必须声明 `parameters` JSON Schema 对象，否则注册即抛 `invalid_tool`。`input`、`before_agent_start` 期间不要调 `sendUserMessage`（抛 `busy`），改用 `sendMessage({ deliverAs })`。通知类处理器抛错时，宿主装了 error sink 就只报告不中断（CLI 打到 stderr），没装则照常抛出
+11. **文件大小与依赖方向**（P51，D54）：`scripts/check-structure.mjs` 让每个源文件不超过 1000 行，已经超过的文件各有上限（P50 拆过的三个用 P50 的目标）；CLI 根目录与 `modes/` 的模块静态 import 走下去不得到达 `tui/controller.ts`。到线时先想能不能拆；确实要调高，在脚本里写上原因。TUI 的各部分与命令表只收自己的 host 类型（`Pick`），新用到控制器的成员就加进对应的 `Pick`。
 
 ## 阶段执行流程（每个 Phase 依此走完）
 

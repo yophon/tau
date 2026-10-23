@@ -253,7 +253,7 @@ export default guard;
 - [docs/architecture.md](docs/architecture.md)——按包和模块写的当前架构、代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——已完成阶段、当前工作、Backlog、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D53）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D54）
 - [docs/settings.md](docs/settings.md)——settings.json 的每个键、缺省值、项目能否设置
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
 - [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
