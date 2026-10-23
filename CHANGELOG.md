@@ -4,6 +4,24 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P54: protocols, fallback, prompt shim)
+- `@yophon/tau-ext-provider-openai-responses`: a pure-Platform OpenAI Responses transport
+  (reasoning effort per thinking level, `store: false` with encrypted reasoning replayed on the
+  same model, message ids kept for replay). models.json `api: "openai-responses"`,
+  `--provider openai-responses`. Not yet tested against the real endpoint.
+- `@yophon/tau-ext-provider-google`: a pure-Platform Gemini API transport (thought summaries,
+  thought signatures replayed, thinking levels on Gemini 3 and budgets on 2.5). models.json
+  `api: "google-generative-ai"`, `--provider google` with `GEMINI_API_KEY`. Not yet tested
+  against the real endpoint.
+- Model fallback: `AgentOptions.fallback` and the kernel's `createFallbackChain`; once retries
+  are spent, a run nothing has answered yet moves to the next model. CLI `--fallback-model`
+  (repeatable), settings `fallbackModels`, `fallback.on` (rate_limit, overloaded, network,
+  auth, billing) and `fallback.enabled`.
+- Prompt shim: `withPromptToolShim(transport)` for models without native tool calling; models.json
+  `toolCalling: "prompt"`, `TAU_TOOL_SHIM=1` for an ad-hoc endpoint.
+- Kernel: `TextContent.textSignature` and `ToolCall.thoughtSignature` (pi), dropped for another
+  model; `shortHash` exported.
+
 ### Added (P53: from yo-agent)
 - CLI: `-r`/`--resume` opens the session picker when the TUI starts (command-line prompts go to
   the session picked); other modes refuse it. `--session` takes a file path, or an id or name of

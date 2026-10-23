@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-23（P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-23（P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -21,7 +21,8 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 ├─ 扩展层（纯函数扩展，静态或动态注册）──────────────────────┤
 │  ext-subagents · ext-resources · ext-mcp-http（纯 ES）· ext-mcp（stdio）│
 │  ext-tool-search · ext-codemode · ext-web · ext-lsp                    │
-│  ext-provider-anthropic（纯 Platform 的 Anthropic transport）· ext-feishu │
+│  ext-provider-anthropic · -openai-responses · -google（纯 Platform 的协议）│
+│  ext-feishu                                                            │
 ├─ 内核层（禁止碰运行时，门禁强制）──────────────────────────┤
 │  @yophon/tau-kernel  agent 循环 · ChatTransport 缝（缺省 OpenAI 兼容）· │
 │                      会话日志 · 工具 · 权限 · 扩展系统 · 能力接口     │
@@ -30,7 +31,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 
 ## 关键不变量（违反即架构回退）
 
-1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、ext-provider-anthropic、ext-tool-search、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）过同一门禁。
+1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）过同一门禁。
 2. **内核零 npm 依赖**。JSON Schema 等一律用结构化类型，不引 typebox。
 3. **可擦除 TypeScript**（`erasableSyntaxOnly`）：无 enum/namespace/参数属性，Node 原生 type-stripping 直接跑源码，开发期零构建。
 4. **能力可选**：内核任何路径不得假设某能力存在；宿主不提供就少注册工具。
@@ -51,10 +52,12 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `uuid.ts` · `utf8.ts` · `base64.ts` · `sse.ts` | uuidv7（随机数经 `Platform.randomBytes`）；纯 ES 增量 UTF-8 解码器（给没有 TextDecoder 的 weapp iOS、Hermes、裸 QuickJS）；Base64 编解码；增量 SSE 解析（任意分块边界、CRLF、多行 data、`onId`/`onRetry`） |
 | `json.ts` | 照抄 pi 的 `repairJson`/`parseJsonWithRepair`（裸控制字符、非法转义、`\u` 后不足 4 位十六进制）；`parseToolCallArguments` 解析完整工具参数，不是对象时给 `argumentsError` |
 | **消息与协议** | |
-| `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序）、Usage/StopReason、消息级 timestamp；联合为 system/user/assistant/toolResult/custom，加上投影出的 branchSummary/compactionSummary。`messageText`/`toolCallsOf`/`userContentText`；`ModelPricing`/`computeUsageCost`（宿主给单价才算，tau 不带定价数据） |
+| `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序；回放用的 `thinkingSignature`、`textSignature`、`ToolCall.thoughtSignature`）、Usage/StopReason、消息级 timestamp；联合为 system/user/assistant/toolResult/custom，加上投影出的 branchSummary/compactionSummary。`messageText`/`toolCallsOf`/`userContentText`；`ModelPricing`/`computeUsageCost`（宿主给单价才算，tau 不带定价数据） |
 | `openai.ts` | OpenAI 兼容 chat/completions 流式客户端与 **ChatTransport 缝（D21）**：`ChatTransport = (TransportRequest) => AsyncGenerator<ChatStreamEvent>`，事件为 `text_delta`/`reasoning_delta`（含 DeepSeek 的 reasoning_content）/`tool_call_delta`/`tool_call`/`response_end`。`TransportRequest` 带 messages（prompt 与工具声明是转录里的 system 消息，`resolveTranscript()` 折成线格式）、signal、maxTokens、模型与思考等级、headers 与 provider 事件回调。失败一律规范成 TauError；`withStallTimeout` 给等响应头与等下一块上看门狗（缺省 120 s）。`OpenAICompatConfig` 含 `contextWindow`、`maxOutputTokens` 等 |
-| `transform.ts` | `transformMessages()`：pi 的跨模型回放规则——同模型按原字段回放推理，换模型或协议时丢掉 thinking，跳过 error/aborted 轮，给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Anthropic 扩展共用 |
-| `retry.ts` | 错误分类逐字照抄 pi 1.4（先排除额度与上下文溢出，再匹配瞬态失败；413 算溢出）与 `RetrySettings`（缺省开、3 次、2 s 指数退避）。策略在 agent 循环里执行 |
+| `transform.ts` | `transformMessages()`：pi 的跨模型回放规则——同模型按原字段回放推理，换模型或协议时丢掉 thinking 与各块的签名、按目标协议改写 tool call id，跳过 error/aborted 轮，给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Responses、Gemini 扩展共用 |
+| `fallback.ts` | 模型降级（yo-agent 的降级链，Claude Code 的 `--fallback-model`）：`fallbackReasonOf` 把失败分成 rate_limit/overloaded/network/auth/billing（先看 HTTP 状态再看文字）；`createFallbackChain` 每次运行建一条，`transport` 问当前路线，agent 在重试用完后调 `fallBack(失败)`，这次运行还没有路线回答过、原因在 `on` 里才换下一条并调 `onSwitch` |
+| `prompt-shim.ts` | `withPromptToolShim(transport)`（yo-agent 的 PromptShimProvider）：给没有原生工具调用的模型，请求里去掉工具声明、把工具与调用格式写进系统提示、之前的调用与结果写成文字；整段回复缓冲后把 fenced `tool_call` 块解析成工具调用（`shim_call_<n>`），坏块丢掉，截在半截的块剥掉 |
+| `retry.ts` | 错误分类逐字照抄 pi 1.4（先排除额度与上下文溢出，再匹配瞬态失败；413 算溢出）与 `RetrySettings`（缺省开、3 次、2 s 指数退避）。策略在 agent 循环里执行，重试用完后才轮到 `fallback.ts` 的降级 |
 | **Agent** | |
 | `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。tool-state、subagent-spawn、aside、navigation 是从它拆出的独立块（P50），经 `agent-internals.ts` 读它的私有状态；pending-queue 是 P53 拆出的队列，`Agent` 的公开方法不变 |
 | `agent-internals.ts` | `AgentInternals`：拆出的模块可以读的 Agent 状态与方法。Agent 里只有一个适配器（`exposeInternals`，getter 读当前值、方法转调），建一次；各模块的 host 类型是它的 `Pick`（`ToolStateHost` 等），所以每个模块碰了 Agent 的什么一眼可见，`Agent` 的公开面不因此变宽 |
@@ -145,6 +148,8 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 - **`@yophon/tau-ext-web`**（纯 Platform）：`web_fetch`（HTML 经 `html.ts` 转 markdown，50 KB 分页）与 `web_search`（Brave、Tavily、Exa、SearXNG，自带 key，没有就不注册）。
 - **`@yophon/tau-ext-lsp`**（纯 ES 入口，`./node` 启进程）：`config.ts`（Claude Code 的 `.lsp.json`）、`framing.ts`（按字节的 Content-Length 分帧）、`connection.ts`（JSON-RPC）、`client.ts`（一个服务器：懒启动、文档同步、崩溃后重启）、`manager.ts`（按扩展名路由、等诊断）、`diagnostics.ts`、`tool.ts`（`lsp` 工具，九种操作）、`extension.ts`（改完文件后在 `turn_end` 追加诊断、`/lsp`）、`catalog.ts`（Claude Code 官方 12 个语言插件的配置）、`node.ts`。使用说明见 [connectors.md](connectors.md)。
 - **`@yophon/tau-ext-provider-anthropic`**（纯 Platform，零依赖）：`createAnthropicTransport(config, platform)`，手写 Anthropic Messages 流式协议，消息与事件映射照抄 pi：thinking 原生流式（signature、redacted）、`none` 在支持的模型上发 disabled、tool_result 图片、`cache_control` 打点、cacheRead/cacheWrite 用量。
+- **`@yophon/tau-ext-provider-openai-responses`**（纯 Platform，零依赖）：`createOpenAIResponsesTransport(config, platform)`，手写 OpenAI Responses 流式协议（`POST {baseUrl}/responses`），映射照抄 pi 的 shared：指令作 developer（推理模型）或 system 输入、function tools、`reasoning.effort` 按思考级别、`store: false` 加 `reasoning.encrypted_content`，推理项与消息项 id（`textSignature`）同模型原样回放，tool call id 是 `call_id|item_id`，用量减去缓存命中，`incomplete`/`failed` 映射到 stopReason。没有模型目录：`reasoning`、`input` 由配置给。
+- **`@yophon/tau-ext-provider-google`**（纯 Platform，零依赖）：`createGoogleTransport(config, platform)`，手写 Gemini API 流式协议（`models/{model}:streamGenerateContent?alt=sse`，`x-goog-api-key`），映射照抄 pi 的 google-shared：`systemInstruction`、user/model 内容与 `functionCall`/`functionResponse` 部件（Gemini 3 起带 id，一轮的结果合进一个 user 轮，图片在 3 起嵌进结果）、`parametersJsonSchema`、思考摘要与 `thoughtSignature` 同模型回放、思考级别按模型族（3 用 `thinkingLevel`，2.5 用 pi 的预算表）、finishReason 与用量。
 - **`@yophon/tau-ext-feishu`**（Node，基于官方 SDK）：飞书长连接与 REST 桥、入站消息解析、媒体、进度卡片、发送工具。需要在扩展目录写 wrapper 引入。
 
 ## 宿主包
@@ -170,8 +175,8 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `main.ts` | 入口：上面的启动顺序、各模式的装配 |
 | `args.ts` | 用法文本、`CliOptions`、`parseArgs`/`parseGatewayArgs`，参数与环境变量取的数字、定价、档位值；`-r/--resume` 让 TUI 启动即打开 `/resume` 的选择器，`--session` 认文件路径或会话 id、名字（P53，照 pi） |
 | `util.ts` | `~/.tau` 所在（`userHome`）、`CLI_VERSION`、终端颜色、`firstLine`、`ask` |
-| `endpoint.ts` | 会话跑在哪个模型与端点上：启动时的选择（`-m` → settings 缺省 → 第一个可用模型 → 环境变量；`-b`/`-k`/`--provider` 是只对一种协议生效的临时端点）、`buildEndpoint`（按 `api` 建 OpenAI 兼容或 Anthropic transport，填 `maxOutputTokens`）、`createPricing`、`createModelSwitch`（TUI 的 `/model`，跨供应商） |
-| `models.ts` | `~/.tau/models.json`（pi 格式子集：供应商 `baseUrl`/`api`/`apiKey`/`headers`，模型 `contextWindow`/`maxTokens`/`cost`/`input`；`apiKey` 支持 `$NAME`、`!command`、`${cred:…}`），只列密钥可用的模型；`--list-models` |
+| `endpoint.ts` | 会话跑在哪个模型与端点上：启动时的选择（`-m` → settings 缺省 → 第一个可用模型 → 环境变量；`-b`/`-k`/`--provider` 是只对一种协议生效的临时端点）、`buildEndpoint`（按 `api` 给出 OpenAI 兼容配置与 `native` 联合——Anthropic、Responses、Gemini 的 transport 配置——填 `maxOutputTokens`）、`endpointTransport`（建对应的 transport，models.json `toolCalling: "prompt"` 或 `TAU_TOOL_SHIM=1` 时套 prompt shim）、`createPricing`、`createModelSwitch`（TUI 的 `/model`，跨供应商） |
+| `models.ts` | `~/.tau/models.json`（pi 格式子集：供应商 `baseUrl`/`api`（openai-completions、anthropic-messages、openai-responses、google-generative-ai）/`apiKey`/`headers`，模型 `contextWindow`/`maxTokens`/`cost`/`input`/`reasoning`/`toolCalling`；`apiKey` 支持 `$NAME`、`!command`、`${cred:…}`），只列密钥可用的模型；`--list-models` |
 | `settings.ts` | 设置分层：用户的 `~/.tau/settings.json`，项目受信任时叠加项目设置（`USER_ONLY_KEYS` 不读）；`agentOptionsFromSettings` 把重试、压缩、队列模式、轮数上限转成 Agent 选项 |
 | `http-dispatcher.ts` | 照抄 pi：undici 的 `EnvHttpProxyAgent` 作全局 dispatcher，`httpProxy`/`httpIdleTimeoutMs` 设置 |
 | **工作区** | |

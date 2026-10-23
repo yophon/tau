@@ -239,6 +239,14 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D56：两个新协议照 pi 手写，降级由 agent 在重试之后做，shim 是 transport 包装（2026-10-23，P54，用户确认）
+
+- **OpenAI Responses 与 Gemini 各一个纯 Platform 的包**，同 D21 的 Anthropic 扩展：不引 SDK（纯度门禁），照 pi 的映射手写线格式。tau 没有模型目录，模型会不会推理、收不收图片由配置给（models.json 的 `reasoning`、`input`，`reasoning` 照 pi 缺省 false；临时端点按推理模型处理）；思考级别到各家控制的映射按模型族写死（Responses 的 `max` 发 `xhigh`；Gemini 3 用级别、2.5 用 pi 的预算表），pi 是按目录逐个映射的。两家都没有密钥实测，标「未实测」。
+- **消息模型补 pi 的两个签名字段**（D13）：`TextContent.textSignature`（Responses 的消息项 id 与 phase）、`ToolCall.thoughtSignature`（Gemini）。换模型或协议时 `transformMessages` 去掉它们，同 pi。
+- **降级**：`AgentOptions.fallback` 给后备路线（transport、模型、标签），agent 每次运行建一条链。失败先走现有重试，重试用完（或该失败不重试，例如鉴权）才换；这次运行只要有路线回答过就不再换（照 yo-agent：两个模型不解读同一批工具结果）；下次运行从自己的模型开始。触发原因可设（`fallback.on`，缺省全部五种，只写 `overloaded` 就是 Claude Code 的做法；`fallback.enabled: false` 关掉）。CLI 的后备模型是 models.json 里的模型（`--fallback-model` 可重复，或 `fallbackModels`），解析同 `/model`；换 key 就写同一供应商的另一个条目。换的提示是回调，不是 AgentEvent。第一版在 transport 层第一次失败就换，与确认的规格不符，已改。
+- **prompt shim 是 transport 包装**（`withPromptToolShim`），内核的循环不知道它的存在：照 yo-agent 的格式（fenced `tool_call` JSON 块），整段回复缓冲后解析，所以文字不逐字流出。CLI 按模型开（models.json `toolCalling: "prompt"`），临时端点用 `TAU_TOOL_SHIM=1`。
+- **CLI 端点的 `native` 联合**：原来专给 Anthropic 的字段改成 `{ kind, config }` 的联合，每加一种协议只加一个分支；`--provider` 增加 `openai-responses`（读 `OPENAI_*`）与 `google`（读 `GEMINI_API_KEY`），密钥环境变量仍只喂给自己的协议。
+
 ## D55：复刻 yo-agent 的能力：接口照 pi / Claude Code，行为照 yo-agent（2026-10-23，P53，用户确认）
 
 - **范围与做法**：只复刻 yo-agent 真正实现了的能力（它只预留接口的 docker、ssh 执行后端，设计里的 OTel 不做）；有 pi、Claude Code、Codex 对应物的照它们，没有的照 yo-agent。P53 做第一批，P54–P59 的规格书由用户逐个判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案，搁置。

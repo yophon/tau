@@ -80,7 +80,7 @@
 | `setModel` | 0.80 | ✅ P23d | 跑 model_select，被取消返回 false。⚠ 偏离：参数是模型 id（无模型库，D21）；宿主侧 `Agent.setModel(id, { transport, provider, api, contextWindow })` 跨供应商切换（P28，D33） |
 | `getThinkingLevel` | 0.80 | ✅ P23d | undefined 表示端点缺省；tau 的 `none` 即 pi 的 `off`（会话条目写 `off`） |
 | `setThinkingLevel` | 0.80 | ✅ P23d | 下一次请求生效，写 `thinking_level_change` 条目；新增 `max` 档（pi 0.80.6） |
-| `registerProvider` | 0.80 | ⚠D21 | 以 `AgentOptions.transport` 装配注入兑现：协议是宿主装配决策，不做运行中热换。首个适配包 ext-provider-anthropic（P16） |
+| `registerProvider` | 0.80 | ⚠D21 | 以 `AgentOptions.transport` 装配注入兑现：协议是宿主装配决策，不做运行中热换。首个适配包 ext-provider-anthropic（P16），P54 加 ext-provider-openai-responses、ext-provider-google |
 | `unregisterProvider` | 0.80 | ❌D21 | 不注册即无从注销 |
 | `registerMcpServer` | 1.2 | ❌D21 | 见 `mcp_servers_change` |
 | `unregisterMcpServer` | 1.2 | ❌D21 | 同上 |

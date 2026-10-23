@@ -19,8 +19,9 @@ inject a small adapter instead of polyfilling globals.
 
 - **Agent loop** — streaming, tool calls, steering while it runs, follow-up
   queues, abort, retry with backoff. Provider failures become
-  `stopReason: "error"/"aborted"` messages (pi semantics). `--provider anthropic`
-  speaks the Anthropic Messages API natively (thinking, prompt caching).
+  `stopReason: "error"/"aborted"` messages (pi semantics). Besides Chat Completions,
+  tau speaks the Anthropic Messages, OpenAI Responses and Gemini APIs natively;
+  `--fallback-model` switches models when a request keeps failing.
 - **Coding tools** — read (images too), write, edit, bash (and `powershell` on
   Windows) with background commands, grep / find / ls in pure ES. The CLI adds
   `todo_write`, long-term memory ([docs/memory.md](docs/memory.md)),
@@ -74,6 +75,8 @@ its boundaries.
 | `@yophon/tau-ext-mcp` | MCP for Node: the ext-mcp-http core plus stdio servers and OAuth sign-in | Yes — child processes |
 | `@yophon/tau-ext-mcp-http` | Pure-ES MCP client and extension core (Streamable HTTP), zero dependencies | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-anthropic` | Anthropic Messages `ChatTransport`: native thinking, prompt caching, images in tool results | **No** — pure `Platform` |
+| `@yophon/tau-ext-provider-openai-responses` | OpenAI Responses `ChatTransport`: reasoning effort, encrypted reasoning replayed statelessly | **No** — pure `Platform` |
+| `@yophon/tau-ext-provider-google` | Gemini API `ChatTransport`: thinking levels and budgets, thought signatures | **No** — pure `Platform` |
 | `@yophon/tau-ext-web` | `web_fetch` (HTML to markdown) and BYOK `web_search` (Brave, Tavily, Exa, SearXNG) | **No** — pure `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`: BM25 over deferred tools, loading the matches | No — pure ES |
 | `@yophon/tau-ext-lsp` | Language servers (Claude Code's `.lsp.json`): diagnostics after edits and the `lsp` tool | Yes — child processes (Node entry) |
@@ -132,8 +135,10 @@ export TAU_MODEL=deepseek-chat
 npm run tau -- --repl             # line-based REPL instead
 npm run tau -- -p "list the files here and summarize"
 
-# Or speak the Anthropic Messages API natively (base URL optional)
+# Or speak a vendor API natively (base URL optional)
 npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
+npm run tau -- --provider openai-responses -k sk-... -m gpt-5.5 -p "hi"
+npm run tau -- --provider google -k ... -m gemini-3-pro-preview -p "hi"
 ```
 
 The TUI runs full screen with its own scrollable, searchable transcript
@@ -171,6 +176,21 @@ literal.
       "api": "anthropic-messages",
       "apiKey": "$ANTHROPIC_API_KEY",
       "models": [{ "id": "claude-sonnet-5-5", "contextWindow": 200000, "maxTokens": 32000 }]
+    },
+    "openai": {
+      "api": "openai-responses",
+      "apiKey": "$OPENAI_API_KEY",
+      "models": [{ "id": "gpt-5.5", "reasoning": true, "input": ["text", "image"] }]
+    },
+    "google": {
+      "api": "google-generative-ai",
+      "apiKey": "$GEMINI_API_KEY",
+      "models": [{ "id": "gemini-3-pro-preview", "reasoning": true, "input": ["text", "image"] }]
+    },
+    "local": {
+      "baseUrl": "http://localhost:11434/v1",
+      "apiKey": "none",
+      "models": [{ "id": "small-model", "toolCalling": "prompt" }]
     }
   }
 }
@@ -178,7 +198,11 @@ literal.
 
 `contextWindow` turns on auto-compaction and the context meter, `cost` (USD per
 million tokens) prices the session, `input` says whether the model takes
-images. Ctrl+S in `/model` saves the default; `-m provider/id` picks one at
+images, `reasoning` turns on reasoning controls (Responses, Gemini), and
+`toolCalling: "prompt"` describes the tools in the prompt for a model without
+native tool calling (`TAU_TOOL_SHIM=1` for an ad-hoc endpoint). `--fallback-model
+provider/id` (repeatable, or `fallbackModels` in settings) switches models when a
+request fails before answering and retries are spent. Ctrl+S in `/model` saves the default; `-m provider/id` picks one at
 startup; `-b` / `-k` / `--provider` run an ad-hoc endpoint. For `web_search`,
 set `webSearch` in settings or export `BRAVE_API_KEY`, `TAVILY_API_KEY` or
 `EXA_API_KEY`.
