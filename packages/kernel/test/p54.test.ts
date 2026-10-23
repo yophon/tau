@@ -1,4 +1,4 @@
-// P54c (yo-agent's fallback chain, Claude Code's --fallback-model): model fallback.
+// P54c (yo-agent's fallback chain, Claude Code's --fallback-model): model fallback; P54d: the prompt shim.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Agent } from "../src/agent.ts";
@@ -6,6 +6,9 @@ import { HttpError, TauError } from "../src/errors.ts";
 import { createFallbackTransport, type FallbackSwitch, fallbackReasonOf } from "../src/fallback.ts";
 import { type AssistantMessage, emptyUsage, messageText } from "../src/messages.ts";
 import type { ChatStreamEvent, ChatTransport, TransportRequest } from "../src/openai.ts";
+import { getCurrentTools, getSystemMessageText } from "../src/projection.ts";
+import { parseToolCallBlocks, withPromptToolShim } from "../src/prompt-shim.ts";
+import type { Tool } from "../src/tools.ts";
 import { fakePlatform } from "./helpers.ts";
 
 function reply(text: string, model = "m"): ChatStreamEvent[] {
@@ -114,5 +117,66 @@ describe("P54c model fallback", () => {
 		const replies = agent.messages.filter((m) => m.role === "assistant").map((m) => messageText(m));
 		assert.deepEqual(replies, ["from spare", "from main"]);
 		assert.deepEqual(seen, ["main:big", "spare:small", "main:big"]);
+	});
+});
+
+describe("P54d the prompt shim (yo-agent)", () => {
+	it("parses fenced tool_call blocks; drops broken ones; strips one cut off at the end", () => {
+		const text =
+			'Let me look.\n```tool_call\n{"name":"read","arguments":{"path":"a.ts"}}\n```\n```tool_call\nnot json\n```\n```tool_call\n{"name":"ls","arguments":[1]}\n```\nAnd then ```tool_call\n{"name":"half';
+		const parsed = parseToolCallBlocks(text);
+		assert.deepEqual(parsed.calls, [
+			{ name: "read", arguments: { path: "a.ts" } },
+			{ name: "ls", arguments: {} },
+		]);
+		assert.equal(parsed.text, "Let me look.\n\n\n\nAnd then");
+	});
+
+	it("an Agent calls tools through text: no native tools on the wire, calls and results written out", async () => {
+		const requests: TransportRequest[] = [];
+		const answers = ['Reading it.\n```tool_call\n{"name":"read","arguments":{"path":"a.ts"}}\n```', "It says hello."];
+		const inner: ChatTransport = async function* (request) {
+			requests.push(request);
+			yield* reply(answers[requests.length - 1] ?? "?");
+		};
+		const read: Tool = {
+			name: "read",
+			description: "Read a file",
+			parameters: { type: "object", properties: { path: { type: "string" } } },
+			execute: async (args) => ({
+				content: [{ type: "text", text: `contents of ${(args as { path: string }).path}: hello` }],
+			}),
+		};
+		const agent = new Agent({
+			config: { baseUrl: "https://unused.test/v1", model: "local" },
+			transport: withPromptToolShim(inner),
+			platform: fakePlatform([]),
+			retry: { enabled: false },
+			tools: [read],
+		});
+		for await (const _event of agent.prompt("what is in a.ts?")) {
+			// drain
+		}
+		assert.equal(requests.length, 2);
+		const second = requests[1]?.messages ?? [];
+		assert.deepEqual(getCurrentTools(second), [], "no native tool declarations");
+		const system = second[0];
+		assert.ok(system?.role === "system" && getSystemMessageText(system).includes("- read: Read a file"));
+		const texts = second.flatMap((m) => {
+			const content = (m as { content: string | Array<{ type: string; text?: string }> }).content;
+			return typeof content === "string"
+				? [content]
+				: content.flatMap((b) => (b.type === "text" && b.text ? [b.text] : []));
+		});
+		assert.ok(
+			texts.includes('```tool_call\n{"name":"read","arguments":{"path":"a.ts"}}\n```'),
+			"the call written as text",
+		);
+		assert.ok(texts.includes("Result of read:\ncontents of a.ts: hello"), "the result as user text");
+		assert.ok(second.every((m) => m.role !== "toolResult"));
+		const [first, final] = agent.messages.filter((m) => m.role === "assistant");
+		assert.equal(messageText(first as AssistantMessage), "Reading it.");
+		assert.ok(first?.role === "assistant" && first.content.some((b) => b.type === "toolCall" && b.name === "read"));
+		assert.equal(messageText(final as AssistantMessage), "It says hello.");
 	});
 });

@@ -37,6 +37,8 @@ export interface ConfiguredModel {
 	contextWindow?: number;
 	maxTokens?: number;
 	cost?: ModelCost;
+	/** P54d (yo-agent's prompt shim): "prompt" for a model without native tool calling. */
+	toolCalling?: "native" | "prompt";
 }
 
 export interface ModelsConfig {
@@ -142,6 +144,7 @@ export function parseModelsConfig(text: string, path: string): ModelsConfig {
 			if (maxTokens !== undefined) model.maxTokens = Math.floor(maxTokens);
 			const cost = parseCost(entry.cost);
 			if (cost) model.cost = cost;
+			if (entry.toolCalling === "prompt" || entry.toolCalling === "native") model.toolCalling = entry.toolCalling;
 			config.models.push(model);
 		});
 	}

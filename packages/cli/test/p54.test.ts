@@ -1,4 +1,4 @@
-// P54 in the CLI: model fallback (54c).
+// P54 in the CLI: model fallback (54c), the prompt shim (54d).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -120,6 +120,47 @@ describe("P54c model fallback in the CLI", () => {
 			await spare.close();
 			await busy.close();
 			await limited.close();
+		}
+	});
+});
+
+describe("P54d the prompt shim in the CLI", () => {
+	it("a models.json model with toolCalling prompt gets no native tools and calls them through text", async () => {
+		const mock = await startMockOpenAI([
+			() => mockTextTurn('Reading.\n```tool_call\n{"name":"read","arguments":{"path":"note.txt"}}\n```'),
+			() => mockTextTurn("SHIM_DONE"),
+		]);
+		try {
+			const home = mkdtempSync(join(tmpdir(), "tau-p54s-home-"));
+			const cwd = mkdtempSync(join(tmpdir(), "tau-p54s-cwd-"));
+			writeFileSync(join(cwd, "note.txt"), "SHIM_FILE_CONTENTS\n");
+			mkdirSync(join(home, ".tau"), { recursive: true });
+			writeFileSync(
+				join(home, ".tau", "models.json"),
+				JSON.stringify({
+					providers: {
+						local: {
+							baseUrl: mock.baseUrl,
+							api: "openai-completions",
+							apiKey: "test",
+							models: [{ id: "small", toolCalling: "prompt" }],
+						},
+					},
+				}),
+			);
+			const result = await run(["-m", "local/small", "-p", "what is in note.txt?"], home, cwd);
+			assert.equal(result.code, 0, result.output);
+			assert.match(result.output, /SHIM_DONE/);
+			const [first, second] = mock.requests as Array<{
+				tools?: unknown;
+				messages: Array<{ role: string; content: unknown }>;
+			}>;
+			assert.equal(first?.tools, undefined, "no native tools on the wire");
+			assert.match(String(first?.messages[0]?.content), /To call one, write a fenced code block/);
+			assert.ok(JSON.stringify(second?.messages).includes("SHIM_FILE_CONTENTS"), "the tool result came back as text");
+			assert.ok(second?.messages.every((message) => message.role !== "tool"));
+		} finally {
+			await mock.close();
 		}
 	});
 });

@@ -4,7 +4,6 @@ import { existsSync, statSync } from "node:fs";
 
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
-import { createAnthropicTransport } from "@yophon/tau-ext-provider-anthropic";
 
 import {
 	type ApprovalRequest,
@@ -35,6 +34,7 @@ import {
 	buildEndpoint,
 	createModelSwitch,
 	createPricing,
+	endpointTransport,
 	resolveStartupEndpoint,
 } from "./endpoint.ts";
 import { extensionFlags, resolveExtensionFlags } from "./extension-loading.ts";
@@ -220,7 +220,7 @@ async function main(): Promise<void> {
 		activeModel,
 		config: startupEndpoint.config,
 		anthropic: startupEndpoint.anthropic,
-		transport: startupEndpoint.anthropic ? createAnthropicTransport(startupEndpoint.anthropic, platform) : undefined,
+		transport: endpointTransport(platform, startupEndpoint, activeModel),
 	};
 	// The thinking level travels with every request (P23d); /thinking changes it on the agent.
 	const thinkingLevel: ThinkingLevel | undefined = userSettings.defaultThinkingLevel;

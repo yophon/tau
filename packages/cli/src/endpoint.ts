@@ -16,6 +16,7 @@ import {
 	type OpenAICompatConfig,
 	type Platform,
 	type SetModelOptions,
+	withPromptToolShim,
 } from "@yophon/tau-kernel";
 import {
 	type CliOptions,
@@ -204,6 +205,21 @@ export function resolveStartupEndpoint(input: {
 }
 
 /** The config and transport of one endpoint: the startup one, or a table model /model switches to. */
+/**
+ * The transport for a built endpoint: Anthropic's, else undefined (the agent's OpenAI-compatible
+ * default). A model without native tool calling gets the prompt shim around it (P54d): models.json
+ * `toolCalling: "prompt"`, or TAU_TOOL_SHIM=1 for an endpoint from flags or the environment.
+ */
+export function endpointTransport(
+	platform: Platform,
+	built: { config: OpenAICompatConfig; anthropic: AnthropicTransportConfig | undefined },
+	model: ConfiguredModel | undefined,
+): ChatTransport | undefined {
+	const base = built.anthropic ? createAnthropicTransport(built.anthropic, platform) : undefined;
+	const shim = model ? model.toolCalling === "prompt" : process.env.TAU_TOOL_SHIM === "1";
+	return shim ? withPromptToolShim(base ?? createOpenAICompatTransport(platform, built.config)) : base;
+}
+
 export function buildEndpoint(
 	defaults: EndpointDefaults,
 	spec: {
@@ -337,7 +353,7 @@ export function createModelSwitch(input: {
 			headers: resolveHeaders(found, valueResolver),
 			input: found.input ?? ["text"],
 		});
-		const nextTransport = next.anthropic ? createAnthropicTransport(next.anthropic, platform) : undefined;
+		const nextTransport = endpointTransport(platform, next, found);
 		return {
 			model: found.id,
 			display: modelRef(found),

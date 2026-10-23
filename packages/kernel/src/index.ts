@@ -358,6 +358,7 @@ export {
 	type ToolStateChanges,
 	toToolDeclaration,
 } from "./projection.ts";
+export { parseToolCallBlocks, toolsAsPrompt, withPromptToolShim } from "./prompt-shim.ts";
 export {
 	DEFAULT_MAX_AGENT_RETRY_DELAY_MS,
 	DEFAULT_RETRY_SETTINGS,
