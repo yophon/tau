@@ -223,6 +223,17 @@ function modelEnvironment(): Record<string, string> {
 	return scrubEnv(process.env, readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow);
 }
 
+/** What main() and the workspaces share and change during the run (P50). */
+interface RunState {
+	/** The host's mode: flag, env, settings, then supervised (P15); /mode changes it. */
+	permissionMode: PermissionMode;
+	thinkingLevel: ThinkingLevel | undefined;
+	/** P37d: the --worktree session, or the one enter_worktree moved into (P46). */
+	worktreeSession: WorktreeSession | undefined;
+	/** P46: where the session was before enter_worktree. */
+	worktreeOriginal: string | undefined;
+}
+
 async function main(): Promise<void> {
 	// P40a (pi): HTTP_PROXY / HTTPS_PROXY / NO_PROXY and settings.json httpProxy apply to every
 	// request, subcommands included. The gateway is parked and stays as it was.
@@ -350,7 +361,7 @@ async function main(): Promise<void> {
 		transport: startupEndpoint.anthropic ? createAnthropicTransport(startupEndpoint.anthropic, platform) : undefined,
 	};
 	// The thinking level travels with every request (P23d); /thinking changes it on the agent.
-	let thinkingLevel: ThinkingLevel | undefined = userSettings.defaultThinkingLevel;
+	const thinkingLevel: ThinkingLevel | undefined = userSettings.defaultThinkingLevel;
 	const pricing = createPricing({ fixed: options.pricing, pricedModel: model, configuredModels, endpoint });
 	let permissionMode = options.permissionMode;
 	if (!permissionMode && process.env.TAU_PERMISSION_MODE) {
@@ -504,6 +515,8 @@ async function main(): Promise<void> {
 	/** Whether the current model takes images (P36d: read says so when it does not). */
 	const modelTakesImages = (): boolean =>
 		endpoint.config.input === undefined || endpoint.config.input.includes("image");
+	/** What main() and the workspaces share and change during the run (P50): /mode, /thinking, enter_worktree. */
+	const run: RunState = { permissionMode, thinkingLevel, worktreeSession, worktreeOriginal };
 	/**
 	 * Everything rooted at one working directory (P29): the extensions and the
 	 * project trust decision, the filesystem and shell, the project context, the
@@ -567,7 +580,7 @@ async function main(): Promise<void> {
 		const workspaceHost = spec.audit?.host ?? auditHost;
 		const hookRunner = new HookRunner({
 			cwd,
-			permissionMode: () => workspaceMode ?? permissionMode ?? "supervised",
+			permissionMode: () => workspaceMode ?? run.permissionMode ?? "supervised",
 			log: (level, text) => process.stderr.write(`${level === "warning" ? "warning: " : ""}${text}\n`),
 			// The gateway tells its owners in chat; Notification hooks are for a person at this machine.
 			notifications: spec.ui !== undefined && (spec.audit?.approvals ?? "terminal") !== "chat",
@@ -627,24 +640,24 @@ async function main(): Promise<void> {
 		const worktreeHost: WorktreeHost = {
 			cwd: () => cwd,
 			current: (): CurrentWorktree | undefined =>
-				worktreeSession
-					? { session: worktreeSession, original: worktreeOriginal ?? worktreeSession.mainRoot }
+				run.worktreeSession
+					? { session: run.worktreeSession, original: run.worktreeOriginal ?? run.worktreeSession.mainRoot }
 					: undefined,
 			move: async (target, worktree) => {
 				if (worktree) await followMainTrust(worktree.session.path, worktree.session.mainRoot);
-				worktreeSession = worktree?.session;
-				worktreeOriginal = worktree?.original;
+				run.worktreeSession = worktree?.session;
+				run.worktreeOriginal = worktree?.original;
 				await moveTo(target);
 			},
 			settings: () => userSettings.worktree ?? {},
-			permissionMode: () => workspaceMode ?? permissionMode ?? "supervised",
+			permissionMode: () => workspaceMode ?? run.permissionMode ?? "supervised",
 		};
 		const hostExtensions = [
 			...(askUser ? [askUser] : []),
 			createBackgroundExtension(background, {
 				...(scheduling ? { scheduler: scheduling.scheduler } : {}),
 				// Like bash, which read-only mode leaves out (createCodingTools).
-				...(extended && (workspaceMode ?? permissionMode) !== "read-only"
+				...(extended && (workspaceMode ?? run.permissionMode) !== "read-only"
 					? {
 							monitor: {
 								maxTimeoutMs:
@@ -658,7 +671,7 @@ async function main(): Promise<void> {
 			...(extended &&
 			spec.fs === undefined &&
 			(workspaceHost === "tui" || workspaceHost === "repl" || workspaceHost === "print" || workspaceHost === "json") &&
-			(workspaceMode ?? permissionMode) !== "read-only"
+			(workspaceMode ?? run.permissionMode) !== "read-only"
 				? [createWorktreeToolsExtension(worktreeHost)]
 				: []),
 			// P46 (Claude Code's PushNotification): where a terminal can show it.
@@ -707,8 +720,8 @@ async function main(): Promise<void> {
 						home: userHome(),
 						cwd,
 						// P37d: in a tau worktree, local rules live in the main checkout (Claude Code).
-						...(worktreeSession && cwd === resolve(worktreeSession.path)
-							? { localRoot: worktreeSession.mainRoot }
+						...(run.worktreeSession && cwd === resolve(run.worktreeSession.path)
+							? { localRoot: run.worktreeSession.mainRoot }
 							: {}),
 						projectTrusted: () => projectTrusted,
 						allowedTools: options.allowedTools ?? [],
@@ -716,7 +729,7 @@ async function main(): Promise<void> {
 						addDirs: options.addDirs ?? [],
 						// This session only: other sessions and later ones keep their own mode (Claude Code).
 						acceptEdits: () => currentAgent?.setPermissionMode("accept-edits"),
-						mode: () => currentAgent?.getPermissionMode() ?? workspaceMode ?? permissionMode ?? "supervised",
+						mode: () => currentAgent?.getPermissionMode() ?? workspaceMode ?? run.permissionMode ?? "supervised",
 						onProjectFileWritten: () => {
 							if (projectTrusted) void saveProjectTrust(cwd, true);
 						},
@@ -835,7 +848,7 @@ async function main(): Promise<void> {
 								images: imageProcessor,
 								...(childPowershell ? { powershell: { shell: childPowershell } } : {}),
 							},
-							{ mode: workspaceMode ?? permissionMode ?? "supervised", supportsImages: modelTakesImages },
+							{ mode: workspaceMode ?? run.permissionMode ?? "supervised", supportsImages: modelTakesImages },
 						);
 						return {
 							cwd: session.path,
@@ -937,7 +950,7 @@ async function main(): Promise<void> {
 			session: SessionRecorder | undefined,
 			agentExtensions = extensions,
 		): Agent => {
-			const mode = workspaceMode ?? permissionMode;
+			const mode = workspaceMode ?? run.permissionMode;
 			const codingTools = createCodingTools(
 				{
 					fs,
@@ -1021,7 +1034,7 @@ async function main(): Promise<void> {
 				// P40c (pi): settings' retry, compaction, branch summary, queue modes and turn cap; the env wins for retries.
 				...agentOptionsFromSettings(workspaceSettings, retry),
 				pricing,
-				thinkingLevel,
+				thinkingLevel: run.thinkingLevel,
 				permissionMode: mode,
 				toolExecution,
 				onApproval: onWorkspaceApproval,
@@ -1097,7 +1110,7 @@ async function main(): Promise<void> {
 			/** Agents built later (session switches) use this mode; only for a workspace opened with one. */
 			setPermissionMode: (next: PermissionMode) => {
 				if (workspaceMode !== undefined) workspaceMode = next;
-				else permissionMode = next;
+				else run.permissionMode = next;
 			},
 		};
 	};
@@ -1120,10 +1133,10 @@ async function main(): Promise<void> {
 			if (endpoint.anthropic) endpoint.anthropic.model = nextModel;
 		},
 		setHostThinking: (nextLevel: ThinkingLevel | undefined) => {
-			thinkingLevel = nextLevel;
+			run.thinkingLevel = nextLevel;
 		},
 		setHostPermissionMode: (nextMode: PermissionMode) => {
-			permissionMode = nextMode;
+			run.permissionMode = nextMode;
 		},
 	};
 	if (options.gateway) {
@@ -1175,7 +1188,7 @@ async function main(): Promise<void> {
 	if (!explicitMode && workspace.permissions) {
 		const { mode: settingsMode, warnings } = workspace.permissions.defaultMode();
 		for (const warning of warnings) console.error(dim(`permissions: ${warning}`));
-		if (settingsMode) permissionMode = settingsMode;
+		if (settingsMode) run.permissionMode = settingsMode;
 	}
 	// P36c (pi): `@file` arguments and messages given as words on the command line.
 	const messages = resolveExtensionFlags(extensions, options.extras).messages;
@@ -1315,15 +1328,15 @@ async function main(): Promise<void> {
 				addedDirs: workspace.permissions?.workingDirectories() ?? [],
 				provider: endpoint.activeModel?.provider ?? endpoint.config.provider ?? "openai-compat",
 				version: CLI_VERSION,
-				...(worktreeSession
+				...(run.worktreeSession
 					? {
-							projectDir: worktreeSession.mainRoot,
+							projectDir: run.worktreeSession.mainRoot,
 							worktree: {
-								name: worktreeSession.name,
-								path: worktreeSession.path,
-								branch: worktreeSession.branch,
-								originalCwd: worktreeSession.mainRoot,
-								...(worktreeSession.originalBranch ? { originalBranch: worktreeSession.originalBranch } : {}),
+								name: run.worktreeSession.name,
+								path: run.worktreeSession.path,
+								branch: run.worktreeSession.branch,
+								originalCwd: run.worktreeSession.mainRoot,
+								...(run.worktreeSession.originalBranch ? { originalBranch: run.worktreeSession.originalBranch } : {}),
 							},
 						}
 					: {}),
@@ -1353,23 +1366,23 @@ async function main(): Promise<void> {
 			baseUrl: endpoint.config.baseUrl,
 			cwd,
 			contextWindow: endpoint.config.contextWindow,
-			permissionMode,
+			permissionMode: run.permissionMode,
 			sessionRepo,
 			shell,
 			store,
 			recorder,
-			thinkingLevel,
+			thinkingLevel: run.thinkingLevel,
 			setModel: (nextModel) => {
 				// Agents built later (/reload, /resume) start from the switched model.
 				endpoint.config.model = nextModel;
 				if (endpoint.anthropic) endpoint.anthropic.model = nextModel;
 			},
 			setThinkingLevel: (nextLevel) => {
-				thinkingLevel = nextLevel;
+				run.thinkingLevel = nextLevel;
 			},
 			setPermissionMode: (nextMode) => {
 				// Agents built later (/reload, /resume) start from the switched mode.
-				permissionMode = nextMode;
+				run.permissionMode = nextMode;
 			},
 			saveTrust: (trusted) => saveProjectTrust(cwd, trusted),
 			// P39d: Ctrl+B moves the running bash command to the background.
@@ -1386,7 +1399,7 @@ async function main(): Promise<void> {
 			consumeReload: workspace.consumeReload,
 			sessionReason,
 		});
-		if (worktreeSession) await finishWorktree(worktreeSession, workspace.background);
+		if (run.worktreeSession) await finishWorktree(run.worktreeSession, workspace.background);
 		return;
 	}
 
@@ -1404,11 +1417,11 @@ async function main(): Promise<void> {
 		sessionReason,
 		files,
 		messages,
-		banner: { model, baseUrl: effectiveBaseUrl, provider, cwd, permissionMode },
+		banner: { model, baseUrl: effectiveBaseUrl, provider, cwd, permissionMode: run.permissionMode },
 		contextWindow,
 		terminalStatus: userSettings.tuiTitle !== false,
 		titled,
-		worktreeSession,
+		worktreeSession: run.worktreeSession,
 	});
 }
 
