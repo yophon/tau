@@ -8,10 +8,11 @@
 	],
 	"scripts": {
 		"build": "node scripts/build-packages.mjs",
-		"check": "biome check --write --error-on-warnings . && npm run check:types && npm run check:purity && npm run check:pinned-deps && npm run check:shrinkwrap",
+		"check": "biome check --write --error-on-warnings . && npm run check:types && npm run check:purity && npm run check:structure && npm run check:pinned-deps && npm run check:shrinkwrap",
 		"check:types": "tsc -p packages/kernel/tsconfig.json && tsc -p packages/kernel/tsconfig.test.json && tsc -p packages/host-node/tsconfig.json && tsc -p packages/host-browser/tsconfig.json && tsc -p packages/host-weapp/tsconfig.json && tsc -p packages/host-rn/tsconfig.json && tsc -p packages/cli/tsconfig.json && tsc -p packages/ext-subagents/tsconfig.json && tsc -p packages/ext-mcp/tsconfig.json && tsc -p packages/ext-mcp-http/tsconfig.json && tsc -p packages/ext-tool-search/tsconfig.json && tsc -p packages/ext-web/tsconfig.json && tsc -p packages/ext-codemode/tsconfig.json && tsc -p packages/ext-lsp/tsconfig.json && tsc -p packages/ext-provider-anthropic/tsconfig.json && tsc -p packages/ext-resources/tsconfig.json && tsc -p packages/ext-feishu/tsconfig.json && tsc -p packages/gateway/tsconfig.json && tsc -p packages/channel-weixin/tsconfig.json && tsc -p packages/channel-feishu/tsconfig.json && tsc -p examples/tsconfig.json",
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
 		"check:purity": "node scripts/check-kernel-purity.mjs",
+		"check:structure": "node scripts/check-structure.mjs",
 		"check:shrinkwrap": "node scripts/generate-cli-shrinkwrap.mjs --check",
 		"demo:browser": "node scripts/serve-browser-demo.mjs",
 		"demo:weapp": "node scripts/build-weapp-demo.mjs",
