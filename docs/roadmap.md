@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-22（P49 完成；P48 完成；P47 完成；P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**下一阶段待定**）
+> 最后更新：2026-10-22（P49 完成；P48 完成；P47 完成；P46 完成；P45 完成；P44 完成；P43 完成；P42 完成；P41 完成；P40 完成；P39 完成，39a 三项暂缓；P38 完成；P37 完成；P23 完成；P24 完成；P25 完成并经用户验收；P26 完成；P27 完成；P28 完成；P29 完成；P30 完成；P31 完成；P32 完成；0.4.0 发版已推迟（Backlog C）；**当前工作 = P50**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -439,6 +439,10 @@ tau 当前只有一个 Agent，因此多个聊天共享上下文并由扩展 FIF
 - 测试：全量 1372 个，1367 通过、5 跳过。check、pack smoke、浏览器 bundle、浏览器 runtime、QuickJS、QuickJS MCP 通过。smoke-tui 新增 p49 场景（OSC 7501 的 working、done、idle、clear 出现在 tmux 截取的原始输出里；Ctrl+C 清掉的草稿按 ↑ 回来），全屏与 inline 各 38 个场景各一遍全过。
 - 真 DeepSeek：`effort: high` 的子 agent 请求带 `reasoning_effort: "high"`；`allow_large` 一次读回 3000 多行；`onFailure: "block"` 的钩子在脚本缺失时拦下 bash 调用，说明照 Claude Code。
 - 决策记为 D52，偏差见规格书「实施记录」。真机验收待用户执行（支持 OSC 7501 的终端里看状态、Ctrl+C 后 ↑）。
+
+## Phase 50 🚧 修整：文档与代码结构
+
+规格书（2026-10-22 确认；用户：「可以，做吧」）：[specs/phase-50-consolidation.md](specs/phase-50-consolidation.md)。不加功能、不改行为：architecture.md 重写成现状、roadmap 已完成阶段压成表、README 精简；CLI 的 `main.ts`、TUI 的 `controller.ts` 按职责拆开，内核 `agent.ts` 拆出独立块；查清两个偶发失败的测试。
 
 ## 产品层后续 ⬜ 待定
 
