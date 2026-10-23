@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P56 规格书**）
+> 最后更新：2026-10-23（P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P56 规格书（常驻 tau 第一步）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -72,9 +72,11 @@
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
 
-## 复刻 yo-agent 的后续阶段（P56–P59）⬜
+## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
-总计划见 [P53 规格书](specs/phase-53-yo-agent-parity.md)：**下一个是 P56**，先写规格书由用户判定。P56 作为 MCP server 被调用、MCP sampling → P57 远程（WebSocket RPC、设备配对、断线续接）与 SQLite 会话库 → P58 浏览器（`createWebAgent`、`defineHttpTool`、IndexedDB、挂件、Web 控制台）→ P59 不可信插件宿主。每个阶段先写规格书，由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
+总计划见 [resident-tau-plan.md](specs/resident-tau-plan.md)（2026-10-23 确认；用户：「我想要那个『一个常驻 tau，TUI、编辑器、手机同时接上同一个会话』」「都按你的建议来，去做吧」）：P56 协议与会话中枢 → P57 TUI 改走协议 → P58 常驻服务与本机 socket → P59 远程与手机（WebSocket、配对、网页客户端）→ P60 编辑器（ACP 接常驻会话）。每个阶段先写规格书由用户判定。
+
+复刻 yo-agent 的其余阶段（原 P56 MCP server 与 sampling、P57 的 SQLite 会话库、P58 的 `createWebAgent`/`defineHttpTool`/IndexedDB/挂件、P59 不可信插件宿主）搁置，见 Backlog G；原 P57 的远程配对与 P58 的网页控制台并进 P59。把 yo-agent 换成 tau 的 CLI 的迁移草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md) 照旧搁置。
 
 ## 产品层后续 ⬜ 待定
 
@@ -132,6 +134,15 @@
 ### F. 复盘列出的后续阶段候选（P52，2026-10-23）
 
 详见 [复盘文档](retrospectives/2026-10-23.md) 的「后续阶段候选」：A 用起来 + 真机验收（建议先做）；B 定位收敛（内核 + 参考 CLI 还是产品，搁置的网关、渠道、示例怎么处置）；C 发布 0.4.0 或明确不发；D TUI 摘出（或只把 yo-agent 剩下的两个缺口补进 tau）；E 依赖升级（Ink 8、React 19）；F 代码清理（重复实现、多余导出、子命令 e2e、`--resume`）。
+
+### G. 复刻 yo-agent 搁置的部分（2026-10-23，用户：「没必要做太广，做精就行」）
+
+P53 总计划里没做的几项，常驻 tau 那条线之后再看：
+
+- **tau 作为 MCP server**（`tau mcp serve`：Claude Code 那样暴露工具，加 yo-agent 的 `run`）与 **MCP sampling**（外部 server 请 tau 用它的模型补全；建议界面里逐次询问）。草稿在 [archive/2026-10-23/phase-56-mcp-server-draft.md](archive/2026-10-23/phase-56-mcp-server-draft.md)。Codex 已于 2026-09 删除 `codex mcp-server`（改用 app-server）。
+- **SQLite 会话库**（yo-agent 的 store）。
+- **浏览器的嵌入部件**：`createWebAgent`、`defineHttpTool`、IndexedDB 会话库、页面挂件（网页客户端本身在 P59 做）。
+- **不可信插件宿主**（yo-agent 的 Worker 隔离插件）。
 
 ## 技术债登记
 
