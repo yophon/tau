@@ -124,7 +124,7 @@ async function main(): Promise<void> {
 	}
 	const options = parseArgs(process.argv.slice(2));
 	// The JSON, RPC and ACP modes own stdout: everything else goes to stderr (pi json.md).
-	if (options.mode) console.log = (...args: unknown[]) => console.error(...args);
+	if (options.mode || options.serve) console.log = (...args: unknown[]) => console.error(...args);
 	if (options.help && !options.gateway) {
 		console.log(USAGE);
 		return;
@@ -257,7 +257,7 @@ async function main(): Promise<void> {
 	/** The session reached its first prompt (from here on an exit keeps the worktree, as -p does). */
 	let worktreeStarted = false;
 	if (options.worktree) {
-		if (options.mode === "rpc" || options.mode === "acp" || options.gateway) {
+		if (options.mode === "rpc" || options.mode === "acp" || options.gateway || options.serve) {
 			console.error("--worktree works with the TUI, the REPL, -p and --mode json.");
 			process.exit(1);
 		}
@@ -301,6 +301,7 @@ async function main(): Promise<void> {
 	const useTui =
 		options.mode === undefined &&
 		options.gateway === undefined &&
+		options.serve === undefined &&
 		options.print === undefined &&
 		!options.repl &&
 		(options.tui || terminal);
@@ -331,7 +332,7 @@ async function main(): Promise<void> {
 		options.mode === "rpc" ? { type: "rpc" } : options.mode === "acp" ? { type: "acp" } : { type: "user" };
 	// The JSON, RPC and ACP modes read stdin themselves (or not at all).
 	const readline =
-		useTui || options.mode !== undefined || options.gateway !== undefined
+		useTui || options.mode !== undefined || options.gateway !== undefined || options.serve !== undefined
 			? undefined
 			: createInterface({ input: process.stdin, output: process.stdout });
 	// P46: push_notification is not sent while you are typing at the REPL (any key or pasted
@@ -450,6 +451,22 @@ async function main(): Promise<void> {
 			run.permissionMode = nextMode;
 		},
 	};
+	if (options.serve) {
+		// P56: the session hub; one workspace per session, as the gateway's conversations.
+		const { runServe } = await import("./server/serve.ts");
+		await runServe({
+			listen: options.serve.listen,
+			host: {
+				cwd,
+				openWorkspace,
+				modelDisplay,
+				modelChoices,
+				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+			},
+			hub: { version: CLI_VERSION },
+		});
+		return;
+	}
 	if (options.gateway) {
 		// One workspace per chat conversation (P30). Loaded on demand with the channels.
 		const { runGateway } = await import("./gateway.ts");

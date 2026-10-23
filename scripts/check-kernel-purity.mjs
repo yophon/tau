@@ -21,6 +21,7 @@ const PURE_PACKAGES = [
 	{ dir: "ext-tool-search", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-loop-detection", external: ["@yophon/tau-kernel"] },
 	{ dir: "ext-checkpoint", external: ["@yophon/tau-kernel"] },
+	{ dir: "protocol", external: [] },
 	{ dir: "ext-web", external: ["@yophon/tau-kernel"] },
 	// The pure entry only; ./node wires the worker-thread sandbox (D30).
 	{ dir: "ext-codemode", external: ["@yophon/tau-kernel", "@yophon/tau-ext-tool-search"], skip: ["node.ts"] },

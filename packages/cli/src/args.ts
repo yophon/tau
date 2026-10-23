@@ -11,6 +11,7 @@ export const USAGE = `tau - minimal OpenAI-compatible coding agent
 Usage: tau [options] [@files...] [messages...]
        tau [options] -p "prompt" [@files...]
        tau gateway <run|status|login|channels|allow|revoke> ...   (see tau gateway help)
+       tau serve [--listen stdio] [options]   Serve sessions to clients over tau's protocol (docs/protocol.md)
 
 @file: a text file goes into the first message, an image is attached to it
 (converted and shrunk like read's). Messages: the first starts the session,
@@ -177,6 +178,8 @@ export interface CliOptions {
 	mode?: "json" | "rpc" | "acp";
 	/** P30: `tau gateway <command>`. */
 	gateway?: GatewayCommand;
+	/** P56: `tau serve`, the session hub for clients (stdio now; a local socket and WebSocket later). */
+	serve?: { listen: string };
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading; the rest are messages (pi). */
 	extras: string[];
@@ -224,8 +227,29 @@ export function parseGatewayArgs(argv: string[]): CliOptions {
 	return options;
 }
 
+/** `tau serve [--listen <url>] [tau options]` (P56). */
+function parseServeArgs(argv: string[]): CliOptions {
+	let listen = "stdio";
+	const rest: string[] = [];
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i] ?? "";
+		if (arg === "--listen") {
+			const value = argv[++i];
+			if (value === undefined) {
+				console.error("Missing value for --listen");
+				process.exit(1);
+			}
+			listen = value;
+		} else rest.push(arg);
+	}
+	const options = parseArgs(rest);
+	options.serve = { listen };
+	return options;
+}
+
 export function parseArgs(argv: string[]): CliOptions {
 	if (argv[0] === "gateway") return parseGatewayArgs(argv.slice(1));
+	if (argv[0] === "serve") return parseServeArgs(argv.slice(1));
 	const options: CliOptions = {
 		help: false,
 		extras: [],

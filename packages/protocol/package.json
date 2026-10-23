@@ -1,0 +1,22 @@
+{
+	"name": "@yophon/tau-protocol",
+	"version": "0.2.0",
+	"description": "tau client protocol: types, JSON-RPC peer, transports and a typed client (pure ES, zero dependencies)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/protocol"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	}
+}

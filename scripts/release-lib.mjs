@@ -7,6 +7,7 @@ import { join } from "node:path";
 
 export const PUBLISHABLE_PACKAGES = [
 	"kernel",
+	"protocol",
 	"host-node",
 	"host-browser",
 	"host-weapp",
