@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P55 规格书**）
+> 最后更新：2026-10-23（P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P55**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -71,9 +71,13 @@
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
 
-## 复刻 yo-agent 的后续阶段（P55–P59）⬜
+## Phase 55 🚧 运行保护：apply_patch、循环检测、checkpoint
 
-总计划见 [P53 规格书](specs/phase-53-yo-agent-parity.md)：**下一个是 P55**，先写规格书由用户判定。P55 运行保护（`apply_patch`、可选的循环熔断与 checkpoint）→ P56 作为 MCP server 被调用、MCP sampling → P57 远程（WebSocket RPC、设备配对、断线续接）与 SQLite 会话库 → P58 浏览器（`createWebAgent`、`defineHttpTool`、IndexedDB、挂件、Web 控制台）→ P59 不可信插件宿主。每个阶段先写规格书，由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
+规格书（2026-10-23 确认；用户：「都做，按你的建议来，不过影子git可以纳入备选，以后也许可以按用户喜好切换这两个」）：[specs/phase-55-protections.md](specs/phase-55-protections.md)。
+
+## 复刻 yo-agent 的后续阶段（P56–P59）⬜
+
+总计划见 [P53 规格书](specs/phase-53-yo-agent-parity.md)：P56 作为 MCP server 被调用、MCP sampling → P57 远程（WebSocket RPC、设备配对、断线续接）与 SQLite 会话库 → P58 浏览器（`createWebAgent`、`defineHttpTool`、IndexedDB、挂件、Web 控制台）→ P59 不可信插件宿主。每个阶段先写规格书，由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
 
 ## 产品层后续 ⬜ 待定
 
