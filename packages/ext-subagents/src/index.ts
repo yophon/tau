@@ -35,6 +35,7 @@ import type {
 	Tool,
 	Usage,
 } from "@yophon/tau-kernel";
+import { messageText } from "@yophon/tau-kernel";
 import {
 	AGENT_EFFORTS,
 	type AgentDefinition,
@@ -133,6 +134,15 @@ export interface BackgroundTask {
 	startedAt: number;
 	endedAt?: number;
 	result?: string;
+	/** P53b (yo-agent's task panel): its latest activity — tool calls and the end of each reply — newest last. */
+	recent?: string[];
+}
+
+/** How many lines of activity a subagent keeps for /tasks (yo-agent's task detail shows 18). */
+const RECENT_LINES = 18;
+
+function noteRecent(record: BackgroundTask, lines: string[]): void {
+	record.recent = [...(record.recent ?? []), ...lines].slice(-RECENT_LINES);
 }
 
 /** A subagent of this session: what /tasks shows plus what resuming it needs. */
@@ -376,6 +386,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 				startedAt: record.startedAt,
 				...(record.endedAt !== undefined ? { endedAt: record.endedAt } : {}),
 				...(record.result !== undefined ? { result: record.result } : {}),
+				...(record.recent !== undefined ? { recent: [...record.recent] } : {}),
 			};
 			api.events.emit(SUBAGENT_TASK_CHANNEL, copy);
 		};
@@ -522,7 +533,17 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 						},
 						onEvent: (event: AgentEvent) => {
 							if (event.type === "tool_start") {
-								onUpdate?.(`${prefix}● ${event.toolCall.name}(${argSummary(event.toolCall.arguments)})\n`);
+								const line = `● ${event.toolCall.name}(${argSummary(event.toolCall.arguments)})`;
+								onUpdate?.(`${prefix}${line}\n`);
+								noteRecent(record, [line]);
+								emitTask(record);
+							} else if (event.type === "assistant_message") {
+								// P53b: the end of each reply, for /tasks.
+								const text = messageText(event.message).trim();
+								if (text !== "") {
+									noteRecent(record, text.split("\n").slice(-6));
+									emitTask(record);
+								}
 							}
 						},
 					},

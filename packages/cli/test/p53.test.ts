@@ -1,4 +1,5 @@
-// P53: what yo-agent had and tau lacked — -r/--resume and --session by id or name (53a).
+// P53: what yo-agent had and tau lacked — -r/--resume and --session by id or name (53a),
+// a background subagent's activity in /tasks (53b).
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync } from "node:fs";
@@ -8,6 +9,7 @@ import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { type MockOpenAI, mockTextTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
 import { parseArgs } from "../src/args.ts";
+import { subagentText } from "../src/background.ts";
 import { ESC, harness } from "./tui-harness.ts";
 
 const CLI_PATH = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -115,5 +117,23 @@ describe("P53a: -r/--resume and --session <id|name|path> (pi)", () => {
 		} finally {
 			h.cleanup();
 		}
+	});
+});
+
+describe("P53b /tasks shows a subagent's activity", () => {
+	const base = { id: "sub-1", agent: "worker", task: "review auth\nin detail", startedAt: 0 };
+	it("while it runs, its latest lines; before any, a note; when it ends, its answer", () => {
+		assert.equal(
+			subagentText({ ...base, status: "running", recent: ["● read(src/auth.ts)", "checked the module"] }),
+			"sub-1 (worker) running · review auth\n\n● read(src/auth.ts)\nchecked the module",
+		);
+		assert.equal(
+			subagentText({ ...base, status: "running" }),
+			"sub-1 (worker) running · review auth\n\n(no activity yet)",
+		);
+		assert.equal(
+			subagentText({ ...base, status: "done", result: "all good", recent: ["● read(x)"] }),
+			"sub-1 (worker) done:\n\nall good",
+		);
 	});
 });

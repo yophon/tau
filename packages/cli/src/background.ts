@@ -423,8 +423,9 @@ function firstLine(text: string, max = 60): string {
 	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
-function subagentText(task: BackgroundTask): string {
-	return task.status === "running"
-		? `${task.id} is still running: ${task.task}`
-		: `${task.id} (${task.agent}) ${task.status}:\n\n${task.result ?? ""}`;
+/** A subagent in /tasks: while it runs, its latest activity (P53b, yo-agent's task detail); then its answer. */
+export function subagentText(task: BackgroundTask): string {
+	if (task.status !== "running") return `${task.id} (${task.agent}) ${task.status}:\n\n${task.result ?? ""}`;
+	const recent = task.recent && task.recent.length > 0 ? task.recent.join("\n") : "(no activity yet)";
+	return `${task.id} (${task.agent}) running · ${firstLine(task.task)}\n\n${recent}`;
 }
