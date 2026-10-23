@@ -15,7 +15,7 @@ import { autoTitle } from "../session-title.ts";
 import { runCommand, whenCommandRuns } from "./commands.ts";
 import type { TuiController } from "./controller.ts";
 import { messageRendererMatches, renderResultLines, toolRendererMatches } from "./extensions.ts";
-import { errorText, firstLine, fmtCost, fmtElapsed, fmtInt } from "./format.ts";
+import { conversationLength, errorText, firstLine, fmtCost, fmtElapsed, fmtInt } from "./format.ts";
 import * as ed from "./input/editor.ts";
 import { expandPastes } from "./input/paste.ts";
 import { type PendingInput, queuedInput } from "./input-box.ts";
@@ -635,11 +635,6 @@ export class TuiRuns {
 
 export function customKey(message: CustomMessage): string {
 	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
-}
-
-/** Conversation messages for user-facing counts (system messages are prompt state, P22). */
-export function conversationLength(messages: readonly { role: string }[]): number {
-	return messages.filter((message) => message.role !== "system").length;
 }
 
 /** `!cmd` records the output in context, `!!cmd` does not. */

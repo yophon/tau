@@ -63,7 +63,7 @@ import { markActivity } from "./push-notification.ts";
 import { autoTitleOn } from "./session-title.ts";
 import { readSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
 import { StatusLineRunner, StatusLineSettings } from "./statusline.ts";
-import { conversationLength } from "./tui/controller.ts";
+import { conversationLength } from "./tui/format.ts";
 import { CLI_VERSION, dim, userHome } from "./util.ts";
 import {
 	openWorkspaceIn,

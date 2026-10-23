@@ -32,12 +32,11 @@ import { copyToClipboard } from "./clipboard.ts";
 import { shortcutItems } from "./commands.ts";
 import { TuiDialogs } from "./dialogs.ts";
 import { renderResultLines } from "./extensions.ts";
-import { errorText, type Tone } from "./format.ts";
+import { conversationLength, errorText, type Tone } from "./format.ts";
 import { acceptCompletion } from "./input/completion.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
 import { InputSplitter, type InputToken } from "./input/keys.ts";
-
 import { inputReport, type PointerEvent, WHEEL_ROWS } from "./input/mouse.ts";
 import { expandPastes } from "./input/paste.ts";
 import { TuiInputBox } from "./input-box.ts";
@@ -56,7 +55,7 @@ import { useMarkdownTransformers } from "./render/markdown.ts";
 import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
-import { conversationLength, isAbortError, TuiRuns } from "./runs.ts";
+import { isAbortError, TuiRuns } from "./runs.ts";
 import { TuiSessions, unique } from "./sessions.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
@@ -67,7 +66,7 @@ import type { RunTuiOptions, TuiDeps } from "./types.ts";
 // Kept importable from here (tests, P38).
 export { filterItems } from "./dialogs.ts";
 export { applyEditorCommand, completePathAt } from "./input-box.ts";
-export { conversationLength, parseUserBash } from "./runs.ts";
+export { parseUserBash } from "./runs.ts";
 
 const ARM_WINDOW_MS = 3000;
 

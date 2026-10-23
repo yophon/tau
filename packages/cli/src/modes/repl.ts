@@ -25,7 +25,7 @@ import { initialContent, type ProcessedFiles } from "../file-args.ts";
 import type { HostApprovalRequest } from "../permissions.ts";
 import { autoTitle, autoTitleOn } from "../session-title.ts";
 import type { TauSettings } from "../settings.ts";
-import { conversationLength } from "../tui/controller.ts";
+import { conversationLength } from "../tui/format.ts";
 import type { ProgramStatus } from "../tui/terminal-status.ts";
 import { ask, cyan, dim, firstLine, type Readline, red } from "../util.ts";
 import { finishWorktree, type WorktreeSession } from "../worktree.ts";

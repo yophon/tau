@@ -23,10 +23,9 @@ import {
 import { type GitDiff, gitDiff } from "../git-diff.ts";
 import { relativeTime, sessionLabel } from "../session-title.ts";
 import type { TuiController } from "./controller.ts";
-import { conversationLength } from "./controller.ts";
 import { sessionHtml } from "./export-html.ts";
 import { entryRendererMatches, isRenderComponent } from "./extensions.ts";
-import { errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
+import { conversationLength, errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
 import type { CompletionItem } from "./input/completion.ts";
 import { truncateCells } from "./input/width.ts";
 import { getKeybindings } from "./keybindings.ts";

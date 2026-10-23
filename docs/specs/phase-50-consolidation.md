@@ -95,7 +95,7 @@
 - [x] 50b：`main.ts` 1000 行以内，新模块各自职责单一；CLI 的所有模式（TUI、REPL、`-p`、json、rpc、acp、网关、子命令）行为不变。
 - [x] 50c：`controller.ts` 1500 行以内；TUI 测试与 smoke-tui 不改断言照样通过。
 - [x] 50d：按「需要确认」1 的结论拆完；内核导出与 `Agent` 公开方法不变；纯度门禁通过。
-- [x] 50e：两个测试的原因查清并处理，各连跑 20 遍、并在全量测试里各过 3 遍。
+- [ ] 50e：两个测试的原因查清并处理，各连跑 20 遍、并在全量测试里各过 3 遍。**原因没查到**：两条都没复现，连跑与全量各遍都过；已加宽等待、加诊断输出，见实施记录。
 - [x] 不改行为的证明：现有测试一条不删、断言不改（只允许改 import 路径）；全量测试、check、pack smoke（含 TUI 安装布局）、浏览器打包与运行、QuickJS、QuickJS MCP、smoke-tui 全屏与 inline 通过；真 DeepSeek 在 TUI、REPL、`-p`、rpc 各跑一轮带工具调用的对话；push 后 CI 通过。
 - [x] DoD 通用项；D53；文档更新。
 
@@ -166,3 +166,13 @@
 - smoke-tui（WSL）：全屏、inline 各 38 个场景各一遍全过。
 - 真 DeepSeek（deepseek-flash，yo-agent 的 config.env，临时 HOME）：`-p`、REPL、rpc 各一轮，模型用 read 读临时目录里的文件并只回第二行（随机串，猜不到），三种模式都答对；TUI 在 WSL 的 tmux 里同样一轮，读取后答对。
 - 现有测试没删，断言没改；改过的测试只有 50e 的三处（两个等待时长、一个失败时的输出）。
+
+### 复查后的更正（2026-10-23）
+
+完成后用户让我再审视一遍，查出下面几处没做好，当场改了（结构上的问题另立 P51）：
+
+- **50e 的勾打错了**：原因没查到却勾了「原因查清」，已改成未勾并写明。p41 的诊断原先只在子进程非零退出时打印；现在 `system()` 发现那一次请求根本没到 mock 时直接报错并带上最近一次运行的退出码与输出，正常退出却没发请求的情况也看得到。
+- **architecture.md 有写错的地方**（照旧文档和印象改写，没有逐句核对）：`executeTool` 写在了 `ExtensionContext` 上（实际在工具的 `ExtensionToolContext`），扩展动作写成了上下文的成员（实际在 `api` 上），消息联合漏了 branchSummary/compactionSummary，事件清单漏了 `session_before_switch`、`session_compact_failed`、`context_with_system`、`auto_retry_*`、`thinking_level_select`、`user_bash`，Base64 只写了解码，CLI 启动顺序把不要模型的子命令放到了 `parseArgs` 之后，子 agent 的 worktree 隔离写成在 `worktree-tools.ts`（实际是 `builtins.ts` 的 `setSubagentIsolation`），内置扩展漏了 secret guard 与 ext-web。都已改正。
+- **「其余使用说明核对过」当时只 grep 了旧文件名**：这次逐份核对 settings、hooks、connectors、permissions、subagents、worktrees、memory、audit、statusline、rpc、gateway：文档里反引号中的名字（标识符、文件名、设置键、环境变量、参数）都在代码里找到了，找不到的几个都是写明「不支持」的 Claude Code / pi 项；时长、上限、缺省值逐个对过代码，没有不一致。
+- **过时的注释**：`modes/headless.ts` 写「main.ts openWorkspace」、`worktree.ts` 写「main.ts asks」，改成现在的位置。
+- **`conversationLength` 的位置**：`main.ts` 与 REPL 为了这个三行函数静态引入整个 TUI 控制器（连带拆出的五块；P50 之前就是这样），移到不依赖 Ink 的 `tui/format.ts`，`-p`、REPL 启动不再加载控制器。

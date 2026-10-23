@@ -24,7 +24,7 @@ import {
 	userContentText,
 } from "@yophon/tau-kernel";
 
-/** What a workspace (main.ts openWorkspace) gives a headless session. */
+/** What a workspace (workspace.ts openWorkspaceIn) gives a headless session. */
 export interface HeadlessWorkspace {
 	cwd: string;
 	extensions: ExtensionRegistry;

@@ -54,10 +54,14 @@ function run(
 			// P50e: one full-suite run saw a child exit within ~0.4 s without a request, and the
 			// assertion that followed only showed an empty system prompt. Say why it exited.
 			if (code !== 0) console.error(`tau ${args.join(" ")} exited with ${code ?? signal}:\n${output}`);
+			lastRun = `tau ${args.join(" ")} exited with ${code ?? signal}. Output:\n${output}`;
 			resolve({ code, output });
 		});
 	});
 }
+
+/** The last run, for a request that never came (exit code 0 included). */
+let lastRun = "";
 
 /** RPC mode: send the records, collect the responses by id, then close stdin. */
 async function rpc(
@@ -121,6 +125,7 @@ async function rpc(
 }
 
 function system(mock: MockOpenAI, index: number): string {
+	if (!mock.requests[index]) throw new Error(`no request #${index} reached the mock; ${lastRun}`);
 	const messages = (mock.requests[index]?.messages ?? []) as Array<{ role: string; content: unknown }>;
 	const first = messages.find((message) => message.role === "system")?.content;
 	return typeof first === "string" ? first : JSON.stringify(first ?? "");

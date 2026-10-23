@@ -9,9 +9,8 @@ import {
 	type ThinkingLevel,
 } from "@yophon/tau-kernel";
 import type { TuiController } from "./controller.ts";
-import { errorText } from "./format.ts";
+import { conversationLength, errorText } from "./format.ts";
 import { messagesToBlocks } from "./replay.ts";
-import { conversationLength } from "./runs.ts";
 
 export class TuiSessions {
 	private readonly host: TuiController;

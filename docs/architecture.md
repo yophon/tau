@@ -47,10 +47,10 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `platform.ts` | **注入缝隙**。`Platform = { fetch, createUtf8Decoder, randomBytes, sleep? }`，全是结构化最小子集类型（`PlatformResponse`、`TauAbortSignal` 等，不依赖 DOM lib）；`headers?` 可选（供 MCP 读响应头）。缺 `sleep` 时重试与停滞超时静默禁用。`defaultPlatform()` 取 WinterTC 全局，并把内核的结构化 signal 桥接成真 `AbortSignal`（原生 fetch 拒收结构子集，自定义适配器要对自家传输做同样桥接）。**整个内核只有这个文件允许引用 WinterTC 全局** |
 | `abort.ts` | `AbortHandle`：纯 ES 的中止手柄（内核不假设 AbortController 存在），`follow()` 单向接宿主信号 |
 | `errors.ts` | `TauError`（带 code）、`HttpError`、`FileError`、`ShellError`、`SessionError` |
-| `uuid.ts` · `utf8.ts` · `base64.ts` · `sse.ts` | uuidv7（随机数经 `Platform.randomBytes`）；纯 ES 增量 UTF-8 解码器（给没有 TextDecoder 的 weapp iOS、Hermes、裸 QuickJS）；Base64 解码；增量 SSE 解析（任意分块边界、CRLF、多行 data、`onId`/`onRetry`） |
+| `uuid.ts` · `utf8.ts` · `base64.ts` · `sse.ts` | uuidv7（随机数经 `Platform.randomBytes`）；纯 ES 增量 UTF-8 解码器（给没有 TextDecoder 的 weapp iOS、Hermes、裸 QuickJS）；Base64 编解码；增量 SSE 解析（任意分块边界、CRLF、多行 data、`onId`/`onRetry`） |
 | `json.ts` | 照抄 pi 的 `repairJson`/`parseJsonWithRepair`（裸控制字符、非法转义、`\u` 后不足 4 位十六进制）；`parseToolCallArguments` 解析完整工具参数，不是对象时给 `argumentsError` |
 | **消息与协议** | |
-| `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序）、Usage/StopReason、消息级 timestamp；联合为 user/assistant/toolResult/custom/system。`messageText`/`toolCallsOf`/`userContentText`；`ModelPricing`/`computeUsageCost`（宿主给单价才算，tau 不带定价数据） |
+| `messages.ts` | 消息模型**照抄 pi（D13）**：内容块数组（Text/Thinking/ToolCall/Image，保留交错序）、Usage/StopReason、消息级 timestamp；联合为 system/user/assistant/toolResult/custom，加上投影出的 branchSummary/compactionSummary。`messageText`/`toolCallsOf`/`userContentText`；`ModelPricing`/`computeUsageCost`（宿主给单价才算，tau 不带定价数据） |
 | `openai.ts` | OpenAI 兼容 chat/completions 流式客户端与 **ChatTransport 缝（D21）**：`ChatTransport = (TransportRequest) => AsyncGenerator<ChatStreamEvent>`，事件为 `text_delta`/`reasoning_delta`（含 DeepSeek 的 reasoning_content）/`tool_call_delta`/`tool_call`/`response_end`。`TransportRequest` 带 messages（prompt 与工具声明是转录里的 system 消息，`resolveTranscript()` 折成线格式）、signal、maxTokens、模型与思考等级、headers 与 provider 事件回调。失败一律规范成 TauError；`withStallTimeout` 给等响应头与等下一块上看门狗（缺省 120 s）。`OpenAICompatConfig` 含 `contextWindow`、`maxOutputTokens` 等 |
 | `transform.ts` | `transformMessages()`：pi 的跨模型回放规则——同模型按原字段回放推理，换模型或协议时丢掉 thinking，跳过 error/aborted 轮，给孤儿 tool call 补合成结果。OpenAI 兼容客户端与 Anthropic 扩展共用 |
 | `retry.ts` | 错误分类逐字照抄 pi 1.4（先排除额度与上下文溢出，再匹配瞬态失败；413 算溢出）与 `RetrySettings`（缺省开、3 次、2 s 指数退避）。策略在 agent 循环里执行 |
@@ -107,9 +107,9 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 ### 扩展系统（照抄 pi）
 
 - **扩展 = 纯 setup 函数** `(api: ExtensionAPI) => void`，是静态值不是模块。内核从不加载代码：Node 宿主用 `loadExtensionsFromDir()` 动态 import 是宿主的便利；禁动态代码的宿主（小程序、RN）静态 import 后传入同样的函数。
-- **事件**语义同 pi（逐个状态见 [pi-parity.md](pi-parity.md)；`on()` 返回取消函数，分发取快照）：`input`（continue/transform/handled）、`before_agent_start`（链式改系统提示、注入 custom 消息）、`context`（改将发送的 messages）、`message_*`、`tool_call`（block、原地改参数、`permission: "allow" | "ask"`、terminate）、`tool_execution_*`、`tool_result`（按字段覆盖）、`agent_*`/`turn_*`（`turn_end` 与 `agent_before_settle` 是可操作边界）、`session_*`（start/shutdown/before_compact/compact/before_tree/tree/before_fork/info_changed）、`project_trust`、`resources_discover`、`before_provider_headers`/`before_provider_request`/`after_provider_response`/`provider_stream_event`、`model_select`、`ui_prompt_*`、`command_prompt`、`subagent_start`/`subagent_stop`。处理器按注册顺序链式执行，block/handled 短路。
-- **注册**：`registerTool(tool, { risk })`、`registerCommand`、`registerFlag`/`getFlag`、`registerMarkdownTransformer`、`addAutocompleteProvider`。每个扩展的注册先暂存，setup 抛错整体回滚并记进 `registry.loadErrors`；工具与 flag 先注册者胜，命令重名加 `:N`；被替换的 registry `invalidate()` 后旧 api/ctx 调用抛 `stale_extension`。
-- **上下文**：`ExtensionContext` 有宿主 facade（`capabilities.fs?`/`shell?`/`platform`）、`ui?`（`UiCapability`：confirm/select/selectMany/input/notify/editor/form；不提供即 headless，扩展走降级路径）、`runSubagent`、`executeTool`、`getContextUsage`、`compact`、`sessionManager`、`getSystemPrompt`；动作 `sendMessage`/`sendUserMessage`/`appendEntry`/`setSessionName`（经 Agent 的 `attachHostActions`）。`Tool.execute` 第四参收到同一个 ctx。
+- **事件**语义同 pi（逐个状态见 [pi-parity.md](pi-parity.md)；`on()` 返回取消函数，分发取快照）：`input`（continue/transform/handled）、`before_agent_start`（链式改系统提示、注入 custom 消息）、`context`（改将发送的 messages）、`message_*`、`tool_call`（block、原地改参数、`permission: "allow" | "ask"`、terminate）、`tool_execution_*`、`tool_result`（按字段覆盖）、`agent_*`/`turn_*`（`turn_end` 与 `agent_before_settle` 是可操作边界）、`context_with_system`、`session_*`（start/shutdown/before_switch/before_fork/before_compact/compact/compact_failed/before_tree/tree/info_changed）、`auto_retry_start`/`auto_retry_end`、`project_trust`、`resources_discover`、`before_provider_headers`/`before_provider_request`/`after_provider_response`/`provider_stream_event`、`model_select`/`thinking_level_select`、`user_bash`、`ui_prompt_start`/`ui_prompt_end`、`command_prompt`、`subagent_start`/`subagent_stop`。处理器按注册顺序链式执行，block/handled 短路。
+- **注册**：`registerTool(tool, { risk })`、`registerCommand`、`registerFlag`/`getFlag`、`registerShortcut`、消息与条目的渲染器、`registerMarkdownTransformer`、`addAutocompleteProvider` 等（全表见 pi-parity.md）。每个扩展的注册先暂存，setup 抛错整体回滚并记进 `registry.loadErrors`；工具与 flag 先注册者胜，命令重名加 `:N`；被替换的 registry `invalidate()` 后旧 api/ctx 调用抛 `stale_extension`。
+- **上下文**：`ExtensionContext` 有宿主 facade（`capabilities.fs?`/`shell?`/`platform`）、`ui?`（`UiCapability`：confirm/select/selectMany/input/notify/editor/form；不提供即 headless，扩展走降级路径）、`cwd`、`model`/`thinkingLevel`、`messages`、`runSubagent`、`getContextUsage`、`compact`、`abort`/`isIdle`/`signal`、`sessionManager`、`getSystemPrompt`、`isProjectTrusted`。工具执行时 `Tool.execute` 的第四参是 `ExtensionToolContext`，另有 `tools` 与 `executeTool`（嵌套调用）。动作在 `api` 上：`sendMessage`/`sendUserMessage`/`appendEntry`/`setSessionName`，由宿主经 Agent 的 `attachHostActions` 接上。
 - **工具集**（照抄 pi agent-session）：可调用集 = 已注册的 codemode/deferred 加 active 的 direct。每次请求：active 集 → 各工具的 `prepareLoadout` → 声明的差异写进 system 消息 → 请求滤掉隐藏的声明（转录仍记着，`/tree` 与 resume 后可复原）。`getDeclaredTools()` 给宿主生成系统提示的工具行。
 - **错误隔离**：宿主经 `setErrorSink()` 接管通知类处理器的异常，一个处理器失败不影响其余。
 
@@ -155,7 +155,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 
 ### 启动
 
-`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，子命令之前，网关除外）→ `parseArgs`（`args.ts`）→ 子命令（`tau credentials`/`tau mcp`/`tau audit` 在 `tool-commands.ts`，`tau gateway` 在 `gateway.ts`）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）→ 进入模式：TUI（交互终端缺省，`--tui` 显式要求）、REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|rpc|acp`。网关与 ACP 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
+`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）→ 进入模式：TUI（交互终端缺省，`--tui` 显式要求）、REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|rpc|acp`。网关与 ACP 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
 
 ### 代码地图
 
@@ -173,7 +173,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `workspace.ts` | 按一个工作目录装配的一切：扩展与项目信任、设置、文件系统与 shell（bash、PowerShell、后台命令）、权限、钩子、审计、项目上下文、会话库、建 Agent；`cwd` 可变（`moveTo` 搬全部依赖，下次空闲时重载扩展）；`sessionEnvironment` 给模型的命令带 `TAU_SESSION_*` |
 | `project-trust.ts` | 项目信任：`~/.tau/trust.json` 记下审过内容的摘要，内容变了重新问；`GATED_PROJECT_RESOURCES`/`presentGatedResources` 列出要信任才加载的项目资源 |
 | `extension-loading.ts` | 加载扩展（全局 → 信任后的项目 → 设置里的 → `-e`）与加载报告、扩展 flag、系统提示的来源（`--system-prompt`/`--append-system-prompt`、`SYSTEM.md`/`APPEND_SYSTEM.md`）、缺省系统提示 |
-| `builtins.ts` | 用户扩展之前加载的内置扩展：tool_search、codemode（都 inactive）、提示工具行（每次 run 按 `getDeclaredTools()` 重写）、技能与模板（ext-resources，约定目录与 `--skill`/`--prompt-template`/`-ns`/`-np`）、设置里的资源与 `images.blockImages`、subagent、todo、记忆 |
+| `builtins.ts` | 用户扩展之前加载的内置扩展：tool_search、codemode（都 inactive）、提示工具行（每次 run 按 `getDeclaredTools()` 重写）、技能与模板（ext-resources，约定目录与 `--skill`/`--prompt-template`/`-ns`/`-np`）、设置里的资源与 `images.blockImages`、secret guard（排第一）、subagent 与子 agent 的 worktree 隔离（`setSubagentIsolation`）、todo、记忆、web_fetch/web_search |
 | `permissions.ts` · `permission-commands.ts` | `WorkspacePermissions`：读用户、项目（allow 要信任）、`.tau/settings.local.json` 的规则与 `--allowed-tools`/`--disallowed-tools`/`--add-dir`，按修改时间重读交给内核策略；「总是允许」的规则怎么写（`alwaysOption`）；`/permissions`、`/add-dir` |
 | `hooks.ts` | 用户钩子（Claude Code 格式，用户与信任项目的 `settings.json`）：`HookRunner`（command/exec/http，并行、超时、后台、`onFailure`）与 `createHooksExtension`（把二十多个钩子事件翻译到内核事件）、`withHookApprovals`。使用说明见 [hooks.md](hooks.md) |
 | `mcp-config.ts` · `mcp-elicit.ts` | 用户级与信任项目的 `mcp.json`（项目级不得引用凭据），`withOAuth`，协议协商；elicitation 的钩子与对话框 |
@@ -185,7 +185,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `todo.ts` · `memory.ts` · `session-search.ts` | `todo_write`（整表替换，存 custom 条目，按分支恢复）；长期记忆（`USER.md`、项目 `MEMORY.md` 与主题文件，提示词只加载前 200 行或 25 KB，见 [memory.md](memory.md)）；`session_search`/`session_read`（扫会话 JSONL，不建索引） |
 | `background.ts` | 后台命令结束时作为 follow-up 送达、`/tasks`（后台命令、后台子 agent、定时任务）、`monitor` 工具 |
 | `loop.ts` · `scheduler.ts` · `run-time.ts` | `/loop` 与 `cron_*`/`schedule_wakeup` 工具（只在空闲时触发，存 custom 条目）；任务表与 cron（用网关的解析器）；给人看的时间 |
-| `worktree.ts` · `worktree-tools.ts` | `--worktree` 的建立、跟随主检出的信任、退出清理；`enter_worktree`/`exit_worktree` 与子 agent 的 worktree 隔离。使用说明见 [worktrees.md](worktrees.md) |
+| `worktree.ts` · `worktree-tools.ts` | `--worktree` 的建立、跟随主检出的信任、退出清理；`enter_worktree`/`exit_worktree`（隔离的子 agent 也用 `openWorktree`）。使用说明见 [worktrees.md](worktrees.md) |
 | `push-notification.ts` · `file-args.ts` | `push_notification`（你在终端前时不发）；`@file` 参数（照抄 pi file-processor） |
 | **会话辅助** | |
 | `session-title.ts` · `handoff.ts` · `dirty-repo.ts` | 第一轮后经 `Agent.completeText` 起标题；`/handoff`（pi）；切换会话前提醒未提交的改动 |

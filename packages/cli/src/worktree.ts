@@ -4,7 +4,7 @@
  * branch ("fresh", default) or the local HEAD (worktree.baseRef: "head"). Ignored
  * files listed in .worktreeinclude are copied in, worktree.symlinkDirectories are
  * linked from the main checkout. On exit a clean worktree with a generated name is
- * removed; otherwise the user decides (main.ts asks).
+ * removed; otherwise the user decides (finishWorktree asks).
  */
 import { execFileSync } from "node:child_process";
 import {

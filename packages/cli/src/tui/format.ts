@@ -74,3 +74,8 @@ export function formatReadLineRange(offset: unknown, limit: unknown): string {
 	const end = start + count - 1;
 	return `:${start}${end ? `-${end}` : ""}`;
 }
+
+/** Conversation messages for user-facing counts (system messages are prompt state, P22). */
+export function conversationLength(messages: readonly { role: string }[]): number {
+	return messages.filter((message) => message.role !== "system").length;
+}
