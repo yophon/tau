@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**下一阶段待定**：复盘候选见 Backlog F）
+> 最后更新：2026-10-23（P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P53**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -68,6 +68,10 @@
 | [P52](specs/phase-52-retrospective.md) | 项目现状复盘（[复盘文档](retrospectives/2026-10-23.md)），含对照 yo-agent 的 TUI | 2026-10-23 | |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
+
+## Phase 53 🚧 复刻 yo-agent 的能力：总计划与第一批
+
+规格书（2026-10-23 确认；用户：「没毛病，先写着吧，每个阶段我再判定这个东西到底要不要」）：[specs/phase-53-yo-agent-parity.md](specs/phase-53-yo-agent-parity.md)。总计划 P53–P59：P53 第一批（`-r/--resume`、`/tasks` 看子 agent、`/cwd`、截断后自动续写、压缩换模型、`ci` 权限档）→ P54 协议（Responses、Gemini、降级链、prompt shim）→ P55 运行保护（`apply_patch`、可选的循环熔断与 checkpoint）→ P56 MCP server → P57 远程与 SQLite → P58 浏览器 → P59 不可信插件宿主；P54 起每阶段由用户判定做不做。把 yo-agent 换成 tau 的 CLI 的迁移另有草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md)，搁置。
 
 ## 产品层后续 ⬜ 待定
 
