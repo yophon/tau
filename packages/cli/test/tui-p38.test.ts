@@ -534,7 +534,14 @@ describe("P38c sessions and commands", () => {
 			await h.waitFor(() => h.controller.state.prompt !== undefined, "the name prompt");
 			await h.type("new name");
 			await h.key(ENTER);
-			await h.waitFor((f) => f.includes("new name"), "the renamed session");
+			// The picker back with the renamed row (P53: waiting for the text matched the prompt's own
+			// input "new name" before Enter took effect, and the Ctrl+D below was lost in the switch).
+			await h.waitFor(
+				() =>
+					h.controller.state.prompt === undefined &&
+					(h.controller.state.picker?.items.some((item) => item.label.includes("new name")) ?? false),
+				"the renamed session in the picker",
+			);
 			const sessions = await h.controller.options.sessionRepo.list();
 			assert.ok(sessions.some((session) => session.name === "new name"));
 			// Delete it: confirm with y.
