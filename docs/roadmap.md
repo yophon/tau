@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P57 规格书（TUI 改走协议）**）
+> 最后更新：2026-10-23（P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P57（TUI 改走协议）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -72,6 +72,10 @@
 | [P56](specs/phase-56-session-hub.md) | 常驻 tau 第一步：客户端协议 tau/1（`@yophon/tau-protocol`，照 Codex app-server 的形状）与会话中枢（多客户端、按 seq 补齐、审批发给所有人先答为准、没人接着时等待），`tau serve --listen stdio` | 2026-10-23 | D58 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
+
+## Phase 57 🚧 TUI 改走协议
+
+规格书（2026-10-23 确认；用户：「push 按你的想法来」）：[specs/phase-57-tui-over-protocol.md](specs/phase-57-tui-over-protocol.md)。分 57a 协议补充与中枢、57b TUI 切换、57c `--mode rpc` 适配层三步提交，做完一起验收。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
