@@ -266,6 +266,7 @@ export default guard;
 - [docs/worktrees.md](docs/worktrees.md)——`tau --worktree` 与 `enter_worktree` / `exit_worktree`：会话在单独的 git worktree 里跑
 - [docs/subagents.md](docs/subagents.md)——子 agent：几种用法、agent 定义、`send_message`、worktree 隔离
 - [docs/pi-parity.md](docs/pi-parity.md)——pi 扩展面逐成员对照
+- [docs/retrospectives/](docs/retrospectives/)——项目复盘（2026-10-23：现状、问题、后续阶段候选）
 
 ## 许可证
 

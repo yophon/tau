@@ -57,7 +57,7 @@ Markdown 文件，frontmatter 写 `name`、`description`，可选 `tools`（逗�
 
 ## 存盘与恢复
 
-每个子 agent 结束时，它的消息写进 `<会话文件去掉 .jsonl>/subagents/<编号>.jsonl`，名字、任务、工具集、状态写进同名的 `.meta.json`。`--resume`、`--continue` 之后还能用 `send_message` 续接，编号从已有的最大值往后排。
+每个子 agent 结束时，它的消息写进 `<会话文件去掉 .jsonl>/subagents/<编号>.jsonl`，名字、任务、工具集、状态写进同名的 `.meta.json`。`--continue`、`--session` 或 TUI 的 `/resume` 恢复会话之后还能用 `send_message` 续接，编号从已有的最大值往后排。
 
 ## 在自己的 worktree 里跑
 

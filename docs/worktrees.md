@@ -72,7 +72,7 @@ tau 会往仓库的 `info/exclude` 加一行 `/.tau/worktrees/`，主仓库的 `
 - **`enter_worktree {path}`**：进入本仓库已有的 worktree（`git worktree list` 里有的）。`.tau/worktrees/` 下的不问；以外的路径要你确认一次，权限规则和「总是允许」都免不了，只有 bypass 模式不问，没有界面（`-p`）时拒绝。已经在 worktree 里（包括 `--worktree` 启动的）时只能用 `path`，而且必须在本仓库的 `.tau/worktrees/` 下。
 - **搬进去之后**：工作目录、文件工具、bash 和 PowerShell、后台命令、权限的工作目录（`/add-dir` 加的保留）、钩子、语言服务器、底栏马上跟过去；这一轮结束时 TUI 重载项目设置、AGENTS.md、项目扩展与技能（同 `/reload`）。REPL 和 `-p` 里设置与扩展保持启动目录的。MCP 服务器的 roots 仍报启动目录。
 - **`exit_worktree {action: "keep" | "remove", discard_changes?}`**：回到进入前的目录。`keep` 留下 worktree 和分支；`remove` 一起删掉。有改动或新提交时，`remove` 必须带 `discard_changes: true`，否则报错并写明几个文件、几个提交；带了也要你确认（bypass 不问，没有界面时拒绝）。`--worktree` 启动的会话也能用。
-- **恢复**：会话文件留在原来的目录，里面记着当前所在的 worktree。`--continue`、`--resume` 恢复时回到那里；它已经被删掉，就留在启动目录并说明。
+- **恢复**：会话文件留在原来的目录，里面记着当前所在的 worktree。`--continue`、`--session` 或 TUI 的 `/resume` 恢复时回到那里；它已经被删掉，就留在启动目录并说明。
 - 退出 TUI 或 REPL 时还在 worktree 里，按「退出时」的规则处理。
 - 只读模式和网关里没有这两个工具，子 agent 也没有。子 agent 自己的 worktree 见 [subagents.md](subagents.md) 的「在自己的 worktree 里跑」。
 

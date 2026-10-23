@@ -297,6 +297,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/worktrees.md](docs/worktrees.md) — `tau --worktree` and `enter_worktree` / `exit_worktree`: a session in its own git worktree
 - [docs/subagents.md](docs/subagents.md) — subagents: modes, agent definitions, `send_message`, worktree isolation
 - [docs/pi-parity.md](docs/pi-parity.md) — pi extension surface, member by member
+- [docs/retrospectives/](docs/retrospectives/) — project retrospectives (2026-10-23: state, problems, candidate next phases)
 
 ## License
 
