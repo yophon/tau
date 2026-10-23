@@ -545,7 +545,7 @@ describe("P38c sessions and commands", () => {
 			await h.key("y");
 			// The picker opens again at once, so the "deleted" flash stays under it: read the files.
 			let left = -1;
-			for (let waited = 0; waited < 3000; waited += 20) {
+			for (let waited = 0; waited < 10_000; waited += 20) {
 				left = (await h.controller.options.sessionRepo.list()).length;
 				if (left === 1) break;
 				await new Promise((resolve) => setTimeout(resolve, 20));

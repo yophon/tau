@@ -49,8 +49,11 @@ function run(
 	});
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => reject(new Error(`tau did not exit. Output:\n${output}`)), 30_000);
-		child.on("exit", (code) => {
+		child.on("exit", (code, signal) => {
 			clearTimeout(timer);
+			// P50e: one full-suite run saw a child exit within ~0.4 s without a request, and the
+			// assertion that followed only showed an empty system prompt. Say why it exited.
+			if (code !== 0) console.error(`tau ${args.join(" ")} exited with ${code ?? signal}:\n${output}`);
 			resolve({ code, output });
 		});
 	});

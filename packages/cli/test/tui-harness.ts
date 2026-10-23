@@ -191,7 +191,8 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		return (ink.lastFrame() ?? "").replaceAll(CARET_MARK, "").replaceAll(CARET_END, "");
 	};
 	const waitFor = async (test: (frame: string) => boolean, what: string): Promise<string> => {
-		const deadline = Date.now() + 3000;
+		// 10 s, not 3: under a full parallel test run one step of a long test once took longer (P50e).
+		const deadline = Date.now() + 10_000;
 		for (;;) {
 			const current = frame();
 			if (test(current)) return current;
