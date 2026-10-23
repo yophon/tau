@@ -4,6 +4,14 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P56: one session, many clients — the first step)
+- `@yophon/tau-protocol`: tau's client protocol `tau/1` (after Codex's app-server protocol: threads,
+  turns, items; approvals and dialogs as requests to the clients, `serverRequest/resolved`), a
+  JSON-RPC 2.0 peer, an in-process transport pair, line framing, and a typed `TauClient`.
+- CLI: `tau serve [--listen stdio]` — the session hub: several clients on one session, replay after a
+  `seq`, approvals to every client with the first answer counting (waiting while nobody is
+  connected), queued and steered turns, interrupt. See docs/protocol.md.
+
 ### Added (P55: apply_patch, loop detection, checkpoints)
 - Kernel: `apply_patch`, Codex's patch format (ported from codex-rs/apply-patch, Apache-2.0; Codex's
   scenarios pass), provided by `createCodingTools` but not active by default (`--tools +apply_patch`).

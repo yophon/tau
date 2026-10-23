@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-23（P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-23（P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -32,7 +32,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 
 ## 关键不变量（违反即架构回退）
 
-1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-loop-detection、ext-checkpoint、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）过同一门禁。
+1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-loop-detection、ext-checkpoint、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）与协议包 `@yophon/tau-protocol` 过同一门禁。
 2. **内核零 npm 依赖**。JSON Schema 等一律用结构化类型，不引 typebox。
 3. **可擦除 TypeScript**（`erasableSyntaxOnly`）：无 enum/namespace/参数属性，Node 原生 type-stripping 直接跑源码，开发期零构建。
 4. **能力可选**：内核任何路径不得假设某能力存在；宿主不提供就少注册工具。
@@ -154,6 +154,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 - **`@yophon/tau-ext-provider-google`**（纯 Platform，零依赖）：`createGoogleTransport(config, platform)`，手写 Gemini API 流式协议（`models/{model}:streamGenerateContent?alt=sse`，`x-goog-api-key`），映射照抄 pi 的 google-shared：`systemInstruction`、user/model 内容与 `functionCall`/`functionResponse` 部件（Gemini 3 起带 id，一轮的结果合进一个 user 轮，图片在 3 起嵌进结果）、`parametersJsonSchema`、思考摘要与 `thoughtSignature` 同模型回放、思考级别按模型族（3 用 `thinkingLevel`，2.5 用 pi 的预算表）、finishReason 与用量。
 - **`@yophon/tau-ext-loop-detection`**（纯 ES）：Gemini CLI 的检测——同一个调用连续 5 次、或 2–5 个调用的循环重复 5 遍——拦下并结束这次运行；同一次回复里的同参调用只算一次、连续 3 次时给一次隐藏提醒（yo-agent）；`/loop-detection on|off|status`。
 - **`@yophon/tau-ext-checkpoint`**（纯 ES，经 FileSystem）：Claude Code 的 checkpoint：每次运行开始（叶子是用户消息）建一个，write/edit/apply_patch 第一次碰某文件前存下原样；`CheckpointBackend` 接口（begin、recordBefore、list、restore），现有「文件备份」后端（每个会话一个目录，`<id>.json` 加 `<id>.<n>.txt`）。不记 bash 的改动。
+- **`@yophon/tau-protocol`**（纯 ES，零依赖）：客户端协议 tau/1 的类型（照 Codex app-server：thread/turn/item、server 发起的请求与 `serverRequest/resolved`）、`JsonRpcPeer`（JSON-RPC 2.0 两端互发请求）、`createMemoryTransportPair`（进程内，对象直接传）、`createLineTransport`/`LineBuffer`（字节流的行分帧）、`TauClient`（类型化客户端）。说明见 [protocol.md](protocol.md)。
 - **`@yophon/tau-ext-feishu`**（Node，基于官方 SDK）：飞书长连接与 REST 桥、入站消息解析、媒体、进度卡片、发送工具。需要在扩展目录写 wrapper 引入。
 
 ## 宿主包
@@ -169,7 +170,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 
 ### 启动
 
-`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）→ 进入模式：TUI（交互终端缺省，`--tui` 显式要求）、REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|rpc|acp`。网关与 ACP 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
+`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）→ 进入模式：TUI（交互终端缺省，`--tui` 显式要求）、REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|rpc|acp`、`tau serve`（会话中枢，`server/`）。网关、ACP 与 `tau serve` 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
 
 ### 代码地图
 
@@ -209,6 +210,11 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | **子命令** | |
 | `tool-commands.ts` | `tau credentials`、`tau mcp list/login/logout`、`tau audit` |
 | `gateway.ts` | `tau gateway`：给网关提供 `openConversation`（工作区加 `HeadlessSession`） |
+| **会话中枢（server/，P56）** | 常驻多客户端的第一步，协议见 [protocol.md](protocol.md) |
+| `server/hub.ts` | `SessionHub`：已加载的会话与连接（`HubConnection`，每个是一个 `JsonRpcPeer`），协议方法的分发（未 `initialize` 拒绝），存档会话的列出与读取（一个不起 MCP 的工作区），按需加载、空闲 60 秒卸载 |
+| `server/thread.ts` | `HubThread`：一个工作区 + 一个 `HeadlessSession`（同网关的对话）；推送编号（`seq`）并保留 20000 条，订阅者，`thread/resume` 的补齐或快照；审批与对话框发给所有订阅者、先答为准、其余收到 `serverRequest/resolved`、没人接着时等待；`turn/start` 排队、steer、interrupt；会话自己发起的运行也算一轮 |
+| `server/items.ts` | AgentEvent → 条目与推送（`ItemTracker`），对话 → 条目快照（`itemsFromMessages`） |
+| `server/serve.ts` | `tau serve --listen stdio`：stdin/stdout 上的行分帧传输 |
 | **模式（modes/）** | |
 | `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态 |
 | `headless.ts` | `HeadlessSession`：一个会话的运行（一次一个，排队的输入 steer/followUp）、会话切换、无界面的斜杠命令 |

@@ -72,6 +72,7 @@ its boundaries.
 | `@yophon/tau-host-browser` | OPFS and in-memory filesystems, browser session repo | Yes |
 | `@yophon/tau-host-weapp` | WeChat mini-program `Platform` adapter (`wx.request` chunked streaming) | Yes |
 | `@yophon/tau-host-rn` | React Native (Expo) `Platform` adapter over `expo/fetch` | Yes |
+| `@yophon/tau-protocol` | tau's client protocol (tau/1): types, a JSON-RPC peer, transports and a typed client | **No** — pure ES |
 | `@yophon/tau-cli` | Terminal frontend: TUI, REPL, one-shot, JSON / RPC / ACP modes | Yes |
 | `@yophon/tau-ext-subagents` | The `subagent` tool and `send_message` over Markdown agent definitions | No direct runtime API |
 | `@yophon/tau-ext-mcp` | MCP for Node: the ext-mcp-http core plus stdio servers and OAuth sign-in | Yes — child processes |
@@ -234,6 +235,7 @@ npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js 
 tau --mode json -p "review the diff" | jq -c 'select(.type=="tool_execution_end")'   # a JSONL event stream
 tau --mode rpc                      # JSONL commands on stdin (pi's RPC protocol), events on stdout
 tau --mode acp                      # Agent Client Protocol: use tau inside an editor such as Zed
+tau serve                           # tau's own protocol: several clients on the same session (docs/protocol.md)
 ```
 
 In Zed: `{ "agent_servers": { "tau": { "command": "tau", "args": ["--mode", "acp"] } } }`.
@@ -316,6 +318,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/decisions.md](docs/decisions.md) — design decision records (D1–D55)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
+- [docs/protocol.md](docs/protocol.md) — `tau serve` and tau's client protocol (several clients on one session)
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, language servers, credentials, OAuth, keeping secrets from the model

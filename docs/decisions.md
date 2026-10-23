@@ -239,6 +239,15 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D58：常驻多客户端的协议照 Codex app-server，TUI 将是它的客户端（2026-10-23，P56，用户确认）
+
+- **方向**（P56 规格前与用户讨论 Codex 的 app-server 之后）：一个常驻 tau 持有会话，TUI、编辑器、手机同时接上同一个会话；复刻 yo-agent 的其余阶段搁置（Backlog G），总计划见 `resident-tau-plan.md`（P56–P60）。
+- **协议照 Codex 的形状、取子集**：JSON-RPC 2.0；会话（thread）、轮（turn）、条目（item）三层；`thread/resume` 对运行中的会话就是重新接上；审批与对话框是 server 发给客户端的请求，发给所有订阅者，先答为准，其余收到 `serverRequest/resolved`。没采用 pi 的 rpc（单客户端，没有接上、补齐、撤销）与 ACP（编辑器驱动单个 agent）作主协议；二者以后做成适配层。tau 自己的部分另起名字（`ui/request`、`thread/notice`），字段只加不改。
+- **协议是单独的纯 ES 包**（`@yophon/tau-protocol`），给 TUI（进程内）、手机网页（浏览器）和别的客户端共用；中枢在 CLI（`src/server/`），因为它要 CLI 的工作区。
+- **一个会话一个工作区**（照网关的对话）；推送带 `seq` 并保留一个窗口，接上时按 `afterSeq` 补齐，太旧就给快照加当前这一轮的推送。
+- **没人接着时审批等着**（离开电脑后用手机答）；`turn/interrupt` 把等待中的审批算拒绝。超时设置留给常驻服务（P58）。
+- **`--mode rpc` 改成适配层挪到 P57**：它的四十个命令要等协议随 TUI 补齐后才能映射。
+
 ## D57：apply_patch 照 Codex，循环检测照 Gemini CLI，checkpoint 照 Claude Code、后端可换（2026-10-23，P55，用户确认）
 
 - **apply_patch**：格式、解析的宽松程度、定位、换行处理、部分失败留下已改的文件，全部照 Codex 的 crate，Codex 的 25 个端到端用例原样作一致性测试。Codex 现在只有 freeform 工具，tau 做成一个字符串参数（`input`）的函数工具，描述用 Codex 教格式的那段。缺省不激活：格式是 Codex 的，别的模型不一定写得对，由用户按模型打开。权限按补丁里的每个路径判，和 edit 一样。

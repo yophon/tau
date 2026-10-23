@@ -1,6 +1,6 @@
 # Phase 56：协议与会话中枢（常驻 tau 第一步） 规格书
 
-> 状态：已确认（2026-10-23）。用户：「按你想法来，去做吧」——「需要确认」三项都按建议。
+> 状态：已完成（2026-10-23），实施记录见文末。确认于 2026-10-23。用户：「按你想法来，去做吧」——「需要确认」三项都按建议。
 > 对应 roadmap 阶段：Phase 56（常驻 tau 的 R1，总计划见 [resident-tau-plan.md](resident-tau-plan.md)）
 
 ## 目标
@@ -70,11 +70,11 @@ server → 客户端的请求：`item/tool/requestApproval { threadId, toolCallI
 
 ## 验收清单
 
-- [ ] 协议包单测：请求与响应、错误、推送、server 发起的请求、进程内通道；`TauClient` 的类型化调用。
-- [ ] 中枢测试（mock 模型）：两个客户端接同一会话，收到同样的推送、同样的 `seq`；第三个客户端带 `afterSeq` 接上补齐，不带就拿到快照；审批发给两个客户端，A 答了 B 收到 `serverRequest/resolved`、工具照 A 的决定执行；没人接着时审批等着，客户端接上时收到；运行中 `turn/start` 排队、`turn/steer` 插入、`turn/interrupt` 中止；`thread/list`、`thread/read`；卸载。
-- [ ] 端到端：启动 `tau serve --listen stdio`（mock 模型），两个脚本客户端经协议包驱动（一个经 stdio，一个模拟后接上）。
-- [ ] 真 DeepSeek：stdio 客户端开会话、问读文件的问题、审批由另一端答。
-- [ ] check（新包进纯度门禁）、全量测试、pack smoke；现有 smoke-tui 照旧通过；push 后 CI 通过；D58；文档。
+- [x] 协议包单测：请求与响应、错误、推送、server 发起的请求、进程内通道；`TauClient` 的类型化调用。
+- [x] 中枢测试（mock 模型）：两个客户端接同一会话，收到同样的推送、同样的 `seq`；第三个客户端带 `afterSeq` 接上补齐，不带就拿到快照；审批发给两个客户端，A 答了 B 收到 `serverRequest/resolved`、工具照 A 的决定执行；没人接着时审批等着，客户端接上时收到；运行中 `turn/start` 排队、`turn/steer` 插入、`turn/interrupt` 中止；`thread/list`、`thread/read`；卸载。
+- [x] 端到端：启动 `tau serve --listen stdio`（mock 模型），两个脚本客户端经协议包驱动（一个经 stdio，一个模拟后接上）。
+- [x] 真 DeepSeek：stdio 客户端开会话、问读文件的问题、审批由另一端答。
+- [x] check（新包进纯度门禁）、全量测试、pack smoke；现有 smoke-tui 照旧通过；push 后 CI 通过；D58；文档。
 
 ## 风险与开放问题
 
@@ -89,3 +89,18 @@ server → 客户端的请求：`item/tool/requestApproval { threadId, toolCallI
 1. **协议的名字与形状照抄 Codex**（`thread/*`、`turn/*`、`item/*`、`serverRequest/resolved`），tau 自己的部分（`ui/request`、`thread/notice`）另起名字。建议同意。
 2. **没人接着时的审批**：(a) 一直等着，有客户端接上时补发（离开电脑后用手机答，P59 的用法）；(b) 立即拒绝（现在无界面模式的做法）。建议 (a)；P58 常驻时可加超时设置。
 3. **`--mode rpc` 改成适配层挪到 P57**（偏离总计划写的 R1）：pi 的 rpc 有四十个命令（换模型、压缩、会话、bash、导出……），这些要等协议在 P57 随 TUI 补齐后才能映射；现在改会丢功能。建议同意。
+
+## 实施记录（2026-10-23）
+
+- 提交：1224c3c 规格、4e1f385 实现，加文档提交。
+- 照规格实现。细节与出入：
+  - `thread/resume` 的快照叫 `items`（规格草案写的是 `messages`）：快照与推送用同一种条目，客户端只认一种形状。
+  - 会话开工作区时不问项目信任（`trustPrompt: false`，开的时候可能没人接着）：没信任过的项目资源照旧不加载。
+  - 会话自己发起的运行（扩展的 follow-up 等，不经 `turn/start`）也算一轮，照样有 `turn/started`/`turn/completed`。
+  - 运行中的 `turn/start` 由中枢自己排队（规格写「同 TUI 的排队」），这样每一轮开始时都能先发 `turn/started`。
+  - 列出与读取存档的会话用一个不起 MCP server 的工作区；每个加载的会话各开一个工作区（同网关的对话）。
+  - 客户端对 server 的请求回错误（不处理）时当它答不了，请求继续等别的客户端。
+  - `turn/interrupt` 把这一轮等待中的审批算拒绝、对话框算取消（否则内核可能一直等回答）。
+- 测试：全量 1481 个，1476 通过、5 跳过；新增协议包 4、中枢 6（进程内两到四个客户端）、`tau serve` 端到端与参数 2。check（协议包进纯度门禁）通过。
+- 冒烟：pack smoke（24 个包）、QuickJS、浏览器 bundle 通过；smoke-tui 全屏、inline 各一遍全过（TUI 这阶段没动）。
+- 真 DeepSeek（`tau serve` 经 stdio，协议包的客户端驱动）：read 问题答对随机串；write 需要审批时客户端先不处理，2 秒内没有写文件（请求在等）；客户端退订后带 `afterSeq` 重新接上并装上审批处理，立即收到那个审批、答「允许一次」，文件写出、这一轮完成、发了一条 `serverRequest/resolved`；关闭 stdin 后退出码 0。
