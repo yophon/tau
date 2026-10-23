@@ -112,7 +112,7 @@ const BUILTINS: BuiltinCommand[] = [
 		complete: (tui, prefix) => startingWith(prefix, modelItems(tui)),
 		run: async (tui, args) => {
 			if (args !== "") {
-				await tui.switchModel(args);
+				await tui.sessions.switchModel(args);
 				return;
 			}
 			const items = modelItems(tui).map((item) => ({
@@ -127,7 +127,7 @@ const BUILTINS: BuiltinCommand[] = [
 			const save = tui.options.saveDefaultModel;
 			if (!save) {
 				const picked = await tui.pick(`Model (current: ${tui.model})`, items, selected);
-				if (picked !== undefined && picked !== tui.model) await tui.switchModel(picked);
+				if (picked !== undefined && picked !== tui.model) await tui.sessions.switchModel(picked);
 				return;
 			}
 			const picked = await tui.pickWithAlt(`Model (current: ${tui.model})`, items, selected, "save as default");
@@ -136,7 +136,7 @@ const BUILTINS: BuiltinCommand[] = [
 				if (save(picked.value)) tui.notice("dim", `Default model for new sessions: ${picked.value}.`);
 				else tui.notice("error", `Cannot save ${picked.value} as the default.`);
 			}
-			if (picked.value !== tui.model) await tui.switchModel(picked.value);
+			if (picked.value !== tui.model) await tui.sessions.switchModel(picked.value);
 		},
 	},
 	{
@@ -159,14 +159,14 @@ const BUILTINS: BuiltinCommand[] = [
 				requested = picked;
 			}
 			if (requested === "default" || requested === "auto" || requested === "off") {
-				await tui.switchThinking(undefined);
+				await tui.sessions.switchThinking(undefined);
 				return;
 			}
 			if (!(THINKING_LEVELS as readonly string[]).includes(requested)) {
 				tui.notice("error", "Usage: /thinking [default|none|minimal|low|medium|high|xhigh|max]");
 				return;
 			}
-			await tui.switchThinking(requested as ThinkingLevel);
+			await tui.sessions.switchThinking(requested as ThinkingLevel);
 		},
 	},
 	{
@@ -226,7 +226,7 @@ const BUILTINS: BuiltinCommand[] = [
 				return;
 			}
 			if (!(await tui.guardDirty("switch session"))) return;
-			const result = await tui.switchSession(await tui.options.sessionRepo.open(selected), "resume");
+			const result = await tui.sessions.switchSession(await tui.options.sessionRepo.open(selected), "resume");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension.");
 		},
 	},
@@ -336,7 +336,7 @@ const BUILTINS: BuiltinCommand[] = [
 				await store.getMetadata(),
 				target === "" ? undefined : { entryId: target },
 			);
-			const result = await tui.switchSession(forked, "fork");
+			const result = await tui.sessions.switchSession(forked, "fork");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the fork file was kept).");
 		},
 	},
@@ -351,7 +351,7 @@ const BUILTINS: BuiltinCommand[] = [
 				return;
 			}
 			if (!(await tui.guardDirty("new session"))) return;
-			const result = await tui.switchSession(await tui.options.sessionRepo.create(), "new");
+			const result = await tui.sessions.switchSession(await tui.options.sessionRepo.create(), "new");
 			if (result.cancelled) tui.notice("dim", "New session cancelled by an extension.");
 		},
 	},
@@ -376,7 +376,7 @@ const BUILTINS: BuiltinCommand[] = [
 				await store.getMetadata(),
 				leaf === null || leaf === undefined ? undefined : { entryId: leaf, position: "at" },
 			);
-			const result = await tui.switchSession(copy, "fork");
+			const result = await tui.sessions.switchSession(copy, "fork");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the copy was kept).");
 		},
 	},
@@ -570,7 +570,7 @@ const BUILTINS: BuiltinCommand[] = [
 			}
 			if (!(await tui.guardDirty("switch session"))) return;
 			const imported = await tui.options.sessionRepo.importFile(source);
-			const result = await tui.switchSession(imported, "resume");
+			const result = await tui.sessions.switchSession(imported, "resume");
 			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the imported file was kept).");
 			else tui.notice("dim", `Imported ${source}.`);
 		},
@@ -770,7 +770,7 @@ const BUILTINS: BuiltinCommand[] = [
 	{
 		name: "reload",
 		description: "Reload extensions, prompts and context files",
-		run: (tui) => tui.reloadExtensions(),
+		run: (tui) => tui.sessions.reloadExtensions(),
 	},
 	{
 		name: "quit",

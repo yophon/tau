@@ -249,7 +249,7 @@ export class TuiRuns {
 		(this.host.options as { cwd: string }).cwd = process.cwd();
 		this.host.inputBox.files = undefined;
 		this.host.inputBox.filesEpoch++;
-		await this.host.reloadExtensions();
+		await this.host.sessions.reloadExtensions();
 	}
 
 	private async runPromptOnce(input: UserContent | null): Promise<void> {
@@ -614,12 +614,14 @@ export class TuiRuns {
 				}
 				const count = conversationLength(this.host.agent.messages);
 				if (result.editorText !== undefined) {
-					this.host.showSession(`Back before that message (${count} messages in context); it is in the input box.`);
+					this.host.sessions.showSession(
+						`Back before that message (${count} messages in context); it is in the input box.`,
+					);
 					// pi puts it in the editor; a draft typed meanwhile stays after it.
 					const draft = this.host.state.editor.text;
 					this.host.setInput(draft.trim() === "" ? result.editorText : `${result.editorText}\n${draft}`);
 				} else {
-					this.host.showSession(`Moved (${count} messages in context).`);
+					this.host.sessions.showSession(`Moved (${count} messages in context).`);
 				}
 			} catch (error) {
 				this.host.notice(

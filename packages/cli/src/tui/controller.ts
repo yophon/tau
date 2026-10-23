@@ -13,9 +13,8 @@ import {
 	type Agent,
 	type ExtensionRegistry,
 	type PermissionMode,
-	restoreSession,
 	type SessionMetadata,
-	SessionRecorder,
+	type SessionRecorder,
 	type SessionStore,
 	TauError,
 	type ThinkingLevel,
@@ -58,6 +57,7 @@ import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
 import { conversationLength, isAbortError, TuiRuns } from "./runs.ts";
+import { TuiSessions, unique } from "./sessions.ts";
 import { TuiStore } from "./store.ts";
 import { notifyDesktop, type TerminalStatus } from "./terminal-status.ts";
 import type { TranscriptRows } from "./transcript.ts";
@@ -93,6 +93,7 @@ const FLASH_MS = 2000;
 const LONG_RUN_MS = 30_000;
 
 export class TuiController {
+	readonly sessions = new TuiSessions(this);
 	readonly runs = new TuiRuns(this);
 	readonly view = new TuiTranscriptView(this);
 	readonly inputBox = new TuiInputBox(this);
@@ -349,7 +350,7 @@ export class TuiController {
 		this.exitTimer = undefined;
 	}
 
-	private attachHostActions(registry: ExtensionRegistry): void {
+	attachHostActions(registry: ExtensionRegistry): void {
 		registry.setErrorSink(({ event, error }) => this.notice("error", `Extension error in ${event}: ${error.message}`));
 		// P40d (pi): the extensions' markdown transformers change how messages are drawn.
 		useMarkdownTransformers(registry.markdownTransformers());
@@ -377,7 +378,7 @@ export class TuiController {
 	}
 
 	/** Extension shortcuts on a key the TUI already uses lose; note them for /diagnostics. */
-	private checkShortcuts(): void {
+	checkShortcuts(): void {
 		const builtin = builtinKeys();
 		this.shortcutConflicts = [...this.extensions.shortcuts.values()]
 			.filter((shortcut) => builtin.has(normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()))
@@ -904,7 +905,7 @@ export class TuiController {
 		if (!(await this.guardDirty("new session"))) return;
 		const source = await store.getMetadata();
 		const next = await this.options.sessionRepo.create({ parentSession: source.filePath ?? source.id });
-		const result = await this.switchSession(next, "new");
+		const result = await this.sessions.switchSession(next, "new");
 		if (result.cancelled) {
 			this.notice("dim", "New session cancelled by an extension.");
 			return;
@@ -1341,158 +1342,6 @@ export class TuiController {
 		if (sync) process.stdout.write("\x1b[?2026l");
 	}
 
-	/** A fresh screen with the current conversation, then a note. */
-	showSession(note: string): void {
-		this.clearScreen();
-		this.dispatch({ type: "reset" });
-		this.dispatch({ type: "replay", blocks: messagesToBlocks(this.agent.messages) });
-		this.runs.markCustomShown();
-		this.notice("dim", note);
-	}
-
-	/** Switch to another session store; extensions may veto it (session_before_switch). */
-	async switchSession(
-		store: SessionStore,
-		reason: "resume" | "fork" | "new",
-	): Promise<{ cancelled: true } | { cancelled: false; metadata: SessionMetadata; messageCount: number }> {
-		const target = await store.getMetadata();
-		const decision = await this.extensions.runSessionBeforeSwitch(
-			{
-				reason: reason === "new" ? "new" : "resume",
-				...(target.filePath !== undefined ? { targetSessionFile: target.filePath } : {}),
-			},
-			this.agent.extensionContext(),
-		);
-		if (decision.cancelled) return { cancelled: true };
-		const restored = await restoreSession(store);
-		this.sessionStore = store;
-		this.recorder = await SessionRecorder.open(store);
-		this.agent = this.options.buildAgent(restored.messages, this.recorder, this.extensions);
-		this.agent.setUi(this.ui);
-		await this.extensions.notifySessionStart(reason === "new" ? "startup" : "resume", this.agent.extensionContext());
-		this.lastSessionStart = reason === "new" ? "startup" : "resume";
-		const metadata = await store.getMetadata();
-		const messageCount = conversationLength(restored.messages);
-		this.showSession(
-			reason === "new"
-				? "New session."
-				: `${reason === "fork" ? "Forked to" : "Resumed"} ${metadata.name ? `"${metadata.name}"` : `session ${metadata.id.slice(0, 8)}`} (${messageCount} messages).`,
-		);
-		await this.refreshSurfaces();
-		if (reason === "resume") await this.restoreSessionModel(store);
-		return { cancelled: false, metadata, messageCount };
-	}
-
-	/** A resumed session goes back to its last model when the model table has it (pi, P28). */
-	private async restoreSessionModel(store: SessionStore): Promise<void> {
-		if (!this.options.resolveModelSwitch) return;
-		const path = await store.getPathToRoot(await store.getLeafId());
-		const last = path.findLast((entry) => entry.type === "model_change");
-		if (last?.type !== "model_change") return;
-		const ref = `${last.provider}/${last.modelId}`;
-		if (ref === this.model || !this.modelChoices.includes(ref)) return;
-		await this.switchModel(ref);
-	}
-
-	async reloadExtensions(): Promise<void> {
-		if (this.state.task !== undefined) {
-			this.notice("dim", "Reload is unavailable while a task is running.");
-			return;
-		}
-		const previousExtensions = this.extensions;
-		const previousAgent = this.agent;
-		let previousShutdown = false;
-		// pi reads keybindings.json again on /reload too (P39e).
-		this.loadKeybindings();
-		await this.runs.runTask("reload", "Reloading extensions", async () => {
-			try {
-				await previousExtensions.notifySessionShutdown("quit", previousAgent.extensionContext());
-				previousShutdown = true;
-				const nextExtensions = await this.options.reloadExtensions(this.ui);
-				const nextAgent = this.options.buildAgent([...previousAgent.messages], this.recorder, nextExtensions);
-				nextAgent.setUi(this.ui);
-				// Host actions first, then session_start: a handler that submits a prompt there must
-				// find the new agent (P23e, pi bindExtensions order).
-				this.extensions = nextExtensions;
-				this.agent = nextAgent;
-				this.attachHostActions(nextExtensions);
-				await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());
-				// Only now that the new registry took over: an api/ctx captured from the old one
-				// throws instead of reaching the new agent (pi runtime invalidate).
-				previousExtensions.invalidate();
-				this.lastSessionStart = "reload";
-				this.inputBox.menuCache = undefined;
-				this.checkShortcuts();
-				this.notice("info", "Extensions reloaded.");
-			} catch (error) {
-				this.extensions = previousExtensions;
-				this.agent = previousAgent;
-				this.agent.setUi(this.ui);
-				this.attachHostActions(previousExtensions);
-				if (previousShutdown) {
-					await previousExtensions
-						.notifySessionStart("resume", previousAgent.extensionContext())
-						.catch(() => undefined);
-				}
-				this.notice("error", `Reload failed: ${errorText(error)}`);
-			}
-		});
-	}
-
-	async switchModel(requested: string): Promise<void> {
-		// With a model table (P28) the choice may switch provider, endpoint and protocol too.
-		const resolved = this.options.resolveModelSwitch?.(requested);
-		if (resolved && "error" in resolved) {
-			this.notice("error", resolved.error);
-			return;
-		}
-		const previous = this.agent.model;
-		const target = resolved ? resolved.model : requested;
-		const decision = await this.extensions.runModelSelectBefore(
-			{ currentModel: previous, requestedModel: target },
-			this.agent.extensionContext(),
-		);
-		if (decision.cancel) {
-			this.notice("dim", `Model switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
-			return;
-		}
-		// An extension that rewrote the choice gets exactly its id, on the current provider.
-		const followsTable = resolved !== undefined && decision.model === target;
-		if (followsTable) resolved.commit();
-		else this.options.setModel(decision.model);
-		this.model = followsTable ? resolved.display : decision.model;
-		this.modelChoices = unique([this.model, ...this.modelChoices]);
-		// The agent sends the model with each request and logs a model_change entry (P23d).
-		this.agent.setModel(decision.model, followsTable ? resolved.options : {});
-		await this.extensions.notifyModelSelected(
-			{ previousModel: previous, requestedModel: target, selectedModel: decision.model },
-			this.agent.extensionContext(),
-		);
-		await this.refreshStatus();
-		this.notice("dim", `Model set to ${this.model}.`);
-	}
-
-	async switchThinking(requested: ThinkingLevel | undefined): Promise<void> {
-		const previous = this.thinkingLevel;
-		const decision = await this.extensions.runThinkingLevelSelectBefore(
-			{ currentLevel: previous, requestedLevel: requested },
-			this.agent.extensionContext(),
-		);
-		if (decision.cancel) {
-			this.notice("dim", `Thinking level switch cancelled${decision.reason ? `: ${decision.reason}` : "."}`);
-			return;
-		}
-		this.thinkingLevel = decision.level;
-		this.options.setThinkingLevel(decision.level);
-		this.agent.setThinkingLevel(decision.level);
-		await this.extensions.notifyThinkingLevelSelected(
-			{ previousLevel: previous, requestedLevel: requested, selectedLevel: decision.level },
-			this.agent.extensionContext(),
-		);
-		await this.refreshStatus();
-		this.notice("dim", `Thinking level set to ${decision.level ?? "default"}.`);
-	}
-
 	// ── runs (runs.ts) ───────────────────────────────────────────────────────
 
 	/** Run a prompt now (P50: runs.ts; tests call it here). */
@@ -1613,10 +1462,6 @@ export class TuiController {
 						: "tau · failed";
 		(this.deps.notify ?? notifyDesktop)(heading, body || heading);
 	}
-}
-
-function unique(values: string[]): string[] {
-	return [...new Set(values.filter((value) => value !== ""))];
 }
 
 /** The git branch, best effort: the ref name in .git/HEAD, a short sha when detached. */
