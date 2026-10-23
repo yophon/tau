@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
+import { createLoopDetectionExtension } from "@yophon/tau-ext-loop-detection";
 import { createResourcesExtension } from "@yophon/tau-ext-resources";
 import { createSubagentsExtension, type SubagentsOptions } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
@@ -57,6 +58,8 @@ const state: {
 	cli: { skillPaths: string[]; promptPaths: string[]; noSkills: boolean; noPrompts: boolean };
 	/** P40c (pi): images.blockImages, no image reaches the model. */
 	blockImages: boolean;
+	/** P55b: settings' loopDetection (the extension loads either way; /loop-detection on|off per session). */
+	loopDetection: boolean;
 } = {
 	codemode: {},
 	agent: undefined,
@@ -75,6 +78,7 @@ const state: {
 	skillCommands: true,
 	cli: { skillPaths: [], promptPaths: [], noSkills: false, noPrompts: false },
 	blockImages: false,
+	loopDetection: false,
 };
 
 /** P41b: pi's --skill, --prompt-template, -ns and -np (paths already resolved against the cwd). */
@@ -230,6 +234,7 @@ export function configureBuiltins(options: {
 		...(options.projectTrusted ? [join(options.cwd, ".tau", "prompts"), join(options.cwd, ".pi", "prompts")] : []),
 	];
 	state.blockImages = layered.images?.blockImages === true;
+	state.loopDetection = layered.loopDetection === true;
 	// P40c: sessions kept in settings' sessionDir are searched too.
 	if (layered.sessionDir !== undefined) {
 		state.memory.sessions = [...state.memory.sessions, { dir: resolve(options.cwd, layered.sessionDir) }];
@@ -352,6 +357,8 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 				]
 			: []),
 		createToolSearchExtension(),
+		// P55b: loop detection, off unless settings turn it on (not in the gateway, which stays as it was).
+		...(state.extended ? [createLoopDetectionExtension({ disabled: !state.loopDetection })] : []),
 		createNodeCodemodeExtension({
 			getMode: () => state.codemode.mode,
 			getInlineBudget: () => state.codemode.inlineBudget,

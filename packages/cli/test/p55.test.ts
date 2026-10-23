@@ -14,10 +14,15 @@ after(() => {
 	for (const child of children) if (child.exitCode === null && !child.killed) child.kill("SIGKILL");
 });
 
-function run(args: string[], cwd: string, baseUrl: string): Promise<{ code: number | null; output: string }> {
+function run(
+	args: string[],
+	cwd: string,
+	baseUrl: string,
+	home = mkdtempSync(join(tmpdir(), "tau-p55-home-")),
+): Promise<{ code: number | null; output: string }> {
 	const env: Record<string, string | undefined> = {
 		...process.env,
-		HOME: mkdtempSync(join(tmpdir(), "tau-p55-home-")),
+		HOME: home,
 		TAU_BASE_URL: baseUrl,
 		TAU_API_KEY: "test",
 		TAU_MODEL: "mock",
@@ -92,6 +97,32 @@ describe("P55a apply_patch in the CLI", () => {
 			assert.match(result, /Success\. Updated the following files:\\nA docs\/new\.md\\nM src\/app\.ts\\nD old\.txt/);
 		} finally {
 			await mock.close();
+		}
+	});
+});
+
+describe("P55b loop detection in the CLI", () => {
+	it("off by default; settings loopDetection stops a run repeating the same call", async () => {
+		const same = () => mockToolCallTurn("ls", { path: "." });
+		const turns = [same, same, same, same, same, same, () => mockTextTurn("GAVE_UP")];
+		const off = await startMockOpenAI(turns);
+		const on = await startMockOpenAI(turns);
+		try {
+			const cwd = mkdtempSync(join(tmpdir(), "tau-p55b-cwd-"));
+			const plain = await run(["-p", "list"], cwd, off.baseUrl);
+			assert.equal(plain.code, 0, plain.output);
+			assert.equal(off.requests.length, 7, "without detection the run goes on");
+
+			const home = mkdtempSync(join(tmpdir(), "tau-p55b-home-"));
+			mkdirSync(join(home, ".tau"), { recursive: true });
+			writeFileSync(join(home, ".tau", "settings.json"), JSON.stringify({ loopDetection: true }));
+			const stopped = await run(["-p", "list"], cwd, on.baseUrl, home);
+			assert.equal(on.requests.length, 5, "the fifth identical call ends the run");
+			assert.match(JSON.stringify(on.requests[3]), /You have called ls with the same arguments 3 times in a row/);
+			assert.doesNotMatch(stopped.output, /GAVE_UP/);
+		} finally {
+			await off.close();
+			await on.close();
 		}
 	});
 });

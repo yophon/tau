@@ -12,6 +12,7 @@
 				"@yophon/tau-channel-weixin": "^0.2.0",
 				"@yophon/tau-ext-codemode": "^0.2.0",
 				"@yophon/tau-ext-lsp": "^0.2.0",
+				"@yophon/tau-ext-loop-detection": "^0.2.0",
 				"@yophon/tau-ext-mcp": "^0.2.0",
 				"@yophon/tau-ext-provider-anthropic": "^0.2.0",
 				"@yophon/tau-ext-provider-google": "^0.2.0",
@@ -62,6 +63,14 @@
 			"dependencies": {
 				"@yophon/tau-kernel": "^0.2.0",
 				"cross-spawn": "7.0.6"
+			}
+		},
+		"node_modules/@yophon/tau-ext-loop-detection": {
+			"version": "0.2.0",
+			"resolved": "https://registry.npmjs.org/@yophon/tau-ext-loop-detection/-/tau-ext-loop-detection-0.2.0.tgz",
+			"license": "MIT",
+			"dependencies": {
+				"@yophon/tau-kernel": "^0.2.0"
 			}
 		},
 		"node_modules/@yophon/tau-ext-mcp": {
