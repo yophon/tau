@@ -1,32 +1,52 @@
 // One session the hub holds (P56): a workspace and a HeadlessSession, as the gateway's conversations
 // (gateway.ts openConversation), plus what makes it shareable: every notification numbered and kept,
 // any number of subscribed clients, and approvals and dialogs sent to all of them — the first answer
-// counts and the others are told (Codex's serverRequest/resolved).
+// counts and the others are told (Codex's serverRequest/resolved). P57 adds what the TUI needs: one
+// job at a time (a turn, a compaction, a `!` command, …), the native data for full clients, the
+// client that opens a session seeing its start, and a session handing its extensions over to the
+// next one a client moves to (the TUI's /new, /resume, /fork).
+import type { CheckpointBackend } from "@yophon/tau-ext-checkpoint";
 import {
 	type AgentEvent,
+	type AgentMessage,
 	type ApprovalRequest,
+	type AutocompleteProvider,
+	type AutocompleteProviderFactory,
+	type FileSystem,
 	type PermissionMode,
 	restoreSession,
+	type SessionMetadata,
 	SessionRecorder,
-	type UiCapability,
+	type SessionStore,
+	type ThinkingLevel,
 	type UserContent,
 } from "@yophon/tau-kernel";
 import {
+	type CompletionItem,
 	ERROR_CODES,
 	type Item,
+	type JoinResult,
 	JsonRpcError,
 	type JsonRpcId,
 	type JsonRpcPeer,
+	NATIVE_NOTIFICATIONS,
+	type NativeEvent,
 	type ServerNotification,
 	type ServerRequestMethod,
 	type ServerRequests,
+	type TaskKind,
 	type ThreadInfo,
+	type ThreadState,
 	type ThreadStatus,
 } from "@yophon/tau-protocol";
 import { HeadlessSession, type ModelSwitch, type RunOutcome } from "../modes/headless.ts";
 import { openAlwaysOptions } from "../permissions.ts";
+import { autoTitle } from "../session-title.ts";
 import type { Workspace, WorkspaceSpec } from "../workspace.ts";
-import { ItemTracker, itemsFromMessages, lastStop, type PendingNotification } from "./items.ts";
+import { reload, setModel } from "./control.ts";
+import { ItemTracker, itemsFromMessages, lastStop, type PendingNotification, toUserInput } from "./items.ts";
+import { changesMessages, MessageMirror, threadState } from "./native.ts";
+import { bottomProvider, threadUi, type UiRoute } from "./ui.ts";
 
 /** What the hub needs from the CLI. */
 export interface HubHost {
@@ -35,11 +55,26 @@ export interface HubHost {
 	modelDisplay(): string;
 	modelChoices: readonly string[];
 	resolveModelSwitch?: (requested: string) => ModelSwitch;
+	/** P57: sessions opened later start from what one switched to (the TUI's setModel, setThinkingLevel). */
+	setHostModel?: (model: string) => void;
+	setHostThinking?: (level: ThinkingLevel | undefined) => void;
+	/** P57: a resumed session goes back to its last model when the table has it (pi); false when -m chose one. */
+	restoreSessionModel?: boolean;
+	/** P57: after a turn the model names a session that has no name (settings session.autoTitle). */
+	autoTitle?: boolean;
+	/** P57: a session's code checkpoints (/rewind). */
+	checkpoints?: (sessionId: string, fs: FileSystem | undefined) => CheckpointBackend | undefined;
+	/** P57: settings' permissions.defaultMode for each session (P37a), unless the flag or the environment chose a mode. */
+	applyDefaultMode?: boolean;
 }
 
 /** A client of the hub, as a thread sees it. */
 export interface Subscriber {
 	readonly peer: JsonRpcPeer;
+	/** P57: it asked for the native data (thread/event, messages, state). */
+	readonly native?: boolean;
+	/** P57: its columns (components draw at them). */
+	width?: number;
 }
 
 /** The notifications a thread keeps for clients that join later (Codex keeps the rollout; tau a window). */
@@ -53,6 +88,8 @@ interface PendingRequest {
 	fallback: unknown;
 	resolve: (result: unknown) => void;
 	sent: Map<Subscriber, JsonRpcId>;
+	/** Timers and listeners to drop once it settles. */
+	cleanup: Array<() => void>;
 }
 
 interface Turn {
@@ -61,14 +98,21 @@ interface Turn {
 	external: boolean;
 	/** The seq of its turn/started. */
 	startSeq: number;
-	/** Messages before it: a client that joins mid-turn gets these as items and the turn as notifications. */
-	messageCount: number;
+	/** The conversation before it: a client that joins mid-turn gets this, and the turn as notifications. */
+	messages: readonly AgentMessage[];
 }
+
+type Metadata = Pick<SessionMetadata, "id" | "name" | "filePath" | "parentSession">;
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export class HubThread {
 	readonly id: string;
 	readonly workspace: Workspace;
 	readonly session: HeadlessSession;
+	readonly host: HubHost;
+	readonly ui: ReturnType<typeof threadUi>;
+	private readonly route: UiRoute;
 	private readonly subscribers = new Set<Subscriber>();
 	private readonly log: ServerNotification[] = [];
 	private seq = 0;
@@ -80,89 +124,124 @@ export class HubThread {
 	private readonly queue: Array<{ turnId: string; input: UserContent }> = [];
 	private readonly pending = new Map<string, PendingRequest>();
 	private status: ThreadStatus = "idle";
-	private name: string | undefined;
+	private task: { kind: TaskKind; activity: string; controller: AbortController } | undefined;
+	private readonly mirror: MessageMirror;
+	name: string | undefined;
+	private filePath: string | undefined;
+	private parentSession: string | undefined;
+	/** The /model choices, the current one first-come (the TUI's list). */
+	modelChoices: string[];
+	lastSessionStart: "startup" | "resume" | "reload";
+	/** Bumps on every /reload (P57 ThreadState.extensionsVersion). */
+	extensionsVersion = 0;
+	private autocomplete: AutocompleteProviderFactory[] = [];
+	private chain: AutocompleteProvider | undefined;
+	private completionAbort: AbortController | undefined;
+	/** The next ui/request is an MCP sign-in page (P49). */
+	private signIn = false;
+	private readonly titled = new Set<string>();
 	private stopped = false;
-	/** Called when nothing holds the thread any more (no subscriber, run, queued turn or open request). */
+	/** User `!` commands run so far (their tool call ids). */
+	bashRuns = 0;
+	/** Called when nothing holds the thread any more (no subscriber, run, queued turn, job or open request). */
 	onIdle: (() => void) | undefined;
 
-	private constructor(id: string, name: string | undefined, workspace: Workspace, session: HeadlessSession) {
-		this.id = id;
-		this.name = name;
+	private constructor(
+		host: HubHost,
+		workspace: Workspace,
+		session: HeadlessSession,
+		route: UiRoute,
+		ui: ReturnType<typeof threadUi>,
+		metadata: Metadata,
+		lastSessionStart: "startup" | "resume",
+	) {
+		this.id = metadata.id;
+		this.host = host;
 		this.workspace = workspace;
 		this.session = session;
+		this.route = route;
+		this.ui = ui;
+		this.name = metadata.name;
+		this.filePath = metadata.filePath;
+		this.parentSession = metadata.parentSession;
+		this.lastSessionStart = lastSessionStart;
+		this.modelChoices = unique([session.modelDisplay, ...host.modelChoices]);
 		this.tracker = new ItemTracker(() => this.nextItemId());
+		this.mirror = new MessageMirror(session.agent.messages);
 	}
 
-	/** Open a new session, or the saved one `metadata` names, in the host's working directory. */
+	/**
+	 * Open a new session, the saved one `metadata` names, or `store` (an import, a fork), in the host's
+	 * working directory. P57: `opener` — the client asking — is subscribed before the extensions start
+	 * (it sees what they say) and is asked the project trust question while the workspace opens.
+	 */
 	static async open(
 		host: HubHost,
 		options: {
 			metadata?: { id: string; cwd: string; timestamp: string; filePath?: string };
+			store?: SessionStore;
 			permissionMode?: PermissionMode;
+			opener?: Subscriber;
+			parentSession?: string;
 		} = {},
 	): Promise<HubThread> {
-		// The workspace's UI and approvals go to whoever is subscribed when they come up.
-		const ref: { thread?: HubThread } = {};
-		const ui: UiCapability = {
-			confirm: async (title, message) =>
-				(await ref.thread?.ask("ui/request", { kind: "confirm", title, ...(message ? { message } : {}) }, {}))
-					?.confirmed === true,
-			select: async (title, choices) =>
-				stringValue(await ref.thread?.ask("ui/request", { kind: "select", title, options: choices }, {})),
-			selectMany: async (title, choices) => {
-				const result = await ref.thread?.ask("ui/request", { kind: "selectMany", title, options: choices }, {});
-				const values = Array.isArray(result?.values)
-					? result.values.filter((value): value is string => typeof value === "string")
-					: [];
-				return values.length > 0 ? values : undefined;
-			},
-			input: async (title, placeholder) =>
-				stringValue(
-					await ref.thread?.ask("ui/request", { kind: "input", title, ...(placeholder ? { placeholder } : {}) }, {}),
-				),
-			editor: async (title, prefill) =>
-				stringValue(
-					await ref.thread?.ask(
-						"ui/request",
-						{ kind: "editor", title, ...(prefill !== undefined ? { prefill } : {}) },
-						{},
-					),
-				),
-			notify: (message, level) =>
-				ref.thread?.emit({ method: "thread/notice", params: { level: level ?? "info", text: message } }),
-		};
+		const route: UiRoute = options.opener ? { opener: options.opener } : {};
+		const ui = threadUi(route);
 		const workspace = await host.openWorkspace({
 			cwd: host.cwd,
 			ui,
-			onApproval: async (request) => (ref.thread ? ref.thread.approve(request) : false),
-			// Nobody may be connected when it opens: an untrusted project's resources stay off (P56).
-			trustPrompt: false,
+			onApproval: async (request) => (route.thread ? route.thread.approve(request) : false),
+			// Without a client opening it, nobody can answer: an untrusted project's resources stay off (P56).
+			trustPrompt: options.opener !== undefined,
 			...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
 		});
-		const store = options.metadata
-			? await workspace.sessionRepo.open(options.metadata)
-			: await workspace.sessionRepo.create();
-		const restored = options.metadata ? await restoreSession(store) : undefined;
+		// settings' permissions.defaultMode (P37a), as main.ts did for the TUI's one workspace.
+		const defaults =
+			host.applyDefaultMode && !options.permissionMode ? workspace.permissions?.defaultMode() : undefined;
+		if (defaults?.mode) workspace.setPermissionMode(defaults.mode);
+		const resumed = options.metadata !== undefined || options.store !== undefined;
+		const store =
+			options.store ??
+			(options.metadata
+				? await workspace.sessionRepo.open(options.metadata)
+				: await workspace.sessionRepo.create(
+						options.parentSession !== undefined ? { parentSession: options.parentSession } : undefined,
+					));
+		const restored = resumed ? await restoreSession(store) : undefined;
 		const recorder = await SessionRecorder.open(store);
 		const agent = workspace.buildAgent(restored?.messages, recorder, workspace.extensions);
-		const metadata = await store.getMetadata();
 		const session = new HeadlessSession(
 			{
 				workspace,
 				modelDisplay: host.modelDisplay(),
 				modelChoices: host.modelChoices,
 				...(host.resolveModelSwitch ? { resolveModelSwitch: host.resolveModelSwitch } : {}),
-				onEvent: (event) => ref.thread?.onAgentEvent(event),
-				onNotice: (level, text) => ref.thread?.emit({ method: "thread/notice", params: { level, text } }),
+				onEvent: (event) => route.thread?.onAgentEvent(event),
+				onNotice: (level, text) => route.thread?.notice(level, text),
+				onExtensionError: (event, error) =>
+					route.thread?.notice("error", `Extension error in ${event}: ${error.message}`),
+				...(host.setHostModel ? { setHostModel: host.setHostModel } : {}),
+				...(host.setHostThinking ? { setHostThinking: host.setHostThinking } : {}),
 				setHostPermissionMode: (mode) => workspace.setPermissionMode(mode),
 			},
 			agent,
 			store,
 			recorder,
 		);
-		const thread = new HubThread(metadata.id, metadata.name, workspace, session);
-		ref.thread = thread;
-		await session.start(options.metadata ? "resume" : "startup");
+		const thread = new HubThread(
+			host,
+			workspace,
+			session,
+			route,
+			ui,
+			await store.getMetadata(),
+			resumed ? "resume" : "startup",
+		);
+		route.thread = thread;
+		if (options.opener) thread.subscribers.add(options.opener);
+		for (const warning of defaults?.warnings ?? []) thread.notice("warning", `permissions: ${warning}`);
+		await session.start(resumed ? "resume" : "startup");
+		if (resumed) await thread.restoreModel();
 		return thread;
 	}
 
@@ -170,11 +249,38 @@ export class HubThread {
 		return {
 			id: this.id,
 			...(this.name ? { name: this.name } : {}),
-			cwd: this.workspace.cwd,
+			cwd: this.cwd,
 			model: this.session.modelDisplay,
 			status: this.status,
 			loaded: true,
+			...(this.filePath ? { filePath: this.filePath } : {}),
+			...(this.parentSession ? { parentSession: this.parentSession } : {}),
 		};
+	}
+
+	/** Where the session works now (enter_worktree moves it). */
+	get cwd(): string {
+		return this.session.agent.extensionContext().cwd ?? this.workspace.cwd;
+	}
+
+	state(): ThreadState {
+		return threadState({
+			id: this.id,
+			model: this.session.modelDisplay,
+			modelChoices: this.modelChoices,
+			agent: this.session.agent,
+			registry: this.session.extensions,
+			...(this.name ? { name: this.name } : {}),
+			...(this.filePath ? { sessionFile: this.filePath } : {}),
+			...(this.parentSession ? { parentSession: this.parentSession } : {}),
+			running: this.status === "running",
+			...(this.task ? { task: { kind: this.task.kind, activity: this.task.activity } } : {}),
+			lastSessionStart: this.lastSessionStart,
+			extensionsVersion: this.extensionsVersion,
+			autocompleteProviders: this.autocomplete.length,
+			foregroundCommands: this.workspace.background?.foregroundCount ?? 0,
+			fallbackCwd: this.workspace.cwd,
+		});
 	}
 
 	/** The conversation as items. */
@@ -186,12 +292,22 @@ export class HubThread {
 		return this.subscribers.size;
 	}
 
+	/** A turn or another job is running. */
+	get busy(): boolean {
+		return this.turn !== undefined || this.session.isRunning || this.task !== undefined;
+	}
+
 	/** Nothing holds it: it may be unloaded. */
 	get idle(): boolean {
+		return this.subscribers.size === 0 && !this.busy && this.queue.length === 0 && this.pending.size === 0;
+	}
+
+	/** Only `subscriber` holds it and it is doing nothing: its workspace can move to the session the client goes to. */
+	canHandOver(subscriber: Subscriber): boolean {
 		return (
-			this.subscribers.size === 0 &&
-			this.turn === undefined &&
-			!this.session.isRunning &&
+			this.subscribers.size === 1 &&
+			this.subscribers.has(subscriber) &&
+			!this.busy &&
 			this.queue.length === 0 &&
 			this.pending.size === 0
 		);
@@ -200,28 +316,42 @@ export class HubThread {
 	/**
 	 * Subscribe a client. With `afterSeq` still in the log it gets the notifications after it;
 	 * otherwise the conversation before the current turn as items and that turn's notifications.
-	 * The requests still waiting for an answer go to it right after.
+	 * A native client always gets the conversation (messages) and the state, and the turn's
+	 * notifications. The requests still waiting for an answer go to it right after.
 	 */
-	subscribe(
-		subscriber: Subscriber,
-		afterSeq?: number,
-	): { thread: ThreadInfo; items?: Item[]; events: ServerNotification[] } {
+	subscribe(subscriber: Subscriber, afterSeq?: number): JoinResult {
 		this.subscribers.add(subscriber);
 		setTimeout(() => {
 			for (const request of this.pending.values()) this.send(request, subscriber);
 		}, 0);
+		this.syncMessages();
+		const startSeq = this.turn?.startSeq;
+		const current = (visible: (event: ServerNotification) => boolean): ServerNotification[] =>
+			startSeq === undefined ? [] : this.log.filter((event) => event.params.seq >= startSeq && visible(event));
+		const before = this.turn ? this.turn.messages : this.mirror.messages;
+		if (subscriber.native) {
+			return {
+				thread: this.info(),
+				seq: this.seq,
+				messages: [...before] as unknown as JoinResult["messages"],
+				state: this.state(),
+				events: current(() => true),
+			};
+		}
+		const visible = (event: ServerNotification): boolean => !NATIVE_NOTIFICATIONS.has(event.method);
 		const firstSeq = this.log[0]?.params.seq ?? this.seq + 1;
 		if (afterSeq !== undefined && afterSeq >= firstSeq - 1 && afterSeq <= this.seq) {
-			return { thread: this.info(), events: this.log.filter((event) => event.params.seq > afterSeq) };
+			return {
+				thread: this.info(),
+				seq: this.seq,
+				events: this.log.filter((event) => event.params.seq > afterSeq && visible(event)),
+			};
 		}
-		const messages = this.turn
-			? this.session.agent.messages.slice(0, this.turn.messageCount)
-			: this.session.agent.messages;
-		const startSeq = this.turn?.startSeq;
 		return {
 			thread: this.info(),
-			items: itemsFromMessages(messages, () => this.nextItemId()),
-			events: startSeq === undefined ? [] : this.log.filter((event) => event.params.seq >= startSeq),
+			seq: this.seq,
+			items: itemsFromMessages(before, () => this.nextItemId()),
+			events: current(visible),
 		};
 	}
 
@@ -242,10 +372,10 @@ export class HubThread {
 		return this.subscribers.has(subscriber);
 	}
 
-	/** turn/start: run now, or after the turns ahead of it. */
+	/** turn/start: run now, or after the turns and jobs ahead of it. */
 	startTurn(input: UserContent): { turnId: string; queued: boolean } {
 		const turnId = `t${++this.turns}`;
-		if (this.turn || this.session.isRunning) {
+		if (this.busy) {
 			this.queue.push({ turnId, input });
 			return { turnId, queued: true };
 		}
@@ -253,14 +383,21 @@ export class HubThread {
 		return { turnId, queued: false };
 	}
 
-	async steer(input: UserContent): Promise<void> {
+	/** Into the running turn; extensions may take it (`handled`, pi 0.86.0). */
+	async steer(input: UserContent): Promise<{ disposition: "queued" | "handled" }> {
 		if (!this.turn) throw new JsonRpcError(ERROR_CODES.invalidRequest, "No turn is running");
-		await this.session.agent.steer(input);
+		return { disposition: await this.session.agent.steer(input) };
 	}
 
-	/** Stop the running turn; requests it is waiting on come to their fallback (deny, dismissed). */
+	async followUp(input: UserContent): Promise<{ disposition: "queued" | "handled" }> {
+		if (!this.turn) throw new JsonRpcError(ERROR_CODES.invalidRequest, "No turn is running");
+		return { disposition: await this.session.agent.followUp(input) };
+	}
+
+	/** Stop the running turn or job; requests waiting on it come to their fallback (deny, dismissed). */
 	interrupt(): void {
 		this.session.abort();
+		this.task?.controller.abort();
 		for (const request of [...this.pending.values()]) this.settle(request, request.fallback, false);
 	}
 
@@ -272,20 +409,183 @@ export class HubThread {
 		await this.session.stop();
 	}
 
-	// --- Internals -----------------------------------------------------------------------------
-
-	private nextItemId(): string {
-		return `i${++this.items}`;
+	/**
+	 * The client moves to another session and nobody else is here (canHandOver): this workspace and
+	 * its extensions serve `store` from now on, as the TUI's session switch (session_before_switch was
+	 * asked already). This thread ends without shutting the extensions down; the new one is returned
+	 * with `subscriber` subscribed before session_start.
+	 */
+	async handover(store: SessionStore, reason: "new" | "resume" | "fork", subscriber: Subscriber): Promise<HubThread> {
+		const { session, workspace } = this;
+		const restored = reason === "new" ? undefined : await restoreSession(store);
+		const recorder = await SessionRecorder.open(store);
+		session.agent = workspace.buildAgent(restored?.messages, recorder, session.extensions);
+		session.store = store;
+		session.recorder = recorder;
+		this.stopped = true;
+		this.subscribers.clear();
+		const started = reason === "new" ? "startup" : "resume";
+		const next = new HubThread(this.host, workspace, session, this.route, this.ui, await store.getMetadata(), started);
+		next.modelChoices = this.modelChoices;
+		next.autocomplete = this.autocomplete;
+		next.extensionsVersion = this.extensionsVersion;
+		this.route.thread = next;
+		next.subscribers.add(subscriber);
+		await session.extensions.notifySessionStart(started, session.agent.extensionContext());
+		if (reason === "resume") await next.restoreModel();
+		return next;
 	}
 
-	private emit(notification: PendingNotification): void {
+	/** session_before_switch: whether the extensions let the client leave for another session. */
+	async beforeSwitch(reason: "new" | "resume", targetSessionFile: string | undefined): Promise<boolean> {
+		const decision = await this.session.extensions.runSessionBeforeSwitch(
+			{ reason, ...(targetSessionFile !== undefined ? { targetSessionFile } : {}) },
+			this.session.agent.extensionContext(),
+		);
+		return !decision.cancelled;
+	}
+
+	/** Hold the job slot for `run`; one job at a time (the TUI's runTask). turn/interrupt aborts its signal. */
+	async runTask<T>(kind: TaskKind, activity: string, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+		if (this.busy) {
+			throw new JsonRpcError(ERROR_CODES.busy, `Busy: ${this.task ? `a ${this.task.kind}` : "a turn"} is running`);
+		}
+		const controller = new AbortController();
+		this.task = { kind, activity, controller };
+		this.emit({ method: "thread/task/started", params: { kind, activity } });
+		this.emitState();
+		try {
+			return await run(controller.signal);
+		} finally {
+			this.task = undefined;
+			this.syncMessages();
+			this.emit({ method: "thread/task/ended", params: { kind } });
+			this.emitState();
+			this.startQueued();
+		}
+	}
+
+	/** Something to show that is not part of the conversation. */
+	notice(level: "info" | "warning" | "error", text: string): void {
+		this.emit({ method: "thread/notice", params: { level, text } });
+	}
+
+	/** Number and keep a notification and send it to the subscribers (native ones only to native clients). */
+	emit(notification: PendingNotification, keep = true): void {
 		const event = {
 			method: notification.method,
 			params: { ...notification.params, threadId: this.id, seq: ++this.seq },
 		} as ServerNotification;
-		this.log.push(event);
-		if (this.log.length > LOG_LIMIT) this.log.splice(0, this.log.length - LOG_LIMIT);
-		for (const subscriber of this.subscribers) subscriber.peer.notify(event.method, event.params);
+		if (keep) {
+			this.log.push(event);
+			if (this.log.length > LOG_LIMIT) this.log.splice(0, this.log.length - LOG_LIMIT);
+		}
+		const native = NATIVE_NOTIFICATIONS.has(event.method);
+		for (const subscriber of this.subscribers) {
+			if (!native || subscriber.native) subscriber.peer.notify(event.method, event.params);
+		}
+	}
+
+	/** The state to native clients; not kept (a client joining gets it fresh). */
+	emitState(): void {
+		if (![...this.subscribers].some((subscriber) => subscriber.native)) return;
+		this.emit({ method: "thread/state/changed", params: { state: this.state() } }, false);
+	}
+
+	/** Tell native clients what changed in the conversation since they last heard. */
+	syncMessages(): void {
+		const change = this.mirror.sync(this.session.agent.messages);
+		if (change) this.emit(change);
+	}
+
+	// --- Autocomplete providers (ui.addAutocompleteProvider) -------------------------------------
+
+	addAutocompleteProvider(factory: AutocompleteProviderFactory): void {
+		this.autocomplete.push(factory);
+		this.chain = undefined;
+	}
+
+	get autocompleteProviderCount(): number {
+		return this.autocomplete.length;
+	}
+
+	/** After a reload the new extensions add their providers again. */
+	resetAutocomplete(): void {
+		this.autocomplete = [];
+		this.chain = undefined;
+	}
+
+	private providerChain(): AutocompleteProvider {
+		this.chain ??= this.autocomplete.reduce<AutocompleteProvider>(
+			(current, factory) => factory(current),
+			bottomProvider,
+		);
+		return this.chain;
+	}
+
+	/** The providers' suggestions for the input; a newer request aborts the one before. */
+	async completion(
+		lines: string[],
+		line: number,
+		col: number,
+		force?: boolean,
+	): Promise<{ items: CompletionItem[]; prefix: string } | null> {
+		if (this.autocomplete.length === 0) return null;
+		this.completionAbort?.abort();
+		const abort = new AbortController();
+		this.completionAbort = abort;
+		const suggestions = await this.providerChain().getSuggestions(lines, line, col, {
+			signal: abort.signal,
+			...(force ? { force } : {}),
+		});
+		if (!suggestions || suggestions.items.length === 0) return null;
+		return {
+			items: suggestions.items.map((item) => ({
+				value: item.value,
+				label: item.label,
+				...(item.description !== undefined ? { description: item.description } : {}),
+			})),
+			prefix: suggestions.prefix,
+		};
+	}
+
+	applyCompletion(
+		lines: string[],
+		line: number,
+		col: number,
+		item: CompletionItem,
+		prefix: string,
+	): { lines: string[]; line: number; col: number } {
+		const applied = this.providerChain().applyCompletion(lines, line, col, item, prefix);
+		return { lines: applied.lines, line: applied.cursorLine, col: applied.cursorCol };
+	}
+
+	expectSignIn(): void {
+		this.signIn = true;
+	}
+
+	/** Its name changed (/name, a title, thread/setName). */
+	renamed(name: string): void {
+		this.name = name;
+		this.emitState();
+	}
+
+	/** A resumed session goes back to the model it last used, when the table has it (pi, P28). */
+	async restoreModel(): Promise<void> {
+		const store = this.session.store;
+		if (this.host.restoreSessionModel === false || !this.host.resolveModelSwitch || !store) return;
+		const path = await store.getPathToRoot(await store.getLeafId());
+		const last = path.findLast((entry) => entry.type === "model_change");
+		if (last?.type !== "model_change") return;
+		const ref = `${last.provider}/${last.modelId}`;
+		if (ref === this.session.modelDisplay || !this.modelChoices.includes(ref)) return;
+		await setModel(this, ref).catch(() => undefined);
+	}
+
+	// --- Internals -----------------------------------------------------------------------------
+
+	private nextItemId(): string {
+		return `i${++this.items}`;
 	}
 
 	private setStatus(status: ThreadStatus): void {
@@ -294,17 +594,23 @@ export class HubThread {
 		this.emit({ method: "thread/status/changed", params: { status } });
 	}
 
-	private beginTurn(id: string, external: boolean): void {
-		this.turn = { id, external, startSeq: this.seq + 1, messageCount: this.session.agent.messages.length };
+	private beginTurn(id: string, external: boolean, input?: UserContent): void {
+		this.syncMessages();
+		this.turn = { id, external, startSeq: this.seq + 1, messages: this.mirror.messages };
 		// The status change after turn/started: a client that joins mid-turn replays from turn/started.
-		this.emit({ method: "turn/started", params: { turnId: id } });
+		this.emit({
+			method: "turn/started",
+			params: { turnId: id, ...(input !== undefined ? { input: toUserInput(input) } : {}) },
+		});
 		this.setStatus("running");
+		this.emitState();
 	}
 
 	private finishTurn(outcome: { stopReason: string; aborted: boolean; errorMessage?: string }): void {
 		const turn = this.turn;
 		if (!turn) return;
 		for (const notification of this.tracker.flush()) this.emit(this.withTurn(notification));
+		this.syncMessages();
 		this.emit({
 			method: "turn/completed",
 			params: {
@@ -321,20 +627,50 @@ export class HubThread {
 			return;
 		}
 		this.setStatus("idle");
+		this.emitState();
+		void this.afterTurn();
+		this.checkIdle();
+	}
+
+	/** After the last turn: a worktree move reloads (P46), an unnamed session gets a title (P34f). */
+	private async afterTurn(): Promise<void> {
+		if (this.stopped) return;
+		if (this.workspace.consumeReload?.()) {
+			await reload(this).catch((error: unknown) => this.notice("error", `Reload failed: ${errorText(error)}`));
+		}
+		if (this.host.autoTitle) await this.title();
+	}
+
+	private async title(): Promise<void> {
+		const recorder = this.session.recorder;
+		if (!recorder) return;
+		const title = await autoTitle(this.session.agent, recorder, this.titled, (message) => console.log(message)).catch(
+			() => undefined,
+		);
+		if (!title || recorder !== this.session.recorder || this.stopped) return;
+		await this.session.extensions.notifySessionInfoChanged(title, this.session.agent.extensionContext());
+		this.renamed(title);
+	}
+
+	/** A job ended: the turns waiting for it start. */
+	private startQueued(): void {
+		if (this.busy || this.stopped) return;
+		const next = this.queue.shift();
+		if (next) {
+			void this.runTurn(next.turnId, next.input);
+			return;
+		}
 		this.checkIdle();
 	}
 
 	private async runTurn(turnId: string, input: UserContent): Promise<void> {
-		this.beginTurn(turnId, false);
+		this.beginTurn(turnId, false, input);
+		for (const notification of this.tracker.userInput(input)) this.emit(this.withTurn(notification));
 		let outcome: RunOutcome;
 		try {
 			outcome = await this.session.run(input);
 		} catch (error) {
-			outcome = {
-				stopReason: "error",
-				aborted: false,
-				errorMessage: error instanceof Error ? error.message : String(error),
-			};
+			outcome = { stopReason: "error", aborted: false, errorMessage: errorText(error) };
 		}
 		this.finishTurn(outcome);
 	}
@@ -342,7 +678,17 @@ export class HubThread {
 	private onAgentEvent(event: AgentEvent): void {
 		// A run the session started by itself (an extension's follow-up): a turn of its own.
 		if (!this.turn) this.beginTurn(`t${++this.turns}`, true);
+		this.emit({ method: "thread/event", params: { event: nativeEvent(event) } });
 		for (const notification of this.tracker.translate(event)) this.emit(this.withTurn(notification));
+		if (changesMessages(event.type)) this.syncMessages();
+		if (
+			event.type === "assistant_message" ||
+			event.type === "tool_start" ||
+			event.type === "tool_result" ||
+			event.type === "compaction"
+		) {
+			this.emitState();
+		}
 		if (event.type === "agent_settled" && this.turn?.external) {
 			this.finishTurn({ ...lastStop(this.session.agent.messages), aborted: event.aborted });
 		}
@@ -365,8 +711,12 @@ export class HubThread {
 				args: request.args,
 				risk: request.risk,
 				...(request.reason ? { reason: request.reason } : {}),
-				...(always ? { always: always.label } : {}),
+				...(always ? { always: always.label, alwaysKind: always.kind } : {}),
 				...(request.subagent ? { subagent: request.subagent } : {}),
+				...(request.rule ? { rule: request.rule } : {}),
+				...(request.protectedPath ? { protectedPath: request.protectedPath } : {}),
+				...(request.parentToolCallId ? { parentToolCallId: request.parentToolCallId } : {}),
+				...(request.detached ? { detached: true } : {}),
 			},
 			{ decision: "deny" },
 		);
@@ -375,24 +725,42 @@ export class HubThread {
 		return decision === "once" || decision === "always";
 	}
 
-	/** Send a request to every subscriber (and to those who subscribe later); the first answer counts. */
-	private ask<M extends ServerRequestMethod>(
+	/**
+	 * Send a request to every subscriber (and to those who subscribe later); the first answer counts.
+	 * P57: a signal or a timeout closes it with the fallback (the dialog is withdrawn everywhere).
+	 */
+	ask<M extends ServerRequestMethod>(
 		method: M,
 		params: Omit<ServerRequests[M]["params"], "threadId" | "requestId">,
 		fallback: ServerRequests[M]["result"],
+		options: { signal?: AbortSignal; timeoutMs?: number } = {},
 	): Promise<ServerRequests[M]["result"]> {
-		if (this.stopped) return Promise.resolve(fallback);
+		if (this.stopped || options.signal?.aborted) return Promise.resolve(fallback);
 		const requestId = `r${++this.requests}`;
+		const signIn = method === "ui/request" && this.signIn;
+		if (method === "ui/request") this.signIn = false;
 		return new Promise((resolve) => {
 			const request: PendingRequest = {
 				requestId,
 				method,
-				params: { ...params, threadId: this.id, requestId },
+				params: { ...params, threadId: this.id, requestId, ...(signIn ? { signIn: true } : {}) },
 				fallback,
 				resolve: resolve as (result: unknown) => void,
 				sent: new Map(),
+				cleanup: [],
 			};
 			this.pending.set(requestId, request);
+			if (options.timeoutMs !== undefined) {
+				const timer = setTimeout(() => this.settle(request, fallback, false), options.timeoutMs);
+				timer.unref?.();
+				request.cleanup.push(() => clearTimeout(timer));
+			}
+			const signal = options.signal;
+			if (signal) {
+				const onAbort = (): void => this.settle(request, fallback, false);
+				signal.addEventListener("abort", onAbort, { once: true });
+				request.cleanup.push(() => signal.removeEventListener("abort", onAbort));
+			}
 			for (const subscriber of this.subscribers) this.send(request, subscriber);
 		});
 	}
@@ -409,6 +777,7 @@ export class HubThread {
 
 	private settle(request: PendingRequest, result: unknown, answered: boolean): void {
 		if (!this.pending.delete(request.requestId)) return;
+		for (const cleanup of request.cleanup) cleanup();
 		for (const [subscriber, id] of request.sent) subscriber.peer.withdraw(id);
 		request.resolve(result ?? request.fallback);
 		if (answered || request.sent.size > 0) {
@@ -422,6 +791,11 @@ export class HubThread {
 	}
 }
 
-function stringValue(result: { value?: unknown } | undefined): string | undefined {
-	return typeof result?.value === "string" ? result.value : undefined;
+/** An AgentEvent as native clients get it: agent_end without its messages (they have them). */
+function nativeEvent(event: AgentEvent): NativeEvent {
+	return (event.type === "agent_end" ? { type: "agent_end" } : event) as unknown as NativeEvent;
+}
+
+export function unique(values: string[]): string[] {
+	return [...new Set(values.filter((value) => value !== ""))];
 }

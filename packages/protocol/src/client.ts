@@ -3,6 +3,8 @@ import { JsonRpcPeer, type MessageTransport } from "./jsonrpc.ts";
 import {
 	type ClientMethod,
 	type ClientRequests,
+	type DirectNotificationMethod,
+	type DirectNotifications,
 	PROTOCOL_VERSION,
 	type ServerNotificationMethod,
 	type ServerNotifications,
@@ -24,8 +26,15 @@ export class TauClient {
 		return this.peer.request<ClientRequests[M]["result"]>(method, params);
 	}
 
-	initialize(): Promise<ClientRequests["initialize"]["result"]> {
-		return this.call("initialize", { clientInfo: this.clientInfo, protocolVersion: PROTOCOL_VERSION });
+	/** P57: `capabilities.nativeEvents` for the native data (full clients such as the TUI). */
+	initialize(
+		capabilities?: ClientRequests["initialize"]["params"]["capabilities"],
+	): Promise<ClientRequests["initialize"]["result"]> {
+		return this.call("initialize", {
+			clientInfo: this.clientInfo,
+			protocolVersion: PROTOCOL_VERSION,
+			...(capabilities ? { capabilities } : {}),
+		});
 	}
 
 	startThread(
@@ -64,6 +73,7 @@ export class TauClient {
 
 	/** A notification by name, or `"*"` for every one (with its method). Returns a function that stops it. */
 	on<M extends ServerNotificationMethod>(method: M, handler: (params: ServerNotifications[M]) => void): () => void;
+	on<M extends DirectNotificationMethod>(method: M, handler: (params: DirectNotifications[M]) => void): () => void;
 	on(method: "*", handler: (params: unknown, method: ServerNotificationMethod) => void): () => void;
 	on(method: string, handler: (params: never, method: never) => void): () => void {
 		return this.peer.onNotification(method, handler as (params: unknown, method: string) => void);

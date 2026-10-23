@@ -131,11 +131,11 @@ describe("P56 session hub", () => {
 		const methods = a.events.map((event) => event.method);
 		assert.deepEqual(methods.slice(0, 2), ["turn/started", "thread/status/changed"]);
 		assert.ok(methods.includes("item/agentMessage/delta"));
+		// P57: native notifications share the numbering, so a client without them sees gaps.
 		const seqs = a.events.map((event) => event.params.seq);
-		assert.deepEqual(
-			seqs,
-			seqs.map((_, i) => (seqs[0] as number) + i),
-			"seq increases by one",
+		assert.ok(
+			seqs.every((seq, i) => i === 0 || seq > (seqs[i - 1] as number)),
+			"seq increases",
 		);
 		const midway = a.events[2]?.params.seq as number;
 

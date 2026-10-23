@@ -1,12 +1,14 @@
 // The session hub (P56): holds sessions and the clients connected to them, over any transport. Each
 // client speaks tau/1 (packages/protocol); a session it starts or resumes sends it every
 // notification, and the requests it waits on. Sessions nothing holds are unloaded after a while.
+// P57: everything the TUI does with a session, so the TUI can be a client too (docs/protocol.md).
 
-import type { PermissionMode } from "@yophon/tau-kernel";
-import { restoreSession } from "@yophon/tau-kernel";
+import type { PermissionMode, RegisteredToolRenderEvent, SessionEntry, SessionStore } from "@yophon/tau-kernel";
+import { type AgentMessage, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
 	ERROR_CODES,
+	type JoinResult,
 	JsonRpcError,
 	JsonRpcPeer,
 	type MessageTransport,
@@ -15,8 +17,10 @@ import {
 } from "@yophon/tau-protocol";
 import { isPermissionMode } from "../args.ts";
 import type { Workspace } from "../workspace.ts";
+import * as control from "./control.ts";
 import { itemsFromMessages } from "./items.ts";
 import { type HubHost, HubThread, type Subscriber } from "./thread.ts";
+import * as ui from "./ui.ts";
 
 export interface SessionHubOptions {
 	/** The server's version (initialize). */
@@ -29,6 +33,9 @@ export interface SessionHubOptions {
 export class HubConnection implements Subscriber {
 	readonly peer: JsonRpcPeer;
 	initialized = false;
+	/** P57: asked for the native data. */
+	native = false;
+	width: number | undefined;
 	readonly threads = new Set<string>();
 
 	constructor(transport: MessageTransport) {
@@ -36,7 +43,24 @@ export class HubConnection implements Subscriber {
 	}
 }
 
-type SessionMetadata = { id: string; cwd: string; timestamp: string; filePath?: string; name?: string };
+type SessionMetadata = {
+	id: string;
+	cwd: string;
+	timestamp: string;
+	modified?: string;
+	filePath?: string;
+	name?: string;
+	parentSession?: string;
+	firstMessage?: string;
+	messageCount?: number;
+};
+
+const cancelled = (by: "switch" | "fork"): JsonRpcError =>
+	new JsonRpcError(
+		ERROR_CODES.cancelled,
+		by === "fork" ? "Fork cancelled by an extension" : "Session switch cancelled by an extension",
+		{ by },
+	);
 
 export class SessionHub {
 	private readonly host: HubHost;
@@ -72,6 +96,8 @@ export class SessionHub {
 				return handler((params ?? {}) as ClientRequests[M]["params"]);
 			});
 		};
+		const thread = (threadId: string): HubThread => this.loaded(threadId);
+		const width = (given: number | undefined): number => given ?? connection.width ?? 80;
 
 		handle("initialize", (params) => {
 			if (params.protocolVersion !== PROTOCOL_VERSION) {
@@ -81,6 +107,8 @@ export class SessionHub {
 				);
 			}
 			connection.initialized = true;
+			connection.native = params.capabilities?.nativeEvents === true;
+			connection.width = params.capabilities?.width;
 			return { serverInfo: { name: "tau", version: this.options.version }, protocolVersion: PROTOCOL_VERSION };
 		});
 
@@ -88,52 +116,113 @@ export class SessionHub {
 			if (params.permissionMode !== undefined && !isPermissionMode(params.permissionMode)) {
 				throw new JsonRpcError(ERROR_CODES.invalidParams, `Unknown permission mode ${params.permissionMode}`);
 			}
-			const thread = await HubThread.open(this.host, {
-				...(params.permissionMode ? { permissionMode: params.permissionMode as PermissionMode } : {}),
-			});
+			const permissionMode = params.permissionMode as PermissionMode | undefined;
+			const previous = this.leaving(connection, params.previousThreadId, undefined);
+			let started: HubThread;
+			if (previous) {
+				const store = await previous.workspace.sessionRepo.create(
+					params.parentSession !== undefined ? { parentSession: params.parentSession } : undefined,
+				);
+				started = await this.switchTo(connection, previous, store, "new");
+				if (permissionMode) started.session.setPermissionMode(permissionMode);
+			} else {
+				started = await HubThread.open(this.host, {
+					...(permissionMode ? { permissionMode } : {}),
+					...(params.parentSession !== undefined ? { parentSession: params.parentSession } : {}),
+					opener: connection,
+				});
+				this.adopt(started);
+			}
 			if (params.model !== undefined) {
-				const switched = thread.session.setModel(params.model);
+				const switched = started.session.setModel(params.model);
 				if ("error" in switched) {
-					await thread.stop();
+					this.threads.delete(started.id);
+					await started.stop();
 					throw new JsonRpcError(ERROR_CODES.invalidParams, switched.error);
 				}
 			}
-			this.adopt(thread);
-			const { thread: info } = this.subscribe(connection, thread);
-			return { thread: info };
+			return this.subscribe(connection, started);
 		});
 
 		handle("thread/resume", async (params) => {
-			const thread = await this.load(params.threadId);
-			return this.subscribe(connection, thread, params.afterSeq);
+			const previous = this.leaving(connection, params.previousThreadId, params.threadId);
+			if (previous) {
+				const existing = this.threads.get(params.threadId);
+				const store =
+					existing?.session.store ?? (await previous.workspace.sessionRepo.open(await this.findSaved(params.threadId)));
+				const joined = await this.switchTo(connection, previous, store, "resume");
+				return this.subscribe(connection, joined, params.afterSeq);
+			}
+			return this.subscribe(connection, await this.load(params.threadId, connection), params.afterSeq);
+		});
+
+		handle("thread/import", async (params) => {
+			const previous = this.leaving(connection, params.previousThreadId, undefined);
+			const repo = (previous?.workspace ?? (await this.catalogWorkspace())).sessionRepo;
+			const store = params.copy
+				? await repo.importFile(params.path)
+				: await repo.open({ id: "", cwd: this.host.cwd, timestamp: "", filePath: params.path });
+			return this.subscribe(connection, await this.switchTo(connection, previous, store, "resume"));
+		});
+
+		handle("thread/fork", async (params) => {
+			const source = thread(params.threadId);
+			const sourceStore = source.session.store;
+			if (!sourceStore) throw new JsonRpcError(ERROR_CODES.invalidRequest, "No session file (--no-session)");
+			// pi: a fork before a message asks session_before_fork; a copy at the current position (/clone) does not.
+			if (params.entryId !== undefined && params.position !== "at") {
+				const decision = await source.session.extensions.runSessionBeforeFork(
+					{ entryId: params.entryId, position: "before" },
+					source.session.agent.extensionContext(),
+				);
+				if (decision.cancel) throw cancelled("fork");
+			}
+			const forked = await source.workspace.sessionRepo.fork(
+				await sourceStore.getMetadata(),
+				params.entryId !== undefined
+					? { entryId: params.entryId, ...(params.position !== undefined ? { position: params.position } : {}) }
+					: undefined,
+			);
+			const previous = source.isSubscribed(connection) ? source : undefined;
+			return this.subscribe(connection, await this.switchTo(connection, previous, forked, "fork"));
+		});
+
+		handle("thread/delete", async (params) => {
+			if (this.threads.has(params.threadId)) {
+				throw new JsonRpcError(ERROR_CODES.invalidRequest, `Session ${params.threadId} is open; it cannot be deleted`);
+			}
+			const metadata = await this.findSaved(params.threadId);
+			await (await this.catalogWorkspace()).sessionRepo.delete(metadata);
+			return {};
 		});
 
 		handle("thread/unsubscribe", (params) => {
-			const thread = this.threads.get(params.threadId);
-			if (!thread) return { status: "notLoaded" as const };
+			const held = this.threads.get(params.threadId);
+			if (!held) return { status: "notLoaded" as const };
 			connection.threads.delete(params.threadId);
-			return { status: thread.unsubscribe(connection) ? ("unsubscribed" as const) : ("notSubscribed" as const) };
+			return { status: held.unsubscribe(connection) ? ("unsubscribed" as const) : ("notSubscribed" as const) };
 		});
 
 		handle("thread/list", async () => {
 			const saved = (await (await this.catalogWorkspace()).sessionRepo.list()) as SessionMetadata[];
 			const threads: ThreadInfo[] = saved.map((metadata) => {
+				const details = savedDetails(metadata);
 				const loaded = this.threads.get(metadata.id);
 				return loaded
-					? { ...loaded.info(), updatedAt: metadata.timestamp }
+					? { ...details, ...loaded.info() }
 					: {
+							...details,
 							id: metadata.id,
 							...(metadata.name ? { name: metadata.name } : {}),
 							cwd: metadata.cwd,
 							model: this.host.modelDisplay(),
 							status: "idle" as const,
-							updatedAt: metadata.timestamp,
 							loaded: false,
 						};
 			});
 			// Started and not yet written (a session file appears with its first message).
-			for (const thread of this.threads.values()) {
-				if (!threads.some((info) => info.id === thread.id)) threads.unshift(thread.info());
+			for (const held of this.threads.values()) {
+				if (!threads.some((info) => info.id === held.id)) threads.unshift(held.info());
 			}
 			return { threads };
 		});
@@ -147,25 +236,116 @@ export class SessionHub {
 			let item = 0;
 			return {
 				thread: {
+					...savedDetails(metadata),
 					id: metadata.id,
 					...(metadata.name ? { name: metadata.name } : {}),
 					cwd: metadata.cwd,
 					model: this.host.modelDisplay(),
 					status: "idle" as const,
-					updatedAt: metadata.timestamp,
 					loaded: false,
 				},
 				items: itemsFromMessages(messages, () => `h${++item}`),
 			};
 		});
 
-		handle("turn/start", (params) => this.loaded(params.threadId).startTurn(params.input));
-		handle("turn/steer", async (params) => {
-			await this.loaded(params.threadId).steer(params.input);
+		handle("thread/setName", async (params) => {
+			const loaded = this.threads.get(params.threadId);
+			if (loaded) await control.setName(loaded, params.name);
+			else {
+				const store = await (await this.catalogWorkspace()).sessionRepo.open(await this.findSaved(params.threadId));
+				await (await SessionRecorder.open(store)).setName(params.name);
+			}
 			return {};
 		});
+
+		handle("turn/start", (params) => thread(params.threadId).startTurn(params.input));
+		handle("turn/steer", (params) => thread(params.threadId).steer(params.input));
+		handle("turn/followUp", (params) => thread(params.threadId).followUp(params.input));
 		handle("turn/interrupt", (params) => {
-			this.loaded(params.threadId).interrupt();
+			thread(params.threadId).interrupt();
+			return {};
+		});
+
+		// --- P57: session control ---
+		handle("thread/state", (params) => thread(params.threadId).state());
+		handle("thread/setModel", (params) => control.setModel(thread(params.threadId), params.model));
+		handle("thread/setThinking", (params) => control.setThinking(thread(params.threadId), params.level));
+		handle("thread/setPermissionMode", (params) => {
+			control.setPermissionMode(thread(params.threadId), params.mode);
+			return {};
+		});
+		handle("thread/setLabel", async (params) => {
+			await thread(params.threadId).session.agent.setLabel(params.entryId, params.label);
+			return {};
+		});
+		handle("thread/setActiveTools", (params) => {
+			const held = thread(params.threadId);
+			held.session.agent.setActiveTools(params.names);
+			held.emitState();
+			return {};
+		});
+		handle("thread/entries", (params) => control.entries(thread(params.threadId)));
+		handle("thread/compact", (params) => control.compact(thread(params.threadId), params.instructions));
+		handle("thread/navigate", (params) => control.navigate(thread(params.threadId), params));
+		handle("thread/aside", (params) =>
+			control.aside(thread(params.threadId), params, (delta) =>
+				peer.notify("thread/aside/delta", {
+					threadId: params.threadId,
+					...(params.asideId !== undefined ? { asideId: params.asideId } : {}),
+					delta,
+				}),
+			),
+		);
+		handle("thread/bash", (params) => control.bash(thread(params.threadId), params));
+		handle("thread/backgroundCommand", (params) => ({
+			moved: thread(params.threadId).workspace.background?.moveToBackground() ?? 0,
+		}));
+		handle("thread/clearQueue", (params) => control.clearQueue(thread(params.threadId)));
+		handle("thread/escape", (params) => {
+			thread(params.threadId).session.extensions.events.emit("tau:idle-escape", undefined);
+			return {};
+		});
+		handle("thread/reload", async (params) => {
+			await control.reload(thread(params.threadId));
+			return {};
+		});
+		handle("thread/handoff", (params) => control.handoff(thread(params.threadId), params.goal));
+		handle("thread/checkpoints", (params) => control.checkpoints(thread(params.threadId)));
+		handle("thread/restoreCheckpoint", (params) =>
+			control.restoreCheckpoint(thread(params.threadId), params.checkpointId),
+		);
+
+		// --- P57: the extensions' side of the screen ---
+		handle("command/list", (params) => ui.listCommands(thread(params.threadId)));
+		handle("command/run", (params) => ui.runCommand(thread(params.threadId), params.name, params.args));
+		handle("command/complete", async (params) => ({
+			items: await ui.completeCommand(thread(params.threadId), params.name, params.prefix),
+		}));
+		handle("shortcut/run", (params) => ui.runShortcut(thread(params.threadId), params.name));
+		handle("completion/request", (params) =>
+			thread(params.threadId).completion(params.lines, params.line, params.col, params.force),
+		);
+		handle("completion/apply", (params) =>
+			thread(params.threadId).applyCompletion(params.lines, params.line, params.col, params.item, params.prefix),
+		);
+		handle("render/tool", (params) =>
+			ui.renderTool(thread(params.threadId), params.event as unknown as RegisteredToolRenderEvent, width(params.width)),
+		);
+		handle("render/message", (params) =>
+			ui.renderMessage(thread(params.threadId), params.message as unknown as AgentMessage, width(params.width)),
+		);
+		handle("render/entry", (params) =>
+			ui.renderEntry(thread(params.threadId), params.entry as unknown as SessionEntry, width(params.width)),
+		);
+		handle("markdown/transform", (params) => ({ texts: ui.transformMarkdown(thread(params.threadId), params.items) }));
+		handle("surfaces/read", (params) => ui.readSurfaces(thread(params.threadId), width(params.width)));
+		handle("widget/click", async (params) => {
+			await ui.clickWidget(thread(params.threadId), params.name);
+			return {};
+		});
+		handle("diagnostics/read", (params) => ui.readDiagnostics(thread(params.threadId)));
+		handle("client/resize", (params) => {
+			connection.width = params.width;
 			return {};
 		});
 
@@ -184,7 +364,7 @@ export class SessionHub {
 		for (const timer of this.unloadTimers.values()) clearTimeout(timer);
 		this.unloadTimers.clear();
 		for (const connection of this.connections) connection.peer.close();
-		await Promise.all([...this.threads.values()].map((thread) => thread.stop()));
+		await Promise.all([...this.threads.values()].map((held) => held.stop()));
 		this.threads.clear();
 	}
 
@@ -193,39 +373,84 @@ export class SessionHub {
 		return [...this.threads.values()];
 	}
 
-	private subscribe(
-		connection: HubConnection,
-		thread: HubThread,
-		afterSeq?: number,
-	): ClientRequests["thread/resume"]["result"] {
-		this.cancelUnload(thread.id);
-		connection.threads.add(thread.id);
-		return thread.subscribe(connection, afterSeq);
+	private subscribe(connection: HubConnection, held: HubThread, afterSeq?: number): JoinResult {
+		this.cancelUnload(held.id);
+		connection.threads.add(held.id);
+		return held.subscribe(connection, afterSeq);
 	}
 
-	private adopt(thread: HubThread): void {
-		this.threads.set(thread.id, thread);
-		thread.onIdle = () => this.scheduleUnload(thread);
+	private adopt(held: HubThread): void {
+		this.threads.set(held.id, held);
+		held.onIdle = () => this.scheduleUnload(held);
+	}
+
+	/** The session the client says it leaves, if it is subscribed to it (and it is not the target). */
+	private leaving(
+		connection: HubConnection,
+		previousThreadId: string | undefined,
+		targetId: string | undefined,
+	): HubThread | undefined {
+		if (previousThreadId === undefined || previousThreadId === targetId) return undefined;
+		const previous = this.threads.get(previousThreadId);
+		return previous?.isSubscribed(connection) ? previous : undefined;
+	}
+
+	/**
+	 * The client moves from `previous` to the session in `store` (the TUI's switchSession):
+	 * session_before_switch may refuse; when only this client held `previous` and it is idle, its
+	 * workspace and extensions serve the new session (no second set of extensions and MCP servers);
+	 * otherwise the client leaves it and the session opens (or is joined) on its own.
+	 */
+	private async switchTo(
+		connection: HubConnection,
+		previous: HubThread | undefined,
+		store: SessionStore,
+		reason: "new" | "resume" | "fork",
+	): Promise<HubThread> {
+		const metadata = await store.getMetadata();
+		const existing = this.threads.get(metadata.id);
+		if (previous) {
+			if (!(await previous.beforeSwitch(reason === "new" ? "new" : "resume", metadata.filePath)))
+				throw cancelled("switch");
+			if (!existing && previous.canHandOver(connection)) {
+				this.cancelUnload(previous.id);
+				const next = await previous.handover(store, reason, connection);
+				this.threads.delete(previous.id);
+				connection.threads.delete(previous.id);
+				this.adopt(next);
+				return next;
+			}
+			connection.threads.delete(previous.id);
+			previous.unsubscribe(connection);
+		}
+		if (existing) return existing;
+		const opened = await HubThread.open(this.host, {
+			...(reason === "new" ? {} : { store }),
+			...(reason === "new" && metadata.parentSession ? { parentSession: metadata.parentSession } : {}),
+			opener: connection,
+		});
+		this.adopt(opened);
+		return opened;
 	}
 
 	private loaded(threadId: string): HubThread {
-		const thread = this.threads.get(threadId);
-		if (!thread) {
+		const held = this.threads.get(threadId);
+		if (!held) {
 			throw new JsonRpcError(ERROR_CODES.invalidParams, `Session ${threadId} is not loaded; call thread/resume first`);
 		}
-		return thread;
+		return held;
 	}
 
-	private async load(threadId: string): Promise<HubThread> {
+	private async load(threadId: string, opener?: Subscriber): Promise<HubThread> {
 		const loaded = this.threads.get(threadId);
 		if (loaded) return loaded;
 		let opening = this.opening.get(threadId);
 		if (!opening) {
 			opening = (async () => {
 				const metadata = await this.findSaved(threadId);
-				const thread = await HubThread.open(this.host, { metadata });
-				this.adopt(thread);
-				return thread;
+				const opened = await HubThread.open(this.host, { metadata, ...(opener ? { opener } : {}) });
+				this.adopt(opened);
+				return opened;
 			})();
 			this.opening.set(threadId, opening);
 			void opening.finally(() => this.opening.delete(threadId)).catch(() => undefined);
@@ -251,17 +476,17 @@ export class SessionHub {
 		return this.catalog;
 	}
 
-	private scheduleUnload(thread: HubThread): void {
+	private scheduleUnload(held: HubThread): void {
 		if (this.closed) return;
-		this.cancelUnload(thread.id);
+		this.cancelUnload(held.id);
 		const timer = setTimeout(() => {
-			this.unloadTimers.delete(thread.id);
-			if (!thread.idle || this.threads.get(thread.id) !== thread) return;
-			this.threads.delete(thread.id);
-			void thread.stop();
+			this.unloadTimers.delete(held.id);
+			if (!held.idle || this.threads.get(held.id) !== held) return;
+			this.threads.delete(held.id);
+			void held.stop();
 		}, this.options.unloadAfterMs ?? 60_000);
 		timer.unref?.();
-		this.unloadTimers.set(thread.id, timer);
+		this.unloadTimers.set(held.id, timer);
 	}
 
 	private cancelUnload(threadId: string): void {
@@ -269,4 +494,16 @@ export class SessionHub {
 		if (timer) clearTimeout(timer);
 		this.unloadTimers.delete(threadId);
 	}
+}
+
+/** What a saved session's metadata says for a picker (P57 ThreadInfo fields). */
+function savedDetails(metadata: SessionMetadata): Partial<ThreadInfo> {
+	return {
+		createdAt: metadata.timestamp,
+		updatedAt: metadata.modified ?? metadata.timestamp,
+		...(metadata.firstMessage !== undefined ? { preview: metadata.firstMessage } : {}),
+		...(metadata.messageCount !== undefined ? { messageCount: metadata.messageCount } : {}),
+		...(metadata.filePath !== undefined ? { filePath: metadata.filePath } : {}),
+		...(metadata.parentSession !== undefined ? { parentSession: metadata.parentSession } : {}),
+	};
 }

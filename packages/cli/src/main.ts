@@ -462,6 +462,13 @@ async function main(): Promise<void> {
 				modelDisplay,
 				modelChoices,
 				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+				// P57: as the TUI — later sessions start from a switch, a resumed one from its last model (not with -m).
+				setHostModel: hostSetters.setHostModel,
+				setHostThinking: hostSetters.setHostThinking,
+				restoreSessionModel: !options.model,
+				autoTitle: autoTitleOn(userSettings.autoTitle),
+				checkpoints: checkpointBackend,
+				applyDefaultMode: !explicitMode,
 			},
 			hub: { version: CLI_VERSION },
 		});

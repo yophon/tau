@@ -43,6 +43,10 @@ export const ERROR_CODES = {
 	internalError: -32603,
 	/** The transport closed before an answer came. */
 	connectionClosed: -32000,
+	/** P57: an extension refused (a session switch, a fork); `data.by` says which hook. */
+	cancelled: -32001,
+	/** P57: the session is doing another job. */
+	busy: -32002,
 } as const;
 
 export class JsonRpcError extends Error {
@@ -189,7 +193,8 @@ export class JsonRpcPeer {
 		}
 		try {
 			const result = await handler(request.params);
-			this.reply(request.id, result ?? {});
+			// null is a result (completion/request has none); only nothing at all becomes {}.
+			this.reply(request.id, result === undefined ? {} : result);
 		} catch (error) {
 			if (error instanceof JsonRpcError) {
 				this.reply(request.id, undefined, {

@@ -18,7 +18,7 @@ export type PendingNotification = {
 	[M in keyof ServerNotifications]: { method: M; params: Omit<ServerNotifications[M], "threadId" | "seq"> };
 }[keyof ServerNotifications];
 
-const toInput = (content: UserContent): UserInput =>
+export const toUserInput = (content: UserContent): UserInput =>
 	typeof content === "string"
 		? content
 		: content.map((block) =>
@@ -38,7 +38,7 @@ export function itemsFromMessages(messages: readonly AgentMessage[], nextId: () 
 	const tools = new Map<string, Extract<Item, { type: "toolCall" }>>();
 	for (const message of messages) {
 		if (message.role === "user") {
-			items.push({ type: "userMessage", id: nextId(), content: toInput(message.content) });
+			items.push({ type: "userMessage", id: nextId(), content: toUserInput(message.content) });
 		} else if (message.role === "assistant") {
 			for (const block of message.content) {
 				if (block.type === "thinking" && block.thinking.trim() !== "") {
@@ -82,6 +82,18 @@ export class ItemTracker {
 		this.nextId = nextId;
 	}
 
+	/**
+	 * P57: the prompt of a turn. The kernel commits it without a user_message event (only queued and
+	 * custom messages get one), so the turn announces it itself.
+	 */
+	userInput(content: UserContent): PendingNotification[] {
+		const item: Item = { type: "userMessage", id: this.nextId(), content: toUserInput(content) };
+		return [
+			{ method: "item/started", params: { item } },
+			{ method: "item/completed", params: { item } },
+		];
+	}
+
 	/** Close what is open (the end of a run). */
 	flush(): PendingNotification[] {
 		return [...this.closeReasoning(), ...this.closeText()];
@@ -91,7 +103,7 @@ export class ItemTracker {
 		switch (event.type) {
 			case "user_message": {
 				if (event.message.role !== "user") return [];
-				const item: Item = { type: "userMessage", id: this.nextId(), content: toInput(event.message.content) };
+				const item: Item = { type: "userMessage", id: this.nextId(), content: toUserInput(event.message.content) };
 				return [
 					{ method: "item/started", params: { item } },
 					{ method: "item/completed", params: { item } },

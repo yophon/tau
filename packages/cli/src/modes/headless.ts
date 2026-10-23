@@ -57,6 +57,8 @@ export interface HeadlessOptions {
 	onEvent?: (event: AgentEvent) => void;
 	/** Something the user should see that is not part of the conversation. */
 	onNotice?: (level: "info" | "warning" | "error", text: string) => void;
+	/** P57: an extension handler failed (the registry's error sink); default: stderr. */
+	onExtensionError?: (event: string, error: Error) => void;
 	modelDisplay: string;
 	modelChoices: readonly string[];
 	resolveModelSwitch?: (requested: string) => ModelSwitch;
@@ -87,6 +89,8 @@ export class HeadlessSession {
 	private compacting = false;
 	private bashController: AbortController | undefined;
 	private stopped = false;
+	/** P57: the extensions after a /reload (the workspace keeps the registry it opened with). */
+	private registry: ExtensionRegistry | undefined;
 
 	constructor(
 		options: HeadlessOptions,
@@ -102,7 +106,13 @@ export class HeadlessSession {
 	}
 
 	get extensions(): ExtensionRegistry {
-		return this.options.workspace.extensions;
+		return this.registry ?? this.options.workspace.extensions;
+	}
+
+	/** P57: use the registry a reload built; its host actions are attached here. */
+	adoptRegistry(registry: ExtensionRegistry): void {
+		this.registry = registry;
+		this.attachHostActions();
 	}
 
 	get isRunning(): boolean {
@@ -115,6 +125,14 @@ export class HeadlessSession {
 
 	/** Host actions first, then session_start (P23e order). */
 	async start(reason: "startup" | "resume"): Promise<void> {
+		this.attachHostActions();
+		await this.extensions.notifySessionStart(reason, this.agent.extensionContext());
+	}
+
+	/** Extension submits, resumes and shutdown reach this session; their errors go to onExtensionError. */
+	attachHostActions(): void {
+		const onError = this.options.onExtensionError;
+		if (onError) this.extensions.setErrorSink(({ event, error }) => onError(event, error));
 		this.extensions.attachHostActions({
 			submitPrompt: (content) => {
 				if (this.running) this.pending.push(content);
@@ -129,7 +147,6 @@ export class HeadlessSession {
 				void this.stop();
 			},
 		});
-		await this.extensions.notifySessionStart(reason, this.agent.extensionContext());
 	}
 
 	async stop(): Promise<void> {
