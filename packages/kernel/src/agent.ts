@@ -571,10 +571,7 @@ export class Agent {
 				});
 			},
 			setSessionName: (name) => {
-				this.enqueueBackground(async () => {
-					await this.session.setName(name);
-					await this.refresh();
-				});
+				this.enqueueBackground(() => this.session.setName(name).then(() => this.refresh()));
 				void this.extensions?.notifySessionInfoChanged(name, this.extensionContext());
 			},
 			setLabel: (entryId, label) => {
@@ -1333,6 +1330,11 @@ export class Agent {
 			label: "Request",
 		});
 		return result.text;
+	}
+
+	/** Name the session (pi setSessionName), in turn with the run's writes (P58: a host's recorder beside them forked the log). */
+	async setSessionName(name: string): Promise<void> {
+		await this.enqueueWrite(() => this.session.setName(name).then(() => this.refresh()));
 	}
 
 	/**

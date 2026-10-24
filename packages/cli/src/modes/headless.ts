@@ -372,7 +372,7 @@ export class HeadlessSession {
 			}
 			case "name": {
 				if (!this.recorder || args === "") return { output: "Usage: /name <name>" };
-				await this.recorder.setName(args);
+				await this.agent.setSessionName(args);
 				await this.extensions.notifySessionInfoChanged(args, this.agent.extensionContext());
 				return { output: `Session named "${args}".` };
 			}

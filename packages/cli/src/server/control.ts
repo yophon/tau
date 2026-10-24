@@ -91,7 +91,7 @@ export function setPermissionMode(thread: HubThread, mode: string): void {
 export async function setName(thread: HubThread, name: string): Promise<void> {
 	const recorder = thread.session.recorder;
 	if (!recorder) throw new JsonRpcError(ERROR_CODES.invalidRequest, "No session file (--no-session)");
-	await recorder.setName(name);
+	await thread.session.agent.setSessionName(name);
 	await thread.session.extensions.notifySessionInfoChanged(name, thread.session.agent.extensionContext());
 	thread.renamed(name);
 }

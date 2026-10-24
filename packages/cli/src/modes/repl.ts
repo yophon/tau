@@ -460,7 +460,7 @@ export async function runRepl(context: ReplContext): Promise<void> {
 			if (input.startsWith("/name ")) {
 				const name = input.slice("/name ".length).trim();
 				if (recorder && name !== "") {
-					await recorder.setName(name);
+					await agent.setSessionName(name);
 					await extensions.notifySessionInfoChanged(name, agent.extensionContext());
 					console.log(dim(`Session named "${name}".`));
 				} else {

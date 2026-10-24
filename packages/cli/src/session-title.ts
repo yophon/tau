@@ -104,7 +104,8 @@ export async function autoTitle(
 		if (!title) return undefined;
 		// The user may have named it while the request ran.
 		if ((await recorder.store.getMetadata()).name) return undefined;
-		await recorder.setName(title);
+		// Through the agent: in turn with its own writes (a prompt saved meanwhile, P58).
+		await agent.setSessionName(title);
 		return title;
 	} catch (error) {
 		log(`session title: ${error instanceof Error ? error.message : String(error)}`);
