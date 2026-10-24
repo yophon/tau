@@ -52,6 +52,7 @@ import { attachPromptAgent, setSubagentIsolation } from "./builtins.ts";
 import { CredentialStore, credentialsPath } from "./credentials.ts";
 import type { ActiveEndpoint } from "./endpoint.ts";
 import {
+	type ClientMcpServer,
 	defaultSystemPrompt,
 	loadExtensionRegistry,
 	resolveExtensionFlags,
@@ -120,6 +121,8 @@ export type WorkspaceSpec = {
 	memory?: MemoryScope;
 	/** P32b: load ~/.tau/mcp.json servers (default true; off for a gateway guest, and ACP merges its own). */
 	mcp?: boolean;
+	/** P60: MCP servers a client brought for this workspace's session (an editor's); a name wins over the configured one. */
+	extraMcpServers?: ClientMcpServer[];
 	/**
 	 * P35: ask_user for this workspace. Offered whenever there is a UI; `freeAnswer: false` when the
 	 * UI has no text input (ACP), `unavailable` says when nobody can answer (a gateway schedule), false = none.
@@ -291,6 +294,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		hookRunner,
 		spec.extendedSettings !== false,
 		workspaceHost === "tui",
+		spec.extraMcpServers ?? [],
 	);
 	const extensions = loaded.registry;
 	/** P46: the language servers in use (a reload brings new ones). */
@@ -384,6 +388,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 			hookRunner,
 			spec.extendedSettings !== false,
 			workspaceHost === "tui",
+			spec.extraMcpServers ?? [],
 		);
 		projectTrusted = next.projectTrusted;
 		currentLsp = next.lsp;

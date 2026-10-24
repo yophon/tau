@@ -241,6 +241,8 @@ export interface ClientRequests {
 			parentSession?: string;
 			cwd?: string;
 			ephemeral?: boolean;
+			/** P60: the client's MCP servers for this session (this machine's clients only). */
+			mcpServers?: McpServerSpec[];
 		};
 		result: JoinResult;
 	};
@@ -260,6 +262,8 @@ export interface ClientRequests {
 			cwd?: string;
 			model?: string;
 			permissionMode?: string;
+			/** P60: the client's MCP servers, when this opens the session (this machine's clients only). */
+			mcpServers?: McpServerSpec[];
 		};
 		result: JoinResult;
 	};
@@ -485,6 +489,19 @@ export interface ClientRequests {
 	"server/devices": { params: Record<string, never>; result: { devices: DeviceInfo[]; listen?: string } };
 	/** Forget a device; its open connections close. */
 	"server/revoke": { params: { name: string }; result: { revoked: boolean } };
+}
+
+/**
+ * P60: an MCP server a client brings for a session (an editor's, over ACP): a command (stdio) or an
+ * HTTP endpoint. Only the machine's own clients may bring them.
+ */
+export interface McpServerSpec {
+	name: string;
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+	url?: string;
+	headers?: Record<string, string>;
 }
 
 /** P59: a paired device (its token is never shown again). */

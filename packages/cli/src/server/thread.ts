@@ -32,6 +32,7 @@ import {
 	JsonRpcError,
 	type JsonRpcId,
 	type JsonRpcPeer,
+	type McpServerSpec,
 	NATIVE_NOTIFICATIONS,
 	type NativeEvent,
 	SESSION_EVENT_NOTIFICATIONS,
@@ -214,6 +215,8 @@ export class HubThread {
 			model?: string;
 			fallbackModel?: string;
 			thinking?: { level: ThinkingLevel | undefined };
+			/** P60: MCP servers the client brought (an editor's), started in this session's workspace. */
+			mcpServers?: McpServerSpec[];
 		} = {},
 	): Promise<HubThread> {
 		const route: UiRoute = options.opener ? { opener: options.opener } : {};
@@ -225,6 +228,7 @@ export class HubThread {
 			// Without a client opening it, nobody can answer: an untrusted project's resources stay off (P56).
 			trustPrompt: options.opener !== undefined,
 			...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
+			...(options.mcpServers && options.mcpServers.length > 0 ? { extraMcpServers: options.mcpServers } : {}),
 		});
 		// settings' permissions.defaultMode (P37a), as main.ts did for the TUI's one workspace.
 		const defaults =

@@ -31,6 +31,7 @@ export {
 	type InputBlock,
 	type Item,
 	type JoinResult,
+	type McpServerSpec,
 	NATIVE_NOTIFICATIONS,
 	type NativeEntry,
 	type NativeEvent,

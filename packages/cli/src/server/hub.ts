@@ -19,6 +19,7 @@ import {
 	type JoinResult,
 	JsonRpcError,
 	JsonRpcPeer,
+	type McpServerSpec,
 	type MessageTransport,
 	PROTOCOL_VERSION,
 	type ThreadInfo,
@@ -118,6 +119,8 @@ type Opening = {
 	fallbackModel?: string;
 	thinking?: { level: ThinkingLevel | undefined };
 	permissionMode?: PermissionMode;
+	/** P60: the client's MCP servers (an editor's), for a session opened here. */
+	mcpServers?: McpServerSpec[];
 };
 
 const cancelled = (by: "switch" | "fork"): JsonRpcError =>
@@ -204,7 +207,11 @@ export class SessionHub {
 					...(params.parentSession !== undefined ? { parentSession: params.parentSession } : {}),
 				},
 				"new",
-				{ ...this.choice(connection, params.model), ...(permissionMode ? { permissionMode } : {}) },
+				{
+					...this.choice(connection, params.model),
+					...(permissionMode ? { permissionMode } : {}),
+					...this.brought(connection, params.mcpServers),
+				},
 			);
 			return this.subscribe(connection, started);
 		});
@@ -213,7 +220,11 @@ export class SessionHub {
 			const permissionMode = this.permissionMode(params.permissionMode);
 			const previous = this.leaving(connection, params.previousThreadId, params.threadId);
 			const cwd = this.dir(params.cwd, previous?.workspace.cwd);
-			const opening = { ...this.choice(connection, params.model), ...(permissionMode ? { permissionMode } : {}) };
+			const opening = {
+				...this.choice(connection, params.model),
+				...(permissionMode ? { permissionMode } : {}),
+				...this.brought(connection, params.mcpServers),
+			};
 			if (previous) {
 				// A held session is joined as it is (P58: one without a session file too).
 				const existing = this.threads.get(params.threadId);
@@ -669,6 +680,24 @@ export class SessionHub {
 	/** P58: the directory a request means — its own `cwd`, else the given default, else the server's. */
 	private dir(cwd: string | undefined, fallback?: string): string {
 		return cwd !== undefined ? resolve(this.host.cwd, cwd) : (fallback ?? this.host.cwd);
+	}
+
+	/**
+	 * P60: MCP servers a client brings for the session it opens (an editor's). Only this machine's
+	 * clients: a remote device must not get the server to start programs. Malformed entries are left out.
+	 */
+	private brought(connection: HubConnection, servers: McpServerSpec[] | undefined): { mcpServers?: McpServerSpec[] } {
+		if (!servers || servers.length === 0) return {};
+		if (!connection.local) {
+			throw new JsonRpcError(ERROR_CODES.invalidRequest, "Only this machine's clients bring MCP servers");
+		}
+		const valid = servers.filter(
+			(server) =>
+				typeof server?.name === "string" &&
+				server.name !== "" &&
+				(typeof server.command === "string" || typeof server.url === "string"),
+		);
+		return valid.length > 0 ? { mcpServers: valid } : {};
 	}
 
 	private permissionMode(mode: string | undefined): PermissionMode | undefined {

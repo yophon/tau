@@ -5,11 +5,13 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { importExtensionFiles, listExtensionFiles, loadExtensionsFromDir } from "@yophon/tau-host-node";
 import { type Extension, ExtensionRegistry, type InlineExtension, type UiCapability } from "@yophon/tau-kernel";
+import type { McpServerSpec } from "@yophon/tau-protocol";
 import { builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { createHooksExtension, type HookRunner, loadHookConfig } from "./hooks.ts";
 import type { LspHost } from "./lsp.ts";
 import type { MemoryScope } from "./memory.ts";
 import { isProjectTrusted, presentGatedResources } from "./project-trust.ts";
+import { stdioServer } from "./secrets.ts";
 import { readSettings } from "./settings.ts";
 import { CLI_VERSION, dim, userHome } from "./util.ts";
 
@@ -118,6 +120,9 @@ export async function loadSettingsExtensions(paths: readonly string[]): Promise<
 	return loaded;
 }
 
+/** P60: an MCP server a client brought for its session (an editor's; the protocol's McpServerSpec). */
+export type ClientMcpServer = McpServerSpec;
+
 export async function loadExtensionRegistry(
 	cwd: string,
 	ui: UiCapability | undefined,
@@ -130,6 +135,8 @@ export async function loadExtensionRegistry(
 	extendedSettings = true,
 	/** P45: offer catalog language servers (the TUI, as Claude Code offers them in the terminal). */
 	recommendLsp = false,
+	/** P60: a client's MCP servers for the session (an editor's); they win over configured ones of the same name. */
+	extraMcp: readonly ClientMcpServer[] = [],
 ): Promise<LoadedExtensions> {
 	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
 	// schedule tools, P31), then the user's extensions.
@@ -190,13 +197,20 @@ export async function loadExtensionRegistry(
 			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
 		});
 		for (const diagnostic of loadedMcp.diagnostics) console.log(dim(`mcp: ${diagnostic}`));
-		if (loadedMcp.servers.length > 0) {
+		// P60: an editor's servers (stdio ones from the environment without secrets, as ACP did, P32b).
+		const brought = extraMcp.map((server) => (server.command ? stdioServer(server) : server));
+		const names = new Set(brought.map((server) => server.name));
+		const servers = [
+			...brought,
+			...withOAuth(loadedMcp.servers, userHome()).filter((server) => !names.has(server.name)),
+		];
+		if (servers.length > 0) {
 			const { createMcpExtension } = await import("@yophon/tau-ext-mcp");
 			const { createElicitHandler } = await import("./mcp-elicit.ts");
 			const { openUrl } = await import("./open-url.ts");
 			await registry.add([
 				createMcpExtension({
-					servers: withOAuth(loadedMcp.servers, userHome()),
+					servers,
 					// P43 (pi): the working directory as the root, resource tools, images to the model;
 					// P44 (Claude Code): elicitation, prompt commands, `@` resources; P47 (Claude Code):
 					// servers are asked for MCP 2026-07-28 first. The gateway is parked and keeps what it
