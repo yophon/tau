@@ -5,7 +5,7 @@
 // (daemon.ts). P59: with `remote` (settings daemon.remote.listen) it also listens for paired
 // devices on WebSocket and serves the web client (remote.ts).
 import { existsSync, rmSync } from "node:fs";
-import { createServer } from "node:net";
+import { createServer, type Socket } from "node:net";
 import { dirname } from "node:path";
 import { createLineTransport } from "@yophon/tau-protocol";
 import {
@@ -110,7 +110,11 @@ async function serveSocket(
 			);
 		}
 	}
+	/** The clients' sockets: a stopping server waits for them to close (what was written reaches them). */
+	const sockets = new Set<Socket>();
 	const server = createServer((socket) => {
+		sockets.add(socket);
+		socket.on("close", () => sockets.delete(socket));
 		hub.connect(socketTransport(socket));
 	});
 	await new Promise<void>((resolve, reject) => {
@@ -138,6 +142,12 @@ async function serveSocket(
 			server.close();
 			await remote?.close();
 			await hub.shutdown(graceSeconds * 1000);
+			// The hub ended every connection; the process exits after this, so let the last writes (the
+			// final turn/completed) go out first — a Windows pipe writes asynchronously. At most a second.
+			await Promise.race([
+				Promise.all([...sockets].map((socket) => new Promise((resolve) => socket.once("close", resolve)))),
+				new Promise((resolve) => setTimeout(resolve, 1000).unref()),
+			]);
 			if (unix) rmSync(address, { force: true });
 			if (isDefault) removeDaemonInfo(options.home, process.pid);
 			finish();

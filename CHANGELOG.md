@@ -11,7 +11,9 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   width is transformed at that width. Sessions without transformers send no extra requests.
 - Lines piped into `tau --repl` at once run one after another and the REPL exits when they are done
   (they used to be lost before the REPL listened); lines that arrive while a turn runs still steer it.
-  The exit code is 1 when the last line's turn fails.
+  The exit code is 1 when the last line's turn fails (an error or a cut-off reply; Ctrl+C is not a failure).
+- A stopping resident server waits (up to a second) for its connections to close, so the last
+  notifications it wrote (the final `turn/completed`) reach the clients before the process exits.
 
 ### Changed (P60: editors on the resident session)
 - `tau --mode acp` is a client of tau's session hub: it uses the resident server as the TUI does

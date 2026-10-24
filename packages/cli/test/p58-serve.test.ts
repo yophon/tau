@@ -143,7 +143,8 @@ describe("P58 tau serve start / status / stop", () => {
 			const stopped = await serveCommand("stop", context);
 			assert.equal(stopped.status, "stopped");
 			assert.equal(stopped.forced, undefined);
-			assert.equal(turnsDone().length, 2);
+			// The server wrote it before it exited; this process may see the exit first.
+			await until(() => turnsDone().length === 2, "the running turn's end", 2000);
 			const last = turnsDone().at(-1);
 			assert.ok(last?.method === "turn/completed" && !last.params.aborted, "the running turn finished");
 			assert.equal(existsSync(join(daemonDir(home), "daemon.json")), false);

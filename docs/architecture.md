@@ -224,7 +224,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `local-hub.ts` · `tui-hub.ts` · `rpc-hub.ts` | 本进程的中枢（P57）：起中枢与一个会话客户端、选第一个会话（P58：在客户端的目录，常驻服务时带 `-m`、`--permission-mode`）；TUI 与 rpc 各自接上去（信任问题在 TUI 上屏前走启动对话框，rpc 走 `extension_ui_request`）。`tui-hub.ts` 不读中枢一侧的对象（结构门禁第 4 条）：设置与 `@文件` 的图片在客户端算，项目信任与额外目录在 `thread/state`。P60：`startHub` 是中枢与一个连上它的客户端（`startLocalHub` 与 `--mode acp` 都用） |
 | `acp-hub.ts` | `--mode acp` 连谁（P60）：常驻服务，或本进程的中枢（宿主同 `tau serve`）；同 `tui-hub.ts` 不读中枢一侧的对象（结构门禁第 5 条） |
 | **模式（modes/）** | |
-| `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态。P61：stdin 是管道时行从一开始就排队（`PipedLines`），一轮开始前已读到的一句跑完再跑下一句，运行中新到的照旧插话；输入读完等排着的跑完再退出，最后一句失败退出码 1 |
+| `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态。P61：stdin 是管道时行从一开始就排队（`PipedLines`），一轮开始前已读到的一句跑完再跑下一句，运行中新到的照旧插话；输入读完等排着的跑完再退出，最后一句失败（出错、截断，Ctrl+C 不算）退出码 1 |
 | `headless.ts` | `HeadlessSession`：一个会话的运行（一次一个，排队的输入 steer/followUp）、会话切换、无界面的斜杠命令；中枢的会话与网关用它（重载后换注册表、扩展报错与退出交给宿主） |
 | `json.ts` · `jsonl.ts` · `events.ts` | 一次运行的事件流与退出码；严格按 LF 分帧；把扩展事件写成 pi 线格式 |
 | `rpc.ts` | pi 的 RPC 命令集与 `extension_ui_request` 子协议；桥一建好就读 stdin。P57 起是协议上的适配层：命令映射到中枢的方法，事件来自 `thread/sessionEvent`（pi 的 JSON 模式记录）与 `thread/event`（压缩、重试）。协议说明见 [rpc.md](rpc.md) |

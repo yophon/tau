@@ -69,7 +69,10 @@ export function createUi(readline: Readline): UiCapability {
 }
 
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
-export const turnState: { controller: AbortController | null } = { controller: null };
+export const turnState: { controller: AbortController | null; lastAborted: boolean } = {
+	controller: null,
+	lastAborted: false,
+};
 
 /** P49: the REPL's status for the terminal (OSC 7501); set only in an interactive REPL with tui.title on. */
 export let replStatus: ProgramStatus | undefined;
@@ -273,6 +276,7 @@ export async function runTurn(agent: Agent, input: UserContent | null, readline:
 		});
 		cancelPendingApproval();
 		turnState.controller = null;
+		turnState.lastAborted = lastStop === "aborted";
 		if (pipedLines) pipedLines.turnRunning = false;
 		readline.removeListener("line", onLine);
 		process.removeListener("SIGINT", onSigint);
@@ -387,7 +391,7 @@ export async function runRepl(context: ReplContext): Promise<void> {
 	const { contextWindow, worktreeSession } = context;
 	let { agent, store, recorder } = context;
 	pipedLines = context.pipedLines;
-	/** P61: with piped input, whether the last line's turn went well (the exit code, as -p). */
+	/** P61: with piped input, whether the last line's turn went well (the exit code; Ctrl+C is no failure). */
 	let lastTurnOk = true;
 	// P49: the REPL tells the terminal it is working, waiting or done (OSC 7501), with tui.title.
 	if (process.stdout.isTTY && context.terminalStatus) {
@@ -632,7 +636,7 @@ export async function runRepl(context: ReplContext): Promise<void> {
 			await runCommand(agent, extensions, input, readline);
 			continue;
 		}
-		lastTurnOk = await runTurn(agent, input, readline);
+		lastTurnOk = (await runTurn(agent, input, readline)) || turnState.lastAborted;
 		// P34f: name the session after its first turn (in the background; failures are silent).
 		if (recorder && autoTitleOn(workspace.settings().autoTitle)) void autoTitle(agent, recorder, titled);
 	}
