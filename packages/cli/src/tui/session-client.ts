@@ -101,6 +101,14 @@ export function contextOf(state: ThreadState): { tokens: number; contextWindow?:
 
 export class TuiSession {
 	readonly client: TauClient;
+	/** P58: the directory this client works from (its saved sessions; a resident server serves many). */
+	readonly cwd: string | undefined;
+	/** P58: the hub is a resident server (sessions go on when this client leaves). */
+	readonly resident: boolean;
+	/** P58: the connection to the hub dropped (the server stopped); the TUI quits. */
+	disconnected = false;
+	/** Set before closing on purpose: a closed connection is then not a drop. */
+	leaving = false;
 	/** The session shown now. */
 	id = "";
 	info: ThreadInfo | undefined;
@@ -125,12 +133,25 @@ export class TuiSession {
 	private readonly markdown = new Map<string, string>();
 	private markdownKey = "";
 
-	constructor(client: TauClient) {
+	constructor(client: TauClient, options: { cwd?: string; resident?: boolean } = {}) {
 		this.client = client;
+		this.cwd = options.cwd;
+		this.resident = options.resident === true;
 		this.ready = new Promise((resolve) => {
 			this.markReady = resolve;
 		});
 		client.on("*", (params, method) => this.receive({ method, params } as ServerNotification));
+		// A dropped connection ends the session for this client as an extension's shutdown does.
+		client.peer.onClose(() => {
+			if (this.leaving || this.id === "") return;
+			this.disconnected = true;
+			this.enqueue({ method: "thread/closed", params: { threadId: this.id, seq: this.lastSeq, reason: "shutdown" } });
+		});
+	}
+
+	/** P58: `cwd` for requests about this client's directory (the saved sessions it lists). */
+	where(): { cwd?: string } {
+		return this.cwd !== undefined ? { cwd: this.cwd } : {};
 	}
 
 	/** Handle the session's notifications from now on (and those that waited). */

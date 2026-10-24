@@ -11,7 +11,7 @@ import type {
 	SessionStore,
 	ThinkingLevel,
 } from "@yophon/tau-kernel";
-import { type AgentMessage, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import { type AgentMessage, messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
 	ERROR_CODES,
@@ -179,11 +179,12 @@ export class SessionHub {
 			const cwd = this.dir(params.cwd, previous?.workspace.cwd);
 			const opening = { ...this.choice(connection, params.model), ...(permissionMode ? { permissionMode } : {}) };
 			if (previous) {
+				// A held session is joined as it is (P58: one without a session file too).
 				const existing = this.threads.get(params.threadId);
-				const store =
-					existing?.session.store ??
-					(await (await this.repo(cwd, previous)).open(await this.findSaved(params.threadId, cwd)));
-				const joined = await this.switchTo(connection, previous, { store, cwd }, "resume", existing ? {} : opening);
+				const target = existing
+					? { cwd, thread: existing }
+					: { cwd, store: await (await this.repo(cwd, previous)).open(await this.findSaved(params.threadId, cwd)) };
+				const joined = await this.switchTo(connection, previous, target, "resume", existing ? {} : opening);
 				return this.subscribe(connection, joined, params.afterSeq);
 			}
 			return this.subscribe(connection, await this.load(params.threadId, cwd, connection, opening), params.afterSeq);
@@ -276,11 +277,16 @@ export class SessionHub {
 		});
 
 		handle("thread/loaded/list", () => ({
-			threads: [...this.threads.values()].map((held) => ({
-				...held.info(),
-				clients: held.subscriberCount,
-				waiting: held.waiting,
-			})),
+			threads: [...this.threads.values()].map((held) => {
+				const first = held.session.agent.messages.find((message) => message.role === "user");
+				const preview = first ? messageText(first).slice(0, 500) : "";
+				return {
+					...held.info(),
+					...(preview !== "" ? { preview } : {}),
+					clients: held.subscriberCount,
+					waiting: held.waiting,
+				};
+			}),
 		}));
 
 		handle("thread/read", async (params) => {
@@ -508,7 +514,7 @@ export class SessionHub {
 	private async switchTo(
 		connection: HubConnection,
 		previous: HubThread | undefined,
-		target: { cwd: string; store?: SessionStore; ephemeral?: boolean; parentSession?: string },
+		target: { cwd: string; store?: SessionStore; thread?: HubThread; ephemeral?: boolean; parentSession?: string },
 		reason: "new" | "resume" | "fork",
 		opening: Opening = {},
 	): Promise<HubThread> {
@@ -522,10 +528,10 @@ export class SessionHub {
 					)
 				: undefined);
 		const metadata = store ? await store.getMetadata() : undefined;
-		const existing = reason === "new" || !metadata ? undefined : this.threads.get(metadata.id);
+		const existing = target.thread ?? (reason === "new" || !metadata ? undefined : this.threads.get(metadata.id));
+		const targetFile = target.thread ? target.thread.info().filePath : metadata?.filePath;
 		if (previous) {
-			if (!(await previous.beforeSwitch(reason === "new" ? "new" : "resume", metadata?.filePath)))
-				throw cancelled("switch");
+			if (!(await previous.beforeSwitch(reason === "new" ? "new" : "resume", targetFile))) throw cancelled("switch");
 			if (!existing && previous.canHandOver(connection) && previous.workspace.cwd === target.cwd) {
 				this.cancelUnload(previous.id);
 				const next = await previous.handover(store, reason, connection);

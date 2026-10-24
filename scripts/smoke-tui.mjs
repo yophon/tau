@@ -64,6 +64,7 @@ async function main() {
 		await run("p49", runP49Smoke);
 		await run("p53", runP53Smoke);
 		await run("p55", runP55Smoke);
+		await run("resident", runResidentSmoke);
 		console.log("TUI smoke passed");
 	} finally {
 		await mock.close();
@@ -288,7 +289,17 @@ export default async function smoke(api) {
 	);
 }
 
-async function startTui(label, dirs, baseUrl, args, extraEnv = []) {
+/** A TUI with the session in its own process (P58: --no-daemon, so no scenario leaves a resident server). */
+function startTui(label, dirs, baseUrl, args, extraEnv = []) {
+	return startTuiProcess(label, dirs, baseUrl, ["--no-daemon", ...args], extraEnv);
+}
+
+/** P58: a TUI that uses (and, by settings' default, starts) the resident server of its HOME. */
+function startResidentTui(label, dirs, baseUrl, args, extraEnv = []) {
+	return startTuiProcess(label, dirs, baseUrl, args, extraEnv);
+}
+
+async function startTuiProcess(label, dirs, baseUrl, args, extraEnv = []) {
 	const name = `tau-smoke-${label}-${process.pid}-${Math.random().toString(16).slice(2)}`;
 	const command = [
 		"env",
@@ -1194,6 +1205,63 @@ async function runP55Smoke(root, baseUrl) {
 	}
 }
 
+// P58: the resident server. The first TUI starts it (settings daemon.autoStart, the default); a
+// second terminal's `tau -c` joins the same session and both see each other's turns; a turn keeps
+// running when the terminal that started it closes, and a third TUI picks it up from /resume.
+async function runResidentSmoke(root, baseUrl) {
+	const dirs = await createSandbox(root, "resident", true);
+	const sessions = [];
+	try {
+		const first = await startResidentTui("resident-a", dirs, baseUrl, []);
+		sessions.push(first);
+		await first.waitFor("Started the resident server", 15_000);
+		await first.send("resident hello", "Enter");
+		await first.waitFor("SMOKE_RESIDENT_HELLO", 10_000);
+
+		const second = await startResidentTui("resident-b", dirs, baseUrl, ["-c"]);
+		sessions.push(second);
+		await second.waitFor("SMOKE_RESIDENT_HELLO", 15_000);
+		await second.send("resident reply", "Enter");
+		await second.waitFor("SMOKE_RESIDENT_REPLY", 10_000);
+		await first.waitFor("SMOKE_RESIDENT_REPLY", 10_000);
+		const firstScreen = await first.capture();
+		if (!firstScreen.includes("resident reply"))
+			throw new Error(`the other terminal's prompt is missing:\n${firstScreen}`);
+
+		// The turn goes on when its terminal closes; the other one sees it end.
+		await first.send("resident slow", "Enter");
+		await first.waitFor("SMOKE_RESIDENT_SLOW", 10_000);
+		await first.kill();
+		await second.waitFor("SMOKE_RESIDENT_SLOW_DONE", 20_000);
+
+		// A third terminal: a new session, then /resume lists the one the server holds.
+		const third = await startResidentTui("resident-c", dirs, baseUrl, []);
+		sessions.push(third);
+		await third.waitFor("tau ·", 15_000);
+		await third.send("/resume", "Enter");
+		await third.waitFor("Resume a session", 10_000);
+		await third.waitFor("1 client", 5_000);
+		await third.send("Enter");
+		await third.waitFor("SMOKE_RESIDENT_SLOW_DONE", 10_000);
+		console.log("ok resident");
+	} finally {
+		for (const session of sessions) await session.kill();
+		await stopResidentServer(dirs);
+	}
+}
+
+/** `tau serve stop` for a sandbox's HOME. */
+async function stopResidentServer(dirs) {
+	await new Promise((resolve) => {
+		execFile(
+			process.execPath,
+			["--disable-warning=ExperimentalWarning", cliPath, "serve", "stop"],
+			{ env: { ...process.env, HOME: dirs.home } },
+			() => resolve(),
+		);
+	});
+}
+
 async function runP47Smoke(root, baseUrl) {
 	const dirs = await createSandbox(root, "p47", false);
 	const server = join(dirs.home, "smoke-modern.mjs");
@@ -1918,6 +1986,13 @@ function responseFor(request) {
 		};
 	}
 	if (content.includes("selector first")) return textTurn("SMOKE_SELECTOR_FIRST");
+	// P58: the resident server scenario.
+	if (content.includes("resident hello")) return textTurn("SMOKE_RESIDENT_HELLO");
+	if (content.includes("resident reply")) return textTurn("SMOKE_RESIDENT_REPLY");
+	if (content.includes("resident slow")) {
+		const parts = ["SMOKE_RESIDENT_SLOW ", ..."........", " SMOKE_RESIDENT_SLOW_DONE"];
+		return { payloads: parts.map((part) => ({ choices: [{ delta: { content: part } }] })), chunkDelayMs: 500 };
+	}
 	if (content.includes("SMOKE_RELOAD_PROMPT")) return textTurn("SMOKE_RELOAD_RESPONSE");
 	return textTurn("SMOKE_DEFAULT_RESPONSE");
 }

@@ -141,6 +141,11 @@ export interface ThreadState {
 	foregroundCommands: number;
 	/** Steering or follow-up messages are waiting for the turn. */
 	queued: boolean;
+	// P58: what a client in another process reads that the TUI read off the workspace:
+	/** The project's own resources and settings are trusted (ctx.isProjectTrusted). */
+	projectTrusted?: boolean;
+	/** The directories the session may work in: the working directory and --add-dir ones. */
+	workingDirectories?: string[];
 }
 
 export interface CommandInfo {

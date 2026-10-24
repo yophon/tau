@@ -301,6 +301,7 @@ export class TuiController {
 				],
 			],
 		});
+		for (const text of this.options.startupNotices ?? []) this.notice("dim", text);
 		// A resumed session shows its history before anything new.
 		if (this.session.messages.some((message) => message.role !== "system")) {
 			await this.runs.prefetchReplay();

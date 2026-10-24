@@ -1,18 +1,21 @@
-// The TUI on an in-process session hub (P57): the TUI is a client of tau/1 like any other — a hub
-// in this process, the memory transport, a session client (local-hub.ts, tui/session-client.ts).
-// The first session is chosen as it always was; the hub opens it, asking the project trust question
-// through the startup dialogs before the TUI is on screen. P58 puts a resident hub behind a socket.
+// The TUI as a client of tau/1 (P57): of the resident server when it can be used, else of a hub in
+// this process (P58, tui-link.ts) — the same code either way, only the transport differs. The first
+// session is chosen as it always was; the hub opens it, asking the project trust question through
+// the startup dialogs before the TUI is on screen. What the TUI needs of the session's workspace it
+// reads through the protocol (thread/state) or works out here (settings files, images); only a hub
+// in this process gives the extensions' --flags and a --worktree's background commands.
 import { join } from "node:path";
+import { NodeImageProcessor } from "@yophon/tau-host-node";
 import type { UiCapability } from "@yophon/tau-kernel";
 import type { ServerRequests } from "@yophon/tau-protocol";
-import { resolveExtensionFlags } from "./extension-loading.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
-import { type LocalHubContext, openFirstSession, startLocalHub } from "./local-hub.ts";
+import { type LocalHubContext, openFirstSession } from "./local-hub.ts";
 import { type ConfiguredModel, describeModel, findModel, modelRef } from "./models.ts";
 import { saveProjectTrust } from "./project-trust.ts";
-import { type TauSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
+import { loadSettings, type TauSettings, tuiScreen, writeSectionKey, writeSettings, writeTuiMode } from "./settings.ts";
 import { StatusLineRunner, StatusLineSettings } from "./statusline.ts";
 import { conversationLength } from "./tui/format.ts";
+import { linkTui } from "./tui-link.ts";
 import { CLI_VERSION, dim } from "./util.ts";
 import type { RunState } from "./workspace.ts";
 import { finishWorktree } from "./worktree.ts";
@@ -35,34 +38,51 @@ export interface TuiHubContext extends LocalHubContext {
 
 export async function runTuiOnHub(context: TuiHubContext): Promise<void> {
 	const { options, cwd, home, userSettings, run } = context;
-	const local = await startLocalHub(context, {
-		name: "tau-tui",
-		capabilities: { nativeEvents: true, width: process.stdout.columns ?? 80 },
-		startupUi: (params) => startupAnswer(context.ui, params),
-	});
-	const { hub, session } = local;
+	const link = await linkTui(
+		{ ...context, autoStart: userSettings.daemon?.autoStart !== false },
+		{
+			name: "tau-tui",
+			capabilities: { nativeEvents: true, width: process.stdout.columns ?? 80 },
+			startupUi: (params) => startupAnswer(context.ui, params),
+		},
+	);
+	const { session } = link;
 	try {
-		await openFirstSession(session, options);
+		// P58: a resident server opens the session with this run's -m and --permission-mode.
+		await openFirstSession(
+			session,
+			options,
+			session.resident
+				? {
+						...((options.model ?? process.env.TAU_MODEL) ? { model: options.model ?? process.env.TAU_MODEL } : {}),
+						...(context.explicitMode ? { permissionMode: run.permissionMode } : {}),
+					}
+				: {},
+		);
 	} catch (error) {
-		await hub.close();
+		await link.close();
 		throw error;
 	}
 	if (session.state.lastSessionStart === "resume") {
 		const name = session.state.name;
 		console.log(dim(`Resumed session (${conversationLength(session.messages)} messages${name ? `, "${name}"` : ""}).`));
 	}
-	const thread = local.thread();
-	const workspace = thread.workspace;
-	// P36c (pi): \`@file\` arguments and messages given as words on the command line.
-	const messages = resolveExtensionFlags(thread.session.extensions, options.extras).messages;
+	// The settings in force here: the user's, and a trusted project's (P40c) — this terminal's own.
+	const settings = (): TauSettings =>
+		loadSettings({ home, cwd, projectTrusted: session.state.projectTrusted === true });
+	// P36c (pi): `@file` arguments and messages given as words on the command line.
+	const messages = link.local ? link.local.messages(options.extras) : options.extras;
+	// --worktree runs in this process (tui-link.ts): its exit asks about the first workspace's commands.
+	const background = run.worktreeSession ? link.local?.background() : undefined;
 	let files: ProcessedFiles = { text: "", images: [] };
 	if (options.files.length > 0) {
 		try {
-			files = await processFileArguments(options.files, cwd, workspace.images, {
+			const images = new NodeImageProcessor({ autoResize: () => settings().images?.autoResize !== false });
+			files = await processFileArguments(options.files, cwd, images, {
 				pathsOnly: process.env.TAU_DISABLE_FILE_MENTIONS === "1",
 			});
 		} catch (error) {
-			await hub.close();
+			await link.close();
 			console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
 			process.exit(1);
 		}
@@ -77,15 +97,16 @@ export async function runTuiOnHub(context: TuiHubContext): Promise<void> {
 	try {
 		await runTui({
 			session,
+			...(link.notices.length > 0 ? { startupNotices: link.notices } : {}),
 			...(firstPrompt !== undefined ? { initialPrompts: [firstPrompt, ...messages.slice(1)] } : {}),
 			...(options.resume ? { openResumePicker: true } : {}),
 			screen: tuiScreen(options.screen, userSettings.tuiMode),
 			saveTuiMode: (mode) => writeTuiMode(context.userSettingsPath, mode),
-			dirtyRepoGuard: workspace.settings().dirtyRepoGuard === true,
+			dirtyRepoGuard: settings().dirtyRepoGuard === true,
 			// P37c: Claude Code's statusLine, the user's own environment like hooks.
 			statusLine: (onLines) =>
 				new StatusLineRunner({
-					settings: new StatusLineSettings({ home, cwd, projectTrusted: () => workspace.isProjectTrusted() }),
+					settings: new StatusLineSettings({ home, cwd, projectTrusted: () => session.state.projectTrusted === true }),
 					cwd,
 					env: process.env,
 					size: () => ({ columns: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 }),
@@ -93,7 +114,7 @@ export async function runTuiOnHub(context: TuiHubContext): Promise<void> {
 				}),
 			statusLineContext: () => ({
 				projectDir: cwd,
-				addedDirs: workspace.permissions?.workingDirectories() ?? [],
+				addedDirs: session.state.workingDirectories ?? [],
 				provider: context.provider(),
 				version: CLI_VERSION,
 				...(run.worktreeSession
@@ -130,13 +151,21 @@ export async function runTuiOnHub(context: TuiHubContext): Promise<void> {
 			// P39e: pi's keybindings.json.
 			keybindingsPath: join(home, ".tau", "keybindings.json"),
 			// P40c: settings' treeFilterMode, branchSummary.skipPrompt and externalEditor.
-			settings: workspace.settings,
+			settings,
 		});
 	} finally {
-		// The session ends here: session_shutdown, MCP servers stopped.
-		await hub.close();
+		// A hub in this process ends the session here (session_shutdown, MCP servers stopped); a
+		// resident server keeps it for the other clients and for coming back.
+		const stillRunning = session.resident && !session.disconnected && session.state.running;
+		await link.close();
+		if (session.disconnected) {
+			console.error("Lost the connection to the resident server; the session is saved: `tau -c` goes on with it.");
+			process.exitCode = 1;
+		} else if (stillRunning) {
+			console.log(dim("The session is still running in the resident server: `tau -c` or /resume picks it up again."));
+		}
+		if (run.worktreeSession && background) await finishWorktree(run.worktreeSession, background);
 	}
-	if (run.worktreeSession) await finishWorktree(run.worktreeSession, workspace.background);
 }
 
 /** A dialog while the session opens (the trust question): the startup dialogs answer it. */

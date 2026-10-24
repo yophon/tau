@@ -17,6 +17,8 @@ export interface RunTuiOptions {
 	initialPrompts?: UserContent[];
 	/** P53a (-r/--resume, pi): open /resume's picker at start; command-line prompts go to the session picked. */
 	openResumePicker?: boolean;
+	/** P58: lines to show at start (why not the resident server, that it was started, versions). */
+	startupNotices?: string[];
 	/** Where tau started; the TUI follows the session when it moves (a worktree, P46). */
 	cwd: string;
 	/** Hints per `provider/id` for the /model picker (P28 model table). */

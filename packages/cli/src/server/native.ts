@@ -83,6 +83,8 @@ export interface StateFacts {
 	autocompleteProviders: number;
 	foregroundCommands: number;
 	fallbackCwd: string;
+	projectTrusted: boolean;
+	workingDirectories: readonly string[];
 }
 
 export function threadState(facts: StateFacts): ThreadState {
@@ -90,7 +92,7 @@ export function threadState(facts: StateFacts): ThreadState {
 	return {
 		id: facts.id,
 		// The live directory (enter_worktree moves it).
-		cwd: agent.extensionContext().cwd ?? facts.fallbackCwd,
+		cwd: agent.extensionContext().cwd || facts.fallbackCwd,
 		model: facts.model,
 		modelChoices: [...facts.modelChoices],
 		...(agent.thinkingLevel !== undefined ? { thinkingLevel: agent.thinkingLevel } : {}),
@@ -116,5 +118,7 @@ export function threadState(facts: StateFacts): ThreadState {
 		extensions: extensionCounts(facts.registry, facts.autocompleteProviders),
 		foregroundCommands: facts.foregroundCommands,
 		queued: agent.hasQueuedMessages(),
+		projectTrusted: facts.projectTrusted,
+		workingDirectories: [...facts.workingDirectories],
 	};
 }

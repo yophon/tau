@@ -100,6 +100,8 @@ Options:
   -ne, --no-extensions   No extensions from ~/.tau/extensions, .tau/extensions or settings
                          (-e paths still load)
       --no-mcp           No MCP servers for this run
+      --no-daemon        The TUI runs the session in this process instead of the resident
+                         server (tau serve start; settings daemon.autoStart starts it)
       --skill <path>     Load a skill file or directory (repeatable)
   -ns, --no-skills       Only the --skill paths: no skills from the usual directories or settings
       --prompt-template <path>  Load a prompt template file or directory (repeatable)
@@ -165,6 +167,8 @@ export interface CliOptions {
 	noExtensions?: boolean;
 	/** P41b (pi --no-mcp): no MCP servers for this run. */
 	noMcp?: boolean;
+	/** P58 (Codex's --no-daemon): the TUI does not use the resident server. */
+	noDaemon?: boolean;
 	/** P41b (pi --skill / --prompt-template): explicit resource paths, resolved against the cwd. */
 	skillPaths?: string[];
 	promptPaths?: string[];
@@ -428,6 +432,9 @@ export function parseArgs(argv: string[]): CliOptions {
 				break;
 			case "--no-mcp":
 				options.noMcp = true;
+				break;
+			case "--no-daemon":
+				options.noDaemon = true;
 				break;
 			case "--skill":
 				options.skillPaths = [...(options.skillPaths ?? []), next()];

@@ -358,6 +358,8 @@ export class HubThread {
 			autocompleteProviders: this.autocomplete.length,
 			foregroundCommands: this.workspace.background?.foregroundCount ?? 0,
 			fallbackCwd: this.workspace.cwd,
+			projectTrusted: this.workspace.isProjectTrusted?.() ?? false,
+			workingDirectories: this.workspace.permissions?.workingDirectories() ?? [],
 		});
 	}
 

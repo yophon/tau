@@ -4,35 +4,28 @@
  * built-in name wins.
  */
 
-import { copyFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import {
 	type AgentMessage,
 	estimateStringTokens,
 	estimateTokens,
 	messageText,
 	type PermissionMode,
-	type SessionEntry,
-	type SessionMetadata,
 	type ThinkingLevel,
 	type Usage,
 } from "@yophon/tau-kernel";
-import type { NativeEntry } from "@yophon/tau-protocol";
 import { type GitDiff, gitDiff } from "../git-diff.ts";
 import { mainCheckoutOf } from "../git-paths.ts";
-import { findSession, relativeTime, sessionLabel } from "../session-title.ts";
 import type { TuiController } from "./controller.ts";
-import { sessionHtml } from "./export-html.ts";
 import { conversationLength, errorText, firstLine, fmtCost, fmtInt } from "./format.ts";
 import type { CompletionItem } from "./input/completion.ts";
-import { truncateCells } from "./input/width.ts";
 import { getKeybindings } from "./keybindings.ts";
 import type { PickerItem } from "./model.ts";
 import { gitDiffLines, summarizeDiff } from "./render/git-diff.ts";
 import { plainLine, type StyledLine, span } from "./render/spans.ts";
 import { runRewind } from "./rewind.ts";
 import type { TuiRuns } from "./runs.ts";
-import { contextOf, savedSessions, type TuiSession, usageOf } from "./session-client.ts";
+import { contextOf, type TuiSession, usageOf } from "./session-client.ts";
+import { sessionCommands } from "./session-commands.ts";
 import { buildTree } from "./session-tree.ts";
 import type { TuiSessions } from "./sessions.ts";
 
@@ -97,7 +90,6 @@ export interface CommandEntry {
 }
 
 const THINKING_LEVELS = ["none", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
-const FULL_SESSION = "__full_session__";
 
 /** Every permission mode with one line on what it does (yo-agent /mode). */
 export const PERMISSION_MODES: ReadonlyArray<{ mode: PermissionMode; hint: string }> = [
@@ -120,7 +112,7 @@ function modelItems(tui: CompletionHost): CompletionItem[] {
 }
 
 /** Values that start with the prefix (case-insensitive), as completion items. */
-function startingWith(prefix: string, values: ReadonlyArray<string | CompletionItem>): CompletionItem[] {
+export function startingWith(prefix: string, values: ReadonlyArray<string | CompletionItem>): CompletionItem[] {
 	const lower = prefix.toLowerCase();
 	return values
 		.map((value) => (typeof value === "string" ? { value, label: value } : value))
@@ -215,67 +207,8 @@ const BUILTINS: BuiltinCommand[] = [
 			await tui.sessions.switchThinking(requested as ThinkingLevel);
 		},
 	},
-	{
-		name: "name",
-		aliases: ["rename"],
-		args: "<name>",
-		description: "Name the current session",
-		run: async (tui, args) => {
-			if (!tui.session.state.sessionFile) {
-				tui.notice("error", "No active session (--no-session).");
-				return;
-			}
-			if (args === "") {
-				tui.notice("error", "Usage: /name <name>");
-				return;
-			}
-			await tui.session.request("thread/setName", { name: args });
-			await tui.session.drain();
-			await tui.refreshSurfaces();
-			tui.notice("dim", `Session named "${args}".`);
-		},
-	},
-	{
-		name: "resume",
-		aliases: ["sessions"],
-		args: "[session]",
-		description: "Switch to a saved session",
-		complete: async (tui, prefix) =>
-			startingWith(
-				prefix,
-				(await listSessions(tui)).map((session) => ({
-					value: session.name ?? session.id,
-					label: truncateCells(sessionLabel(session), 50),
-					hint: relativeTime(session.modified ?? session.timestamp),
-				})),
-			),
-		run: async (tui, args) => {
-			const sessions = await listSessions(tui);
-			if (sessions.length === 0) {
-				tui.notice("dim", "No sessions found.");
-				return;
-			}
-			let selected: SessionMetadata | undefined;
-			if (args === "") {
-				selected = await chooseSession(tui, sessions);
-				if (!selected) return;
-			} else {
-				const found = findSession(sessions, args);
-				if (found === "ambiguous") {
-					tui.notice("error", `Multiple sessions match "${args}". Use a full id or path.`);
-					return;
-				}
-				selected = found;
-			}
-			if (!selected) {
-				tui.notice("error", `No session matches "${args}".`);
-				return;
-			}
-			if (!(await tui.guardDirty("switch session"))) return;
-			const result = await tui.sessions.switchSession({ kind: "resume", threadId: selected.id });
-			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension.");
-		},
-	},
+	sessionCommands.name,
+	sessionCommands.resume,
 	{
 		name: "rewind",
 		description: "Go back to before one of your messages: restore the code, the conversation, or both (Claude Code)",
@@ -338,87 +271,15 @@ const BUILTINS: BuiltinCommand[] = [
 			});
 		},
 	},
-	{
-		name: "fork",
-		args: "[id]",
-		description: "Copy this session (or up to a message) and switch to the copy",
-		run: async (tui, args) => {
-			if (!tui.session.state.sessionFile) {
-				tui.notice("error", "No active session (--no-session).");
-				return;
-			}
-			let target = args;
-			if (target === "") {
-				const items: PickerItem[] = [{ label: "● The whole session", value: FULL_SESSION }];
-				for (const entry of (await tui.session.entries()).entries) {
-					const fallback =
-						entry.type === "message" && entry.message.role === "user"
-							? { label: `○ ${firstLine(messageText(entry.message), 70)}`, hint: entry.id }
-							: undefined;
-					const presentation = await presentEntry(tui, entry, fallback);
-					if (presentation) items.push({ ...presentation, value: fallback ? entry.id : `${INFO}${entry.id}` });
-				}
-				const picked = await tui.pick("Fork from", items);
-				if (picked === undefined) {
-					tui.notice("dim", "Fork cancelled.");
-					return;
-				}
-				if (picked.startsWith(INFO)) {
-					tui.notice("dim", "That entry is not a fork target.");
-					return;
-				}
-				target = picked === FULL_SESSION ? "" : picked;
-			}
-			if (!(await tui.guardDirty("fork"))) return;
-			// session_before_fork (before a message) and session_before_switch run in the hub.
-			const result = await tui.sessions.switchSession({ kind: "fork", ...(target === "" ? {} : { entryId: target }) });
-			if (result.cancelled) {
-				tui.notice(
-					"dim",
-					result.by === "fork"
-						? "Fork cancelled."
-						: "Session switch cancelled by an extension (the fork file was kept).",
-				);
-			}
-		},
-	},
-	{
-		name: "new",
-		// Claude Code's /clear (aliases /reset, /new): a new conversation with empty context (P38c).
-		aliases: ["clear", "reset"],
-		description: "Start a new session with empty context (/clear)",
-		run: async (tui) => {
-			if (!tui.session.state.sessionFile) {
-				tui.notice("error", "No active session (--no-session).");
-				return;
-			}
-			if (!(await tui.guardDirty("new session"))) return;
-			const result = await tui.sessions.switchSession({ kind: "new" });
-			if (result.cancelled) tui.notice("dim", "New session cancelled by an extension.");
-		},
-	},
+	sessionCommands.fork,
+	sessionCommands.new,
 	{
 		name: "handoff",
 		args: "<goal>",
 		description: "Start a new session with a prompt that carries what matters from this one",
 		run: (tui, args) => tui.runHandoff(args.trim()),
 	},
-	{
-		name: "clone",
-		description: "Copy this session at its current position and switch to the copy",
-		run: async (tui) => {
-			if (!tui.session.state.sessionFile) {
-				tui.notice("error", "No active session (--no-session).");
-				return;
-			}
-			if (!(await tui.guardDirty("fork"))) return;
-			const { leafId } = await tui.session.entries();
-			const result = await tui.sessions.switchSession(
-				leafId === null ? { kind: "fork" } : { kind: "fork", entryId: leafId, position: "at" },
-			);
-			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the copy was kept).");
-		},
-	},
+	sessionCommands.clone,
 	{
 		name: "cwd",
 		description: "Show the working directory",
@@ -430,45 +291,7 @@ const BUILTINS: BuiltinCommand[] = [
 			);
 		},
 	},
-	{
-		name: "session",
-		aliases: ["status"],
-		description: "Show the session file, id, size and usage",
-		run: async (tui) => {
-			const usage = usageOf(tui.session.state);
-			const context = contextOf(tui.session.state);
-			const row = (label: string, value: string): StyledLine => [
-				span(`  ${label.padEnd(12)}`, { dim: true }),
-				span(value),
-			];
-			const lines: StyledLine[] = [plainLine("Session", { bold: true })];
-			const { state } = tui.session;
-			if (state.sessionFile) {
-				const { entries } = await tui.session.entries();
-				lines.push(row("id", tui.session.id));
-				if (state.name) lines.push(row("name", state.name));
-				lines.push(row("file", state.sessionFile));
-				if (state.parentSession) lines.push(row("parent", state.parentSession));
-				lines.push(row("entries", String(entries.length)));
-			} else {
-				lines.push(row("file", "none (--no-session)"));
-			}
-			lines.push(row("messages", `${conversationLength(tui.session.messages)} in context`));
-			lines.push(
-				row("context", `~${context.tokens} tokens${context.contextWindow ? ` of ${context.contextWindow}` : ""}`),
-			);
-			lines.push(
-				row(
-					"usage",
-					`${usage.input + usage.cacheRead + usage.cacheWrite} in · ${usage.output} out${usage.cost.total > 0 ? ` · $${usage.cost.total.toFixed(4)}` : ""}`,
-				),
-			);
-			lines.push(row("cwd", tui.options.cwd));
-			lines.push(row("model", `${tui.model} · ${tui.thinkingLevel ?? "default"} reasoning`));
-			lines.push(row("mode", tui.session.state.permissionMode));
-			tui.lines(lines);
-		},
-	},
+	sessionCommands.session,
 	{
 		name: "keybindings",
 		description: "Change keys: open ~/.tau/keybindings.json (created with every action) in your editor",
@@ -564,67 +387,8 @@ const BUILTINS: BuiltinCommand[] = [
 			tui.flash(`Copied ${chosen.length} characters via ${how}`);
 		},
 	},
-	{
-		name: "export",
-		args: "[path]",
-		description: "Write the session as HTML (default) or JSONL",
-		run: async (tui, args) => {
-			const { state } = tui.session;
-			const persisted = state.sessionFile !== undefined;
-			const stem = `tau-session-${(persisted ? tui.session.id : new Date().toISOString().replaceAll(":", "-")).slice(0, 8)}`;
-			const target = resolve(tui.options.cwd, args === "" ? `${stem}.html` : args);
-			if (target.toLowerCase().endsWith(".jsonl")) {
-				if (!state.sessionFile) {
-					tui.notice("error", "No active session (--no-session): only HTML export is available.");
-					return;
-				}
-				try {
-					await copyFile(state.sessionFile, target);
-				} catch {
-					// Not written yet (no message): the entries as they are.
-					const { entries } = await tui.session.entries();
-					await writeFile(target, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
-				}
-			} else {
-				const html = sessionHtml(tui.session.messages, {
-					title: state.name ?? `tau session ${persisted ? tui.session.id.slice(0, 8) : ""}`.trim(),
-					model: tui.model,
-					cwd: tui.options.cwd,
-					exportedAt: new Date().toISOString(),
-				});
-				await writeFile(target, html, "utf8");
-			}
-			tui.notice("dim", `Exported the session to ${target}.`);
-		},
-	},
-	{
-		name: "import",
-		args: "<path.jsonl>",
-		description: "Import a session file and switch to it",
-		run: async (tui, args) => {
-			if (!tui.session.state.sessionFile) {
-				tui.notice("error", "No active session (--no-session).");
-				return;
-			}
-			if (args === "") {
-				tui.notice("error", "Usage: /import <path.jsonl>");
-				return;
-			}
-			const source = resolve(tui.options.cwd, args);
-			const answer = await tui.pick(`Replace the current session with ${source}?`, [
-				{ label: "Import", value: "yes", key: "y" },
-				{ label: "Cancel", value: "no", key: "n" },
-			]);
-			if (answer !== "yes") {
-				tui.notice("dim", "Import cancelled.");
-				return;
-			}
-			if (!(await tui.guardDirty("switch session"))) return;
-			const result = await tui.sessions.switchSession({ kind: "import", path: source });
-			if (result.cancelled) tui.notice("dim", "Session switch cancelled by an extension (the imported file was kept).");
-			else tui.notice("dim", `Imported ${source}.`);
-		},
-	},
+	sessionCommands.export,
+	sessionCommands.import,
 	{
 		name: "trust",
 		description: "Save whether this project's extensions, skills and settings are trusted",
@@ -902,8 +666,6 @@ async function pickScreen(tui: CommandHost): Promise<void> {
 	tui.notice("dim", `Saved tui.mode = ${picked} in settings.json; tau uses it from the next start.`);
 }
 
-const INFO = "__entry_info__:";
-
 export function builtinCommands(): readonly BuiltinCommand[] {
 	return BUILTINS;
 }
@@ -1169,110 +931,6 @@ export async function runCommand(tui: CommandHost, text: string): Promise<boolea
 	return true;
 }
 
-/** A session entry as a picker item, through extension entry renderers first. */
-async function presentEntry(
-	tui: CommandHost,
-	entry: SessionEntry,
-	fallback: { label: string; hint?: string } | undefined,
-): Promise<{ label: string; hint?: string } | undefined> {
-	if (tui.session.state.extensions.entryRenderers === 0) return fallback;
-	try {
-		const { rendered, failed } = await tui.session.request("render/entry", {
-			entry: entry as unknown as NativeEntry,
-			width: 80,
-		});
-		if (failed) {
-			tui.notice("error", `Entry renderer ${failed.renderer} failed: ${failed.error}`);
-			return fallback;
-		}
-		if (!rendered) return fallback;
-		if (rendered.kind === "label") {
-			return { label: rendered.label, ...(rendered.description !== undefined ? { hint: rendered.description } : {}) };
-		}
-		if (rendered.kind === "lines") {
-			const [label, ...rest] = rendered.lines;
-			if (!label) return fallback;
-			return { label, ...(rest.length > 0 ? { hint: rest.join(" ") } : {}) };
-		}
-		return { label: rendered.text, ...(fallback?.hint ? { hint: fallback.hint } : {}) };
-	} catch {
-		return fallback;
-	}
-}
-
-/** "5 min ago · 42 messages" (P34f). */
-function sessionHint(session: SessionMetadata): string {
-	const when = relativeTime(session.modified ?? session.timestamp);
-	const count = session.messageCount ?? 0;
-	return `${when} · ${count} message${count === 1 ? "" : "s"}`;
-}
-
-/**
- * The /resume picker (P38c, pi's session selector): type to search titles and first
- * messages, the current session marked, same titles told apart by their id, Ctrl+R to
- * rename and Ctrl+D to delete. Undefined when nothing is chosen (or only the current one).
- */
-async function chooseSession(tui: CommandHost, initial: SessionMetadata[]): Promise<SessionMetadata | undefined> {
-	let sessions = initial;
-	const current = { id: tui.session.id };
-	for (;;) {
-		const labels = sessions.map((session) => truncateCells(sessionLabel(session), 50));
-		const items = sessions.map((session, index) => {
-			const label = labels[index] as string;
-			const twin = labels.filter((other) => other === label).length > 1;
-			return {
-				label: `${session.id === current?.id ? "● " : "  "}${label}`,
-				hint: `${session.id === current?.id ? "current · " : ""}${sessionHint(session)}${twin ? ` · ${session.id.slice(0, 8)}` : ""}`,
-				value: session.id,
-			};
-		});
-		const start = Math.max(
-			0,
-			sessions.findIndex((session) => session.id !== current?.id),
-		);
-		const picked = await tui.pickWithActions(
-			"Resume a session",
-			items,
-			[
-				{ key: "ctrl+r", label: "rename" },
-				{ key: "ctrl+d", label: "delete" },
-			],
-			start,
-		);
-		if (!picked) {
-			tui.flash("Session selection cancelled.");
-			return undefined;
-		}
-		const session = sessions.find((candidate) => candidate.id === picked.value);
-		if (!session) return undefined;
-		if (picked.action === "ctrl+r") {
-			const name = (await tui.ask("input", `New name for "${sessionLabel(session)}"`))?.trim();
-			if (name) {
-				await tui.session.client.call("thread/setName", { threadId: session.id, name });
-				tui.flash(`Renamed to "${name}"`);
-			}
-		} else if (picked.action === "ctrl+d") {
-			if (session.id === current?.id) {
-				tui.flash("The current session cannot be deleted.");
-			} else if (await tui.ui.confirm(`Delete "${sessionLabel(session)}"?`, "This removes the session file.")) {
-				await tui.session.client.call("thread/delete", { threadId: session.id });
-				tui.flash("Session deleted.");
-			}
-		} else {
-			if (session.id === current?.id) {
-				tui.flash("Already in this session.");
-				return undefined;
-			}
-			return session;
-		}
-		sessions = await listSessions(tui);
-		if (sessions.length === 0) {
-			tui.notice("dim", "No sessions found.");
-			return undefined;
-		}
-	}
-}
-
 /**
  * The keyboard shortcuts for /hotkeys and the ? panel, with the keys the key table
  * gives each action (P39e: changed in ~/.tau/keybindings.json, they show changed).
@@ -1474,9 +1132,4 @@ async function diagnosticsLines(tui: CommandHost): Promise<StyledLine[]> {
 		}
 	}
 	return lines;
-}
-
-/** The sessions of this directory as the pickers know them (thread/list; P57: the hub reads them). */
-async function listSessions(tui: Pick<CommandHost, "session">): Promise<SessionMetadata[]> {
-	return savedSessions((await tui.session.client.listThreads()).threads);
 }

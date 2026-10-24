@@ -2,7 +2,9 @@
 // sessions in a temp dir, rendered with ink-testing-library and driven through stdin like a
 // terminal. P57: the TUI is a client of an in-process session hub, as in tau itself; the
 // harness's workspace stands in for the CLI's.
+import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeFileSystem } from "@yophon/tau-host-node";
@@ -23,10 +25,11 @@ import {
 	type Tool,
 	type ToolResult,
 } from "@yophon/tau-kernel";
-import { createMemoryTransportPair, TauClient } from "@yophon/tau-protocol";
+import { createMemoryTransportPair, type MessageTransport, TauClient } from "@yophon/tau-protocol";
 import { render } from "ink-testing-library";
 import React from "react";
 import { fakePlatform } from "../../kernel/test/helpers.ts";
+import { connectTo, socketTransport } from "../src/daemon.ts";
 import { type AlwaysOption, openAlwaysOptions, suggestRules } from "../src/permissions.ts";
 import { SessionHub } from "../src/server/hub.ts";
 import type { HubHost } from "../src/server/thread.ts";
@@ -105,6 +108,34 @@ export interface HarnessOptions {
 	deps?: Partial<TuiDeps>;
 	/** P57: another TUI on this hub's session (the hub stays its owner's). */
 	join?: { hub: SessionHub; threadId: string };
+	/**
+	 * P58: reach the hub over a real local socket (JSON on the wire, as a resident server) instead of
+	 * the memory transport; TAU_TEST_TRANSPORT=socket does it for every TUI test.
+	 */
+	socket?: boolean;
+	/** P58: the TUI takes the hub for a resident server (its session pickers list what it holds). */
+	resident?: boolean;
+}
+
+/** A client end on `hub` over a local socket (a named pipe on Windows), and how to take it down. */
+async function socketClientEnd(hub: SessionHub): Promise<{ transport: MessageTransport; close: () => void }> {
+	const address =
+		process.platform === "win32"
+			? `\\\\.\\pipe\\tau-test-${randomUUID()}`
+			: join(mkdtempSync(join(tmpdir(), "tau-sock-")), "hub.sock");
+	const server = createServer((socket) => {
+		hub.connect(socketTransport(socket));
+	});
+	await new Promise<void>((resolve) => server.listen(address, resolve));
+	const connection = await connectTo(address);
+	if (!connection) throw new Error(`Could not connect to ${address}`);
+	return {
+		transport: socketTransport(connection.socket),
+		close: () => {
+			connection.socket.destroy();
+			server.close();
+		},
+	};
 }
 
 /** What main.ts's workspace offers as "always" for an approval (P37a). */
@@ -181,7 +212,8 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 					},
 				});
 			const workspace = {
-				cwd,
+				// P58: a session opened in another directory works there.
+				cwd: spec.cwd,
 				extensions,
 				sessionRepo,
 				shell,
@@ -195,11 +227,20 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		},
 	};
 	const hub = options.join?.hub ?? new SessionHub(host, { version: "test" });
-	const [clientEnd, serverEnd] = createMemoryTransportPair();
-	hub.connect(serverEnd);
+	let clientEnd: MessageTransport;
+	let closeSocket = (): void => undefined;
+	if (options.socket || process.env.TAU_TEST_TRANSPORT === "socket") {
+		const end = await socketClientEnd(hub);
+		clientEnd = end.transport;
+		closeSocket = end.close;
+	} else {
+		const [memoryClient, serverEnd] = createMemoryTransportPair();
+		hub.connect(serverEnd);
+		clientEnd = memoryClient;
+	}
 	const client = new TauClient(clientEnd, { name: "test-tui" });
 	await client.initialize({ nativeEvents: true, width: 100 });
-	const session = new TuiSession(client);
+	const session = new TuiSession(client, options.resident ? { cwd, resident: true } : {});
 	if (options.join) await session.join("thread/resume", { threadId: options.join.threadId });
 	else if (resumeId) await session.join("thread/resume", { threadId: resumeId });
 	else await session.join("thread/start", {});
@@ -228,6 +269,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		ink.unmount();
 		void controller.stop();
 		if (!options.join) void hub.close();
+		closeSocket();
 	};
 	await controller.start();
 	// Let Ink mount and attach its stdin listener (useInput's raw mode) before anything is typed;

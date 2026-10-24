@@ -68,9 +68,9 @@ export class TuiSessions {
 					...(move.parentSession !== undefined ? { parentSession: move.parentSession } : {}),
 				});
 			} else if (move.kind === "resume") {
-				await session.join("thread/resume", { threadId: move.threadId, previousThreadId });
+				await session.join("thread/resume", { threadId: move.threadId, previousThreadId, ...session.where() });
 			} else if (move.kind === "import") {
-				await session.join("thread/import", { path: move.path, copy: true, previousThreadId });
+				await session.join("thread/import", { path: move.path, copy: true, previousThreadId, ...session.where() });
 			} else {
 				const params: ClientRequests["thread/fork"]["params"] = {
 					threadId: previousThreadId,

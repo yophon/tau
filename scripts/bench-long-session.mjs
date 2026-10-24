@@ -8,8 +8,10 @@
 //
 // Not part of CI (it takes minutes); the P42 spec records the numbers before and after.
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { connectTo, socketTransport } from "../packages/cli/src/daemon.ts";
 import { SessionHub } from "../packages/cli/src/server/hub.ts";
 import { blockLines, LineCache } from "../packages/cli/src/tui/render/lines.ts";
 import { TranscriptSearch } from "../packages/cli/src/tui/render/search.ts";
@@ -98,9 +100,10 @@ const readTool = {
 
 /**
  * P57: the TUI opening the session through an in-process hub (the hub restores it, the client gets
- * the conversation and the state over the memory transport); ms, median of three.
+ * the conversation and the state over the memory transport); ms, median of three. P58 (`socket`):
+ * the same over a local socket, JSON on the wire, as with the resident server.
  */
-async function hubJoin(dir, id) {
+async function hubJoin(dir, id, socket = false) {
 	const host = {
 		cwd: dir,
 		modelDisplay: () => "m",
@@ -124,13 +127,25 @@ async function hubJoin(dir, id) {
 	};
 	return time(async () => {
 		const hub = new SessionHub(host, { version: "bench" });
-		const [clientEnd, serverEnd] = createMemoryTransportPair();
-		hub.connect(serverEnd);
+		let clientEnd;
+		let server;
+		if (socket) {
+			const address = process.platform === "win32" ? `\\\\.\\pipe\\tau-bench-${process.pid}` : join(dir, "bench.sock");
+			server = createServer((connection) => hub.connect(socketTransport(connection)));
+			await new Promise((resolve) => server.listen(address, resolve));
+			clientEnd = socketTransport((await connectTo(address)).socket);
+		} else {
+			const [memoryClient, serverEnd] = createMemoryTransportPair();
+			hub.connect(serverEnd);
+			clientEnd = memoryClient;
+		}
 		const client = new TauClient(clientEnd, { name: "bench" });
 		await client.initialize({ nativeEvents: true, width: 120 });
 		const session = new TuiSession(client);
 		await session.join("thread/resume", { threadId: id });
+		client.close();
 		await hub.close();
+		if (server) await new Promise((resolve) => server.close(resolve));
 	});
 }
 
@@ -184,6 +199,7 @@ for (const entries of sizes) {
 		const coldLoad = await time(async () => restoreSession(await fresh().open(meta)));
 		const list = await time(() => fresh().list());
 		const joined = await hubJoin(dir, meta.id);
+		const joinedOverSocket = await hubJoin(dir, meta.id, true);
 		// TUI: all rows of the full-screen transcript, the first search, /tree.
 		const blocks = messagesToBlocks(messages).map((block, index) => ({ ...block, id: `b${index}` }));
 		let allRows = [];
@@ -242,6 +258,7 @@ for (const entries of sizes) {
 			"of which the check (2 requests)": `${Math.max(0, turnWithCheck - turnWithoutCheck)} ms`,
 			"cold load": `${coldLoad} ms`,
 			"hub join (P57)": `${joined} ms`,
+			"over a socket (P58)": `${joinedOverSocket} ms`,
 			"list (1 file)": `${list} ms`,
 			"full-screen all rows": `${renderAll} ms (${allRows.length})`,
 			"first Ctrl+F": `${firstSearch} ms`,

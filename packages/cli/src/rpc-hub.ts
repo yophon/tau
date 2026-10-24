@@ -2,7 +2,6 @@
 // tau/1 — pi's commands become protocol requests, the session's JSON-mode records come as
 // thread/sessionEvent. The first session is chosen as before (new, -c, --session); its project
 // trust question and dialogs go to the rpc client as extension_ui_request records.
-import { resolveExtensionFlags } from "./extension-loading.ts";
 import { type LocalHubContext, openFirstSession, startLocalHub } from "./local-hub.ts";
 import type { RecordWriter } from "./modes/jsonl.ts";
 import { answerWithBridge, type RpcModelEntry, type RpcUiBridge, runRpcMode } from "./modes/rpc.ts";
@@ -31,7 +30,7 @@ export async function runRpcOnHub(context: RpcHubContext): Promise<void> {
 	try {
 		await openFirstSession(local.session, options);
 		// Words on the command line that are not extension flags would be prompts: rpc takes them on stdin.
-		const { messages } = resolveExtensionFlags(local.thread().session.extensions, options.extras);
+		const messages = local.messages(options.extras);
 		if (messages.length > 0) {
 			console.error(`Unexpected argument: ${messages[0]} (--mode rpc takes the prompt with -p or on stdin)`);
 			process.exit(1);

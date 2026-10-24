@@ -11,6 +11,8 @@
 //    dynamically when the TUI starts).
 // 3. The TUI is a client (P57): nothing under tui/ imports the kernel's Agent or ExtensionRegistry, or
 //    the hub (server/); it reaches the session through the protocol (tui/session-client.ts).
+// 4. One path for the TUI's start (P58): tui-hub.ts reads nothing off the hub's own objects (a
+//    session's thread or workspace), so a resident server and a hub in this process look the same.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +26,8 @@ const LIMITS = {
 	"packages/kernel/src/agent.ts": 2500,
 	// Above the default when the gate was added (2026-10-23): no further growth.
 	"packages/kernel/src/extensions.ts": 2350,
-	"packages/cli/src/tui/commands.ts": 1500,
+	// P58: the session commands moved to tui/session-commands.ts (technical debt #32).
+	"packages/cli/src/tui/commands.ts": 1200,
 	"packages/ext-mcp-http/src/client.ts": 1250,
 	"packages/ext-feishu/src/index.ts": 1200,
 	"packages/cli/src/hooks.ts": 1200,
@@ -130,10 +133,20 @@ for (const file of sources.filter((path) => path.startsWith(tuiDir))) {
 	}
 }
 
+const tuiStart = join(cliSrc, "tui-hub.ts");
+if (existsSync(tuiStart)) {
+	const text = readFileSync(tuiStart, "utf8");
+	if (/\.thread\(\)|\.workspace\b|from\s+["']\.\/server\//.test(text)) {
+		problems.push(
+			"packages/cli/src/tui-hub.ts: reads the hub's own objects (thread(), workspace, server/); the TUI's start goes through the protocol, the same with a resident server.",
+		);
+	}
+}
+
 if (problems.length > 0) {
 	console.error(`Structure check failed:\n${problems.map((problem) => `  - ${problem}`).join("\n")}`);
 	process.exit(1);
 }
 console.log(
-	`Structure check passed (${sources.length} source files within their line limits; the CLI's non-TUI entry points do not load the TUI controller; the TUI reaches sessions through the protocol only).`,
+	`Structure check passed (${sources.length} source files within their line limits; the CLI's non-TUI entry points do not load the TUI controller; the TUI reaches sessions through the protocol only, its start included).`,
 );
