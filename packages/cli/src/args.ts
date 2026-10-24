@@ -11,7 +11,9 @@ export const USAGE = `tau - minimal OpenAI-compatible coding agent
 Usage: tau [options] [@files...] [messages...]
        tau [options] -p "prompt" [@files...]
        tau gateway <run|status|login|channels|allow|revoke> ...   (see tau gateway help)
-       tau serve [--listen stdio] [options]   Serve sessions to clients over tau's protocol (docs/protocol.md)
+       tau serve [--listen stdio|unix://[PATH]] [options]   Serve sessions to clients over tau's
+                                         protocol (docs/protocol.md)
+       tau serve start|stop|restart|status [options]   The resident server the TUI connects to
 
 @file: a text file goes into the first message, an image is attached to it
 (converted and shrunk like read's). Messages: the first starts the session,
@@ -179,7 +181,13 @@ export interface CliOptions {
 	/** P30: `tau gateway <command>`. */
 	gateway?: GatewayCommand;
 	/** P56: `tau serve`, the session hub for clients (stdio now; a local socket and WebSocket later). */
-	serve?: { listen: string };
+	serve?: {
+		listen: string;
+		/** P58: `tau serve start|stop|restart|status` (the resident server's lifecycle). */
+		action?: "start" | "stop" | "restart" | "status";
+		/** The tau options given after the action (start passes them to the server). */
+		args?: string[];
+	};
 	help: boolean;
 	/** Unrecognized tokens, matched against extension-declared flags after loading; the rest are messages (pi). */
 	extras: string[];
@@ -227,8 +235,15 @@ export function parseGatewayArgs(argv: string[]): CliOptions {
 	return options;
 }
 
-/** `tau serve [--listen <url>] [tau options]` (P56). */
+/** `tau serve [--listen <url>] [tau options]` (P56); P58: `tau serve start|stop|restart|status [tau options]`. */
 function parseServeArgs(argv: string[]): CliOptions {
+	const first = argv[0];
+	if (first === "start" || first === "stop" || first === "restart" || first === "status") {
+		const args = argv.slice(1);
+		const options = parseArgs(args);
+		options.serve = { listen: "unix://", action: first, args };
+		return options;
+	}
 	let listen = "stdio";
 	const rest: string[] = [];
 	for (let i = 0; i < argv.length; i++) {

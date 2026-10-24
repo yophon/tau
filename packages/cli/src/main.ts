@@ -123,6 +123,15 @@ async function main(): Promise<void> {
 		console.log(CLI_VERSION);
 		return;
 	}
+	// P58: `tau serve start|stop|restart|status` manage the resident server and need no model.
+	if (options.serve?.action) {
+		const { runDaemonCommand } = await import("./daemon.ts");
+		process.exitCode = await runDaemonCommand(options.serve.action, {
+			home: userHome(),
+			args: options.serve.args ?? [],
+		});
+		return;
+	}
 	// `tau gateway status/allow/login/…` need no model (P30); `run` sets the agent up first.
 	if (options.gateway && options.gateway.command !== "run") {
 		const { runGatewayCommand } = await import("./gateway.ts");
@@ -451,16 +460,21 @@ async function main(): Promise<void> {
 				modelDisplay,
 				modelChoices,
 				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
-				// P57: as the TUI — later sessions start from a switch, a resumed one from its last model (not with -m).
-				setHostModel: hostSetters.setHostModel,
-				setHostThinking: hostSetters.setHostThinking,
+				// P58: sessions of several clients share the process: a switch stays the session's, and
+				// each client's later sessions start from what it switched to (hub.ts). A resumed session
+				// goes back to its last model (not with -m).
+				isolateModels: true,
 				restoreSessionModel: !options.model,
-				autoTitle: autoTitleOn(userSettings.autoTitle),
+				autoTitle: (workspace) => autoTitleOn(workspace.settings().autoTitle),
 				checkpoints: checkpointBackend,
 				applyDefaultMode: !explicitMode,
 			},
 			hub: { version: CLI_VERSION },
+			home,
+			graceSeconds: userSettings.daemon?.shutdownGraceSeconds ?? 60,
 		});
+		// A stopped resident server exits, whatever is left open (a stopped request's connection).
+		if (options.serve.listen !== "stdio" && options.serve.listen !== "stdio://") process.exit(0);
 		return;
 	}
 	if (options.gateway) {

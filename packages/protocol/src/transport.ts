@@ -56,12 +56,18 @@ export function createMemoryTransportPair(): [MessageTransport, MessageTransport
 
 /** Splits a byte stream's text into lines; a partial line waits for the rest. */
 export class LineBuffer {
-	private buffer = "";
+	/** The partial line, in the chunks it came in (a long line is joined once, when it ends). */
+	private parts: string[] = [];
 
 	push(chunk: string): string[] {
-		this.buffer += chunk;
-		const lines = this.buffer.split("\n");
-		this.buffer = lines.pop() ?? "";
+		if (!chunk.includes("\n")) {
+			if (chunk !== "") this.parts.push(chunk);
+			return [];
+		}
+		this.parts.push(chunk);
+		const lines = this.parts.join("").split("\n");
+		const rest = lines.pop() ?? "";
+		this.parts = rest === "" ? [] : [rest];
 		return lines.map((line) => line.replace(/\r$/, "")).filter((line) => line.trim() !== "");
 	}
 }

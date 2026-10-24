@@ -47,6 +47,12 @@ export interface TauSettings {
 	doubleEscapeAction?: "tree" | "fork" | "none";
 	/** P37d: worktree.baseRef ("fresh" default | "head") and worktree.symlinkDirectories (Claude Code). */
 	worktree?: { baseRef?: "fresh" | "head"; symlinkDirectories?: string[] };
+	/**
+	 * P58 (Codex's daemon_auto_start, shutdownGraceSeconds): daemon.autoStart — the TUI starts the resident
+	 * server when none runs (default true); daemon.shutdownGraceSeconds — how long `tau serve stop` lets
+	 * running turns finish (default 60, 0–300).
+	 */
+	daemon?: { autoStart?: boolean; shutdownGraceSeconds?: number };
 	/** P40a (pi): the default for HTTP_PROXY and HTTPS_PROXY (user settings only). */
 	httpProxy?: string;
 	/** P40a (pi): how long a request may wait for headers or the next body chunk, in ms (0 = no limit; user settings only). */
@@ -224,6 +230,7 @@ const USER_ONLY_KEYS: ReadonlySet<string> = new Set([
 	"showReasoning",
 	"doubleEscapeAction",
 	"worktree",
+	"daemon",
 ]);
 const RESOURCE_KEYS: ReadonlySet<string> = new Set(["extensions", "skills", "prompts"]);
 
@@ -408,6 +415,19 @@ export function readSettings(path: string, home: string = defaultHome()): TauSet
 							(dir): dir is string => typeof dir === "string" && dir !== "",
 						),
 					}
+				: {}),
+		};
+	}
+	const daemon = raw.daemon;
+	if (typeof daemon === "object" && daemon !== null) {
+		const { autoStart, shutdownGraceSeconds } = daemon as Record<string, unknown>;
+		settings.daemon = {
+			...(typeof autoStart === "boolean" ? { autoStart } : {}),
+			...(typeof shutdownGraceSeconds === "number" &&
+			Number.isInteger(shutdownGraceSeconds) &&
+			shutdownGraceSeconds >= 0 &&
+			shutdownGraceSeconds <= 300
+				? { shutdownGraceSeconds }
 				: {}),
 		};
 	}

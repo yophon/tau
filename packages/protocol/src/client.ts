@@ -51,8 +51,9 @@ export class TauClient {
 		return this.call("thread/unsubscribe", { threadId });
 	}
 
-	listThreads(): Promise<ClientRequests["thread/list"]["result"]> {
-		return this.call("thread/list", {});
+	/** P58: `cwd` picks the directory (default: the server's). */
+	listThreads(cwd?: string): Promise<ClientRequests["thread/list"]["result"]> {
+		return this.call("thread/list", cwd !== undefined ? { cwd } : {});
 	}
 
 	readThread(threadId: string): Promise<ClientRequests["thread/read"]["result"]> {

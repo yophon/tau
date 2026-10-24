@@ -31,6 +31,11 @@ export interface ThreadInfo {
 	filePath?: string;
 	/** The session it was forked from (its file or id). */
 	parentSession?: string;
+	// P58 (thread/loaded/list), for the sessions a resident server holds:
+	/** Clients subscribed to it now. */
+	clients?: number;
+	/** Approvals and dialogs waiting for an answer. */
+	waiting?: number;
 }
 
 export type InputBlock = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -214,32 +219,52 @@ export interface ClientRequests {
 		result: { serverInfo: { name: string; version: string }; protocolVersion: string };
 	};
 	/**
-	 * A new session in the server's working directory; the caller is subscribed to it (before its
-	 * extensions start, so it sees what they say). P57: `previousThreadId` is the session the caller
-	 * leaves — its extensions may refuse (error `cancelled`); when nobody else holds it the new
-	 * session takes over its extensions (the TUI's /new). `parentSession` records where it came from.
+	 * A new session; the caller is subscribed to it (before its extensions start, so it sees what they
+	 * say). P57: `previousThreadId` is the session the caller leaves — its extensions may refuse (error
+	 * `cancelled`); when nobody else holds it the new session takes over its extensions (the TUI's
+	 * /new). `parentSession` records where it came from. P58: `cwd` is where it works (default: the
+	 * directory of the session left, else the server's); `ephemeral` sessions are not saved.
 	 */
 	"thread/start": {
-		params: { model?: string; permissionMode?: string; previousThreadId?: string; parentSession?: string };
+		params: {
+			model?: string;
+			permissionMode?: string;
+			previousThreadId?: string;
+			parentSession?: string;
+			cwd?: string;
+			ephemeral?: boolean;
+		};
 		result: JoinResult;
 	};
 	/**
 	 * Subscribe to a session: loaded from disk when the server does not hold it, rejoined when it is
 	 * running. With `afterSeq` still in the server's log, `events` are the notifications after it;
 	 * otherwise `items` is the conversation so far and `events` the current turn's notifications.
-	 * The requests still waiting for an answer are sent to the caller next.
+	 * The requests still waiting for an answer are sent to the caller next. P58: `cwd` is the directory
+	 * whose saved sessions hold it (when the server does not); `model` and `permissionMode` apply
+	 * when this opens the session from disk, not to one already running.
 	 */
 	"thread/resume": {
-		params: { threadId: string; afterSeq?: number; previousThreadId?: string };
+		params: {
+			threadId: string;
+			afterSeq?: number;
+			previousThreadId?: string;
+			cwd?: string;
+			model?: string;
+			permissionMode?: string;
+		};
 		result: JoinResult;
 	};
 	"thread/unsubscribe": {
 		params: { threadId: string };
 		result: { status: "notLoaded" | "notSubscribed" | "unsubscribed" };
 	};
-	"thread/list": { params: Record<string, never>; result: { threads: ThreadInfo[] } };
+	/** The saved sessions of a directory (P58 `cwd`; default the server's), and the ones held there. */
+	"thread/list": { params: { cwd?: string }; result: { threads: ThreadInfo[] } };
+	/** P58 (Codex's name): the sessions the server holds now, in any directory. */
+	"thread/loaded/list": { params: Record<string, never>; result: { threads: ThreadInfo[] } };
 	/** The conversation without subscribing. */
-	"thread/read": { params: { threadId: string }; result: { thread: ThreadInfo; items: Item[] } };
+	"thread/read": { params: { threadId: string; cwd?: string }; result: { thread: ThreadInfo; items: Item[] } };
 	/** Send a message; while a turn runs it waits its turn (`queued`). */
 	"turn/start": { params: { threadId: string; input: UserInput }; result: { turnId: string; queued: boolean } };
 	/** Put a message into the turn that is running; P57: `handled` when an extension took it (pi 0.86.0). */
@@ -258,7 +283,7 @@ export interface ClientRequests {
 	// --- P57: session control (what the TUI does, and pi rpc's commands) ---
 	/** A session file from elsewhere: copied into the sessions (`copy`, /import) or opened in place. */
 	"thread/import": {
-		params: { path: string; copy: boolean; previousThreadId?: string };
+		params: { path: string; copy: boolean; previousThreadId?: string; cwd?: string };
 		result: JoinResult;
 	};
 	/** A copy of the session (up to an entry, or all of it) that the caller moves to. */
@@ -267,7 +292,7 @@ export interface ClientRequests {
 		result: JoinResult;
 	};
 	/** Delete a saved session's file (not one the server holds). */
-	"thread/delete": { params: { threadId: string }; result: Record<string, never> };
+	"thread/delete": { params: { threadId: string; cwd?: string }; result: Record<string, never> };
 	"thread/state": { params: { threadId: string }; result: ThreadState };
 	/** A models.json reference or a model id; extensions may refuse or rewrite it (model_select). */
 	"thread/setModel": {
@@ -281,7 +306,7 @@ export interface ClientRequests {
 	};
 	"thread/setPermissionMode": { params: { threadId: string; mode: string }; result: Record<string, never> };
 	/** The name of a session, held or saved. */
-	"thread/setName": { params: { threadId: string; name: string }; result: Record<string, never> };
+	"thread/setName": { params: { threadId: string; name: string; cwd?: string }; result: Record<string, never> };
 	"thread/setLabel": { params: { threadId: string; entryId: string; label?: string }; result: Record<string, never> };
 	"thread/setActiveTools": { params: { threadId: string; names: string[] }; result: Record<string, never> };
 	/** The session tree: every entry, and the current leaf. */
@@ -435,6 +460,11 @@ export interface ClientRequests {
 	};
 	/** The client's width changed (components draw at it). */
 	"client/resize": { params: { width: number }; result: Record<string, never> };
+	/**
+	 * P58: the server exits (`tau serve stop`): no new turns start, running ones may finish within
+	 * `graceSeconds` (default 60), then they are stopped. Answered before the server goes.
+	 */
+	"server/shutdown": { params: { graceSeconds?: number }; result: Record<string, never> };
 }
 
 export type ClientMethod = keyof ClientRequests;

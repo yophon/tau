@@ -129,6 +129,17 @@ describe("line framing", () => {
 		transport.end();
 		assert.equal(closed, true);
 	});
+
+	it("joins a long line from many chunks once (P58: a long session's join over a socket)", () => {
+		const buffer = new LineBuffer();
+		const line = JSON.stringify({ text: "x".repeat(2_000_000) });
+		const chunks = line.match(/[\s\S]{1,65536}/g) ?? [];
+		assert.ok(chunks.length > 30);
+		for (const chunk of chunks) assert.deepEqual(buffer.push(chunk), []);
+		assert.deepEqual(buffer.push('\n{"next":1}\n{"par'), [line, '{"next":1}']);
+		assert.deepEqual(buffer.push('t":2}\n'), ['{"part":2}']);
+		assert.deepEqual(buffer.push(""), []);
+	});
 });
 
 describe("TauClient", () => {

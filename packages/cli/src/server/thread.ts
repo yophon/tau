@@ -73,6 +73,11 @@ export interface HubHost {
 	checkpoints?: (sessionId: string, fs: FileSystem | undefined) => CheckpointBackend | undefined;
 	/** P57: settings' permissions.defaultMode for each session (P37a), unless the flag or the environment chose a mode. */
 	applyDefaultMode?: boolean;
+	/**
+	 * P58 (`tau serve`): sessions of several clients share the process, so a model switch stays the
+	 * session's own — the process's endpoint does not move, and an agent built again keeps it.
+	 */
+	isolateModels?: boolean;
 }
 
 /** A client of the hub, as a thread sees it. */
@@ -185,9 +190,12 @@ export class HubThread {
 	}
 
 	/**
-	 * Open a new session, the saved one `metadata` names, or `store` (an import, a fork), in the host's
-	 * working directory. P57: `opener` — the client asking — is subscribed before the extensions start
-	 * (it sees what they say) and is asked the project trust question while the workspace opens.
+	 * Open a new session, the saved one `metadata` names, or `store` (an import, a fork), in `cwd`
+	 * (default: the host's working directory). P57: `opener` — the client asking — is subscribed before
+	 * the extensions start (it sees what they say) and is asked the project trust question while the
+	 * workspace opens. P58: `model` is the client's choice (a resumed session then stays on it);
+	 * `fallbackModel` and `thinking`, what the client last switched to, apply unless the session goes
+	 * back to its own last model; `ephemeral` sessions are not saved.
 	 */
 	static async open(
 		host: HubHost,
@@ -197,12 +205,17 @@ export class HubThread {
 			permissionMode?: PermissionMode;
 			opener?: Subscriber;
 			parentSession?: string;
+			cwd?: string;
+			ephemeral?: boolean;
+			model?: string;
+			fallbackModel?: string;
+			thinking?: { level: ThinkingLevel | undefined };
 		} = {},
 	): Promise<HubThread> {
 		const route: UiRoute = options.opener ? { opener: options.opener } : {};
 		const ui = threadUi(route);
 		const workspace = await host.openWorkspace({
-			cwd: host.cwd,
+			cwd: options.cwd ?? host.cwd,
 			ui,
 			onApproval: async (request) => (route.thread ? route.thread.approve(request) : false),
 			// Without a client opening it, nobody can answer: an untrusted project's resources stay off (P56).
@@ -219,7 +232,7 @@ export class HubThread {
 			options.store ??
 			(options.metadata
 				? await workspace.sessionRepo.open(options.metadata)
-				: host.noSession
+				: host.noSession || options.ephemeral
 					? undefined
 					: await workspace.sessionRepo.create(
 							options.parentSession !== undefined ? { parentSession: options.parentSession } : undefined,
@@ -242,6 +255,7 @@ export class HubThread {
 				...(host.setHostModel ? { setHostModel: host.setHostModel } : {}),
 				...(host.setHostThinking ? { setHostThinking: host.setHostThinking } : {}),
 				setHostPermissionMode: (mode) => workspace.setPermissionMode(mode),
+				...(host.isolateModels ? { keepEndpoint: true } : {}),
 			},
 			agent,
 			store,
@@ -261,8 +275,51 @@ export class HubThread {
 		await thread.ensureSessionEvents();
 		for (const warning of defaults?.warnings ?? []) thread.notice("warning", `permissions: ${warning}`);
 		await session.start(resumed ? "resume" : "startup");
-		if (resumed) await thread.restoreModel();
+		try {
+			await thread.chooseModel(resumed, options);
+		} catch (error) {
+			await thread.stop();
+			throw error;
+		}
 		return thread;
+	}
+
+	/**
+	 * After the session opened: the client's model (-m), else the session's own last model when it
+	 * resumes (pi), else the one the client last switched to (P58, a resident server); then the
+	 * client's reasoning level.
+	 */
+	async chooseModel(
+		resumed: boolean,
+		choice: { model?: string; fallbackModel?: string; thinking?: { level: ThinkingLevel | undefined } },
+	): Promise<void> {
+		if (choice.model !== undefined) {
+			const switched = this.session.setModel(choice.model);
+			if ("error" in switched) throw new JsonRpcError(ERROR_CODES.invalidParams, switched.error);
+		} else if (!(resumed && (await this.restoreModel())) && choice.fallbackModel !== undefined) {
+			if (choice.fallbackModel !== this.session.modelDisplay) this.session.setModel(choice.fallbackModel);
+		}
+		if (choice.thinking && choice.thinking.level !== this.session.agent.thinkingLevel) {
+			this.session.setThinking(choice.thinking.level);
+		}
+		this.modelChoices = unique([this.session.modelDisplay, ...this.modelChoices]);
+	}
+
+	/**
+	 * P58: an agent built again (/reload, a session switch) starts from the process's endpoint and
+	 * reasoning level; in a resident server (isolateModels) the session stays on its own.
+	 */
+	keepModel(display: string, thinking: ThinkingLevel | undefined): void {
+		if (!this.host.isolateModels) return;
+		const { session } = this;
+		const resolved = this.host.resolveModelSwitch?.(display);
+		const id = resolved && !("error" in resolved) ? resolved.model : display;
+		if (session.agent.model !== id) {
+			if (resolved && !("error" in resolved)) session.agent.setModel(resolved.model, resolved.options);
+			else session.agent.setModel(display);
+		}
+		session.modelDisplay = display;
+		if (session.agent.thinkingLevel !== thinking) session.agent.setThinkingLevel(thinking);
 	}
 
 	info(): ThreadInfo {
@@ -280,7 +337,8 @@ export class HubThread {
 
 	/** Where the session works now (enter_worktree moves it). */
 	get cwd(): string {
-		return this.session.agent.extensionContext().cwd ?? this.workspace.cwd;
+		// An agent without a file system says "" (P58: the workspace's directory then).
+		return this.session.agent.extensionContext().cwd || this.workspace.cwd;
 	}
 
 	state(): ThreadState {
@@ -415,6 +473,11 @@ export class HubThread {
 		return { disposition: await this.session.agent.followUp(input) };
 	}
 
+	/** P58: the server is shutting down — turns waiting their turn do not start. */
+	dropQueue(): void {
+		this.queue.length = 0;
+	}
+
 	/** Stop the running turn or job; requests waiting on it come to their fallback (deny, dismissed). */
 	interrupt(): void {
 		this.session.abort();
@@ -436,26 +499,45 @@ export class HubThread {
 	 * asked already). This thread ends without shutting the extensions down; the new one is returned
 	 * with `subscriber` subscribed before session_start.
 	 */
-	async handover(store: SessionStore, reason: "new" | "resume" | "fork", subscriber: Subscriber): Promise<HubThread> {
+	async handover(
+		store: SessionStore | undefined,
+		reason: "new" | "resume" | "fork",
+		subscriber: Subscriber,
+	): Promise<HubThread> {
 		const { session, workspace } = this;
-		const restored = reason === "new" ? undefined : await restoreSession(store);
-		const recorder = await SessionRecorder.open(store);
+		const restored = reason === "new" || !store ? undefined : await restoreSession(store);
+		// P58: an ephemeral session's /new is not saved either.
+		const recorder = store ? await SessionRecorder.open(store) : undefined;
+		const display = session.modelDisplay;
+		const thinking = session.agent.thinkingLevel;
 		session.agent = workspace.buildAgent(restored?.messages, recorder, session.extensions);
 		session.store = store;
 		session.recorder = recorder;
 		this.stopped = true;
 		this.subscribers.clear();
 		const started = reason === "new" ? "startup" : "resume";
-		const next = new HubThread(this.host, workspace, session, this.route, this.ui, await store.getMetadata(), started);
+		const metadata = store ? await store.getMetadata() : { id: randomUUID() };
+		const next = new HubThread(this.host, workspace, session, this.route, this.ui, metadata, started);
 		next.modelChoices = this.modelChoices;
 		next.autocomplete = this.autocomplete;
 		next.extensionsVersion = this.extensionsVersion;
+		next.keepModel(display, thinking);
 		this.route.thread = next;
 		next.subscribers.add(subscriber);
 		await next.ensureSessionEvents();
 		await session.extensions.notifySessionStart(started, session.agent.extensionContext());
 		if (reason === "resume") await next.restoreModel();
 		return next;
+	}
+
+	/** Not saved (--no-session, an ephemeral session). */
+	get ephemeral(): boolean {
+		return this.session.store === undefined;
+	}
+
+	/** Approvals and dialogs waiting for an answer (P58 ThreadInfo.waiting). */
+	get waiting(): number {
+		return this.pending.size;
 	}
 
 	/** session_before_switch: whether the extensions let the client leave for another session. */
@@ -631,16 +713,20 @@ export class HubThread {
 		this.emitState();
 	}
 
-	/** A resumed session goes back to the model it last used, when the table has it (pi, P28). */
-	async restoreModel(): Promise<void> {
+	/**
+	 * A resumed session goes back to the model it last used, when the table has it (pi, P28). Whether
+	 * the session has a last model it can use (P58: else the client's own choice applies).
+	 */
+	async restoreModel(): Promise<boolean> {
 		const store = this.session.store;
-		if (this.host.restoreSessionModel === false || !this.host.resolveModelSwitch || !store) return;
+		if (this.host.restoreSessionModel === false || !this.host.resolveModelSwitch || !store) return false;
 		const path = await store.getPathToRoot(await store.getLeafId());
 		const last = path.findLast((entry) => entry.type === "model_change");
-		if (last?.type !== "model_change") return;
+		if (last?.type !== "model_change") return false;
 		const ref = `${last.provider}/${last.modelId}`;
-		if (ref === this.session.modelDisplay || !this.modelChoices.includes(ref)) return;
-		await setModel(this, ref).catch(() => undefined);
+		if (!this.modelChoices.includes(ref)) return false;
+		if (ref === this.session.modelDisplay) return true;
+		return (await setModel(this, ref).catch(() => undefined))?.model !== undefined;
 	}
 
 	// --- Internals -----------------------------------------------------------------------------

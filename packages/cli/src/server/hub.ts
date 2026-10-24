@@ -3,7 +3,14 @@
 // notification, and the requests it waits on. Sessions nothing holds are unloaded after a while.
 // P57: everything the TUI does with a session, so the TUI can be a client too (docs/protocol.md).
 
-import type { PermissionMode, RegisteredToolRenderEvent, SessionEntry, SessionStore } from "@yophon/tau-kernel";
+import { resolve } from "node:path";
+import type {
+	PermissionMode,
+	RegisteredToolRenderEvent,
+	SessionEntry,
+	SessionStore,
+	ThinkingLevel,
+} from "@yophon/tau-kernel";
 import { type AgentMessage, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
@@ -27,7 +34,25 @@ export interface SessionHubOptions {
 	version: string;
 	/** How long a session nothing holds stays loaded (default 60 s). */
 	unloadAfterMs?: number;
+	/** P58: a client asked the server to exit (server/shutdown); absent, the method is refused. */
+	onShutdownRequest?: (graceSeconds: number | undefined) => void;
 }
+
+/** Methods refused once the server is shutting down: nothing new starts. */
+const STARTS_WORK: ReadonlySet<string> = new Set([
+	"thread/start",
+	"thread/resume",
+	"thread/import",
+	"thread/fork",
+	"turn/start",
+	"thread/compact",
+	"thread/navigate",
+	"thread/bash",
+	"thread/reload",
+	"thread/handoff",
+	"command/run",
+	"shortcut/run",
+]);
 
 /** One connected client. */
 export class HubConnection implements Subscriber {
@@ -39,6 +64,9 @@ export class HubConnection implements Subscriber {
 	sessionEvents = false;
 	width: number | undefined;
 	readonly threads = new Set<string>();
+	/** P58: the model and reasoning level this client last switched to (sessions it opens later start there). */
+	model: string | undefined;
+	thinking: { level: ThinkingLevel | undefined } | undefined;
 
 	constructor(transport: MessageTransport) {
 		this.peer = new JsonRpcPeer(transport, { idPrefix: "s" });
@@ -57,6 +85,14 @@ type SessionMetadata = {
 	messageCount?: number;
 };
 
+/** How a session opened for a client starts (P58: its model choice, -m, --permission-mode). */
+type Opening = {
+	model?: string;
+	fallbackModel?: string;
+	thinking?: { level: ThinkingLevel | undefined };
+	permissionMode?: PermissionMode;
+};
+
 const cancelled = (by: "switch" | "fork"): JsonRpcError =>
 	new JsonRpcError(
 		ERROR_CODES.cancelled,
@@ -71,9 +107,11 @@ export class SessionHub {
 	private readonly opening = new Map<string, Promise<HubThread>>();
 	private readonly unloadTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private readonly connections = new Set<HubConnection>();
-	/** A workspace without MCP servers, for listing and reading saved sessions. */
-	private catalog: Promise<Workspace> | undefined;
+	/** Per directory, a workspace without MCP servers, for listing and reading saved sessions. */
+	private readonly catalogs = new Map<string, Promise<Workspace>>();
 	private closed = false;
+	/** P58: shutting down — nothing new starts. */
+	private draining = false;
 
 	constructor(host: HubHost, options: SessionHubOptions) {
 		this.host = host;
@@ -94,6 +132,9 @@ export class SessionHub {
 			peer.onRequest(method, (params) => {
 				if (method !== "initialize" && !connection.initialized) {
 					throw new JsonRpcError(ERROR_CODES.invalidRequest, "Call initialize first");
+				}
+				if (this.draining && STARTS_WORK.has(method)) {
+					throw new JsonRpcError(ERROR_CODES.invalidRequest, "The server is shutting down");
 				}
 				return handler((params ?? {}) as ClientRequests[M]["params"]);
 			});
@@ -116,56 +157,49 @@ export class SessionHub {
 		});
 
 		handle("thread/start", async (params) => {
-			if (params.permissionMode !== undefined && !isPermissionMode(params.permissionMode)) {
-				throw new JsonRpcError(ERROR_CODES.invalidParams, `Unknown permission mode ${params.permissionMode}`);
-			}
-			const permissionMode = params.permissionMode as PermissionMode | undefined;
+			const permissionMode = this.permissionMode(params.permissionMode);
 			const previous = this.leaving(connection, params.previousThreadId, undefined);
-			let started: HubThread;
-			if (previous) {
-				const store = await previous.workspace.sessionRepo.create(
-					params.parentSession !== undefined ? { parentSession: params.parentSession } : undefined,
-				);
-				started = await this.switchTo(connection, previous, store, "new");
-				if (permissionMode) started.session.setPermissionMode(permissionMode);
-			} else {
-				started = await HubThread.open(this.host, {
-					...(permissionMode ? { permissionMode } : {}),
+			const started = await this.switchTo(
+				connection,
+				previous,
+				{
+					cwd: this.dir(params.cwd, previous?.workspace.cwd),
+					ephemeral: params.ephemeral ?? previous?.ephemeral ?? false,
 					...(params.parentSession !== undefined ? { parentSession: params.parentSession } : {}),
-					opener: connection,
-				});
-				this.adopt(started);
-			}
-			if (params.model !== undefined) {
-				const switched = started.session.setModel(params.model);
-				if ("error" in switched) {
-					this.threads.delete(started.id);
-					await started.stop();
-					throw new JsonRpcError(ERROR_CODES.invalidParams, switched.error);
-				}
-			}
+				},
+				"new",
+				{ ...this.choice(connection, params.model), ...(permissionMode ? { permissionMode } : {}) },
+			);
 			return this.subscribe(connection, started);
 		});
 
 		handle("thread/resume", async (params) => {
+			const permissionMode = this.permissionMode(params.permissionMode);
 			const previous = this.leaving(connection, params.previousThreadId, params.threadId);
+			const cwd = this.dir(params.cwd, previous?.workspace.cwd);
+			const opening = { ...this.choice(connection, params.model), ...(permissionMode ? { permissionMode } : {}) };
 			if (previous) {
 				const existing = this.threads.get(params.threadId);
 				const store =
-					existing?.session.store ?? (await previous.workspace.sessionRepo.open(await this.findSaved(params.threadId)));
-				const joined = await this.switchTo(connection, previous, store, "resume");
+					existing?.session.store ??
+					(await (await this.repo(cwd, previous)).open(await this.findSaved(params.threadId, cwd)));
+				const joined = await this.switchTo(connection, previous, { store, cwd }, "resume", existing ? {} : opening);
 				return this.subscribe(connection, joined, params.afterSeq);
 			}
-			return this.subscribe(connection, await this.load(params.threadId, connection), params.afterSeq);
+			return this.subscribe(connection, await this.load(params.threadId, cwd, connection, opening), params.afterSeq);
 		});
 
 		handle("thread/import", async (params) => {
 			const previous = this.leaving(connection, params.previousThreadId, undefined);
-			const repo = (previous?.workspace ?? (await this.catalogWorkspace())).sessionRepo;
+			const cwd = this.dir(params.cwd, previous?.workspace.cwd);
+			const repo = await this.repo(cwd, previous);
 			const store = params.copy
 				? await repo.importFile(params.path)
-				: await repo.open({ id: "", cwd: this.host.cwd, timestamp: "", filePath: params.path });
-			return this.subscribe(connection, await this.switchTo(connection, previous, store, "resume"));
+				: await repo.open({ id: "", cwd, timestamp: "", filePath: params.path });
+			return this.subscribe(
+				connection,
+				await this.switchTo(connection, previous, { store, cwd }, "resume", this.choice(connection)),
+			);
 		});
 
 		handle("thread/fork", async (params) => {
@@ -187,15 +221,25 @@ export class SessionHub {
 					: undefined,
 			);
 			const previous = source.isSubscribed(connection) ? source : undefined;
-			return this.subscribe(connection, await this.switchTo(connection, previous, forked, "fork"));
+			return this.subscribe(
+				connection,
+				await this.switchTo(
+					connection,
+					previous,
+					{ store: forked, cwd: source.workspace.cwd },
+					"fork",
+					this.choice(connection),
+				),
+			);
 		});
 
 		handle("thread/delete", async (params) => {
 			if (this.threads.has(params.threadId)) {
 				throw new JsonRpcError(ERROR_CODES.invalidRequest, `Session ${params.threadId} is open; it cannot be deleted`);
 			}
-			const metadata = await this.findSaved(params.threadId);
-			await (await this.catalogWorkspace()).sessionRepo.delete(metadata);
+			const cwd = this.dir(params.cwd);
+			const metadata = await this.findSaved(params.threadId, cwd);
+			await (await this.catalogWorkspace(cwd)).sessionRepo.delete(metadata);
 			return {};
 		});
 
@@ -206,8 +250,9 @@ export class SessionHub {
 			return { status: held.unsubscribe(connection) ? ("unsubscribed" as const) : ("notSubscribed" as const) };
 		});
 
-		handle("thread/list", async () => {
-			const saved = (await (await this.catalogWorkspace()).sessionRepo.list()) as SessionMetadata[];
+		handle("thread/list", async (params) => {
+			const cwd = this.dir(params.cwd);
+			const saved = (await (await this.catalogWorkspace(cwd)).sessionRepo.list()) as SessionMetadata[];
 			const threads: ThreadInfo[] = saved.map((metadata) => {
 				const details = savedDetails(metadata);
 				const loaded = this.threads.get(metadata.id);
@@ -223,18 +268,27 @@ export class SessionHub {
 							loaded: false,
 						};
 			});
-			// Started and not yet written (a session file appears with its first message).
+			// Started here and not yet written (a session file appears with its first message).
 			for (const held of this.threads.values()) {
-				if (!threads.some((info) => info.id === held.id)) threads.unshift(held.info());
+				if (held.workspace.cwd === cwd && !threads.some((info) => info.id === held.id)) threads.unshift(held.info());
 			}
 			return { threads };
 		});
 
+		handle("thread/loaded/list", () => ({
+			threads: [...this.threads.values()].map((held) => ({
+				...held.info(),
+				clients: held.subscriberCount,
+				waiting: held.waiting,
+			})),
+		}));
+
 		handle("thread/read", async (params) => {
 			const loaded = this.threads.get(params.threadId);
 			if (loaded) return { thread: loaded.info(), items: loaded.snapshot() };
-			const metadata = await this.findSaved(params.threadId);
-			const store = await (await this.catalogWorkspace()).sessionRepo.open(metadata);
+			const cwd = this.dir(params.cwd);
+			const metadata = await this.findSaved(params.threadId, cwd);
+			const store = await (await this.catalogWorkspace(cwd)).sessionRepo.open(metadata);
 			const { messages } = await restoreSession(store);
 			let item = 0;
 			return {
@@ -255,7 +309,10 @@ export class SessionHub {
 			const loaded = this.threads.get(params.threadId);
 			if (loaded) await control.setName(loaded, params.name);
 			else {
-				const store = await (await this.catalogWorkspace()).sessionRepo.open(await this.findSaved(params.threadId));
+				const cwd = this.dir(params.cwd);
+				const store = await (await this.catalogWorkspace(cwd)).sessionRepo.open(
+					await this.findSaved(params.threadId, cwd),
+				);
 				await (await SessionRecorder.open(store)).setName(params.name);
 			}
 			return {};
@@ -271,8 +328,17 @@ export class SessionHub {
 
 		// --- P57: session control ---
 		handle("thread/state", (params) => thread(params.threadId).state());
-		handle("thread/setModel", (params) => control.setModel(thread(params.threadId), params.model));
-		handle("thread/setThinking", (params) => control.setThinking(thread(params.threadId), params.level));
+		// P58: what this client switched to is where the sessions it opens later start (isolateModels).
+		handle("thread/setModel", async (params) => {
+			const result = await control.setModel(thread(params.threadId), params.model);
+			if (result.model !== undefined) connection.model = result.model;
+			return result;
+		});
+		handle("thread/setThinking", async (params) => {
+			const result = await control.setThinking(thread(params.threadId), params.level);
+			if (!result.cancelled) connection.thinking = { level: result.level as ThinkingLevel | undefined };
+			return result;
+		});
 		handle("thread/setPermissionMode", (params) => {
 			control.setPermissionMode(thread(params.threadId), params.mode);
 			return {};
@@ -359,6 +425,13 @@ export class SessionHub {
 			connection.width = params.width;
 			return {};
 		});
+		handle("server/shutdown", (params) => {
+			const { onShutdownRequest } = this.options;
+			if (!onShutdownRequest) throw new JsonRpcError(ERROR_CODES.invalidRequest, "This server is not stopped this way");
+			// After the answer is on its way.
+			setTimeout(() => onShutdownRequest(params.graceSeconds), 0);
+			return {};
+		});
 
 		peer.onClose(() => {
 			this.connections.delete(connection);
@@ -366,6 +439,20 @@ export class SessionHub {
 			connection.threads.clear();
 		});
 		return connection;
+	}
+
+	/**
+	 * P58 (`tau serve stop`): nothing new starts and queued turns are dropped; running work may finish
+	 * within `graceMs`, then every session stops.
+	 */
+	async shutdown(graceMs: number): Promise<void> {
+		this.draining = true;
+		for (const held of this.threads.values()) held.dropQueue();
+		const deadline = Date.now() + graceMs;
+		while (Date.now() < deadline && [...this.threads.values()].some((held) => held.busy)) {
+			await new Promise((resolve) => setTimeout(resolve, 50));
+		}
+		await this.close();
 	}
 
 	/** Stop every session and drop every client. */
@@ -412,28 +499,47 @@ export class SessionHub {
 	}
 
 	/**
-	 * The client moves from `previous` to the session in `store` (the TUI's switchSession):
-	 * session_before_switch may refuse; when only this client held `previous` and it is idle, its
-	 * workspace and extensions serve the new session (no second set of extensions and MCP servers);
-	 * otherwise the client leaves it and the session opens (or is joined) on its own.
+	 * The client moves from `previous` to `target` (the TUI's switchSession) — a new session, or the
+	 * one in `target.store`: session_before_switch may refuse; when only this client held `previous`,
+	 * it is idle and the target is in its directory, its workspace and extensions serve the target (no
+	 * second set of extensions and MCP servers); otherwise the client leaves it and the target opens
+	 * (or is joined) on its own. `opening` applies to a session opened here, not one joined.
 	 */
 	private async switchTo(
 		connection: HubConnection,
 		previous: HubThread | undefined,
-		store: SessionStore,
+		target: { cwd: string; store?: SessionStore; ephemeral?: boolean; parentSession?: string },
 		reason: "new" | "resume" | "fork",
+		opening: Opening = {},
 	): Promise<HubThread> {
-		const metadata = await store.getMetadata();
-		const existing = this.threads.get(metadata.id);
+		// Leaving a session for a new one: its file (not written before the first message) for
+		// session_before_switch and the handover, unless it is not saved.
+		const store =
+			target.store ??
+			(reason === "new" && previous && !target.ephemeral && !this.host.noSession
+				? await (await this.repo(target.cwd, previous)).create(
+						target.parentSession !== undefined ? { parentSession: target.parentSession } : undefined,
+					)
+				: undefined);
+		const metadata = store ? await store.getMetadata() : undefined;
+		const existing = reason === "new" || !metadata ? undefined : this.threads.get(metadata.id);
 		if (previous) {
-			if (!(await previous.beforeSwitch(reason === "new" ? "new" : "resume", metadata.filePath)))
+			if (!(await previous.beforeSwitch(reason === "new" ? "new" : "resume", metadata?.filePath)))
 				throw cancelled("switch");
-			if (!existing && previous.canHandOver(connection)) {
+			if (!existing && previous.canHandOver(connection) && previous.workspace.cwd === target.cwd) {
 				this.cancelUnload(previous.id);
 				const next = await previous.handover(store, reason, connection);
 				this.threads.delete(previous.id);
 				connection.threads.delete(previous.id);
 				this.adopt(next);
+				try {
+					if (opening.model !== undefined) await next.chooseModel(false, { model: opening.model });
+					if (opening.permissionMode) next.session.setPermissionMode(opening.permissionMode);
+				} catch (error) {
+					this.threads.delete(next.id);
+					await next.stop();
+					throw error;
+				}
 				return next;
 			}
 			connection.threads.delete(previous.id);
@@ -442,8 +548,11 @@ export class SessionHub {
 		if (existing) return existing;
 		const opened = await HubThread.open(this.host, {
 			...(reason === "new" ? {} : { store }),
-			...(reason === "new" && metadata.parentSession ? { parentSession: metadata.parentSession } : {}),
+			...(reason === "new" && target.parentSession !== undefined ? { parentSession: target.parentSession } : {}),
+			...(target.ephemeral ? { ephemeral: true } : {}),
+			cwd: target.cwd,
 			opener: connection,
+			...opening,
 		});
 		this.adopt(opened);
 		return opened;
@@ -457,39 +566,75 @@ export class SessionHub {
 		return held;
 	}
 
-	private async load(threadId: string, opener?: Subscriber): Promise<HubThread> {
+	/** The held session, else the saved one of `cwd` opened (`opening` applies then). */
+	private async load(threadId: string, cwd: string, opener?: Subscriber, opening: Opening = {}): Promise<HubThread> {
 		const loaded = this.threads.get(threadId);
 		if (loaded) return loaded;
-		let opening = this.opening.get(threadId);
-		if (!opening) {
-			opening = (async () => {
-				const metadata = await this.findSaved(threadId);
-				const opened = await HubThread.open(this.host, { metadata, ...(opener ? { opener } : {}) });
+		let pending = this.opening.get(threadId);
+		if (!pending) {
+			pending = (async () => {
+				const metadata = await this.findSaved(threadId, cwd);
+				const opened = await HubThread.open(this.host, {
+					metadata,
+					cwd,
+					...(opener ? { opener } : {}),
+					...opening,
+				});
 				this.adopt(opened);
 				return opened;
 			})();
-			this.opening.set(threadId, opening);
-			void opening.finally(() => this.opening.delete(threadId)).catch(() => undefined);
+			this.opening.set(threadId, pending);
+			void pending.finally(() => this.opening.delete(threadId)).catch(() => undefined);
 		}
-		return opening;
+		return pending;
 	}
 
-	private async findSaved(threadId: string): Promise<SessionMetadata> {
-		const saved = (await (await this.catalogWorkspace()).sessionRepo.list()) as SessionMetadata[];
+	private async findSaved(threadId: string, cwd: string): Promise<SessionMetadata> {
+		const saved = (await (await this.catalogWorkspace(cwd)).sessionRepo.list()) as SessionMetadata[];
 		const metadata = saved.find((candidate) => candidate.id === threadId);
-		if (!metadata) throw new JsonRpcError(ERROR_CODES.invalidParams, `No session ${threadId} in ${this.host.cwd}`);
+		if (!metadata) throw new JsonRpcError(ERROR_CODES.invalidParams, `No session ${threadId} in ${cwd}`);
 		return metadata;
 	}
 
-	private catalogWorkspace(): Promise<Workspace> {
-		this.catalog ??= this.host.openWorkspace({
-			cwd: this.host.cwd,
-			ui: undefined,
-			onApproval: undefined,
-			trustPrompt: false,
-			mcp: false,
-		});
-		return this.catalog;
+	/** P58: the directory a request means — its own `cwd`, else the given default, else the server's. */
+	private dir(cwd: string | undefined, fallback?: string): string {
+		return cwd !== undefined ? resolve(this.host.cwd, cwd) : (fallback ?? this.host.cwd);
+	}
+
+	private permissionMode(mode: string | undefined): PermissionMode | undefined {
+		if (mode !== undefined && !isPermissionMode(mode)) {
+			throw new JsonRpcError(ERROR_CODES.invalidParams, `Unknown permission mode ${mode}`);
+		}
+		return mode as PermissionMode | undefined;
+	}
+
+	/**
+	 * The model a session this client opens starts on: the one it asks for (-m), else (P58, a server
+	 * whose sessions keep their own models) the model and reasoning level it last switched to.
+	 */
+	private choice(connection: HubConnection, model?: string): Opening {
+		if (model !== undefined) return { model, ...(connection.thinking ? { thinking: connection.thinking } : {}) };
+		if (!this.host.isolateModels) return {};
+		return {
+			...(connection.model !== undefined ? { fallbackModel: connection.model } : {}),
+			...(connection.thinking ? { thinking: connection.thinking } : {}),
+		};
+	}
+
+	/** The sessions of `cwd`: the leaving session's workspace when it works there, else the catalog's. */
+	private async repo(cwd: string, previous: HubThread | undefined): Promise<Workspace["sessionRepo"]> {
+		return previous && previous.workspace.cwd === cwd
+			? previous.workspace.sessionRepo
+			: (await this.catalogWorkspace(cwd)).sessionRepo;
+	}
+
+	private catalogWorkspace(cwd: string): Promise<Workspace> {
+		let catalog = this.catalogs.get(cwd);
+		if (!catalog) {
+			catalog = this.host.openWorkspace({ cwd, ui: undefined, onApproval: undefined, trustPrompt: false, mcp: false });
+			this.catalogs.set(cwd, catalog);
+		}
+		return catalog;
 	}
 
 	private scheduleUnload(held: HubThread): void {

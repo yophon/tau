@@ -40,8 +40,11 @@ export async function setModel(thread: HubThread, requested: string): Promise<Re
 	if (decision.cancel) return { cancelled: decision.reason ? { reason: decision.reason } : {} };
 	// An extension that rewrote the choice gets exactly its id, on the current provider.
 	const followsTable = resolved !== undefined && decision.model === target;
-	if (followsTable) resolved.commit();
-	else host.setHostModel?.(decision.model);
+	// P58: in a resident server the switch stays this session's (the process's endpoint does not move).
+	if (!host.isolateModels) {
+		if (followsTable) resolved.commit();
+		else host.setHostModel?.(decision.model);
+	}
 	session.modelDisplay = followsTable ? resolved.display : decision.model;
 	thread.modelChoices = [...new Set([session.modelDisplay, ...thread.modelChoices])];
 	// The agent sends the model with each request and logs a model_change entry (P23d).
@@ -285,6 +288,7 @@ export function reload(thread: HubThread): Promise<void> {
 			// Host actions first, then session_start: a handler that submits a prompt there must find
 			// the new agent (P23e, pi bindExtensions order).
 			session.agent = nextAgent;
+			thread.keepModel(session.modelDisplay, previousAgent.thinkingLevel);
 			session.adoptRegistry(nextExtensions);
 			await thread.ensureSessionEvents();
 			await nextExtensions.notifySessionStart("reload", nextAgent.extensionContext());

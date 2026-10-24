@@ -68,6 +68,8 @@ export interface HeadlessOptions {
 	setHostModel?: (model: string) => void;
 	setHostThinking?: (level: ThinkingLevel | undefined) => void;
 	setHostPermissionMode?: (mode: PermissionMode) => void;
+	/** P58: a model switch stays this session's (in a resident server it does not move the process's endpoint). */
+	keepEndpoint?: boolean;
 }
 
 export interface RunOutcome {
@@ -299,7 +301,7 @@ export class HeadlessSession {
 		const resolved = this.options.resolveModelSwitch?.(requested);
 		if (resolved && "error" in resolved) return resolved;
 		if (resolved) {
-			resolved.commit();
+			if (!this.options.keepEndpoint) resolved.commit();
 			this.agent.setModel(resolved.model, resolved.options);
 			this.modelDisplay = resolved.display;
 		} else {
