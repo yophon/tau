@@ -4,6 +4,20 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P59: tau on a phone)
+- `@yophon/tau-web`: a web client the resident server serves — pair once from a QR code, then the
+  sessions the server holds (the terminal's among them) and recent ones; the conversation as it
+  streams, approval cards and extension dialogs, send / steer / stop, photos, model and permission
+  mode, new sessions; reconnects and catches up by itself; installable to the home screen.
+- `tau serve remote on [--listen ws://HOST:PORT] | off` (settings `daemon.remote.listen`, port 7700),
+  `tau serve pair` (one-time code, addresses, QR code), `tau serve devices`, `tau serve revoke`.
+  Every WebSocket connection needs a paired device's token; no TLS of its own (use a tunnel such as
+  Tailscale beyond the home network).
+- `tau/1`: `initialize.auth`, `capabilities.stateEvents`, `thread/list.allDirectories`, `server/pair`,
+  `server/devices`, `server/revoke`; `createWebSocketTransport` in `@yophon/tau-protocol`.
+- The TUI reconnects to the resident server after a drop (a restart) and rejoins its session.
+- Dependencies: `ws` 8.22.0, `qrcode-generator` 2.0.4 (CLI); `preact` 10.29.8 (bundled into the web client).
+
 ### Added (P58: the resident server)
 - `tau serve start|stop|restart|status`: a tau in the background on a local socket (`~/.tau/daemon/serve.sock`
   in a user-only directory; a named pipe on Windows), after Codex's `app-server daemon` — start returns

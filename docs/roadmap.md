@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-24（P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P59（远程与手机）**）
+> 最后更新：2026-10-24（P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P60 规格书（编辑器接常驻会话）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -72,16 +72,13 @@
 | [P56](specs/phase-56-session-hub.md) | 常驻 tau 第一步：客户端协议 tau/1（`@yophon/tau-protocol`，照 Codex app-server 的形状）与会话中枢（多客户端、按 seq 补齐、审批发给所有人先答为准、没人接着时等待），`tau serve --listen stdio` | 2026-10-23 | D58 |
 | [P57](specs/phase-57-tui-over-protocol.md) | 常驻 tau 第二步：TUI 与 `--mode rpc` 成为会话中枢的客户端（进程内），协议补齐 TUI 所需——原样的内核消息、事件与状态，会话控制，一次一件事，扩展的界面以数据发出，换会话时交接工作区；两个 TUI 可接同一会话 | 2026-10-23 | D59 |
 | [P58](specs/phase-58-resident-service.md) | 常驻 tau 第三步：常驻服务——`tau serve --listen unix://`（Windows 命名管道）与 `tau serve start\|stop\|restart\|status`（照 Codex 的 daemon），一个服务管所有目录、会话的模型各归各的；TUI 有服务就连、没有时缺省先起一个，改服务配置的参数与 `--no-daemon` 在本进程；两个终端接同一会话，关掉终端会话照跑，`/resume` 列出服务持有的会话 | 2026-10-24 | D60 |
+| [P59](specs/phase-59-remote-phone.md) | 常驻 tau 第四步：手机——常驻服务的 WebSocket 与网页客户端（新包 `@yophon/tau-web`，Preact 构建时打包），`tau serve remote on`、`pair`（一次性码与二维码）、`devices`、`revoke`，设备令牌（只存摘要）、不自带 TLS（推荐 Tailscale）；手机上看会话、答审批与对话框、发话插话中止、附图、换模型与档位；网页与 TUI 断线自动重连补齐 | 2026-10-24 | D61 |
 
-真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）。
-
-## Phase 59 🚧 远程与手机
-
-规格书（2026-10-24 确认；用户：「可以，做吧」）：[specs/phase-59-remote-phone.md](specs/phase-59-remote-phone.md)。分 59a 服务端（WebSocket、配对与设备、协议补充、TUI 断线续接）与 59b 网页客户端（`@yophon/tau-web`）两步提交，做完一起验收。
+真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）；P59 的手机两项（同一局域网扫码配对、接上终端的会话、答一次审批；有 Tailscale 时经它的 HTTPS 地址打开一次）。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
-总计划见 [resident-tau-plan.md](specs/resident-tau-plan.md)（2026-10-23 确认；用户：「我想要那个『一个常驻 tau，TUI、编辑器、手机同时接上同一个会话』」「都按你的建议来，去做吧」）：P56 协议与会话中枢（✅）→ P57 TUI 改走协议（✅）→ P58 常驻服务与本机 socket（✅）→ **下一个是 P59** 远程与手机（WebSocket、配对、网页客户端）→ P60 编辑器（ACP 接常驻会话）。每个阶段先写规格书由用户判定。
+总计划见 [resident-tau-plan.md](specs/resident-tau-plan.md)（2026-10-23 确认；用户：「我想要那个『一个常驻 tau，TUI、编辑器、手机同时接上同一个会话』」「都按你的建议来，去做吧」）：P56 协议与会话中枢（✅）→ P57 TUI 改走协议（✅）→ P58 常驻服务与本机 socket（✅）→ P59 远程与手机（✅）→ **下一个是 P60** 编辑器（ACP 接常驻会话）。每个阶段先写规格书由用户判定。
 
 复刻 yo-agent 的其余阶段（原 P56 MCP server 与 sampling、P57 的 SQLite 会话库、P58 的 `createWebAgent`/`defineHttpTool`/IndexedDB/挂件、P59 不可信插件宿主）搁置，见 Backlog G；原 P57 的远程配对与 P58 的网页控制台并进 P59。把 yo-agent 换成 tau 的 CLI 的迁移草案 [draft-yo-agent-migration.md](specs/draft-yo-agent-migration.md) 照旧搁置。
 

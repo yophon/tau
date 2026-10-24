@@ -62,6 +62,7 @@ tau 读两份设置文件，键名尽量照 pi：
 | `tui.doubleEscapeAction` | 输入框为空时连按两次 Esc：`tree`、`fork`、`none`（P37b，pi） | `tree` | 否 | 启动 |
 | `worktree.baseRef`、`worktree.symlinkDirectories` | `tau --worktree`、`enter_worktree`、隔离的子 agent 从哪里开分支、链接哪些目录（P37d、P46），见 [worktrees.md](worktrees.md) | `fresh`、无 | 否 | 启动 |
 | `daemon.autoStart` | 打开 TUI 时没有常驻服务就先在后台起一个（P58，照 Codex 的 `daemon_auto_start`）；`false` 时只连已经在运行的（`tau serve start`） | true | 否 | 启动 |
+| `daemon.remote.listen` | 常驻服务给手机等设备的地址 `ws://HOST:PORT`（网页客户端在同一端口）；`tau serve remote on [--listen …]` 写它、`off` 删它，并重启服务（P59，照 Codex 的 enable-remote-control）。设备要先 `tau serve pair` | 不开（`remote on` 时 `ws://0.0.0.0:7700`） | 否 | 启动 |
 | `daemon.shutdownGraceSeconds` | `tau serve stop`、Ctrl+C 停常驻服务时，正在跑的轮最多再跑多少秒，0–300（P58，照 Codex） | 60 | 否 | 启动 |
 | `shell.envAllow` | 名字像密钥、但仍要留给命令的环境变量（P32b） | 无 | 否 | 启动 |
 | `audit.details` | 审计账本里记工具参数的摘要还是不记（P32c） | `summary` | 否 | 启动 |

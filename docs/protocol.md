@@ -1,6 +1,6 @@
 # tau 的客户端协议（tau/1）
 
-一个 tau 持有会话，多个客户端同时接上同一个会话：终端、编辑器、手机。这是它们说的协议（P56 起；P57 补齐了 TUI 需要的部分，TUI 与 `--mode rpc` 自己就是它的客户端；P58 加了常驻服务与本机 socket）。形状与名字照抄 Codex 的 app-server 协议（会话、轮、条目；审批是 server 发给客户端的请求），tau 自己的部分另起名字。类型定义在 `@yophon/tau-protocol`（`packages/protocol/src/types.ts`），以它为准；字段只加不改。
+一个 tau 持有会话，多个客户端同时接上同一个会话：终端、编辑器、手机。这是它们说的协议（P56 起；P57 补齐了 TUI 需要的部分，TUI 与 `--mode rpc` 自己就是它的客户端；P58 加了常驻服务与本机 socket；P59 加了远程设备与网页客户端）。形状与名字照抄 Codex 的 app-server 协议（会话、轮、条目；审批是 server 发给客户端的请求），tau 自己的部分另起名字。类型定义在 `@yophon/tau-protocol`（`packages/protocol/src/types.ts`），以它为准；字段只加不改。
 
 现在的入口：
 
@@ -9,9 +9,11 @@ tau serve                         # 同 --listen stdio：stdin/stdout 上一行�
 tau serve -m deepseek/flash --permission-mode supervised
 tau serve --listen unix://        # 本机 socket（Windows 上是命名管道），前台运行
 tau serve start|stop|restart|status   # 常驻服务：在后台运行的 --listen unix://（见「常驻服务」）
+tau serve remote on|off              # P59：远程设备与网页客户端（见「远程设备」）
+tau serve pair | devices | revoke     # 配对、列出、撤销设备
 ```
 
-TUI 有常驻服务就连上它，没有时按设置先起一个，否则在自己进程里起会话中枢、经进程内通道（对象直接传）连上（P57/P58，照 Codex 的 TUI）。`--mode rpc` 总在自己进程里。WebSocket 与配对（P59）之后加上。
+TUI 有常驻服务就连上它，没有时按设置先起一个，否则在自己进程里起会话中枢、经进程内通道（对象直接传）连上（P57/P58，照 Codex 的 TUI）；连接断了自动重连（P59）。`--mode rpc` 总在自己进程里。手机经 WebSocket 连常驻服务（P59）。
 
 ## 线格式
 
@@ -21,6 +23,7 @@ JSON-RPC 2.0。stdio 与本机 socket 上一行一条消息（UTF-8，`\n` 结�
 |---|---|---|
 | stdio | `--listen stdio`（缺省） | 一个客户端（启动它的那个进程） |
 | 本机 socket | `--listen unix://` 或 `unix://PATH` | 缺省位置：Linux/macOS 是 `~/.tau/daemon/serve.sock`（目录 0700，路径太长时 `/tmp/tau-<uid>/serve.sock`）；Windows 是命名管道 `\\.\pipe\tau-<家目录的哈希>`（只有本用户、管理员与 SYSTEM 能写） |
+| WebSocket（P59） | 常驻服务的 `daemon.remote.listen`（`ws://HOST:PORT`，缺省端口 7700），路径 `/rpc` | 一帧一条消息；配对过的设备，`initialize` 必须带令牌（见「远程设备」） |
 | 进程内 | `createMemoryTransportPair()` | TUI 与 `--mode rpc` 的进程内中枢，对象直接传 |
 
 ```json
@@ -35,6 +38,9 @@ JSON-RPC 2.0。stdio 与本机 socket 上一行一条消息（UTF-8，`\n` 结�
 | `nativeEvents` | 要 tau 的原样数据（见「原样数据」）：完整客户端（TUI）用它维护对话镜像 |
 | `sessionEvents` | 要 pi 的 JSON 模式事件记录（`thread/sessionEvent`，`tau --mode json\|rpc` 打印的那些） |
 | `width` | 客户端的列数；扩展组件按它画（各渲染请求也可单独给宽度），改变时 `client/resize` |
+| `stateEvents` | P59：只要会话状态（`thread/state/changed`，加入结果也带 `state`），不要其余原样数据：轻客户端（手机）的顶栏 |
+
+`initialize` 另有 `auth: { token }`（P59）：WebSocket 连接必须带配对得来的设备令牌，没带或不对就回错误并断开。
 
 server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的标准码外：`-32000` 连接已关，`-32001` 被扩展拒绝（`data.by` 是 `"switch"` 或 `"fork"`），`-32002` 会话正忙（另一件事在做）。
 
@@ -49,7 +55,7 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 | `thread/import` | `{ path, copy, cwd?, previousThreadId? }` → 加入结果。别处的会话文件：`copy` 时复制进会话目录（`/import`），否则就地打开（`--session <文件>`） |
 | `thread/fork` | `{ threadId, entryId?, position? }` → 加入结果。复制会话（到某个条目之前，`position: "at"` 为到它为止；不给条目为整个会话）并移过去；有条目且不是 `at` 时扩展可拒绝（`session_before_fork`） |
 | `thread/unsubscribe` | `{ threadId }` → `{ status: "notLoaded" \| "notSubscribed" \| "unsubscribed" }` |
-| `thread/list` | `{ cwd? }` → `{ threads }`：这个目录的会话，`loaded` 表示 server 正持有 |
+| `thread/list` | `{ cwd?, allDirectories?, limit? }` → `{ threads }`：这个目录的会话，`loaded` 表示 server 正持有；P59 `allDirectories`：各个目录的存档会话，按更新时间从新到旧，最多 `limit` 条（缺省 50；放在 `~/.tau/sessions` 以外的不在内） |
 | `thread/loaded/list` | `{}` → `{ threads }`：server 正持有的会话，各个目录的（Codex 的名字），带 `clients` 与 `waiting` |
 | `thread/read` | `{ threadId, cwd? }` → `{ thread, items }`：读对话，不订阅 |
 | `thread/delete` | `{ threadId, cwd? }`：删掉存档会话的文件（server 正持有的不能删） |
@@ -191,6 +197,22 @@ TUI 的渲染全建在内核消息与事件上（pi 的形状，本来就是 JSO
 - **配置以服务启动时为准**：模型表、端点、密钥、用户设置里启动时读的项，改了要 `tau serve restart`；每个新开的会话照旧读它所在目录的项目设置。
 - **环境变量以服务为准**：工具与 `!` 命令在服务里运行，用的是服务启动时的环境，不按客户端隔离。
 
+## 远程设备（P59）
+
+常驻服务开了远程（`tau serve remote on [--listen ws://HOST:PORT]`，写 settings `daemon.remote.listen` 并重启服务，照 Codex 的 `enable-remote-control`；缺省 `ws://0.0.0.0:7700`）后，同一个端口上有：
+
+| 路径 | 内容 |
+|---|---|
+| `GET /` | 网页客户端（`@yophon/tau-web` 构建好的静态文件；页面带 CSP，只连这个服务） |
+| `GET /readyz` | `ok`（照 Codex） |
+| `POST /pair` | `{ code, name? }` → `{ token, name }`：配对码换设备令牌；码不对 403 |
+| WebSocket `/rpc` | 协议本身，一帧一条消息 |
+
+- **配对**：`tau serve pair [--name 名字]` 让服务发一个一次性 6 位码（10 分钟，同一个码 5 次失败作废，照 yo-agent），打出这台电脑能被访问的网址（家里的网络排在前面）与二维码，网址形如 `http://192.168.1.5:7700/#pair=483920`。设备换到的令牌服务只存 SHA-256（`~/.tau/daemon/devices.json`，0600，照 Codex 的 capability token）。
+- **每个 WebSocket 连接都要令牌**，回环地址上也一样（tau 自己的本机客户端走本机 socket）；浏览器的 `Origin` 必须是这个服务自己，别的网站的页面连不上。服务定时 ping，走掉的手机的连接会被断开。
+- **只有本机的客户端管设备**：`server/pair { name? }` → `{ code, expiresAt, urls }`、`server/devices` → `{ devices: [{ name, pairedAt, lastSeenAt?, connected? }], listen? }`、`server/revoke { name }` → `{ revoked }`（撤销的设备在线的连接立刻断开）。WebSocket 上调用它们回错误。命令行是 `tau serve pair | devices | revoke <名字>`。
+- **不自带 TLS**（同 Codex 的 WebSocket 监听、yo-agent）：局域网内是明文 `http`/`ws`。离开局域网或要加密请用隧道，例如 Tailscale：`tailscale serve --bg 7700` 后在手机上开 `https://<机器名>.<tailnet>.ts.net`；只经隧道用时可以把监听绑在 `127.0.0.1`。
+
 TUI 怎么用它见 README 的「常驻服务」一节：有服务就连；没有时 settings `daemon.autoStart`（缺省开）先起一个；`--no-daemon` 与改端点、提示词、工具、扩展、权限规则的参数在自己进程里运行。
 
 ## 用 `@yophon/tau-protocol` 写客户端
@@ -208,7 +230,7 @@ const { thread } = await client.startThread();
 await client.startTurn(thread.id, "hello");
 ```
 
-接常驻服务时，把 `net.connect(地址)` 的 socket 接到同样的行传输上（地址见「线格式」的表；CLI 的 `packages/cli/src/daemon.ts` 里有 `defaultAddress`、`socketTransport`、`probeDaemon`）。进程内用 `createMemoryTransportPair()`（对象直接传，不经 JSON）。TUI 的客户端一侧（镜像、状态、命令表、Markdown 变换的缓存）在 `packages/cli/src/tui/session-client.ts`。
+浏览器与 WebSocket 用 `createWebSocketTransport(socket)`（一帧一条消息，P59），`initialize` 带 `auth: { token }`。接常驻服务时，把 `net.connect(地址)` 的 socket 接到同样的行传输上（地址见「线格式」的表；CLI 的 `packages/cli/src/daemon.ts` 里有 `defaultAddress`、`socketTransport`、`probeDaemon`）。进程内用 `createMemoryTransportPair()`（对象直接传，不经 JSON）。TUI 的客户端一侧（镜像、状态、命令表、Markdown 变换的缓存）在 `packages/cli/src/tui/session-client.ts`。
 
 ## 和其他协议的关系
 

@@ -239,6 +239,17 @@ D31 定下的 Ink 界面跑在主屏幕上：写完的内容交给终端的滚�
 - **退出时把整段对话写回主屏幕**（pi 的缺省）：全屏的内容不在滚动记录里，退出后应该还看得到；异常退出和收到信号也要恢复终端。
 - **搜索不在这一步**：先把画面和滚动做扎实。
 
+## D61：手机经常驻服务的 WebSocket 与网页客户端，设备令牌，不自带 TLS（2026-10-24，P59，用户确认）
+
+- **传输照 Codex 的 `--listen ws://`**：常驻服务多一个 WebSocket 监听，同一个端口发网页客户端、`/readyz`、`POST /pair`。开关是显式的、写进设置（照 Codex 的 `enable-remote-control`），缺省不开、开了缺省 `0.0.0.0:7700`。实现用 `ws` 库（Node 只有 WebSocket 客户端）。
+- **凭据是配对码换来的设备令牌**（用户确认第 1 项）：一次性 6 位码、10 分钟、5 次失败作废（yo-agent 的门），服务只存令牌的 SHA-256（Codex 的 capability token），逐个撤销。没用 yo-agent 的设备密钥对：局域网的 `http` 页面里没有 WebCrypto。浏览器的 WebSocket 带不了 `Authorization` 头，令牌放在 `initialize` 里。
+- **每个 WebSocket 连接都要令牌**，回环地址也一样（比 Codex 严，但 tau 自己的本机客户端走本机 socket，不限制任何用法），并查 `Origin`：挡住别的网站经 `ws://127.0.0.1` 驱动 tau。管设备（配对、列出、撤销）只给本机的连接。
+- **不自带 TLS**（用户确认第 2 项，同 Codex 的 WebSocket 监听与 yo-agent）：局域网明文，开远程时与配对时都说明；文档推荐 Tailscale（`tailscale serve` 给 HTTPS 与真证书），也可只绑回环让隧道转发。
+- **网页客户端是新包 `@yophon/tau-web`**（用户确认第 3 项）：Preact 在构建时由 esbuild 打进静态文件，运行时零依赖，CLI 依赖它、服务端发出。它是轻客户端：用条目，不要原样内核数据；顶栏的会话状态用新能力 `stateEvents`。Markdown 读成数据再画成元素，不插 HTML（agent 输出不可信），页面带 CSP。
+- **手机上不显示扩展的组件与渲染器**（用户确认第 4 项），扩展的对话框照常（它们是 `ui/request`）。
+- **断线续接**：网页客户端按退避重连并按 `seq` 补齐，服务重启后（会话只在磁盘上）带会话的目录去接；TUI 也补上 P58 推迟的重连（最多 60 秒，重新加入并重画）。
+- **跨目录的最近会话**：`thread/list allDirectories` 扫 `~/.tau/sessions` 下各目录、按文件修改时间只读最新的几个；放在别处的（`sessionDir`）不在内。
+
 ## D60：常驻服务照 Codex 的 daemon，TUI 有就连、缺省自动起（2026-10-24，P58，用户确认）
 
 - **服务与生命周期照 Codex**：`tau serve --listen unix://`（或 `unix://PATH`）在本机 socket 上服务多个客户端；`tau serve start|stop|restart|status` 照 `codex app-server daemon`：start 幂等、等到服务能回 `initialize` 才返回；stop 先 `server/shutdown`（不再开始新的事，正在跑的轮在宽限期内跑完，缺省 60 秒、0–300），过了再按 pid 强杀；每个命令输出一个 JSON 对象。socket 本身当锁：同一位置有服务在听就不起第二个，Unix 上连不上的 socket 文件是上次留下的、删掉再听。

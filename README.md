@@ -41,8 +41,8 @@ inject a small adapter instead of polyfilling globals.
   compaction with pi's algorithm, `/handoff`; `tau --worktree` and
   `enter_worktree` for a session in its own git worktree
   ([docs/worktrees.md](docs/worktrees.md)). A resident server keeps sessions
-  running after a terminal closes, and several terminals share one session
-  (see "Resident server" below).
+  running after a terminal closes, and several terminals share one session; a
+  phone joins from its browser (see "Resident server" and "On a phone" below).
 - **Subagents** — one, parallel, chain or background, from Markdown agent
   definitions; `send_message` continues one; worktree isolation
   ([docs/subagents.md](docs/subagents.md)).
@@ -274,6 +274,28 @@ the server fixed — `--extension`, `--no-mcp`, `--tools`, `--system-prompt`,
 the TUI's own process instead, as does `--no-daemon`; the TUI says why in one
 line. `-p`, the REPL and `--mode json|rpc|acp` always run in their own process.
 
+## On a phone
+
+```bash
+tau serve remote on            # the resident server also serves the web client (port 7700)
+tau serve pair                 # a one-time code, the addresses and a QR code to scan
+tau serve devices              # paired devices; tau serve revoke <name> forgets one
+```
+
+Scan the QR code (or open the address and type the code) and the phone is paired; after that the
+page opens straight away. It lists the sessions the resident server holds — the one running in
+your terminal among them — and recent ones from every directory. Inside a session you see the
+conversation as it streams, answer approvals and extension dialogs, send, steer or stop, attach a
+photo, switch model or permission mode, and start new sessions. When the network drops or the
+phone sleeps it reconnects and catches up by itself. Add it to the home screen to use it like an
+app.
+
+Every connection needs a paired device's token (`tau serve pair`); remote access is off until you
+turn it on. On your home network the connection is plain HTTP — not encrypted. Beyond it, or to
+encrypt it, use a tunnel such as Tailscale: `tailscale serve --bg 7700` gives the phone an HTTPS
+address on your tailnet (bind tau to `127.0.0.1` with `tau serve remote on --listen
+ws://127.0.0.1:7700` so only the tunnel reaches it).
+
 ## Resident gateway
 
 ```bash
@@ -349,7 +371,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/decisions.md](docs/decisions.md) — design decision records (D1–D55)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
-- [docs/protocol.md](docs/protocol.md) — `tau serve`, the resident server and tau's client protocol (several clients on one session)
+- [docs/protocol.md](docs/protocol.md) — `tau serve`, the resident server, remote devices and tau's client protocol (several clients on one session)
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, language servers, credentials, OAuth, keeping secrets from the model

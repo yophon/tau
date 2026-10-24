@@ -1,6 +1,6 @@
 # Phase 59：远程与手机 规格书
 
-> 状态：已确认（2026-10-24）。用户：「可以，做吧」——「需要确认」四项都按建议。
+> 状态：已完成（2026-10-24），实施记录见文末。确认于 2026-10-24。用户：「可以，做吧」——「需要确认」四项都按建议。
 > 对应 roadmap 阶段：Phase 59（常驻 tau 的 R4，总计划见 [resident-tau-plan.md](resident-tau-plan.md)）
 
 ## 目标
@@ -98,13 +98,13 @@
 
 ## 验收清单
 
-- [ ] 59a 测试：配对码（一次性、10 分钟过期、5 次失败作废）、设备存储（只存摘要、撤销后在线连接断开）、WebSocket 鉴权（没令牌、错令牌、对的令牌）、`Origin` 检查、静态文件与 `/readyz`；`thread/list { allDirectories }`；`stateEvents`。
-- [ ] 59a 端到端（mock 模型）：`tau serve remote on` 后用 Node 的 WebSocket 客户端配对、带令牌连上、跑一轮、在 WebSocket 上答审批、断开后 `afterSeq` 补齐；本机 socket 的客户端同时在场，两边看到同样的东西。
-- [ ] TUI 断线续接：服务停了又起（测试里重启中枢），TUI 自动重连回到同一会话，不退出；超时才退出。
-- [ ] 59b 网页客户端：headless Chrome 冒烟（CI 的 Linux 与本机）：配对、看到会话列表、接上 TUI 那边的会话、发话看到流式回复、答审批、断网（关掉连接）后自动重连补齐。手机尺寸（390×844）截图检查布局。
+- [x] 59a 测试：配对码（一次性、10 分钟过期、5 次失败作废）、设备存储（只存摘要、撤销后在线连接断开）、WebSocket 鉴权（没令牌、错令牌、对的令牌）、`Origin` 检查、静态文件与 `/readyz`；`thread/list { allDirectories }`；`stateEvents`。
+- [x] 59a 端到端（mock 模型）：`tau serve remote on` 后用 Node 的 WebSocket 客户端配对、带令牌连上、跑一轮、在 WebSocket 上答审批、断开后 `afterSeq` 补齐；本机 socket 的客户端同时在场，两边看到同样的东西。
+- [x] TUI 断线续接：服务停了又起（测试里重启中枢），TUI 自动重连回到同一会话，不退出；超时才退出。
+- [x] 59b 网页客户端：headless Chrome 冒烟（CI 的 Linux 与本机）：配对、看到会话列表、接上 TUI 那边的会话、发话看到流式回复、答审批、断网（关掉连接）后自动重连补齐。手机尺寸（390×844）截图检查布局。
 - [ ] 真机：手机（用户）在同一局域网扫码配对、接上终端里的会话、答一次审批；经 Tailscale 的 HTTPS 地址打开一次（用户有 Tailscale 时）。
-- [ ] 真 DeepSeek：网页客户端（headless Chrome）一轮，带一次审批。
-- [ ] check、全量测试、pack smoke（新包进 pack smoke）、smoke-tui；push 后 CI 通过；D61；文档（protocol.md、README 的手机一节、远程与安全说明）。
+- [x] 真 DeepSeek：网页客户端（headless Chrome）一轮，带一次审批。
+- [x] check、全量测试、pack smoke（新包进 pack smoke）、smoke-tui；push 后 CI 通过；D61；文档（protocol.md、README 的手机一节、远程与安全说明）。
 
 ## 风险
 
@@ -125,3 +125,18 @@
 2. **远程缺省不开，开了绑 `0.0.0.0:7700`、不自带 TLS**，文档推荐 Tailscale（也可只绑 `127.0.0.1` 让隧道转发）。建议同意：同 Codex 与 yo-agent，tau 不做证书与中继。
 3. **网页客户端用 Preact**（构建时打包，运行时零依赖），新包 `@yophon/tau-web`。另一种是不用框架、手写 DOM（代码多、对话框与列表难维护）。建议 Preact。
 4. **手机上不显示扩展的组件与渲染器**（只看条目，扩展的对话框照常）。建议同意：手机屏幕上那些组件本来就按终端宽度画，意义不大；以后有需要再加文字版。
+
+## 实施记录（2026-10-24）
+
+- 提交：9efb7ed 规格、07cde37 59a（服务端、配对与设备、协议补充、TUI 断线重连）、9f1b8e1 59b（网页客户端与它的冒烟），加文档提交。
+- 照规格实现：`server/remote.ts`（同一端口的网页、`/readyz`、`POST /pair`、WebSocket `/rpc`）、`server/devices.ts`（配对码与设备存储）、`tau serve remote|pair|devices|revoke`（`daemon.ts`）、协议的 `initialize.auth`、`stateEvents`、`thread/list allDirectories`、`server/pair|devices|revoke`、`createWebSocketTransport`；新包 `@yophon/tau-web`（`packages/web`，`scripts/build-web.mjs`）。协议说明见 [protocol.md](../protocol.md)，理由见 D61。
+- 和规格的出入与补充：
+  - **配对网址的顺序**：一台电脑常有好几个地址（这次的机器有代理软件的 TUN 网卡 198.18.x、WSL 的虚拟网卡、真正的 Wi-Fi），二维码只放一个。按地址段与网卡名排：家里的网络（192.168、10）在前，Tailscale（100.64/10）其次，虚拟机、容器、代理的网卡在后；全部地址都列出来。
+  - **TUI 断线续接的做法**：`TuiSession` 记下审批与对话框的处理器，重连后装到新连接上；重新加入会话时先排一条客户端自己的 `client/reconnected`，TUI 据此重画并结束没看到结尾的那一轮，再处理这一轮的推送。控制器只改两行（结构门禁的上限还差 5 行）。
+  - **网页客户端找到并修的**：服务重启后会话只在磁盘上，重连时要带会话的目录去接（冒烟查出）；会话没有名字时顶栏用第一句话；输入框到最大高度前不出滚动条（截图查出）；新会话的项目信任问题在会话打开前就到，审批与对话框卡片在会话列表上也显示，否则开会话会卡住。
+  - **静态文件**：未知路径回页面本身（页面自己的路由），编码过的 `..` 爬不出客户端的目录；带哈希的文件长缓存，页面不缓存。
+- 测试：全量 1526 个，1521 通过、5 跳过（P58 结束时 1512）；新增远程监听 7 个（配对码的一次性/过期/限次、设备只存摘要与撤销、地址解析、静态文件与 `/readyz`、配对后在 WebSocket 上跑一轮并答审批与撤销后断开、没令牌/错令牌/别的站点、`allDirectories` 与 `stateEvents`）、`tau serve` 远程端到端 1 个（`pair --json`、HTTP 配对、WebSocket 跑一轮、`devices`、`revoke`、`remote off/on` 重启）、TUI 断线重连 1 个、网页客户端的 Markdown 与会话模型 5 个。
+- 冒烟：`smoke:web`（新）：headless Chromium（本机 Edge、CI 的 Chrome）以手机尺寸 390×844 经 DevTools 协议驱动——从二维码的网址配对、在列表里看到终端那边的会话并接上、发话、在卡片上批准 write、`tau serve restart` 后自动重连并重画对话；截图检查了列表、审批、对话三屏的布局。pack smoke 加了网页包的安装与定位；smoke-tui 41 个场景全屏、inline 各一遍全过（WSL）。
+- 真 DeepSeek（`deepseek-flash`，headless Edge，手机尺寸）：从网址配对，在页面上新建会话（填项目目录），发「读 secret.txt、把第二行最后一个词写进 done.txt 并回答」，审批卡片批准 write，回答与 done.txt 都是随机串；截图里工具调用与推理折叠、回答的 Markdown 正常。
+- 留给用户真机验收：手机在同一局域网扫码配对、接上终端的会话、答一次审批；有 Tailscale 时经它的 HTTPS 地址打开一次。
+- CI：59a（run 40061449656）与 59b（run 40063760858，gate、smoke——含 CI 的 Chrome 跑 smoke:web——与 dialects）都通过。
