@@ -73,7 +73,7 @@
 | [P57](specs/phase-57-tui-over-protocol.md) | 常驻 tau 第二步：TUI 与 `--mode rpc` 成为会话中枢的客户端（进程内），协议补齐 TUI 所需——原样的内核消息、事件与状态，会话控制，一次一件事，扩展的界面以数据发出，换会话时交接工作区；两个 TUI 可接同一会话 | 2026-10-23 | D59 |
 | [P58](specs/phase-58-resident-service.md) | 常驻 tau 第三步：常驻服务——`tau serve --listen unix://`（Windows 命名管道）与 `tau serve start\|stop\|restart\|status`（照 Codex 的 daemon），一个服务管所有目录、会话的模型各归各的；TUI 有服务就连、没有时缺省先起一个，改服务配置的参数与 `--no-daemon` 在本进程；两个终端接同一会话，关掉终端会话照跑，`/resume` 列出服务持有的会话 | 2026-10-24 | D60 |
 
-真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的两项（Windows Terminal 与 VS Code 终端里起服务后关窗口；真 DeepSeek 一轮——验收时端点回 429「user access to this plan has been disabled」）。
+真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
