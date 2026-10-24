@@ -29,7 +29,7 @@ interface ModeProcess {
 
 function startMode(
 	args: string[],
-	options: { cwd: string; home: string; baseUrl: string; stdin?: string },
+	options: { cwd: string; home: string; baseUrl: string; stdin?: string; env?: Record<string, string> },
 ): ModeProcess {
 	const env: Record<string, string | undefined> = {
 		...process.env,
@@ -37,6 +37,7 @@ function startMode(
 		TAU_BASE_URL: options.baseUrl,
 		TAU_MODEL: "mock-model",
 		TAU_API_KEY: "test",
+		...options.env,
 	};
 	const child = spawn(process.execPath, ["--disable-warning=ExperimentalWarning", CLI_PATH, ...args], {
 		cwd: options.cwd,
@@ -244,7 +245,8 @@ describe("--mode rpc", () => {
 });
 
 describe("--mode acp", () => {
-	it("initialize, session/new, prompts with client fs and permission requests, set_mode, load replays", async () => {
+	// P60: the editor's fs is not used (tools read the disk); --no-daemon keeps the hub in this process.
+	it("initialize, session/new, prompts read the disk, permission requests, set_mode, load replays", async () => {
 		await sandbox(async ({ cwd, home }) => {
 			await writeFile(join(cwd, "a.txt"), "ON DISK\n");
 			const mock = await startMockOpenAI([
@@ -254,10 +256,12 @@ describe("--mode acp", () => {
 				() => mockTextTurn("ACP_RAN_DONE"),
 			]);
 			try {
-				const acp = startMode(["--mode", "acp", "--permission-mode", "supervised"], {
+				const acp = startMode(["--mode", "acp", "--no-daemon", "--permission-mode", "supervised"], {
 					cwd: home,
 					home,
 					baseUrl: mock.baseUrl,
+					// P60: the hub names sessions after their first turn; that request would take a scripted turn.
+					env: { TAU_AUTO_TITLE: "0" },
 				});
 				acp.send({
 					jsonrpc: "2.0",
@@ -286,12 +290,10 @@ describe("--mode acp", () => {
 					method: "session/prompt",
 					params: { sessionId, prompt: [{ type: "text", text: "read it" }] },
 				});
-				const read = await acp.waitFor((r) => r.method === "fs/read_text_file", "the client fs read");
-				assert.equal((read.params as Json).path, join(cwd, "a.txt"));
-				acp.send({ jsonrpc: "2.0", id: read.id, result: { content: "UNSAVED BUFFER" } });
 				const done = await acp.waitFor((r) => r.id === 3, "the prompt result");
 				assert.deepEqual(done.result, { stopReason: "end_turn" });
-				assert.match(JSON.stringify(mock.requests[1]), /UNSAVED BUFFER/);
+				assert.match(JSON.stringify(mock.requests[1]), /ON DISK/);
+				assert.ok(!acp.records.some((r) => r.method === "fs/read_text_file"), "the editor's fs is not asked");
 				const updates = acp.records
 					.filter((r) => r.method === "session/update")
 					.map((r) => (r.params as Json).update as Json);
@@ -477,7 +479,7 @@ describe("P29 coverage of the remaining commands", () => {
 				() => ({ payloads: [{ choices: [{ delta: { content: "waiting" } }] }], hold: true }),
 			]);
 			try {
-				const acp = startMode(["--mode", "acp", "--permission-mode", "autonomous"], {
+				const acp = startMode(["--mode", "acp", "--no-daemon", "--permission-mode", "autonomous"], {
 					cwd: home,
 					home,
 					baseUrl: mock.baseUrl,

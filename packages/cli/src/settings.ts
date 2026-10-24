@@ -48,8 +48,8 @@ export interface TauSettings {
 	/** P37d: worktree.baseRef ("fresh" default | "head") and worktree.symlinkDirectories (Claude Code). */
 	worktree?: { baseRef?: "fresh" | "head"; symlinkDirectories?: string[] };
 	/**
-	 * P58 (Codex's daemon_auto_start, shutdownGraceSeconds): daemon.autoStart — the TUI starts the resident
-	 * server when none runs (default true); daemon.shutdownGraceSeconds — how long `tau serve stop` lets
+	 * P58 (Codex's daemon_auto_start, shutdownGraceSeconds): daemon.autoStart — the TUI (P60: and --mode acp)
+	 * starts the resident server when none runs (default true); daemon.shutdownGraceSeconds — how long `tau serve stop` lets
 	 * running turns finish (default 60, 0–300).
 	 */
 	daemon?: { autoStart?: boolean; shutdownGraceSeconds?: number; remote?: { listen?: string } };

@@ -4,7 +4,9 @@
 // permission rules (the server's were fixed when it started), run in this process; so does a
 // terminal running as administrator on Windows. A server that cannot be used falls back to this
 // process with a line saying why; a server of another version is used with a line saying so.
+// P60: `tau --mode acp` follows the same policy (residentAllowed, residentClient).
 import { spawnSync } from "node:child_process";
+import type { ClientRequests, TauClient } from "@yophon/tau-protocol";
 import type { CliOptions } from "./args.ts";
 import { connectTo, defaultAddress, probeDaemon, startDaemon } from "./daemon.ts";
 import { type LocalHub, type LocalHubClient, type LocalHubContext, startLocalHub } from "./local-hub.ts";
@@ -22,12 +24,22 @@ export interface TuiLink {
 	close(): Promise<void>;
 }
 
-export interface TuiLinkContext extends LocalHubContext {
+/** What decides whether a run uses the resident server, and starts it. */
+export interface ResidentContext {
+	options: CliOptions;
 	home: string;
 	/** settings daemon.autoStart (default true, Codex's daemon_auto_start). */
 	autoStart: boolean;
 	/** Starts the resident server (default: `tau serve start`'s startDaemon; tests serve one themselves). */
 	start?: (home: string) => Promise<unknown>;
+}
+
+export interface TuiLinkContext extends LocalHubContext, ResidentContext {}
+
+/** The resident server's client, and a new connection to it after a drop (P59). */
+export interface ResidentClient {
+	client: TauClient;
+	reconnect: () => Promise<TauClient | undefined>;
 }
 
 /** The options that keep the TUI off the resident server (they configure what the server fixed at its start). */
@@ -78,23 +90,28 @@ function elevatedOnWindows(): boolean {
 	return groups.status === 0 && groups.stdout.includes("S-1-16-12288");
 }
 
-export async function linkTui(context: TuiLinkContext, client: LocalHubClient): Promise<TuiLink> {
-	const notices: string[] = [];
+/** Whether this run may use the resident server; why not goes to `notices` (when it matters). */
+export async function residentAllowed(context: ResidentContext, notices: string[]): Promise<boolean> {
 	const { options } = context;
 	const excluded = options.noDaemon ? undefined : daemonExclusion(options);
 	if (!options.noDaemon && excluded === undefined) {
-		if (elevatedOnWindows()) {
-			notices.push("Running as administrator: the resident server is not used (start tau in a terminal without it).");
-		} else {
-			const resident = await attach(context, client, notices);
-			if (resident) return resident;
-		}
+		if (!elevatedOnWindows()) return true;
+		notices.push("Running as administrator: the resident server is not used (start tau in a terminal without it).");
 	} else if (excluded !== undefined) {
 		const running = await connectTo(defaultAddress(context.home), 500);
 		if (running) {
 			running.socket.destroy();
 			notices.push(`Running without the resident server: ${excluded} is set when the server starts.`);
 		}
+	}
+	return false;
+}
+
+export async function linkTui(context: TuiLinkContext, client: LocalHubClient): Promise<TuiLink> {
+	const notices: string[] = [];
+	if (await residentAllowed(context, notices)) {
+		const resident = await attach(context, client, notices);
+		if (resident) return resident;
 	}
 	const local = await startLocalHub(context, client);
 	return {
@@ -108,12 +125,34 @@ export async function linkTui(context: TuiLinkContext, client: LocalHubClient): 
 	};
 }
 
-/** The resident server's client, starting the server first when settings allow; undefined to run here. */
+/** The resident server as the TUI's hub, if it can be used. */
 async function attach(
 	context: TuiLinkContext,
 	client: LocalHubClient,
 	notices: string[],
 ): Promise<TuiLink | undefined> {
+	const resident = await residentClient(context, client, notices);
+	if (!resident) return undefined;
+	const tauClient = resident.client;
+	const session = new TuiSession(tauClient, { cwd: context.cwd, resident: true, reconnect: resident.reconnect });
+	// The project trust question while the first session opens, before the TUI is on screen.
+	tauClient.handle("ui/request", client.startupUi);
+	return {
+		session,
+		notices,
+		close: async () => {
+			session.leaving = true;
+			tauClient.close();
+		},
+	};
+}
+
+/** The resident server's client, starting the server first when settings allow; undefined to run here. */
+export async function residentClient(
+	context: ResidentContext,
+	client: { name: string; capabilities: NonNullable<ClientRequests["initialize"]["params"]["capabilities"]> },
+	notices: string[],
+): Promise<ResidentClient | undefined> {
 	const address = defaultAddress(context.home);
 	const ask = () => probeDaemon(address, { name: client.name, capabilities: client.capabilities });
 	let probe = await ask();
@@ -139,21 +178,10 @@ async function attach(
 	if (probe.state !== "running") return undefined;
 	if (probe.version !== CLI_VERSION)
 		notices.push(`Resident server v${probe.version} ≠ tau v${CLI_VERSION} · tau serve restart`);
-	const tauClient = probe.client;
 	// P59: after a drop (the server restarts), a new connection to the same address.
 	const reconnect = async () => {
 		const again = await ask();
 		return again.state === "running" ? again.client : undefined;
 	};
-	const session = new TuiSession(tauClient, { cwd: context.cwd, resident: true, reconnect });
-	// The project trust question while the first session opens, before the TUI is on screen.
-	tauClient.handle("ui/request", client.startupUi);
-	return {
-		session,
-		notices,
-		close: async () => {
-			session.leaving = true;
-			tauClient.close();
-		},
-	};
+	return { client: probe.client, reconnect };
 }

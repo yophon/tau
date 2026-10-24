@@ -4,7 +4,7 @@
  * the background (Claude Code). The title is a session_info entry, as /name
  * writes, so pi reads it too; a name the user gave is never replaced.
  */
-import type { Agent, AgentMessage, SessionMetadata, SessionRecorder } from "@yophon/tau-kernel";
+import type { Agent, AgentMessage, SessionMetadata, SessionRecorder, TauAbortSignal } from "@yophon/tau-kernel";
 
 export const TITLE_SYSTEM_PROMPT =
 	"You name conversations. Reply with only a title for the conversation you are shown: in the language the user writes in, at most 12 characters for Chinese, Japanese or Korean, otherwise at most 6 words. No quotes, no trailing punctuation, nothing else.";
@@ -93,6 +93,8 @@ export async function autoTitle(
 	recorder: SessionRecorder,
 	attempted: Set<string>,
 	log: (message: string) => void = () => undefined,
+	/** P60: the session stops (a hub closing must not leave the request running). */
+	signal?: TauAbortSignal,
 ): Promise<string | undefined> {
 	const metadata = await recorder.store.getMetadata();
 	if (attempted.has(metadata.id) || metadata.name) return undefined;
@@ -100,7 +102,9 @@ export async function autoTitle(
 	if (prompt === undefined) return undefined;
 	attempted.add(metadata.id);
 	try {
-		const title = titleFromReply(await agent.completeText(TITLE_SYSTEM_PROMPT, prompt, { maxTokens: 200 }));
+		const title = titleFromReply(
+			await agent.completeText(TITLE_SYSTEM_PROMPT, prompt, { maxTokens: 200, ...(signal ? { signal } : {}) }),
+		);
 		if (!title) return undefined;
 		// The user may have named it while the request ran.
 		if ((await recorder.store.getMetadata()).name) return undefined;

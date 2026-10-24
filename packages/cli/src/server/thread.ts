@@ -161,6 +161,8 @@ export class HubThread {
 	private completionAbort: AbortController | undefined;
 	/** The next ui/request is an MCP sign-in page (P49). */
 	private signIn = false;
+	/** P60: aborted when the thread stops (its title request). */
+	private readonly stopping = new AbortController();
 	private readonly titled = new Set<string>();
 	private stopped = false;
 	/** User `!` commands run so far (their tool call ids). */
@@ -502,6 +504,7 @@ export class HubThread {
 	async stop(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
+		this.stopping.abort();
 		for (const request of [...this.pending.values()]) this.settle(request, request.fallback, false);
 		this.queue.length = 0;
 		await this.session.stop();
@@ -528,6 +531,7 @@ export class HubThread {
 		session.store = store;
 		session.recorder = recorder;
 		this.stopped = true;
+		this.stopping.abort();
 		this.subscribers.clear();
 		const started = reason === "new" ? "startup" : "resume";
 		const metadata = store ? await store.getMetadata() : { id: randomUUID() };
@@ -808,9 +812,13 @@ export class HubThread {
 	private async title(): Promise<void> {
 		const recorder = this.session.recorder;
 		if (!recorder) return;
-		const title = await autoTitle(this.session.agent, recorder, this.titled, (message) => console.log(message)).catch(
-			() => undefined,
-		);
+		const title = await autoTitle(
+			this.session.agent,
+			recorder,
+			this.titled,
+			(message) => console.log(message),
+			this.stopping.signal,
+		).catch(() => undefined);
 		if (!title || recorder !== this.session.recorder || this.stopped) return;
 		await this.session.extensions.notifySessionInfoChanged(title, this.session.agent.extensionContext());
 		this.renamed(title);

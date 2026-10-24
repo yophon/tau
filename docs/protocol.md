@@ -1,6 +1,6 @@
 # tau 的客户端协议（tau/1）
 
-一个 tau 持有会话，多个客户端同时接上同一个会话：终端、编辑器、手机。这是它们说的协议（P56 起；P57 补齐了 TUI 需要的部分，TUI 与 `--mode rpc` 自己就是它的客户端；P58 加了常驻服务与本机 socket；P59 加了远程设备与网页客户端）。形状与名字照抄 Codex 的 app-server 协议（会话、轮、条目；审批是 server 发给客户端的请求），tau 自己的部分另起名字。类型定义在 `@yophon/tau-protocol`（`packages/protocol/src/types.ts`），以它为准；字段只加不改。
+一个 tau 持有会话，多个客户端同时接上同一个会话：终端、编辑器、手机。这是它们说的协议（P56 起；P57 补齐了 TUI 需要的部分，TUI 与 `--mode rpc` 自己就是它的客户端；P58 加了常驻服务与本机 socket；P59 加了远程设备与网页客户端；P60 起编辑器的 `--mode acp` 也是它的客户端）。形状与名字照抄 Codex 的 app-server 协议（会话、轮、条目；审批是 server 发给客户端的请求），tau 自己的部分另起名字。类型定义在 `@yophon/tau-protocol`（`packages/protocol/src/types.ts`），以它为准；字段只加不改。
 
 现在的入口：
 
@@ -13,7 +13,7 @@ tau serve remote on|off              # P59：远程设备与网页客户端（�
 tau serve pair | devices | revoke     # 配对、列出、撤销设备
 ```
 
-TUI 有常驻服务就连上它，没有时按设置先起一个，否则在自己进程里起会话中枢、经进程内通道（对象直接传）连上（P57/P58，照 Codex 的 TUI）；连接断了自动重连（P59）。`--mode rpc` 总在自己进程里。手机经 WebSocket 连常驻服务（P59）。
+TUI 有常驻服务就连上它，没有时按设置先起一个，否则在自己进程里起会话中枢、经进程内通道（对象直接传）连上（P57/P58，照 Codex 的 TUI）；连接断了自动重连（P59）。`--mode acp`（编辑器，P60）用同一个连接策略。`--mode rpc` 总在自己进程里。手机经 WebSocket 连常驻服务（P59）。
 
 ## 线格式
 
@@ -50,8 +50,8 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 
 | 方法 | 参数 → 结果 |
 |---|---|
-| `thread/start` | `{ cwd?, model?, permissionMode?, ephemeral?, previousThreadId?, parentSession? }` → 加入结果。新会话；调用者在它的扩展启动前就已订阅（看得到 `session_start` 时说的话），打开时的项目信任问题也问它；`ephemeral`：不存（`--no-session`），从它 `/new` 出的会话也不存 |
-| `thread/resume` | `{ threadId, afterSeq?, cwd?, model?, permissionMode?, previousThreadId? }` → 加入结果。没加载的从 `cwd` 的存档打开；**正在运行的就是接上**（没有会话文件的也行）；随后正在等待回答的请求发给这个客户端。`model`、`permissionMode` 只在这次从磁盘打开时用，接上已在运行的会话不改它 |
+| `thread/start` | `{ cwd?, model?, permissionMode?, ephemeral?, previousThreadId?, parentSession?, mcpServers? }` → 加入结果。新会话；调用者在它的扩展启动前就已订阅（看得到 `session_start` 时说的话），打开时的项目信任问题也问它；`ephemeral`：不存（`--no-session`），从它 `/new` 出的会话也不存 |
+| `thread/resume` | `{ threadId, afterSeq?, cwd?, model?, permissionMode?, previousThreadId?, mcpServers? }` → 加入结果。没加载的从 `cwd` 的存档打开；**正在运行的就是接上**（没有会话文件的也行）；随后正在等待回答的请求发给这个客户端。`model`、`permissionMode`、`mcpServers` 只在这次从磁盘打开时用，接上已在运行的会话不改它 |
 | `thread/import` | `{ path, copy, cwd?, previousThreadId? }` → 加入结果。别处的会话文件：`copy` 时复制进会话目录（`/import`），否则就地打开（`--session <文件>`） |
 | `thread/fork` | `{ threadId, entryId?, position? }` → 加入结果。复制会话（到某个条目之前，`position: "at"` 为到它为止；不给条目为整个会话）并移过去；有条目且不是 `at` 时扩展可拒绝（`session_before_fork`） |
 | `thread/unsubscribe` | `{ threadId }` → `{ status: "notLoaded" \| "notSubscribed" \| "unsubscribed" }` |
@@ -64,6 +64,8 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 `thread`：`{ id, name?, cwd, model, status: "idle" | "running", updatedAt?, loaded?, createdAt?, preview?, messageCount?, filePath?, parentSession?, clients?, waiting? }`（`createdAt` 到 `parentSession` 给会话选择器：开始时间、第一句话、消息条数、文件、从哪个会话分出来；`clients`、`waiting`：接着的客户端数、等待回答的审批与对话框数）。
 
 **加入结果**：`{ thread, events, seq?, items?, messages?, state? }`。带 `afterSeq` 且还在日志里：`events` 是它之后的推送；否则 `items` 是这一轮之前的对话，`events` 是当前这一轮的推送（没在运行时为空）。原样客户端总是拿到 `messages`（这一轮之前的对话，内核消息）与 `state`，`events` 是当前这一轮的推送。
+
+**客户端带来的 MCP server**（P60，编辑器经 ACP 给的那些）：`mcpServers: [{ name, command?, args?, env?, url?, headers? }]`，stdio 或 http（同 ACP 的形状）。打开会话时在它的工作区启动：stdio 的从去掉密钥的环境起（P32b）再加上给的 `env`，同名的盖过 `~/.tau/mcp.json` 里的；会话卸载时一起停。只接受本机的客户端：远程设备带它回 `-32600`，免得经网络让服务启动程序。名字为空、`command` 与 `url` 都没有的条目略过；`--no-mcp` 起的中枢一个也不起。
 
 **换会话**：带 `previousThreadId` 表示调用者离开那个会话。它的扩展先被问 `session_before_switch`，拒绝时报 `-32001`（`data.by: "switch"`）。只有调用者订阅着、它闲着、目标在同一个目录时，它的工作区与扩展直接服务新会话（同 TUI 的 `/new`、`/resume`：不再起第二套扩展与 MCP server）；否则调用者退出它，新会话自己打开（或接上已在运行的）。
 
@@ -213,7 +215,7 @@ TUI 的渲染全建在内核消息与事件上（pi 的形状，本来就是 JSO
 - **只有本机的客户端管设备**：`server/pair { name? }` → `{ code, expiresAt, urls }`、`server/devices` → `{ devices: [{ name, pairedAt, lastSeenAt?, connected? }], listen? }`、`server/revoke { name }` → `{ revoked }`（撤销的设备在线的连接立刻断开）。WebSocket 上调用它们回错误。命令行是 `tau serve pair | devices | revoke <名字>`。
 - **不自带 TLS**（同 Codex 的 WebSocket 监听、yo-agent）：局域网内是明文 `http`/`ws`。离开局域网或要加密请用隧道，例如 Tailscale：`tailscale serve --bg 7700` 后在手机上开 `https://<机器名>.<tailnet>.ts.net`；只经隧道用时可以把监听绑在 `127.0.0.1`。
 
-TUI 怎么用它见 README 的「常驻服务」一节：有服务就连；没有时 settings `daemon.autoStart`（缺省开）先起一个；`--no-daemon` 与改端点、提示词、工具、扩展、权限规则的参数在自己进程里运行。
+TUI（P60 起还有 `--mode acp`）怎么用它见 README 的「常驻服务」一节：有服务就连；没有时 settings `daemon.autoStart`（缺省开）先起一个；`--no-daemon` 与改端点、提示词、工具、扩展、权限规则的参数在自己进程里运行。
 
 ## 用 `@yophon/tau-protocol` 写客户端
 
@@ -234,4 +236,4 @@ await client.startTurn(thread.id, "hello");
 
 ## 和其他协议的关系
 
-`--mode rpc`（pi 的协议，单客户端）是这个协议上的适配层（P57）：pi 的命令映射到上面的方法，事件来自 `thread/sessionEvent` 与 `thread/event`，说明见 [rpc.md](rpc.md)，行为不变。`--mode acp`（编辑器）P60 起接到常驻会话上。
+`--mode rpc`（pi 的协议，单客户端）是这个协议上的适配层（P57）：pi 的命令映射到上面的方法，事件来自 `thread/sessionEvent` 与 `thread/event`，说明见 [rpc.md](rpc.md)，行为不变。`--mode acp`（编辑器）P60 起也是这个协议上的适配层：ACP 的会话方法映射到上面的方法，原样事件转成 ACP 的更新，所以编辑器、终端、手机接的是同一个会话，说明见 [rpc.md](rpc.md)。

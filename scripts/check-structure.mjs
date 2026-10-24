@@ -13,6 +13,9 @@
 //    the hub (server/); it reaches the session through the protocol (tui/session-client.ts).
 // 4. One path for the TUI's start (P58): tui-hub.ts reads nothing off the hub's own objects (a
 //    session's thread or workspace), so a resident server and a hub in this process look the same.
+// 5. The editor's adapter is a client too (P60): modes/acp.ts and modes/acp-updates.ts import neither
+//    the hub (server/) nor the kernel's Agent or ExtensionRegistry, nor hold a HeadlessSession;
+//    acp-hub.ts, like tui-hub.ts, reads nothing off the hub's own objects.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -109,9 +112,9 @@ for (const entry of entries) {
 
 const tuiDir = join(cliSrc, "tui");
 const KERNEL_IMPORT = /import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+["']@yophon\/tau-kernel["']/g;
-for (const file of sources.filter((path) => path.startsWith(tuiDir))) {
-	const key = relative(root, file).split("\\").join("/");
-	const text = readFileSync(file, "utf8");
+/** The kernel's session objects a client must not import (it reaches sessions through the protocol). */
+function kernelSessionImports(text) {
+	const found = [];
 	for (const match of text.matchAll(KERNEL_IMPORT)) {
 		const names = match[1].split(",").map(
 			(name) =>
@@ -120,19 +123,22 @@ for (const file of sources.filter((path) => path.startsWith(tuiDir))) {
 					.replace(/^type\s+/, "")
 					.split(/\s+as\s+/)[0],
 		);
-		for (const forbidden of ["Agent", "ExtensionRegistry"]) {
-			if (names.includes(forbidden)) {
-				problems.push(
-					`${key}: imports ${forbidden} from @yophon/tau-kernel; the TUI reaches the session through the protocol (tui/session-client.ts).`,
-				);
-			}
-		}
+		for (const forbidden of ["Agent", "ExtensionRegistry"]) if (names.includes(forbidden)) found.push(forbidden);
+	}
+	return found;
+}
+for (const file of sources.filter((path) => path.startsWith(tuiDir))) {
+	const key = relative(root, file).split("\\").join("/");
+	const text = readFileSync(file, "utf8");
+	for (const forbidden of kernelSessionImports(text)) {
+		problems.push(
+			`${key}: imports ${forbidden} from @yophon/tau-kernel; the TUI reaches the session through the protocol (tui/session-client.ts).`,
+		);
 	}
 	if (/from\s+["'](?:\.\.\/)+server\//.test(text)) {
 		problems.push(`${key}: imports the hub (server/); the TUI is a client of it (tui/session-client.ts).`);
 	}
 }
-
 const tuiStart = join(cliSrc, "tui-hub.ts");
 if (existsSync(tuiStart)) {
 	const text = readFileSync(tuiStart, "utf8");
@@ -143,10 +149,35 @@ if (existsSync(tuiStart)) {
 	}
 }
 
+for (const name of ["modes/acp.ts", "modes/acp-updates.ts"]) {
+	const file = join(cliSrc, name);
+	if (!existsSync(file)) continue;
+	const text = readFileSync(file, "utf8");
+	for (const forbidden of kernelSessionImports(text)) {
+		problems.push(
+			`packages/cli/src/${name}: imports ${forbidden} from @yophon/tau-kernel; the ACP adapter is a client of the hub.`,
+		);
+	}
+	if (/from\s+["'](?:\.\.\/)+server\/|HeadlessSession/.test(text)) {
+		problems.push(
+			`packages/cli/src/${name}: reaches into the hub or a HeadlessSession; the ACP adapter speaks the protocol only.`,
+		);
+	}
+}
+const acpStart = join(cliSrc, "acp-hub.ts");
+if (existsSync(acpStart)) {
+	const text = readFileSync(acpStart, "utf8");
+	if (/\.thread\(\)|\.workspace\b|from\s+["']\.\/server\//.test(text)) {
+		problems.push(
+			"packages/cli/src/acp-hub.ts: reads the hub's own objects (thread(), workspace, server/); the editor's sessions go through the protocol, the same with a resident server.",
+		);
+	}
+}
+
 if (problems.length > 0) {
 	console.error(`Structure check failed:\n${problems.map((problem) => `  - ${problem}`).join("\n")}`);
 	process.exit(1);
 }
 console.log(
-	`Structure check passed (${sources.length} source files within their line limits; the CLI's non-TUI entry points do not load the TUI controller; the TUI reaches sessions through the protocol only, its start included).`,
+	`Structure check passed (${sources.length} source files within their line limits; the CLI's non-TUI entry points do not load the TUI controller; the TUI and the ACP adapter reach sessions through the protocol only).`,
 );

@@ -39,7 +39,7 @@ import {
 } from "./endpoint.ts";
 import { extensionFlags, resolveExtensionFlags } from "./extension-loading.ts";
 import { initialContent, type ProcessedFiles, processFileArguments } from "./file-args.ts";
-
+import type { InProcessHost } from "./local-hub.ts";
 import {
 	availableModels,
 	describeModel,
@@ -53,10 +53,8 @@ import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
 import { type ApprovalChoice, createUi, nestedNote, readlineApprovalPrompt, runRepl, runTurn } from "./modes/repl.ts";
 import { RpcUiBridge } from "./modes/rpc.ts";
-
 import { type HostApprovalRequest, migrateLegacyPermissions, openAlwaysOptions } from "./permissions.ts";
 import { markActivity } from "./push-notification.ts";
-
 import { autoTitleOn, findSession } from "./session-title.ts";
 import { readSettings } from "./settings.ts";
 import { conversationLength } from "./tui/format.ts";
@@ -449,28 +447,30 @@ async function main(): Promise<void> {
 			run.permissionMode = nextMode;
 		},
 	};
+	// The session hub's host for `tau serve` (P56), and for `--mode acp` when it runs the hub itself (P60).
+	const hubHost: InProcessHost = {
+		cwd,
+		openWorkspace,
+		modelDisplay,
+		modelChoices,
+		...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
+		// P58: sessions of several clients share the process: a switch stays the session's, and
+		// each client's later sessions start from what it switched to (hub.ts). A resumed session
+		// goes back to its last model (not with -m).
+		isolateModels: true,
+		// P59: the phone's recent sessions, every directory's.
+		listAllSessions: async (limit) => (await import("./all-sessions.ts")).listAllSessions(home, limit),
+		restoreSessionModel: !options.model,
+		autoTitle: (workspace) => autoTitleOn(workspace.settings().autoTitle),
+		checkpoints: checkpointBackend,
+		applyDefaultMode: !explicitMode,
+	};
 	if (options.serve) {
 		// P56: the session hub; one workspace per session, as the gateway's conversations.
 		const { runServe } = await import("./server/serve.ts");
 		await runServe({
 			listen: options.serve.listen,
-			host: {
-				cwd,
-				openWorkspace,
-				modelDisplay,
-				modelChoices,
-				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
-				// P58: sessions of several clients share the process: a switch stays the session's, and
-				// each client's later sessions start from what it switched to (hub.ts). A resumed session
-				// goes back to its last model (not with -m).
-				isolateModels: true,
-				// P59: the phone's recent sessions, every directory's.
-				listAllSessions: async (limit) => (await import("./all-sessions.ts")).listAllSessions(home, limit),
-				restoreSessionModel: !options.model,
-				autoTitle: (workspace) => autoTitleOn(workspace.settings().autoTitle),
-				checkpoints: checkpointBackend,
-				applyDefaultMode: !explicitMode,
-			},
+			host: hubHost,
 			hub: { version: CLI_VERSION },
 			home,
 			graceSeconds: userSettings.daemon?.shutdownGraceSeconds ?? 60,
@@ -499,29 +499,18 @@ async function main(): Promise<void> {
 		return;
 	}
 	if (options.mode === "acp") {
-		// One workspace per session/new, at the client's cwd (P29). Loaded on demand: it pulls in the MCP client.
-		const { runAcpMode } = await import("./modes/acp.ts");
-		const { loadMcpConfig, withOAuth } = await import("./mcp-config.ts");
-		await runAcpMode({
+		// P60: an adapter over tau's protocol, on the resident server when it can be used (the TUI's policy).
+		const { runAcpOnHub } = await import("./acp-hub.ts");
+		await runAcpOnHub({
+			options,
+			cwd,
+			home,
+			autoStart: userSettings.daemon?.autoStart !== false,
+			host: hubHost,
 			out,
-			host: {
-				openWorkspace,
-				// P41b (pi --no-mcp): no servers at all, the editor's included.
-				...(options.noMcp === true ? { noMcp: true } : {}),
-				configuredMcpServers: (serverCwd, projectTrusted) => {
-					const loaded = loadMcpConfig({
-						home: userHome(),
-						cwd: serverCwd,
-						projectTrusted,
-						envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
-					});
-					for (const diagnostic of loaded.diagnostics) console.error(`mcp: ${diagnostic}`);
-					return withOAuth(loaded.servers, userHome());
-				},
-				modelDisplay,
-				modelChoices,
-				...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
-				version: CLI_VERSION,
+			opening: {
+				...((options.model ?? process.env.TAU_MODEL) ? { model: options.model ?? process.env.TAU_MODEL } : {}),
+				...(explicitMode ? { permissionMode } : {}),
 			},
 		});
 		return;

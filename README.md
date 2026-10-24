@@ -242,9 +242,13 @@ tau serve                           # tau's own protocol: several clients on the
 ```
 
 In Zed: `{ "agent_servers": { "tau": { "command": "tau", "args": ["--mode", "acp"] } } }`.
-Approvals become the editor's permission prompts, reads and edits go through the
-editor's buffers, and the permission modes are the session modes. See
-[docs/rpc.md](docs/rpc.md).
+The editor is a client of the same session hub as the TUI: with the resident
+server running (it is started when needed), the editor's history lists the
+sessions open in your terminals, and one session shows the same conversation,
+approvals and settings everywhere — an approval answered in the terminal
+disappears from the editor. Tools read and write the disk; edits reach the editor
+as diffs. Model, permission mode and reasoning effort are the session's config
+options. See [docs/rpc.md](docs/rpc.md).
 
 ## Resident server
 

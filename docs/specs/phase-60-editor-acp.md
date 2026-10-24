@@ -1,6 +1,6 @@
 # Phase 60：编辑器接常驻会话（ACP） 规格书
 
-> 状态：已确认（2026-10-24）。用户：「按你的建议来，做吧」——「需要确认」四项都按建议。
+> 状态：已完成（2026-10-24）。规格确认：用户「按你的建议来，做吧」——「需要确认」四项都按建议。实施记录见文末。
 > 对应 roadmap 阶段：Phase 60（常驻 tau 的 R5，也是这条线的最后一步，总计划见 [resident-tau-plan.md](resident-tau-plan.md)）
 
 ## 目标
@@ -92,8 +92,8 @@
 
 ## 验收清单
 
-- [ ] 60a 中枢测试：`thread/start` 带 `mcpServers` 起一个 mock MCP server，这个会话里能调用它的工具；会话卸载时它停掉；接上已在运行的会话时不重复启动；远程设备带 `mcpServers` 被拒。
-- [ ] 60b 适配层测试（脚本化的 ACP 客户端，mock 模型）：
+- [x] 60a 中枢测试：`thread/start` 带 `mcpServers` 起一个 mock MCP server，这个会话里能调用它的工具；会话卸载时它停掉；接上已在运行的会话时不重复启动；远程设备带 `mcpServers` 被拒。
+- [x] 60b 适配层测试（脚本化的 ACP 客户端，mock 模型）：
   - 进程内与常驻服务两种都跑：new、prompt（流式、工具调用与 diff、计划）、cancel、load（回放）、resume、close；
   - `session/list` 列出终端那个会话（运行中排前）；
   - 多客户端：ACP 客户端与 TUI（或协议客户端）接同一会话，一边发话另一边收到；终端先答了审批，ACP 客户端收到 `$/cancel_request`；
@@ -101,10 +101,10 @@
   - elicitation：扩展的输入与表单经 `elicitation/create`；不支持时的退回；
   - 编辑器给的 MCP server 在常驻服务里起来；
   - 现有的 ACP 测试按新行为改（经编辑器读写的那些改成磁盘）。
-- [ ] 结构门禁：适配层不读中枢一侧的对象。
-- [ ] 真 DeepSeek：脚本化的 ACP 客户端连常驻服务，load 终端里的会话，发一句需要审批的话，审批在 ACP 这边答。
+- [x] 结构门禁：适配层不读中枢一侧的对象。
+- [x] 真 DeepSeek：脚本化的 ACP 客户端连常驻服务，load 终端里的会话，发一句需要审批的话，审批在 ACP 这边答。
 - [ ] 真机（用户）：Zed 里 tau 的历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失。
-- [ ] check、全量测试、pack smoke、smoke-tui；push 后 CI 通过；D62；文档（protocol.md、rpc.md 的 ACP 一节、README 的编辑器一节）。
+- [x] check、全量测试、pack smoke、smoke-tui；push 后 CI 通过；D62；文档（protocol.md、rpc.md 的 ACP 一节、README 的编辑器一节）。
 
 ## 风险
 
@@ -129,3 +129,20 @@
    建议 (a)：原生支持 ACP 的 agent（Gemini CLI、OpenCode、Goose、Kimi CLI）都是内置的；独立适配器多是给第三方 agent 包一层用的。代码按协议客户端写，以后要拆随时能拆。
 3. **编辑器给的 MCP server 在服务里为这个会话启动**，只接受本机客户端的。建议同意：Codex 与 Claude 的适配器都支持编辑器给的 MCP server。
 4. **编辑器里能看到别的客户端在这个会话里的动静**；编辑器里取消会中止当前这一轮，不论是谁发起的（同终端的 Ctrl+C）。建议同意：这就是「同一个会话」的意思。
+
+## 实施记录（2026-10-24）
+
+- 提交：2ab9f52 规格、2aecbd5 60a（协议的 `mcpServers` 与中枢支持）、60b（适配层、文档）。
+- 照规格实现：`modes/acp.ts` 改写成 tau/1 的客户端（会话方法、更新、审批撤回、对话框、配置项、断线重连），纯映射移到 `modes/acp-updates.ts`；`acp-hub.ts` 选连谁（`tui-link.ts` 的判断拆成 `residentAllowed`、`residentClient` 两个函数，TUI 与 ACP 共用；`local-hub.ts` 的 `startHub` 起本进程的中枢）；`main.ts` 里 `tau serve` 与本进程 ACP 共用一个中枢宿主。去掉经编辑器的 `fs/*` 读写（`ClientFileSystem`）与 ACP 自己装 MCP 的那套。结构门禁加第 5 条。协议说明见 [protocol.md](../protocol.md)、[rpc.md](../rpc.md)，理由见 D62。
+- 和规格的出入与补充：
+  - **MCP 的登录网页没转成 elicitation 的网址模式**（规格「审批与对话框」一项）：网址模式由编辑器自己打开网页，tau 的流程是用户同意后由服务打开，照搬会打开两次；它照旧是一个选择（在浏览器里打开 / 拒绝），网页在会话所在的机器上打开。要做好需要协议告诉服务「客户端已打开」，记在 D62。
+  - **没声明 elicitation 的编辑器里，会话打开途中的对话框（项目信任问题）算取消**：`request_permission` 必须带会话 id，而那时会话还没有；声明了时用发起请求的 `requestId`（ACP 的 request-scoped elicitation）。项目信任在终端里答一次即存下。
+  - **编辑器排着的那一轮被取消**：会话正在跑别人的一轮时编辑器发的话排在后面；`session/cancel` 中止当前这一轮，排着的那句在轮到时立即中止（协议没有撤回排队的轮的方法），回答 `cancelled`。
+  - **`session/close`** 只让编辑器退出；编辑器自己发的那一轮还在跑时先中止它（ACP 要求关会话时停下进行中的工作），别人的不动。`session/delete` 没有做（ACP 有，规格没列）。
+  - **会话中枢的两处修正**：会话停下时中止还在等的自动标题请求——本进程的中枢关闭后它留着到 mock 模型的连接，ACP 进程退不出（测试查出）；ACP 的会话现在也自动起标题，编辑器的历史列表因此有名字。
+  - **手动 `/compact` 的结束**以对话从摘要重新开始（`thread/messages/reset`）为准：手动压缩不发内核的 `compaction` 事件。
+  - 常驻服务断了时，编辑器那边正在等的 prompt 以错误结束，适配层按退避重连（最多 60 秒，同 TUI），重新接上编辑器的会话（带上它的 MCP server）。
+- 测试：全量 1530 个，1525 通过、5 跳过（P59 结束时 1526）；新增 60a 两个（中枢交给工作区、接上时不重复、远程设备被拒；`tau serve` 起编辑器的 MCP server、工具能用、会话停时停）、60b 两个（常驻服务：列表里终端的会话排前、load 回放、两边的话互相看到、终端先答审批后编辑器收到 `$/cancel_request`、终端换模型推 `config_option_update`、编辑器换档位终端看到、编辑器的 MCP server 在服务里起来且随服务停、diff、计划、取消、resume、close；进程内：输入、单选、表单经 `elicitation/create`，notice，压缩的 `compaction_update`，resume，没声明 elicitation 时单选借用 `request_permission`、其余取消）；原有两个 ACP 测试改成读磁盘、加 `--no-daemon`。
+- 冒烟：pack smoke 通过；smoke-tui 41 个场景全过（WSL；整套一次跑超过了我设的 15 分钟，最后 4 个——p49、p53、p55、resident——分开再跑）。
+- 真 DeepSeek（`deepseek-flash`，Windows，临时家目录里的常驻服务）：终端（协议客户端）开会话说「记住这个词」；脚本化的 ACP 客户端 `session/list` 里它排第一、标题是那句话，`session/load` 回放出它；ACP 发「用 bash 运行 echo <随机词>，再说出两个词」，审批同时到了终端与 ACP，在 ACP 答允许，终端收到 `serverRequest/resolved` 与 ACP 发的那句话；回答里两个随机词都有，ACP 退出码 0，`tau serve stop` 正常。
+- 留给用户真机验收：Zed 里 tau 的历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失。

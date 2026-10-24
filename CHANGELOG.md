@@ -4,6 +4,27 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P60: editors on the resident session)
+- `tau --mode acp` is a client of tau's session hub: it uses the resident server as the TUI does
+  (starting it when settings `daemon.autoStart` allow; `--no-daemon` runs in-process), so an editor
+  such as Zed, the terminals and the phone share sessions. `session/list` shows the sessions held now
+  (the terminal's) first, `session/load` joins and replays, `session/resume` joins, `session/close`
+  leaves. Prompts, replies, tool calls and setting changes from other clients reach the editor; an
+  approval goes to every client and is withdrawn from the editor (`$/cancel_request`) when another
+  answers first; `session/cancel` stops the current turn, whoever sent it.
+- ACP: Session Config Options for permission mode, model and reasoning effort (the session modes still
+  work); extension dialogs and forms as `elicitation/create` forms when the editor supports them;
+  `notice` and `compaction_update` when it declares them; the editor's MCP servers start for the
+  session in the hub.
+- ACP no longer reads and writes files through the editor (`fs/*`): tools use the disk, as the Codex
+  and Claude adapters do; edits still reach the editor as diffs.
+- `tau/1`: `thread/start` and `thread/resume` take `mcpServers` (stdio or http) from the machine's own
+  clients; a remote device bringing them is refused.
+
+### Fixed
+- A session that stops no longer leaves its automatic title request running (a hub in the process
+  closing kept the connection open).
+
 ### Added (P59: tau on a phone)
 - `@yophon/tau-web`: a web client the resident server serves — pair once from a QR code, then the
   sessions the server holds (the terminal's among them) and recent ones; the conversation as it

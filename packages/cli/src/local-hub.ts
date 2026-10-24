@@ -12,7 +12,7 @@ import { checkpointBackend } from "./builtins.ts";
 import { resolveExtensionFlags } from "./extension-loading.ts";
 import type { ModelSwitch } from "./modes/headless.ts";
 import type { SessionHub } from "./server/hub.ts";
-import type { HubThread } from "./server/thread.ts";
+import type { HubHost, HubThread } from "./server/thread.ts";
 import { autoTitleOn, findSession } from "./session-title.ts";
 import { savedSessions, TuiSession } from "./tui/session-client.ts";
 import { CLI_VERSION } from "./util.ts";
@@ -50,10 +50,26 @@ export interface LocalHub {
 	background(): Workspace["background"];
 }
 
+/** What a hub in this process is given (the host `tau serve` builds; P60: `--mode acp` builds the same). */
+export type InProcessHost = HubHost;
+
+/** P60: a hub in this process, and a client of it over the memory transport. */
+export async function startHub(
+	host: InProcessHost,
+	client: { name: string; capabilities: LocalHubClient["capabilities"] },
+): Promise<{ hub: SessionHub; client: TauClient }> {
+	const { SessionHub } = await import("./server/hub.ts");
+	const hub = new SessionHub(host, { version: CLI_VERSION });
+	const [clientEnd, serverEnd] = createMemoryTransportPair();
+	hub.connect(serverEnd);
+	const tauClient = new TauClient(clientEnd, { name: client.name, version: CLI_VERSION });
+	await tauClient.initialize(client.capabilities);
+	return { hub, client: tauClient };
+}
+
 export async function startLocalHub(context: LocalHubContext, client: LocalHubClient): Promise<LocalHub> {
 	const { options } = context;
-	const { SessionHub } = await import("./server/hub.ts");
-	const hub = new SessionHub(
+	const { hub, client: tauClient } = await startHub(
 		{
 			cwd: context.cwd,
 			openWorkspace: context.openWorkspace,
@@ -68,12 +84,8 @@ export async function startLocalHub(context: LocalHubContext, client: LocalHubCl
 			applyDefaultMode: !context.explicitMode,
 			...(options.noSession ? { noSession: true } : {}),
 		},
-		{ version: CLI_VERSION },
+		client,
 	);
-	const [clientEnd, serverEnd] = createMemoryTransportPair();
-	hub.connect(serverEnd);
-	const tauClient = new TauClient(clientEnd, { name: client.name, version: CLI_VERSION });
-	await tauClient.initialize(client.capabilities);
 	const session = new TuiSession(tauClient, { cwd: context.cwd });
 	tauClient.handle("ui/request", client.startupUi);
 	const thread = (): HubThread => {
