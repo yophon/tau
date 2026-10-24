@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-24（P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P60 规格书（编辑器接常驻会话）**）
+> 最后更新：2026-10-24（P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P60（编辑器接常驻会话）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -75,6 +75,10 @@
 | [P59](specs/phase-59-remote-phone.md) | 常驻 tau 第四步：手机——常驻服务的 WebSocket 与网页客户端（新包 `@yophon/tau-web`，Preact 构建时打包），`tau serve remote on`、`pair`（一次性码与二维码）、`devices`、`revoke`，设备令牌（只存摘要）、不自带 TLS（推荐 Tailscale）；手机上看会话、答审批与对话框、发话插话中止、附图、换模型与档位；网页与 TUI 断线自动重连补齐 | 2026-10-24 | D61 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）；P59 的手机两项（同一局域网扫码配对、接上终端的会话、答一次审批；有 Tailscale 时经它的 HTTPS 地址打开一次）。
+
+## Phase 60 🚧 编辑器接常驻会话（ACP）
+
+规格书（2026-10-24 确认；用户：「按你的建议来，做吧」）：[specs/phase-60-editor-acp.md](specs/phase-60-editor-acp.md)。分 60a 协议补充（编辑器给的 MCP server）与中枢支持、60b `--mode acp` 改成协议上的适配层两步提交，做完一起验收。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
@@ -169,5 +173,6 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 | 32 | `cli/src/tui/controller.ts` 1495 行，结构门禁上限 1500（P55、P57；P58 把会话类命令移出了 `commands.ts`，它降到 1135 行、上限改为 1200） | 再加几个控制器方法就撞线 | 下一个动它的阶段先把指针与键盘处理移出去；不调高上限 |
 | 33 | 扩展的 Markdown 变换只作用于写完的文字：流式中的文字照原样画，变换结果按文字写完时的宽度取（P57，变换改在中枢运行） | 依赖 `isStreaming` 或宽度的变换器在流式时看不到效果，调宽度后用旧宽度的结果 | 出现真要流式变换的扩展时，按段增量取；宽度变化时重取 |
 | 35 | 常驻服务里各会话的模型各归各的（P58），但 read 工具收不收图片、`@文件` 的图片提示按进程的启动模型判断（工作区的 `modelTakesImages` 读进程的端点） | 一个会话换到与服务启动模型不同的模型后，图片支持可能判断错 | 让工作区按会话当前的模型判断（模型表的 `input`） |
+| 36 | `smoke:browser:runtime`（浏览器里跑内核与 OPFS）在 CI 上超时过一次（20 秒内 Chrome 没报结果，stderr 只有 dbus 的报错），重跑通过（P59 文档提交的 CI，run 40064221954） | CI 偶尔红一次 | 再出现时把超时放宽到 40 秒并打出页面状态；查是否 Chrome 启动慢 |
 
 （#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
