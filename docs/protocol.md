@@ -1,19 +1,27 @@
 # tau 的客户端协议（tau/1）
 
-一个 tau 持有会话，多个客户端同时接上同一个会话：终端、编辑器、手机。这是它们说的协议（P56 起；P57 补齐了 TUI 需要的部分，TUI 与 `--mode rpc` 自己就是它的客户端）。形状与名字照抄 Codex 的 app-server 协议（会话、轮、条目；审批是 server 发给客户端的请求），tau 自己的部分另起名字。类型定义在 `@yophon/tau-protocol`（`packages/protocol/src/types.ts`），以它为准；字段只加不改。
+一个 tau 持有会话，多个客户端同时接上同一个会话：终端、编辑器、手机。这是它们说的协议（P56 起；P57 补齐了 TUI 需要的部分，TUI 与 `--mode rpc` 自己就是它的客户端；P58 加了常驻服务与本机 socket）。形状与名字照抄 Codex 的 app-server 协议（会话、轮、条目；审批是 server 发给客户端的请求），tau 自己的部分另起名字。类型定义在 `@yophon/tau-protocol`（`packages/protocol/src/types.ts`），以它为准；字段只加不改。
 
 现在的入口：
 
 ```bash
-tau serve                    # 同 --listen stdio：stdin/stdout 上一行一条 JSON-RPC 消息，日志在 stderr
+tau serve                         # 同 --listen stdio：stdin/stdout 上一行一条 JSON-RPC 消息，日志在 stderr
 tau serve -m deepseek/flash --permission-mode supervised
+tau serve --listen unix://        # 本机 socket（Windows 上是命名管道），前台运行
+tau serve start|stop|restart|status   # 常驻服务：在后台运行的 --listen unix://（见「常驻服务」）
 ```
 
-TUI 与 `--mode rpc` 在自己进程里起一个会话中枢，经进程内通道（对象直接传）连上（P57，照 Codex 的 TUI 与 exec）。常驻进程与本机 socket（P58）、WebSocket 与配对（P59）之后加上。
+TUI 有常驻服务就连上它，没有时按设置先起一个，否则在自己进程里起会话中枢、经进程内通道（对象直接传）连上（P57/P58，照 Codex 的 TUI）。`--mode rpc` 总在自己进程里。WebSocket 与配对（P59）之后加上。
 
 ## 线格式
 
-JSON-RPC 2.0。stdio 上一行一条消息。客户端先发 `initialize`，之前的调用都被拒绝。
+JSON-RPC 2.0。stdio 与本机 socket 上一行一条消息（UTF-8，`\n` 结尾）；每个 socket 连接是一个客户端。客户端先发 `initialize`，之前的调用都被拒绝。
+
+| 传输 | 写法 | 说明 |
+|---|---|---|
+| stdio | `--listen stdio`（缺省） | 一个客户端（启动它的那个进程） |
+| 本机 socket | `--listen unix://` 或 `unix://PATH` | 缺省位置：Linux/macOS 是 `~/.tau/daemon/serve.sock`（目录 0700，路径太长时 `/tmp/tau-<uid>/serve.sock`）；Windows 是命名管道 `\\.\pipe\tau-<家目录的哈希>`（只有本用户、管理员与 SYSTEM 能写） |
+| 进程内 | `createMemoryTransportPair()` | TUI 与 `--mode rpc` 的进程内中枢，对象直接传 |
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"initialize","params":{"clientInfo":{"name":"my-client"},"protocolVersion":"tau/1","capabilities":{"nativeEvents":true}}}
@@ -32,25 +40,26 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 
 ## 会话（thread）
 
-一个会话就是 tau 的一个 session（id 相同，存在 `~/.tau/sessions`）。server 只服务启动时的工作目录。
+一个会话就是 tau 的一个 session（id 相同，存在 `~/.tau/sessions`）。一个 server 可以服务多个目录（P58）：开会话、列出、找存档时给 `cwd`；不给时用离开的那个会话的目录，再不然用 server 启动时的目录。
 
 | 方法 | 参数 → 结果 |
 |---|---|
-| `thread/start` | `{ model?, permissionMode?, previousThreadId?, parentSession? }` → 加入结果。新会话；调用者在它的扩展启动前就已订阅（看得到 `session_start` 时说的话），打开时的项目信任问题也问它 |
-| `thread/resume` | `{ threadId, afterSeq?, previousThreadId? }` → 加入结果。没加载的从磁盘打开；**正在运行的就是接上**；随后正在等待回答的请求发给这个客户端 |
-| `thread/import` | `{ path, copy, previousThreadId? }` → 加入结果。别处的会话文件：`copy` 时复制进会话目录（`/import`），否则就地打开（`--session <文件>`） |
+| `thread/start` | `{ cwd?, model?, permissionMode?, ephemeral?, previousThreadId?, parentSession? }` → 加入结果。新会话；调用者在它的扩展启动前就已订阅（看得到 `session_start` 时说的话），打开时的项目信任问题也问它；`ephemeral`：不存（`--no-session`），从它 `/new` 出的会话也不存 |
+| `thread/resume` | `{ threadId, afterSeq?, cwd?, model?, permissionMode?, previousThreadId? }` → 加入结果。没加载的从 `cwd` 的存档打开；**正在运行的就是接上**（没有会话文件的也行）；随后正在等待回答的请求发给这个客户端。`model`、`permissionMode` 只在这次从磁盘打开时用，接上已在运行的会话不改它 |
+| `thread/import` | `{ path, copy, cwd?, previousThreadId? }` → 加入结果。别处的会话文件：`copy` 时复制进会话目录（`/import`），否则就地打开（`--session <文件>`） |
 | `thread/fork` | `{ threadId, entryId?, position? }` → 加入结果。复制会话（到某个条目之前，`position: "at"` 为到它为止；不给条目为整个会话）并移过去；有条目且不是 `at` 时扩展可拒绝（`session_before_fork`） |
 | `thread/unsubscribe` | `{ threadId }` → `{ status: "notLoaded" \| "notSubscribed" \| "unsubscribed" }` |
-| `thread/list` | `{}` → `{ threads }`：这个目录的会话，`loaded` 表示 server 正持有 |
-| `thread/read` | `{ threadId }` → `{ thread, items }`：读对话，不订阅 |
-| `thread/delete` | `{ threadId }`：删掉存档会话的文件（server 正持有的不能删） |
-| `thread/setName` | `{ threadId, name }`：持有的或存档的都行 |
+| `thread/list` | `{ cwd? }` → `{ threads }`：这个目录的会话，`loaded` 表示 server 正持有 |
+| `thread/loaded/list` | `{}` → `{ threads }`：server 正持有的会话，各个目录的（Codex 的名字），带 `clients` 与 `waiting` |
+| `thread/read` | `{ threadId, cwd? }` → `{ thread, items }`：读对话，不订阅 |
+| `thread/delete` | `{ threadId, cwd? }`：删掉存档会话的文件（server 正持有的不能删） |
+| `thread/setName` | `{ threadId, name, cwd? }`：持有的或存档的都行 |
 
-`thread`：`{ id, name?, cwd, model, status: "idle" | "running", updatedAt?, loaded?, createdAt?, preview?, messageCount?, filePath?, parentSession? }`（后五个给会话选择器：开始时间、第一句话、消息条数、文件、从哪个会话分出来）。
+`thread`：`{ id, name?, cwd, model, status: "idle" | "running", updatedAt?, loaded?, createdAt?, preview?, messageCount?, filePath?, parentSession?, clients?, waiting? }`（`createdAt` 到 `parentSession` 给会话选择器：开始时间、第一句话、消息条数、文件、从哪个会话分出来；`clients`、`waiting`：接着的客户端数、等待回答的审批与对话框数）。
 
 **加入结果**：`{ thread, events, seq?, items?, messages?, state? }`。带 `afterSeq` 且还在日志里：`events` 是它之后的推送；否则 `items` 是这一轮之前的对话，`events` 是当前这一轮的推送（没在运行时为空）。原样客户端总是拿到 `messages`（这一轮之前的对话，内核消息）与 `state`，`events` 是当前这一轮的推送。
 
-**换会话**：带 `previousThreadId` 表示调用者离开那个会话。它的扩展先被问 `session_before_switch`，拒绝时报 `-32001`（`data.by: "switch"`）。只有调用者订阅着且它闲着时，它的工作区与扩展直接服务新会话（同 TUI 的 `/new`、`/resume`：不再起第二套扩展与 MCP server）；否则调用者退出它，新会话自己打开。
+**换会话**：带 `previousThreadId` 表示调用者离开那个会话。它的扩展先被问 `session_before_switch`，拒绝时报 `-32001`（`data.by: "switch"`）。只有调用者订阅着、它闲着、目标在同一个目录时，它的工作区与扩展直接服务新会话（同 TUI 的 `/new`、`/resume`：不再起第二套扩展与 MCP server）；否则调用者退出它，新会话自己打开（或接上已在运行的）。
 
 没有客户端订阅、没在运行、没有排队和等待中的请求时，会话 60 秒后从内存卸载（磁盘上照旧在），再 `thread/resume` 即可。扩展要求退出（`ctx.shutdown`）时会话结束，订阅者收到 `thread/closed`。
 
@@ -93,7 +102,7 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 | `thread/backgroundTasks` / `thread/stopBackgroundTask { taskId }` | 工作区的后台命令（P36a） |
 | `thread/checkpoints` / `thread/restoreCheckpoint { checkpointId }` | 代码检查点（`/rewind`）：`{ available, checkpoints }`，还原 → `{ restored, deleted }` |
 
-会话状态 `ThreadState`：`id`、`cwd`（会话现在所在的目录，worktree 会移动它）、`model`、`modelChoices`、`thinkingLevel?`、`permissionMode`、`sessionUsage`、`contextUsage`（内核的用量与上下文估计）、`tools { all, active }`、`name?`、`sessionFile?`、`parentSession?`、`running`、`task?`、`lastSessionStart`、`extensionsVersion`（每次重新加载加一）、`extensions`（扩展注册了什么的计数：命令、快捷键、各种渲染器、组件、状态项、诊断、自动补全、Markdown 变换）、`foregroundCommands`、`queued`（有排队的话）。
+会话状态 `ThreadState`：`id`、`cwd`（会话现在所在的目录，worktree 会移动它）、`model`、`modelChoices`、`thinkingLevel?`、`permissionMode`、`sessionUsage`、`contextUsage`（内核的用量与上下文估计）、`tools { all, active }`、`name?`、`sessionFile?`、`parentSession?`、`running`、`task?`、`lastSessionStart`、`extensionsVersion`（每次重新加载加一）、`extensions`（扩展注册了什么的计数：命令、快捷键、各种渲染器、组件、状态项、诊断、自动补全、Markdown 变换）、`foregroundCommands`、`queued`（有排队的话）、`projectTrusted?`（项目自己的资源与设置被信任）、`workingDirectories?`（会话能工作的目录：工作目录与 `--add-dir` 的）。
 
 ## 推送
 
@@ -168,6 +177,22 @@ TUI 的渲染全建在内核消息与事件上（pi 的形状，本来就是 JSO
 | `item/tool/requestApproval` | `{ threadId, requestId, toolCallId, toolName, args, risk, reason?, always?, alwaysKind?, subagent?, rule?, protectedPath?, parentToolCallId?, detached? }` → `{ decision: "once" \| "always" \| "deny" }`。`always` 说明「总是允许」在这里指什么，`alwaysKind` 是存规则（`rules`）还是本会话放行编辑（`edits`）；没有 `always` 时只该给 `once`/`deny`。`detached`：后台子 agent 的审批，比这一轮活得久 |
 | `ui/request` | `{ threadId, requestId, kind, title, message?, options?, placeholder?, prefill?, form?, timeoutMs?, signIn? }` → `{ confirmed? \| value? \| values? \| form? \| cancelled? }`。`kind`：`confirm`、`select`、`selectMany`、`input`、`editor`、`form`（内核的 UiForm/UiFormResult）；`timeoutMs` 到时 server 自己关掉它；`signIn`：这是 MCP server 的登录页（P49 的 OSC 7501 `auth`） |
 
+## 常驻服务
+
+`tau serve start` 在后台起 `tau serve --listen unix://`（脱离终端，工作目录设在家目录，输出写 `~/.tau/daemon/serve.log`），等它能回 `initialize` 再返回；已在运行就直接返回。`stop` 让它退出，`restart` 先停再起（升级 tau 后用），`status` 报告是否在运行、pid、版本、地址、会话数与客户端数。每个命令往 stdout 写一个 JSON 对象（照 Codex 的 `codex app-server daemon`）。服务把自己写进 `~/.tau/daemon/daemon.json`（pid、版本、地址、启动时间、启动目录）。一个家目录一个服务：同一位置已有服务在听时，第二个不起。
+
+| 方法 | 说明 |
+|---|---|
+| `server/shutdown` `{ graceSeconds? }` | 服务退出：不再开始新的事，排队的轮丢掉，正在跑的在宽限期内跑完（缺省 60 秒，settings `daemon.shutdownGraceSeconds`，0–300），然后中止。先回答再退出。只有常驻服务接受它（`tau serve stop` 用它；stdio 与进程内的回错误） |
+
+几个约定（照 Codex）：
+
+- **模型各归各的**：一个会话 `thread/setModel` 换了模型，只是这个会话的，进程的端点不动，之后重建的 agent（`/reload`、换会话）也保持它。一个客户端换过的模型与推理强度，是它之后开的会话的起点；别的客户端开的会话照服务的缺省。
+- **配置以服务启动时为准**：模型表、端点、密钥、用户设置里启动时读的项，改了要 `tau serve restart`；每个新开的会话照旧读它所在目录的项目设置。
+- **环境变量以服务为准**：工具与 `!` 命令在服务里运行，用的是服务启动时的环境，不按客户端隔离。
+
+TUI 怎么用它见 README 的「常驻服务」一节：有服务就连；没有时 settings `daemon.autoStart`（缺省开）先起一个；`--no-daemon` 与改端点、提示词、工具、扩展、权限规则的参数在自己进程里运行。
+
 ## 用 `@yophon/tau-protocol` 写客户端
 
 ```ts
@@ -183,7 +208,7 @@ const { thread } = await client.startThread();
 await client.startTurn(thread.id, "hello");
 ```
 
-进程内用 `createMemoryTransportPair()`（对象直接传，不经 JSON）。TUI 的客户端一侧（镜像、状态、命令表、Markdown 变换的缓存）在 `packages/cli/src/tui/session-client.ts`。
+接常驻服务时，把 `net.connect(地址)` 的 socket 接到同样的行传输上（地址见「线格式」的表；CLI 的 `packages/cli/src/daemon.ts` 里有 `defaultAddress`、`socketTransport`、`probeDaemon`）。进程内用 `createMemoryTransportPair()`（对象直接传，不经 JSON）。TUI 的客户端一侧（镜像、状态、命令表、Markdown 变换的缓存）在 `packages/cli/src/tui/session-client.ts`。
 
 ## 和其他协议的关系
 

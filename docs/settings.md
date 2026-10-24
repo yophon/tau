@@ -15,7 +15,7 @@ tau 读两份设置文件，键名尽量照 pi：
 改了设置之后：
 
 - 下表标「重读」的键，`/reload` 后生效；
-- 其余的键在启动时读，要重启 tau。
+- 其余的键在启动时读，要重启 tau；会话在常驻服务里时（P58），用户设置里启动时读的键以服务启动时为准，要 `tau serve restart`（新开的会话照旧读它所在目录的项目设置）。
 
 ## 键一览
 
@@ -61,6 +61,8 @@ tau 读两份设置文件，键名尽量照 pi：
 | `tui.showReasoning` | 推理全文显示，不折叠成一行（P38，Claude Code） | false | 否 | 启动 |
 | `tui.doubleEscapeAction` | 输入框为空时连按两次 Esc：`tree`、`fork`、`none`（P37b，pi） | `tree` | 否 | 启动 |
 | `worktree.baseRef`、`worktree.symlinkDirectories` | `tau --worktree`、`enter_worktree`、隔离的子 agent 从哪里开分支、链接哪些目录（P37d、P46），见 [worktrees.md](worktrees.md) | `fresh`、无 | 否 | 启动 |
+| `daemon.autoStart` | 打开 TUI 时没有常驻服务就先在后台起一个（P58，照 Codex 的 `daemon_auto_start`）；`false` 时只连已经在运行的（`tau serve start`） | true | 否 | 启动 |
+| `daemon.shutdownGraceSeconds` | `tau serve stop`、Ctrl+C 停常驻服务时，正在跑的轮最多再跑多少秒，0–300（P58，照 Codex） | 60 | 否 | 启动 |
 | `shell.envAllow` | 名字像密钥、但仍要留给命令的环境变量（P32b） | 无 | 否 | 启动 |
 | `audit.details` | 审计账本里记工具参数的摘要还是不记（P32c） | `summary` | 否 | 启动 |
 

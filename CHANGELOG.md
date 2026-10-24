@@ -4,6 +4,31 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Added (P58: the resident server)
+- `tau serve start|stop|restart|status`: a tau in the background on a local socket (`~/.tau/daemon/serve.sock`
+  in a user-only directory; a named pipe on Windows), after Codex's `app-server daemon` — start returns
+  once the server answers, stop lets running turns finish (settings `daemon.shutdownGraceSeconds`, 60 s),
+  each prints one JSON object. `tau serve --listen unix://[PATH]` runs it in the foreground.
+- The TUI connects to the resident server and, when none runs, starts one first (settings
+  `daemon.autoStart`, on by default; `--no-daemon` runs in-process). Two terminals share one session;
+  closing a terminal leaves the session running; `/resume` lists what the server holds in every
+  directory, with how many terminals are on each. Options that configure what the server fixed at its
+  start (`--extension`, `--no-mcp`, `--tools`, `--base-url`, permission rules, `--worktree`, …) run
+  in-process, with a line saying why.
+- `tau/1`: `cwd` on `thread/start`, `thread/resume`, `thread/list` and the others (one server for
+  every directory), `ephemeral` sessions, `model`/`permissionMode` when `thread/resume` opens a
+  session, `thread/loaded/list` with `clients` and `waiting`, `server/shutdown`, `projectTrusted` and
+  `workingDirectories` in the session state. See docs/protocol.md.
+- Kernel: `Agent.setSessionName` (pi's `AgentSession.setSessionName`).
+
+### Fixed (P58)
+- In `tau serve`, a model switch in one session no longer moves the process's endpoint (another
+  session's `/reload` would have picked it up); each client's later sessions start from what it switched to.
+- The automatic session title could fork the session log when the next prompt arrived as it was
+  written, ending that run with "Model context diverged from the session log" (seen on CI in
+  `--mode rpc`); session names are written in turn with the agent's writes.
+- Joining a running session that has no session file from `/resume` works.
+
 ### Changed (P57: the TUI and `--mode rpc` over tau's protocol)
 - The TUI is a client of a session hub in its own process (as Codex's TUI is of its app-server):
   it no longer holds the agent, the extensions or the session file, and everything it does goes

@@ -40,7 +40,9 @@ inject a small adapter instead of polyfilling globals.
 - **Sessions** — pi v3 JSONL on disk: `--continue`, `-r` (pick one), `--session <id|name>`, `/tree`, `/fork`, automatic
   compaction with pi's algorithm, `/handoff`; `tau --worktree` and
   `enter_worktree` for a session in its own git worktree
-  ([docs/worktrees.md](docs/worktrees.md)).
+  ([docs/worktrees.md](docs/worktrees.md)). A resident server keeps sessions
+  running after a terminal closes, and several terminals share one session
+  (see "Resident server" below).
 - **Subagents** — one, parallel, chain or background, from Markdown agent
   definitions; `send_message` continues one; worktree isolation
   ([docs/subagents.md](docs/subagents.md)).
@@ -244,6 +246,34 @@ Approvals become the editor's permission prompts, reads and edits go through the
 editor's buffers, and the permission modes are the session modes. See
 [docs/rpc.md](docs/rpc.md).
 
+## Resident server
+
+```bash
+tau serve start      # a tau in the background, on a local socket (a named pipe on Windows)
+tau                  # any terminal, any directory: the TUI connects to it
+tau -c               # in another terminal: the same session, live in both
+tau serve status     # running, version, sessions, clients (one JSON object)
+tau serve stop       # running turns may finish first (settings daemon.shutdownGraceSeconds, 60 s)
+```
+
+The TUI is a client of tau's protocol ([docs/protocol.md](docs/protocol.md)). When a
+resident server runs, it connects to it; when none runs, it starts one first
+(settings `daemon.autoStart`, on by default; it says so once, and how to stop it),
+as Codex's TUI does with its daemon. Two terminals on one session see each
+other's prompts, replies and tool output; an approval answered in one closes in
+the other. Leaving with `/quit` or closing the terminal does not stop the session:
+a running turn finishes, and `tau -c` or `/resume` (which lists what the server
+holds, in every directory, with how many terminals are on each) picks it up again.
+
+The server's configuration is fixed when it starts: its models, keys and
+environment variables (tools and `!` commands run with them), so after changing
+`~/.tau/models.json` run `tau serve restart`. Each terminal's `-m` and
+`--permission-mode` go with the session it opens. Options that configure what
+the server fixed — `--extension`, `--no-mcp`, `--tools`, `--system-prompt`,
+`--base-url`, permission rules, `--worktree` and the like — run the session in
+the TUI's own process instead, as does `--no-daemon`; the TUI says why in one
+line. `-p`, the REPL and `--mode json|rpc|acp` always run in their own process.
+
 ## Resident gateway
 
 ```bash
@@ -319,7 +349,7 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/decisions.md](docs/decisions.md) — design decision records (D1–D55)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
-- [docs/protocol.md](docs/protocol.md) — `tau serve` and tau's client protocol (several clients on one session)
+- [docs/protocol.md](docs/protocol.md) — `tau serve`, the resident server and tau's client protocol (several clients on one session)
 - [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, language servers, credentials, OAuth, keeping secrets from the model

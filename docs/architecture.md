@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-23（P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-24（P58：常驻服务与本机 socket——`daemon.ts`、`tui-link.ts`、`tau serve --listen unix://` 与 `start|stop|restart|status`，中枢服务多个目录；P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -170,7 +170,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 
 ### 启动
 
-`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 进入模式。TUI（交互终端缺省，`--tui` 显式要求，`tui-hub.ts`）与 `--mode rpc`（`rpc-hub.ts`）在本进程起一个会话中枢、经进程内通道连上（`local-hub.ts`：中枢、会话客户端、照旧选第一个会话——新的、`-c` 最近的、`--session` 指定的），由中枢为会话开工作区；`tau serve`（`server/`）是同一个中枢。其余模式为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）：REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|acp`。网关与 ACP 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
+`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`，网关除外）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau serve start|stop|restart|status`（`daemon.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 进入模式。TUI（交互终端缺省，`--tui` 显式要求，`tui-hub.ts`）先由 `tui-link.ts` 决定连谁：常驻服务（P58；没有时按设置先起一个），或本进程的中枢；`--mode rpc`（`rpc-hub.ts`）总在本进程起中枢、经进程内通道连上（`local-hub.ts`：中枢、会话客户端、照旧选第一个会话——新的、`-c` 最近的、`--session` 指定的），由中枢为会话开工作区；`tau serve`（`server/`）是同一个中枢，经 stdio 或本机 socket 服务客户端。其余模式为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）：REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json|acp`。网关与 ACP 拿到同一个 `openWorkspace` 为每个对话或会话再开工作区。
 
 ### 代码地图
 
@@ -210,15 +210,17 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | **子命令** | |
 | `tool-commands.ts` | `tau credentials`、`tau mcp list/login/logout`、`tau audit` |
 | `gateway.ts` | `tau gateway`：给网关提供 `openConversation`（工作区加 `HeadlessSession`） |
-| **会话中枢（server/，P56–P57）** | 一个 tau 持有会话、多个客户端接上同一个会话；TUI 与 `--mode rpc` 也是它的客户端。协议见 [protocol.md](protocol.md) |
-| `server/hub.ts` | `SessionHub`：已加载的会话与连接（`HubConnection`：一个 `JsonRpcPeer`，加上它声明的能力——原样数据、pi 事件记录、宽度），协议方法的分发（未 `initialize` 拒绝），换会话（`previousThreadId`：先问 `session_before_switch`，只有这个客户端持有且闲着时把工作区交给新会话），存档会话的列出、读取、改名、删除（借已加载会话的工作区，没有时开一个不起 MCP 的），按需加载、空闲 60 秒卸载，扩展要求退出时卸下 |
-| `server/thread.ts` | `HubThread`：一个工作区 + 一个 `HeadlessSession`（同网关的对话）；推送编号（`seq`）并保留 20000 条，只发给部分客户端的推送（原样数据、pi 事件记录）也占编号；订阅者与加入结果（补齐或快照，原样客户端拿对话与状态）；打开会话的客户端在扩展启动前就订阅、信任问题问它；审批与对话框发给所有订阅者、先答为准、其余收到 `serverRequest/resolved`、没人接着时等待，对话框可带信号与超时；一次一件事（`runTask`：轮之外的压缩、移动、`!` 命令、重载、交接），`turn/start` 排在后面；会话自己发起的运行也算一轮；一轮结束后 worktree 移动触发重载、无名会话取标题；`handover` 把工作区与扩展交给客户端移去的会话；自动补全 provider 链（底层是客户端送来的自己的补全） |
+| **会话中枢（server/，P56–P58）** | 一个 tau 持有会话、多个客户端接上同一个会话；TUI 与 `--mode rpc` 也是它的客户端；常驻服务服务各个目录。协议见 [protocol.md](protocol.md) |
+| `server/hub.ts` | `SessionHub`：已加载的会话与连接（`HubConnection`：一个 `JsonRpcPeer`，加上它声明的能力——原样数据、pi 事件记录、宽度），协议方法的分发（未 `initialize` 拒绝），换会话（`previousThreadId`：先问 `session_before_switch`，只有这个客户端持有且闲着时把工作区交给新会话），存档会话的列出、读取、改名、删除（借已加载会话的工作区，没有时按目录各开一个不起 MCP 的），请求带 `cwd` 时按那个目录开会话、找存档（P58），按需加载、空闲 60 秒卸载，扩展要求退出时卸下；P58：`thread/loaded/list`，按连接记住换过的模型与推理强度（`isolateModels` 时它之后开的会话从那里起），`server/shutdown` 与 `shutdown()`（不再开始新的事，正在跑的在宽限期内跑完） |
+| `server/thread.ts` | `HubThread`：一个工作区 + 一个 `HeadlessSession`（同网关的对话）；推送编号（`seq`）并保留 20000 条，只发给部分客户端的推送（原样数据、pi 事件记录）也占编号；订阅者与加入结果（补齐或快照，原样客户端拿对话与状态）；打开会话的客户端在扩展启动前就订阅、信任问题问它；审批与对话框发给所有订阅者、先答为准、其余收到 `serverRequest/resolved`、没人接着时等待，对话框可带信号与超时；一次一件事（`runTask`：轮之外的压缩、移动、`!` 命令、重载、交接），`turn/start` 排在后面；会话自己发起的运行也算一轮；一轮结束后 worktree 移动触发重载、无名会话取标题；`handover` 把工作区与扩展交给客户端移去的会话（同一目录时；不存的会话 `/new` 出的也不存）；P58：`isolateModels`（`tau serve`）时换模型不动进程的端点，重建的 agent 由 `keepModel` 回到会话自己的模型与推理强度，开会话时 `chooseModel` 按客户端的 `-m`、会话自己的上一个模型、客户端换过的模型的顺序选；自动补全 provider 链（底层是客户端送来的自己的补全） |
 | `server/control.ts` | 会话控制，照 TUI 原来的代码：换模型与推理强度（经扩展钩子）、权限模式、命名、条目、压缩与 `/tree` 移动（任务）、`!` 命令（任务，输出作为 `bash` 调用的工具事件推出）、`/btw`、取回排队、重载（失败时恢复旧扩展）、交接、检查点 |
 | `server/ui.ts` | 扩展的界面在中枢一侧：会话的 `UiCapability`（对话框成为 `ui/request`，含表单、超时、登录页），工具/消息/条目渲染器、组件、状态项、诊断、Markdown 变换的结果以数据发出（组件按客户端给的宽度画成行），扩展命令与快捷键、参数补全 |
 | `server/native.ts` | 原样数据：对话镜像（按消息身份比较，追加或重置）与会话状态（`ThreadState`） |
 | `server/items.ts` | AgentEvent → 条目与推送（`ItemTracker`，`turn/start` 的那句话在一轮开始时成为条目），对话 → 条目快照（`itemsFromMessages`） |
-| `server/serve.ts` | `tau serve --listen stdio`：stdin/stdout 上的行分帧传输 |
-| `local-hub.ts` · `tui-hub.ts` · `rpc-hub.ts` | 本进程的中枢（P57）：起中枢与一个会话客户端、选第一个会话；TUI 与 rpc 各自接上去（信任问题在 TUI 上屏前走启动对话框，rpc 走 `extension_ui_request`） |
+| `server/serve.ts` | `tau serve --listen stdio`：stdin/stdout 上的行分帧传输；P58 `--listen unix://`（或 `unix://PATH`）：每个 socket 连接一个客户端，写 `daemon.json`，Ctrl+C、SIGTERM、`server/shutdown` 都优雅退出 |
+| `daemon.ts` | 常驻服务（P58，照 Codex 的 `app-server daemon`）：缺省地址（`~/.tau/daemon/serve.sock`，0700 目录；Windows 命名管道 `\\.\pipe\tau-<家目录的哈希>`）、socket 上的行传输、找服务并初始化客户端（`probeDaemon`）、`start`（脱离终端起 `tau serve --listen unix://`，等到能回 `initialize`）、`stop`（`server/shutdown`，宽限期后按 pid 强杀）、`restart`、`status`，各输出一个 JSON 对象 |
+| `tui-link.ts` | TUI 连谁（P58，照 Codex 的 TUI）：常驻服务（没有时按 `daemon.autoStart` 先起），`--no-daemon`、改服务启动时定下的配置的参数、Windows 管理员终端在本进程；用不了时退回并说一行原因，版本不同时说一行 |
+| `local-hub.ts` · `tui-hub.ts` · `rpc-hub.ts` | 本进程的中枢（P57）：起中枢与一个会话客户端、选第一个会话（P58：在客户端的目录，常驻服务时带 `-m`、`--permission-mode`）；TUI 与 rpc 各自接上去（信任问题在 TUI 上屏前走启动对话框，rpc 走 `extension_ui_request`）。`tui-hub.ts` 不读中枢一侧的对象（结构门禁第 4 条）：设置与 `@文件` 的图片在客户端算，项目信任与额外目录在 `thread/state` |
 | **模式（modes/）** | |
 | `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态 |
 | `headless.ts` | `HeadlessSession`：一个会话的运行（一次一个，排队的输入 steer/followUp）、会话切换、无界面的斜杠命令；中枢的会话、ACP 与网关用它（重载后换注册表、扩展报错与退出交给宿主） |
@@ -240,7 +242,7 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
 
 基于 Ink 5 + React 18（D31）。main.ts 不静态引入 Ink（有测试检查），TUI 只在进入时动态加载。
 
-P57 起 TUI 是会话中枢的客户端（D59）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。
+P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻服务（D60，`tui-link.ts`）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。P58：`TuiSession` 带客户端的目录（列存档、换会话时给 `cwd`）与是否常驻；连接断了（服务停了）时以 `thread/closed` 让 TUI 退出。会话类命令（`/name`、`/resume`、`/fork`、`/new`、`/clone`、`/session`、`/export`、`/import`）在 `session-commands.ts`；常驻服务时 `/resume`（别名 `/sessions`）也列出服务持有的各目录的会话。
 
 - **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
 - **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者；`types.ts` 是共用类型。
