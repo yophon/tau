@@ -132,7 +132,7 @@
 
 ## 实施记录（2026-10-24）
 
-- 提交：2ab9f52 规格、2aecbd5 60a（协议的 `mcpServers` 与中枢支持）、60b（适配层、文档）。
+- 提交：2ab9f52 规格、2aecbd5 60a（协议的 `mcpServers` 与中枢支持）、f56ad77 60b（适配层、测试、文档）。
 - 照规格实现：`modes/acp.ts` 改写成 tau/1 的客户端（会话方法、更新、审批撤回、对话框、配置项、断线重连），纯映射移到 `modes/acp-updates.ts`；`acp-hub.ts` 选连谁（`tui-link.ts` 的判断拆成 `residentAllowed`、`residentClient` 两个函数，TUI 与 ACP 共用；`local-hub.ts` 的 `startHub` 起本进程的中枢）；`main.ts` 里 `tau serve` 与本进程 ACP 共用一个中枢宿主。去掉经编辑器的 `fs/*` 读写（`ClientFileSystem`）与 ACP 自己装 MCP 的那套。结构门禁加第 5 条。协议说明见 [protocol.md](../protocol.md)、[rpc.md](../rpc.md)，理由见 D62。
 - 和规格的出入与补充：
   - **MCP 的登录网页没转成 elicitation 的网址模式**（规格「审批与对话框」一项）：网址模式由编辑器自己打开网页，tau 的流程是用户同意后由服务打开，照搬会打开两次；它照旧是一个选择（在浏览器里打开 / 拒绝），网页在会话所在的机器上打开。要做好需要协议告诉服务「客户端已打开」，记在 D62。
@@ -146,3 +146,4 @@
 - 冒烟：pack smoke 通过；smoke-tui 41 个场景全过（WSL；整套一次跑超过了我设的 15 分钟，最后 4 个——p49、p53、p55、resident——分开再跑）。
 - 真 DeepSeek（`deepseek-flash`，Windows，临时家目录里的常驻服务）：终端（协议客户端）开会话说「记住这个词」；脚本化的 ACP 客户端 `session/list` 里它排第一、标题是那句话，`session/load` 回放出它；ACP 发「用 bash 运行 echo <随机词>，再说出两个词」，审批同时到了终端与 ACP，在 ACP 答允许，终端收到 `serverRequest/resolved` 与 ACP 发的那句话；回答里两个随机词都有，ACP 退出码 0，`tau serve stop` 正常。
 - 留给用户真机验收：Zed 里 tau 的历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失。
+- CI：60a（run 40071123165）与 60b（run 40075614287，gate、smoke、dialects）都通过。
