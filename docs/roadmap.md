@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-23（P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P58 规格书（常驻服务与本机 socket）**）
+> 最后更新：2026-10-23（P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P58（常驻服务与本机 socket）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -73,6 +73,10 @@
 | [P57](specs/phase-57-tui-over-protocol.md) | 常驻 tau 第二步：TUI 与 `--mode rpc` 成为会话中枢的客户端（进程内），协议补齐 TUI 所需——原样的内核消息、事件与状态，会话控制，一次一件事，扩展的界面以数据发出，换会话时交接工作区；两个 TUI 可接同一会话 | 2026-10-23 | D59 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）。
+
+## Phase 58 🚧 常驻服务与本机 socket
+
+规格书（2026-10-23 确认；用户：「都按你建议来」）：[specs/phase-58-resident-service.md](specs/phase-58-resident-service.md)。分 58a 服务端（多目录、`--listen unix://`、`tau serve start|stop|restart|status`）与 58b TUI 自动连上两步提交，做完一起验收。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
