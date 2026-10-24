@@ -62,7 +62,7 @@ if (versions.length !== 1) {
 console.log(`Publishing tau packages at ${versions[0]}${dryRun ? " (dry run)" : ""}\n`);
 
 for (const state of states) {
-	const entry = state.dir === "cli" ? "dist/main.js" : "dist/index.js";
+	const entry = state.dir === "cli" ? "dist/main.js" : state.dir === "web" ? "dist/index.html" : "dist/index.js";
 	if (!existsSync(join(state.pkgDir, entry))) {
 		throw new Error(`${state.pkgDir}/${entry} missing — run npm run build first`);
 	}

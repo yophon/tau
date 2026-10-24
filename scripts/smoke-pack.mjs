@@ -352,8 +352,36 @@ ${plugin.stdout}`);
 	const shrinkwrap = readFileSync(join(packageDir("cli"), "npm-shrinkwrap.json"), "utf8");
 	if (shrinkwrap.includes("@larksuiteoapi")) throw new Error("the CLI's shrinkwrap pulls in the Feishu SDK");
 
+	// P59: the web client from its tarball — the built page and its script, found the way the CLI's
+	// remote listener finds them (import.meta.resolve of the package.json), and no Preact at run time.
+	const webBefore = new Set(readdirSync(workDir));
+	await withPublishManifest(packageDir("web"), "web", async () => {
+		run("npm", ["pack", "--ignore-scripts", "--pack-destination", workDir], { cwd: packageDir("web") });
+	});
+	const webTarball = readdirSync(workDir).find((file) => file.endsWith(".tgz") && !webBefore.has(file));
+	if (!webTarball) throw new Error("npm pack produced no tarball for web");
+	const webDir = join(workDir, "web-consumer");
+	mkdirSync(webDir);
+	writeFileSync(join(webDir, "package.json"), JSON.stringify({ name: "web-consumer", type: "module" }, null, "\t"));
+	run("npm", ["install", "--ignore-scripts", "--no-audit", "--no-fund", join(workDir, webTarball)], { cwd: webDir });
+	writeFileSync(
+		join(webDir, "main.mjs"),
+		`import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+const dist = join(dirname(fileURLToPath(import.meta.resolve("@yophon/tau-web/package.json"))), "dist");
+const page = readFileSync(join(dist, "index.html"), "utf8");
+const script = readdirSync(dist).find((name) => /^app-.*\\.js$/.test(name));
+if (!script || !page.includes(script)) throw new Error("the page does not load its script");
+if (existsSync(join(dist, "..", "node_modules", "preact"))) throw new Error("preact installed at run time");
+console.log("pack smoke web ok");
+`,
+	);
+	const web = run("node", ["main.mjs"], { cwd: webDir });
+	if (!web.stdout.includes("pack smoke web ok")) throw new Error(`web smoke failed:\n${web.stdout}`);
+
 	console.log(
-		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout; host-node resizes images and runs background commands from its tarball; a channel plugin installs under a gateway directory and loads",
+		"pack smoke passed: tarball installs, runs, and typechecks for a bare consumer; codemode runs from packed tarballs; the TUI renders from an installed layout; host-node resizes images and runs background commands from its tarball; a channel plugin installs under a gateway directory and loads; the web client's built files install and resolve",
 	);
 } finally {
 	rmSync(workDir, { recursive: true, force: true });

@@ -1,0 +1,28 @@
+{
+	"name": "@yophon/tau-web",
+	"version": "0.2.0",
+	"description": "tau's web client: phones and other devices on a resident tau (built static files the CLI serves)",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/web"
+	},
+	"exports": {
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "node ../../scripts/build-web.mjs"
+	},
+	"devDependencies": {
+		"@yophon/tau-protocol": "^0.2.0",
+		"preact": "10.29.8"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}

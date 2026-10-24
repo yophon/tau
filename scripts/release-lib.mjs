@@ -29,6 +29,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"gateway",
 	"channel-weixin",
 	"channel-feishu",
+	"web",
 	"cli",
 ];
 
@@ -59,6 +60,9 @@ export function toPublishManifest(pkg, dir) {
 	if (dir === "cli") {
 		out.exports = { ".": { types: "./dist/main.d.ts", default: "./dist/main.js" }, "./package.json": "./package.json" };
 		out.bin = { tau: "./dist/main.js" };
+	} else if (dir === "web") {
+		// P59: static files only (the CLI serves dist); no JS entry point.
+		out.exports = { "./package.json": "./package.json" };
 	} else {
 		out.exports = {
 			".": { types: "./dist/index.d.ts", default: "./dist/index.js" },

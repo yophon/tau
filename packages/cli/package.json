@@ -43,6 +43,7 @@
 		"@yophon/tau-host-node": "^0.2.0",
 		"@yophon/tau-kernel": "^0.2.0",
 		"@yophon/tau-protocol": "^0.2.0",
+		"@yophon/tau-web": "^0.2.0",
 		"highlight.js": "10.7.3",
 		"ink": "5.2.1",
 		"qrcode-generator": "2.0.4",

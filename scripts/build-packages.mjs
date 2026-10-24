@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { buildWeb } from "./build-web.mjs";
 import { PUBLISHABLE_PACKAGES } from "./release-lib.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -34,6 +35,12 @@ function commandForPlatform(command) {
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
 	for (const dir of PUBLISHABLE_PACKAGES) {
 		const pkgDir = join(root, "packages", dir);
+		// P59: the web client is a bundle of static files, not tsc output.
+		if (dir === "web") {
+			console.log("building packages/web ...");
+			await buildWeb();
+			continue;
+		}
 		rmSync(join(pkgDir, "dist"), { recursive: true, force: true });
 		console.log(`building packages/${dir} ...`);
 		const result = spawnSync(commandForPlatform("npx"), ["tsc", "-p", join(pkgDir, "tsconfig.build.json")], {

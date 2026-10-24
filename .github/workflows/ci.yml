@@ -39,6 +39,8 @@ jobs:
       - run: npm run smoke:quickjs:legacy
       - run: npm run smoke:quickjs:mcp
       - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:browser:runtime
+      # P59: the web client in headless Chrome against the resident server
+      - run: BROWSER_BIN="$(command -v google-chrome)" npm run smoke:web
       - run: npm run smoke:tui
       # P33: the same scenarios in the inline TUI (the default is full screen)
       - run: SMOKE_TUI_MODE=inline npm run smoke:tui
