@@ -2,7 +2,8 @@
 // logs on stderr, nothing printed at start (Codex's `app-server --listen stdio://`, Claude Code's
 // `mcp serve`). P58: `--listen unix://` (or `unix://PATH`) serves every client that connects to a
 // local socket — a named pipe on Windows — and is the resident server `tau serve start` runs
-// (daemon.ts). WebSocket comes with P59.
+// (daemon.ts). P59: with `remote` (settings daemon.remote.listen) it also listens for paired
+// devices on WebSocket and serves the web client (remote.ts).
 import { existsSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { dirname } from "node:path";
@@ -16,7 +17,8 @@ import {
 	socketTransport,
 	writeDaemonInfo,
 } from "../daemon.ts";
-import { SessionHub, type SessionHubOptions } from "./hub.ts";
+import { type RemoteAdmin, SessionHub, type SessionHubOptions } from "./hub.ts";
+import { type RemoteListener, startRemote } from "./remote.ts";
 import type { HubHost } from "./thread.ts";
 
 export const LISTEN_VALUES = ["stdio", "unix://", "unix://PATH"] as const;
@@ -29,6 +31,8 @@ export async function runServe(options: {
 	home: string;
 	/** How long running turns may finish when the server stops by a signal (settings daemon.shutdownGraceSeconds). */
 	graceSeconds: number;
+	/** P59: `ws://HOST:PORT` for remote devices (with a local socket only). */
+	remote?: string;
 }): Promise<void> {
 	if (options.listen === "stdio" || options.listen === "stdio://") return serveStdio(options);
 	const address = listenAddress(options.listen, options.home);
@@ -63,7 +67,7 @@ async function serveStdio(options: { host: HubHost; hub: SessionHubOptions }): P
 }
 
 async function serveSocket(
-	options: { host: HubHost; hub: SessionHubOptions; home: string; graceSeconds: number },
+	options: { host: HubHost; hub: SessionHubOptions; home: string; graceSeconds: number; remote?: string },
 	address: string,
 ): Promise<void> {
 	const unix = process.platform !== "win32";
@@ -81,10 +85,31 @@ async function serveSocket(
 		finish = resolve;
 	});
 	let stopping: Promise<void> | undefined;
+	// P59: remote devices; the hub asks the listener to pair and list them.
+	let remote: RemoteListener | undefined;
+	const remoteAdmin: RemoteAdmin = {
+		pair: (name) => {
+			if (!remote) throw new Error("Remote access did not start (see serve.log)");
+			return remote.admin.pair(name);
+		},
+		devices: () => remote?.admin.devices() ?? { devices: [] },
+		revoke: (name) => remote?.admin.revoke(name) ?? false,
+	};
 	const hub = new SessionHub(options.host, {
 		...options.hub,
 		onShutdownRequest: (graceSeconds) => void stop(graceSeconds ?? options.graceSeconds),
+		...(options.remote ? { remote: remoteAdmin } : {}),
 	});
+	if (options.remote) {
+		try {
+			remote = await startRemote({ listen: options.remote, home: options.home, hub: () => hub });
+			console.error(`tau serve: remote devices on ${remote.listen}`);
+		} catch (error) {
+			console.error(
+				`tau serve: remote access did not start: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
 	const server = createServer((socket) => {
 		hub.connect(socketTransport(socket));
 	});
@@ -102,6 +127,7 @@ async function serveSocket(
 			address,
 			startedAt: new Date().toISOString(),
 			cwd: options.host.cwd,
+			...(remote ? { remote: remote.listen } : {}),
 		});
 	}
 	console.error(`tau serve: listening on ${address}`);
@@ -110,6 +136,7 @@ async function serveSocket(
 		stopping ??= (async () => {
 			console.error(`tau serve: stopping (running turns may finish within ${graceSeconds}s)`);
 			server.close();
+			await remote?.close();
 			await hub.shutdown(graceSeconds * 1000);
 			if (unix) rmSync(address, { force: true });
 			if (isDefault) removeDaemonInfo(options.home, process.pid);

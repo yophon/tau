@@ -218,8 +218,11 @@ export interface ClientRequests {
 			/**
 			 * P57: `nativeEvents` asks for the native data; `sessionEvents` for pi's JSON-mode event records
 			 * (what `tau --mode json|rpc` print); `width` is the client's columns (components draw at it).
+			 * P59: `stateEvents` asks for `thread/state/changed` alone (a light client's header).
 			 */
-			capabilities?: { nativeEvents?: boolean; sessionEvents?: boolean; width?: number };
+			capabilities?: { nativeEvents?: boolean; sessionEvents?: boolean; stateEvents?: boolean; width?: number };
+			/** P59: the device token a paired device got (`POST /pair`); WebSocket connections must give it. */
+			auth?: { token: string };
 		};
 		result: { serverInfo: { name: string; version: string }; protocolVersion: string };
 	};
@@ -264,8 +267,14 @@ export interface ClientRequests {
 		params: { threadId: string };
 		result: { status: "notLoaded" | "notSubscribed" | "unsubscribed" };
 	};
-	/** The saved sessions of a directory (P58 `cwd`; default the server's), and the ones held there. */
-	"thread/list": { params: { cwd?: string }; result: { threads: ThreadInfo[] } };
+	/**
+	 * The saved sessions of a directory (P58 `cwd`; default the server's), and the ones held there.
+	 * P59: `allDirectories` — every directory's, newest first, at most `limit` (default 50).
+	 */
+	"thread/list": {
+		params: { cwd?: string; allDirectories?: boolean; limit?: number };
+		result: { threads: ThreadInfo[] };
+	};
 	/** P58 (Codex's name): the sessions the server holds now, in any directory. */
 	"thread/loaded/list": { params: Record<string, never>; result: { threads: ThreadInfo[] } };
 	/** The conversation without subscribing. */
@@ -470,6 +479,21 @@ export interface ClientRequests {
 	 * `graceSeconds` (default 60), then they are stopped. Answered before the server goes.
 	 */
 	"server/shutdown": { params: { graceSeconds?: number }; result: Record<string, never> };
+	// P59: pairing devices for remote access — local connections only (the machine's own socket).
+	/** A one-time pairing code (6 digits, 10 minutes, 5 tries) and the addresses a phone can open. */
+	"server/pair": { params: { name?: string }; result: { code: string; expiresAt: string; urls: string[] } };
+	"server/devices": { params: Record<string, never>; result: { devices: DeviceInfo[]; listen?: string } };
+	/** Forget a device; its open connections close. */
+	"server/revoke": { params: { name: string }; result: { revoked: boolean } };
+}
+
+/** P59: a paired device (its token is never shown again). */
+export interface DeviceInfo {
+	name: string;
+	pairedAt: string;
+	lastSeenAt?: string;
+	/** Connected now. */
+	connected?: boolean;
 }
 
 export type ClientMethod = keyof ClientRequests;

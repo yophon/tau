@@ -464,6 +464,8 @@ async function main(): Promise<void> {
 				// each client's later sessions start from what it switched to (hub.ts). A resumed session
 				// goes back to its last model (not with -m).
 				isolateModels: true,
+				// P59: the phone's recent sessions, every directory's.
+				listAllSessions: async (limit) => (await import("./all-sessions.ts")).listAllSessions(home, limit),
 				restoreSessionModel: !options.model,
 				autoTitle: (workspace) => autoTitleOn(workspace.settings().autoTitle),
 				checkpoints: checkpointBackend,
@@ -472,6 +474,10 @@ async function main(): Promise<void> {
 			hub: { version: CLI_VERSION },
 			home,
 			graceSeconds: userSettings.daemon?.shutdownGraceSeconds ?? 60,
+			// P59: remote devices and the web client (settings daemon.remote.listen, or --remote).
+			...((options.serve.remote ?? userSettings.daemon?.remote?.listen)
+				? { remote: options.serve.remote ?? userSettings.daemon?.remote?.listen }
+				: {}),
 		});
 		// A stopped resident server exits, whatever is left open (a stopped request's connection).
 		if (options.serve.listen !== "stdio" && options.serve.listen !== "stdio://") process.exit(0);

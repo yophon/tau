@@ -52,6 +52,16 @@ const EMPTY_STATE: ThreadState = {
 
 const MARKDOWN_CACHE_LIMIT = 2000;
 
+/** P59: how long the TUI tries to get back to the resident server (`tau serve restart`'s window). */
+export const RECONNECT_FOR_MS = 60_000;
+
+/** A notification of the session, or (P59) this client's own word that it got back after a drop. */
+export type SessionNotification =
+	| ServerNotification
+	| { method: "client/reconnected"; params: { threadId: string; seq: number } };
+
+type RequestHandler = Parameters<TauClient["handle"]>[1];
+
 /** The saved sessions in a thread/list answer, as the session pickers know them (not written yet: left out). */
 export function savedSessions(threads: readonly ThreadInfo[]): SessionMetadata[] {
 	return threads.flatMap((thread): SessionMetadata[] =>
@@ -100,7 +110,7 @@ export function contextOf(state: ThreadState): { tokens: number; contextWindow?:
 }
 
 export class TuiSession {
-	readonly client: TauClient;
+	private current: TauClient;
 	/** P58: the directory this client works from (its saved sessions; a resident server serves many). */
 	readonly cwd: string | undefined;
 	/** P58: the hub is a resident server (sessions go on when this client leaves). */
@@ -119,7 +129,11 @@ export class TuiSession {
 	readonly commands = new Map<string, CommandInfo>();
 	readonly shortcuts = new Map<string, ShortcutInfo>();
 	/** Each notification of the session, in order: the next waits until the handler is done. */
-	private onNotification: ((notification: ServerNotification) => Promise<void> | void) | undefined;
+	private onNotification: ((notification: SessionNotification) => Promise<void> | void) | undefined;
+	/** P59: a new connection to the hub after a drop (the resident server); absent, a drop ends the TUI. */
+	private readonly reconnect: (() => Promise<TauClient | undefined>) | undefined;
+	/** The approval and dialog handlers, for the connection after a drop too. */
+	private readonly handlers = new Map<string, RequestHandler>();
 	private chain: Promise<void> = Promise.resolve();
 	/** Notifications wait until the TUI is on screen to handle them (what the first session's start said). */
 	private readonly ready: Promise<void>;
@@ -133,20 +147,79 @@ export class TuiSession {
 	private readonly markdown = new Map<string, string>();
 	private markdownKey = "";
 
-	constructor(client: TauClient, options: { cwd?: string; resident?: boolean } = {}) {
-		this.client = client;
+	constructor(
+		client: TauClient,
+		options: { cwd?: string; resident?: boolean; reconnect?: () => Promise<TauClient | undefined> } = {},
+	) {
+		this.current = client;
 		this.cwd = options.cwd;
 		this.resident = options.resident === true;
+		this.reconnect = options.reconnect;
 		this.ready = new Promise((resolve) => {
 			this.markReady = resolve;
 		});
-		client.on("*", (params, method) => this.receive({ method, params } as ServerNotification));
-		// A dropped connection ends the session for this client as an extension's shutdown does.
-		client.peer.onClose(() => {
-			if (this.leaving || this.id === "") return;
-			this.disconnected = true;
-			this.enqueue({ method: "thread/closed", params: { threadId: this.id, seq: this.lastSeq, reason: "shutdown" } });
+		this.listen(client);
+	}
+
+	/** The connection to the hub now (a new one after a reconnect). */
+	get client(): TauClient {
+		return this.current;
+	}
+
+	/** Answer the hub's requests of one kind (approvals, dialogs), on this and any later connection. */
+	handle(method: Parameters<TauClient["handle"]>[0], handler: RequestHandler): void {
+		this.handlers.set(method, handler);
+		this.current.handle(method, handler as never);
+	}
+
+	private listen(client: TauClient): void {
+		client.on("*", (params, method) => {
+			if (client === this.current) this.receive({ method, params } as ServerNotification);
 		});
+		client.peer.onClose(() => {
+			if (this.leaving || this.id === "" || client !== this.current) return;
+			if (this.reconnect) void this.recover();
+			else this.dropped();
+		});
+	}
+
+	/** The connection is gone for good: the session ends for this client as an extension's shutdown does. */
+	private dropped(): void {
+		this.disconnected = true;
+		this.enqueue({ method: "thread/closed", params: { threadId: this.id, seq: this.lastSeq, reason: "shutdown" } });
+	}
+
+	/** P59: get back to the resident server (it restarts, the network blips) and rejoin the session. */
+	private async recover(): Promise<void> {
+		this.enqueue({
+			method: "thread/notice",
+			params: {
+				threadId: this.id,
+				seq: this.lastSeq,
+				level: "warning",
+				text: "Lost the connection to the resident server; reconnecting…",
+			},
+		});
+		const deadline = Date.now() + RECONNECT_FOR_MS;
+		for (let delay = 250; Date.now() < deadline && !this.leaving; delay = Math.min(delay * 2, 4000)) {
+			await new Promise((resolve) => setTimeout(resolve, delay));
+			const client = await this.reconnect?.().catch(() => undefined);
+			if (!client) continue;
+			this.current = client;
+			for (const [method, handler] of this.handlers) client.handle(method as never, handler as never);
+			this.listen(client);
+			try {
+				await this.join(
+					"thread/resume",
+					{ threadId: this.id, ...this.where() },
+					{ method: "client/reconnected", params: { threadId: this.id, seq: 0 } },
+				);
+				return;
+			} catch {
+				client.close();
+			}
+		}
+		if (!this.leaving) this.dropped();
 	}
 
 	/** P58: `cwd` for requests about this client's directory (the saved sessions it lists). */
@@ -155,7 +228,7 @@ export class TuiSession {
 	}
 
 	/** Handle the session's notifications from now on (and those that waited). */
-	attach(handler: (notification: ServerNotification) => Promise<void> | void): void {
+	attach(handler: (notification: SessionNotification) => Promise<void> | void): void {
 		this.onNotification = handler;
 		this.markReady();
 	}
@@ -178,7 +251,12 @@ export class TuiSession {
 	 * come with the answer; the current turn's notifications and what its extensions said while it
 	 * opened are handled after, once each, in order.
 	 */
-	async join<M extends JoinMethod>(method: M, params: ClientRequests[M]["params"]): Promise<JoinResult> {
+	async join<M extends JoinMethod>(
+		method: M,
+		params: ClientRequests[M]["params"],
+		/** P59: handled before the session's own notifications (the TUI redraws, then replays the turn). */
+		first?: SessionNotification,
+	): Promise<JoinResult> {
 		await this.drain();
 		const buffer: ServerNotification[] = [];
 		this.joining = buffer;
@@ -198,6 +276,7 @@ export class TuiSession {
 		this.stateSeq = result.seq ?? 0;
 		this.lastSeq = 0;
 		await this.refreshCommands(true);
+		if (first) this.enqueue(first);
 		const seen = new Set<number>();
 		const pending = [...result.events, ...buffer.filter((notification) => notification.params.threadId === this.id)]
 			.filter((notification) => {
@@ -312,7 +391,7 @@ export class TuiSession {
 		this.enqueue(notification);
 	}
 
-	private enqueue(notification: ServerNotification): void {
+	private enqueue(notification: SessionNotification): void {
 		this.chain = this.chain.then(async () => {
 			await this.ready;
 			const version = this.state.extensionsVersion;
@@ -329,7 +408,7 @@ export class TuiSession {
 	}
 
 	/** Keep the mirror and the state in step (in order, as the TUI handles the notification). */
-	private apply(notification: ServerNotification): void {
+	private apply(notification: SessionNotification): void {
 		switch (notification.method) {
 			case "thread/messages/appended": {
 				const { start, messages } = notification.params;

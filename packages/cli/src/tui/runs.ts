@@ -13,13 +13,7 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import { userContentText } from "@yophon/tau-kernel";
-import type {
-	CommandOutcome,
-	TaskKind as HubTaskKind,
-	NativeMessage,
-	Rendered,
-	ServerNotification,
-} from "@yophon/tau-protocol";
+import type { CommandOutcome, TaskKind as HubTaskKind, NativeMessage, Rendered } from "@yophon/tau-protocol";
 import type { CommandHost } from "./commands.ts";
 import { runCommand, whenCommandRuns } from "./commands.ts";
 import type { TuiController } from "./controller.ts";
@@ -33,7 +27,7 @@ import { type PendingInput, queuedInput } from "./input-box.ts";
 import { diagnosticsBlock, type TaskKind } from "./model.ts";
 import { markdownTransformsChanged } from "./render/markdown.ts";
 import type { StyledLine } from "./render/spans.ts";
-import { type MarkdownKind, usageOf } from "./session-client.ts";
+import { type MarkdownKind, type SessionNotification, usageOf } from "./session-client.ts";
 import type { TuiSessions } from "./sessions.ts";
 
 /** What runs use from the controller and the other parts (P51). Runs execute commands, so they need all a command may use. */
@@ -265,6 +259,23 @@ export class TuiRuns {
 		this.host.terminalStatus?.running();
 	}
 
+	/**
+	 * P59: back on the resident server after a drop. A turn that ended unseen ends here; the screen
+	 * shows the conversation again (a turn still running replays from the notifications that follow).
+	 */
+	private async reconnected(): Promise<void> {
+		const { state } = this.host.session;
+		if (!state.running && state.task === undefined) {
+			this.turn = undefined;
+			for (const [turnId, waiter] of this.turnWaiters) {
+				this.turnWaiters.delete(turnId);
+				waiter();
+			}
+			if (this.host.state.task !== undefined) await this.endTask();
+		}
+		this.host.sessions.showSession("Reconnected to the resident server.");
+	}
+
 	/** The task ended: open approvals are void, the surfaces may have changed, waiting input runs. */
 	private async endTask(): Promise<void> {
 		this.hubTask = undefined;
@@ -340,8 +351,11 @@ export class TuiRuns {
 	private readonly finishedTurns = new Set<string>();
 
 	/** A notification of the session (in order; the next waits for this one). */
-	async handleNotification(notification: ServerNotification): Promise<void> {
+	async handleNotification(notification: SessionNotification): Promise<void> {
 		switch (notification.method) {
+			case "client/reconnected":
+				await this.reconnected();
+				return;
 			case "turn/started":
 				await this.turnStarted(notification.params.turnId, notification.params.input as UserContent | undefined);
 				return;

@@ -67,6 +67,8 @@ export interface Harness {
 	submit(text: string): Promise<void>;
 	waitFor(test: (frame: string) => boolean, what: string): Promise<string>;
 	cleanup(): void;
+	/** P59: cut the TUI's connection to the hub (with `socket`). */
+	drop(): void;
 }
 
 export const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -115,6 +117,8 @@ export interface HarnessOptions {
 	socket?: boolean;
 	/** P58: the TUI takes the hub for a resident server (its session pickers list what it holds). */
 	resident?: boolean;
+	/** P59 (with `socket` and `resident`): after a drop (`drop()`), the TUI connects again. */
+	reconnectable?: boolean;
 }
 
 /** A client end on `hub` over a local socket (a named pipe on Windows), and how to take it down. */
@@ -240,7 +244,18 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	}
 	const client = new TauClient(clientEnd, { name: "test-tui" });
 	await client.initialize({ nativeEvents: true, width: 100 });
-	const session = new TuiSession(client, options.resident ? { cwd, resident: true } : {});
+	// P59: a new socket to the same hub, initialized as the first was.
+	const reconnect = async (): Promise<TauClient> => {
+		const end = await socketClientEnd(hub);
+		closeSocket = end.close;
+		const again = new TauClient(end.transport, { name: "test-tui" });
+		await again.initialize({ nativeEvents: true, width: 100 });
+		return again;
+	};
+	const session = new TuiSession(
+		client,
+		options.resident ? { cwd, resident: true, ...(options.reconnectable ? { reconnect } : {}) } : {},
+	);
 	if (options.join) await session.join("thread/resume", { threadId: options.join.threadId });
 	else if (resumeId) await session.join("thread/resume", { threadId: resumeId });
 	else await session.join("thread/start", {});
@@ -268,6 +283,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	const cleanup = (): void => {
 		ink.unmount();
 		void controller.stop();
+		session.leaving = true;
 		if (!options.join) void hub.close();
 		closeSocket();
 	};
@@ -332,6 +348,7 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 		},
 		waitFor,
 		cleanup,
+		drop: () => closeSocket(),
 	};
 }
 

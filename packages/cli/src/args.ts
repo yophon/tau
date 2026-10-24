@@ -14,6 +14,8 @@ Usage: tau [options] [@files...] [messages...]
        tau serve [--listen stdio|unix://[PATH]] [options]   Serve sessions to clients over tau's
                                          protocol (docs/protocol.md)
        tau serve start|stop|restart|status [options]   The resident server the TUI connects to
+       tau serve remote on [--listen ws://HOST:PORT] | off   Phones and other devices (web client)
+       tau serve pair [--name <name>] | devices | revoke <name>   Pair a device, list, forget
 
 @file: a text file goes into the first message, an image is attached to it
 (converted and shrunk like read's). Messages: the first starts the session,
@@ -187,8 +189,10 @@ export interface CliOptions {
 	/** P56: `tau serve`, the session hub for clients (stdio now; a local socket and WebSocket later). */
 	serve?: {
 		listen: string;
-		/** P58: `tau serve start|stop|restart|status` (the resident server's lifecycle). */
-		action?: "start" | "stop" | "restart" | "status";
+		/** P58: `tau serve start|stop|restart|status` (the resident server's lifecycle); P59: remote, pair, devices, revoke. */
+		action?: "start" | "stop" | "restart" | "status" | "remote" | "pair" | "devices" | "revoke";
+		/** P59: `tau serve --remote ws://HOST:PORT` (foreground; the daemon reads settings daemon.remote.listen). */
+		remote?: string;
 		/** The tau options given after the action (start passes them to the server). */
 		args?: string[];
 	};
@@ -242,27 +246,44 @@ export function parseGatewayArgs(argv: string[]): CliOptions {
 /** `tau serve [--listen <url>] [tau options]` (P56); P58: `tau serve start|stop|restart|status [tau options]`. */
 function parseServeArgs(argv: string[]): CliOptions {
 	const first = argv[0];
-	if (first === "start" || first === "stop" || first === "restart" || first === "status") {
+	if (
+		first === "start" ||
+		first === "stop" ||
+		first === "restart" ||
+		first === "status" ||
+		first === "remote" ||
+		first === "pair" ||
+		first === "devices" ||
+		first === "revoke"
+	) {
+		// P59: remote, pair, devices and revoke take their own words; start passes options on.
+		if (first === "remote" || first === "pair" || first === "devices" || first === "revoke") {
+			const options = parseArgs([]);
+			options.serve = { listen: "unix://", action: first, args: argv.slice(1) };
+			return options;
+		}
 		const args = argv.slice(1);
 		const options = parseArgs(args);
 		options.serve = { listen: "unix://", action: first, args };
 		return options;
 	}
 	let listen = "stdio";
+	let remote: string | undefined;
 	const rest: string[] = [];
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i] ?? "";
-		if (arg === "--listen") {
+		if (arg === "--listen" || arg === "--remote") {
 			const value = argv[++i];
 			if (value === undefined) {
-				console.error("Missing value for --listen");
+				console.error(`Missing value for ${arg}`);
 				process.exit(1);
 			}
-			listen = value;
+			if (arg === "--listen") listen = value;
+			else remote = value;
 		} else rest.push(arg);
 	}
 	const options = parseArgs(rest);
-	options.serve = { listen };
+	options.serve = { listen, ...(remote !== undefined ? { remote } : {}) };
 	return options;
 }
 

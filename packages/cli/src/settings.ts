@@ -52,7 +52,7 @@ export interface TauSettings {
 	 * server when none runs (default true); daemon.shutdownGraceSeconds — how long `tau serve stop` lets
 	 * running turns finish (default 60, 0–300).
 	 */
-	daemon?: { autoStart?: boolean; shutdownGraceSeconds?: number };
+	daemon?: { autoStart?: boolean; shutdownGraceSeconds?: number; remote?: { listen?: string } };
 	/** P40a (pi): the default for HTTP_PROXY and HTTPS_PROXY (user settings only). */
 	httpProxy?: string;
 	/** P40a (pi): how long a request may wait for headers or the next body chunk, in ms (0 = no limit; user settings only). */
@@ -420,9 +420,13 @@ export function readSettings(path: string, home: string = defaultHome()): TauSet
 	}
 	const daemon = raw.daemon;
 	if (typeof daemon === "object" && daemon !== null) {
-		const { autoStart, shutdownGraceSeconds } = daemon as Record<string, unknown>;
+		const { autoStart, shutdownGraceSeconds, remote } = daemon as Record<string, unknown>;
+		const listen =
+			typeof remote === "object" && remote !== null ? (remote as Record<string, unknown>).listen : undefined;
 		settings.daemon = {
 			...(typeof autoStart === "boolean" ? { autoStart } : {}),
+			// P59: daemon.remote.listen — remote devices and the web client (tau serve remote on).
+			...(typeof listen === "string" && listen.trim() !== "" ? { remote: { listen: listen.trim() } } : {}),
 			...(typeof shutdownGraceSeconds === "number" &&
 			Number.isInteger(shutdownGraceSeconds) &&
 			shutdownGraceSeconds >= 0 &&

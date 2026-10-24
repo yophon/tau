@@ -140,7 +140,12 @@ async function attach(
 	if (probe.version !== CLI_VERSION)
 		notices.push(`Resident server v${probe.version} ≠ tau v${CLI_VERSION} · tau serve restart`);
 	const tauClient = probe.client;
-	const session = new TuiSession(tauClient, { cwd: context.cwd, resident: true });
+	// P59: after a drop (the server restarts), a new connection to the same address.
+	const reconnect = async () => {
+		const again = await ask();
+		return again.state === "running" ? again.client : undefined;
+	};
+	const session = new TuiSession(tauClient, { cwd: context.cwd, resident: true, reconnect });
 	// The project trust question while the first session opens, before the TUI is on screen.
 	tauClient.handle("ui/request", client.startupUi);
 	return {

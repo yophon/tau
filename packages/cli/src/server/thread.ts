@@ -78,6 +78,8 @@ export interface HubHost {
 	 * session's own — the process's endpoint does not move, and an agent built again keeps it.
 	 */
 	isolateModels?: boolean;
+	/** P59: the saved sessions of every directory, newest first (thread/list allDirectories). */
+	listAllSessions?: (limit: number) => Promise<SessionMetadata[]>;
 }
 
 /** A client of the hub, as a thread sees it. */
@@ -87,6 +89,8 @@ export interface Subscriber {
 	readonly native?: boolean;
 	/** P57: it asked for pi's JSON-mode event records (thread/sessionEvent). */
 	readonly sessionEvents?: boolean;
+	/** P59: it asked for the session state alone (thread/state/changed; a light client's header). */
+	readonly stateEvents?: boolean;
 	/** P57: its columns (components draw at them). */
 	width?: number;
 }
@@ -421,16 +425,20 @@ export class HubThread {
 		}
 		const visible = (event: ServerNotification): boolean => !NATIVE_NOTIFICATIONS.has(event.method);
 		const firstSeq = this.log[0]?.params.seq ?? this.seq + 1;
+		// P59: a light client that asked for the state gets it with the join too.
+		const state = subscriber.stateEvents ? { state: this.state() } : {};
 		if (afterSeq !== undefined && afterSeq >= firstSeq - 1 && afterSeq <= this.seq) {
 			return {
 				thread: this.info(),
 				seq: this.seq,
+				...state,
 				events: this.log.filter((event) => event.params.seq > afterSeq && visible(event)),
 			};
 		}
 		return {
 			thread: this.info(),
 			seq: this.seq,
+			...state,
 			items: itemsFromMessages(before, () => this.nextItemId()),
 			events: current(visible),
 		};
@@ -603,8 +611,9 @@ export class HubThread {
 		}
 		const native = NATIVE_NOTIFICATIONS.has(event.method);
 		const sessionEvent = SESSION_EVENT_NOTIFICATIONS.has(event.method);
+		const stateOnly = event.method === "thread/state/changed";
 		for (const subscriber of this.subscribers) {
-			if (native && !subscriber.native) continue;
+			if (native && !subscriber.native && !(stateOnly && subscriber.stateEvents)) continue;
 			if (sessionEvent && !subscriber.sessionEvents) continue;
 			subscriber.peer.notify(event.method, event.params);
 		}
@@ -627,7 +636,7 @@ export class HubThread {
 
 	/** The state to native clients; not kept (a client joining gets it fresh). */
 	emitState(): void {
-		if (![...this.subscribers].some((subscriber) => subscriber.native)) return;
+		if (![...this.subscribers].some((subscriber) => subscriber.native || subscriber.stateEvents)) return;
 		this.emit({ method: "thread/state/changed", params: { state: this.state() } }, false);
 	}
 

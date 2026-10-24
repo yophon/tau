@@ -10,7 +10,13 @@ export {
 	type JsonRpcResponse,
 	type MessageTransport,
 } from "./jsonrpc.ts";
-export { createLineTransport, createMemoryTransportPair, LineBuffer } from "./transport.ts";
+export {
+	createLineTransport,
+	createMemoryTransportPair,
+	createWebSocketTransport,
+	LineBuffer,
+	type WebSocketLike,
+} from "./transport.ts";
 export {
 	type CheckpointSummary,
 	type ClientMethod,
@@ -18,6 +24,7 @@ export {
 	type CommandInfo,
 	type CommandOutcome,
 	type CompletionItem,
+	type DeviceInfo,
 	type DirectNotificationMethod,
 	type DirectNotifications,
 	type ExtensionCounts,

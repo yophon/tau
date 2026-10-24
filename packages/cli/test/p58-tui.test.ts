@@ -273,3 +273,26 @@ describe("P58 TUI on a resident server", () => {
 		assert.equal(session.id, id);
 	});
 });
+
+describe("P59 TUI: back after a drop", () => {
+	it("reconnects to the resident server and rejoins the session; turns go on", async () => {
+		const h = await harness({
+			responses: [makeSseResponse(textTurn("before the drop")), makeSseResponse(textTurn("after the drop"))],
+			resident: true,
+			socket: true,
+			reconnectable: true,
+		});
+		cleanups.push(() => h.cleanup());
+		await h.submit("one");
+		await h.waitFor((frame) => frame.includes("before the drop"), "the first answer");
+		const id = h.controller.session.id;
+		h.drop();
+		await h.waitFor((frame) => frame.includes("Reconnected to the resident server."), "the reconnect");
+		assert.equal(h.controller.session.id, id);
+		assert.equal(h.controller.session.disconnected, false);
+		const frame = h.frame();
+		assert.ok(frame.includes("before the drop"), "the conversation is drawn again");
+		await h.submit("two");
+		await h.waitFor((current) => current.includes("after the drop"), "a turn after it");
+	});
+});

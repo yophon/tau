@@ -19,11 +19,12 @@ import {
 import { connect, type Socket } from "node:net";
 import { join } from "node:path";
 import { type ClientRequests, createLineTransport, type MessageTransport, TauClient } from "@yophon/tau-protocol";
-import { readSettings } from "./settings.ts";
+import { qrLines } from "./qr.ts";
+import { parseRemoteListen } from "./server/remote.ts";
+import { readSettings, writeSectionKey } from "./settings.ts";
 import { CLI_VERSION } from "./util.ts";
 
-export type DaemonAction = "start" | "stop" | "restart" | "status";
-export const DAEMON_ACTIONS: readonly DaemonAction[] = ["start", "stop", "restart", "status"];
+export type DaemonAction = "start" | "stop" | "restart" | "status" | "remote" | "pair" | "devices" | "revoke";
 
 /** What a running server writes about itself (`tau serve status`, `stop`). */
 export interface DaemonInfo {
@@ -33,6 +34,8 @@ export interface DaemonInfo {
 	startedAt: string;
 	/** Where `tau serve` was started (its sessions' default directory; the environment it inherited). */
 	cwd: string;
+	/** P59: where remote devices connect (`ws://host:port`), when remote access is on. */
+	remote?: string;
 }
 
 /** `~/.tau/daemon`: daemon.json, serve.log and (Unix) the socket. */
@@ -304,6 +307,8 @@ export interface StatusResult {
 	cwd?: string;
 	sessions?: { loaded: number; running: number };
 	clients?: number;
+	/** P59: where remote devices connect, and how many are paired. */
+	remote?: { listen: string; devices: number };
 	error?: string;
 }
 
@@ -323,6 +328,7 @@ export async function daemonStatus(home: string): Promise<StatusResult> {
 	if (probe.state === "incompatible") return { status: "incompatible", address, ...known, error: probe.error };
 	try {
 		const { threads } = await probe.client.call("thread/loaded/list", {});
+		const remote = await probe.client.call("server/devices", {}).catch(() => undefined);
 		return {
 			status: "running",
 			address,
@@ -330,10 +336,81 @@ export async function daemonStatus(home: string): Promise<StatusResult> {
 			...known,
 			sessions: { loaded: threads.length, running: threads.filter((thread) => thread.status === "running").length },
 			clients: threads.reduce((sum, thread) => sum + (thread.clients ?? 0), 0),
+			...(remote?.listen ? { remote: { listen: remote.listen, devices: remote.devices.length } } : {}),
 		};
 	} finally {
 		probe.client.close();
 	}
+}
+
+/** A request to the running server over the local socket (pairing and devices are for this machine's clients). */
+async function adminCall<T>(home: string, call: (client: TauClient) => Promise<T>): Promise<T> {
+	const probe = await probeDaemon(defaultAddress(home), { name: "tau-serve" });
+	if (probe.state !== "running") throw new Error("The resident server is not running (tau serve start)");
+	try {
+		return await call(probe.client);
+	} finally {
+		probe.client.close();
+	}
+}
+
+/**
+ * `tau serve remote on [--listen ws://HOST:PORT] | off` (Codex's enable-remote-control): the setting
+ * daemon.remote.listen, and a running server restarted so it applies.
+ */
+async function remoteCommand(home: string, args: readonly string[]): Promise<Record<string, unknown>> {
+	const settingsPath = join(home, ".tau", "settings.json");
+	const [mode, flag, value] = args;
+	if (mode !== "on" && mode !== "off") throw new Error("Usage: tau serve remote on [--listen ws://HOST:PORT] | off");
+	let listen: string | undefined;
+	if (mode === "on") {
+		listen = flag === "--listen" && value ? value : "ws://0.0.0.0:7700";
+		parseRemoteListen(listen);
+	}
+	writeSectionKey(settingsPath, "daemon", "remote", listen ? { listen } : undefined);
+	const running =
+		(await probeDaemon(defaultAddress(home), { name: "tau-serve" }).then((probe) => {
+			if (probe.state === "running") probe.client.close();
+			return probe.state;
+		})) === "running";
+	if (running) {
+		await stopDaemon(home, shutdownGraceSeconds(home));
+		await startDaemon({ home });
+	}
+	return {
+		status: mode,
+		...(listen ? { listen } : {}),
+		restarted: running,
+		...(listen
+			? {
+					note: "Not encrypted on the local network; beyond it use a tunnel (Tailscale). Pair a device with tau serve pair.",
+				}
+			: {}),
+	};
+}
+
+/** `tau serve pair [--name <name>] [--json]`: a one-time code, the addresses and a QR code to scan. */
+async function pairCommand(home: string, args: readonly string[]): Promise<number> {
+	const at = args.indexOf("--name");
+	const name = at >= 0 ? args[at + 1] : undefined;
+	const pairing = await adminCall(home, (client) => client.call("server/pair", name ? { name } : {}));
+	if (args.includes("--json")) {
+		process.stdout.write(`${JSON.stringify(pairing)}\n`);
+		return 0;
+	}
+	const [first, ...others] = pairing.urls;
+	const lines = [
+		`Pairing code ${pairing.code} (one use, until ${new Date(pairing.expiresAt).toLocaleTimeString()}).`,
+		"Open this on the phone, or scan:",
+		`  ${first}`,
+		...others.map((url) => `  ${url}`),
+		"",
+		...(first ? qrLines(first) : []),
+		"",
+		"On the local network the connection is not encrypted; beyond it use a tunnel (Tailscale).",
+	];
+	process.stdout.write(`${lines.join("\n")}\n`);
+	return 0;
 }
 
 /** The grace period for stopping: settings daemon.shutdownGraceSeconds, default 60 (Codex). */
@@ -366,6 +443,20 @@ export async function runDaemonCommand(
 			case "status":
 				print(await daemonStatus(home));
 				return 0;
+			case "remote":
+				print(await remoteCommand(home, options.args));
+				return 0;
+			case "pair":
+				return await pairCommand(home, options.args);
+			case "devices":
+				print(await adminCall(home, (client) => client.call("server/devices", {})));
+				return 0;
+			case "revoke": {
+				const name = options.args[0];
+				if (!name) throw new Error("Usage: tau serve revoke <device name>");
+				print(await adminCall(home, (client) => client.call("server/revoke", { name })));
+				return 0;
+			}
 		}
 	} catch (error) {
 		print({ status: "error", error: error instanceof Error ? error.message : String(error) });

@@ -14,6 +14,7 @@ import type {
 import { type AgentMessage, messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
+	type DeviceInfo,
 	ERROR_CODES,
 	type JoinResult,
 	JsonRpcError,
@@ -36,6 +37,21 @@ export interface SessionHubOptions {
 	unloadAfterMs?: number;
 	/** P58: a client asked the server to exit (server/shutdown); absent, the method is refused. */
 	onShutdownRequest?: (graceSeconds: number | undefined) => void;
+	/** P59: pairing and devices for remote access (server/pair, server/devices, server/revoke). */
+	remote?: RemoteAdmin;
+}
+
+/** P59: what the remote listener offers the machine's own clients (remote.ts). */
+export interface RemoteAdmin {
+	pair(name: string | undefined): { code: string; expiresAt: string; urls: string[] };
+	devices(): { devices: DeviceInfo[]; listen?: string };
+	revoke(name: string): boolean;
+}
+
+/** P59: how a connection is let in. A remote one (WebSocket) must give a paired device's token. */
+export interface ConnectOptions {
+	/** The device a token belongs to, or undefined (not paired). Absent: a local connection. */
+	authorize?: (token: string | undefined) => string | undefined;
 }
 
 /** Methods refused once the server is shutting down: nothing new starts. */
@@ -67,9 +83,20 @@ export class HubConnection implements Subscriber {
 	/** P58: the model and reasoning level this client last switched to (sessions it opens later start there). */
 	model: string | undefined;
 	thinking: { level: ThinkingLevel | undefined } | undefined;
+	/** P59: asked for the session state alone. */
+	stateEvents = false;
+	/** P59: a remote connection's device (after initialize). */
+	device: string | undefined;
+	readonly authorize: ConnectOptions["authorize"];
 
-	constructor(transport: MessageTransport) {
+	constructor(transport: MessageTransport, options: ConnectOptions = {}) {
 		this.peer = new JsonRpcPeer(transport, { idPrefix: "s" });
+		this.authorize = options.authorize;
+	}
+
+	/** The machine's own client (a local socket, stdio, this process), not a remote device. */
+	get local(): boolean {
+		return this.authorize === undefined;
 	}
 }
 
@@ -118,9 +145,9 @@ export class SessionHub {
 		this.options = options;
 	}
 
-	/** Serve one client over `transport`. */
-	connect(transport: MessageTransport): HubConnection {
-		const connection = new HubConnection(transport);
+	/** Serve one client over `transport` (P59: `authorize` for a remote one). */
+	connect(transport: MessageTransport, options: ConnectOptions = {}): HubConnection {
+		const connection = new HubConnection(transport, options);
 		this.connections.add(connection);
 		const { peer } = connection;
 		const handle = <M extends keyof ClientRequests>(
@@ -149,8 +176,17 @@ export class SessionHub {
 					`Unsupported protocol version ${String(params.protocolVersion)}; this server speaks ${PROTOCOL_VERSION}`,
 				);
 			}
+			if (connection.authorize) {
+				const device = connection.authorize(params.auth?.token);
+				if (device === undefined) {
+					setTimeout(() => connection.peer.close(), 0);
+					throw new JsonRpcError(ERROR_CODES.invalidRequest, "This device is not paired (tau serve pair)");
+				}
+				connection.device = device;
+			}
 			connection.initialized = true;
 			connection.native = params.capabilities?.nativeEvents === true;
+			connection.stateEvents = params.capabilities?.stateEvents === true;
 			connection.sessionEvents = params.capabilities?.sessionEvents === true;
 			connection.width = params.capabilities?.width;
 			return { serverInfo: { name: "tau", version: this.options.version }, protocolVersion: PROTOCOL_VERSION };
@@ -252,6 +288,7 @@ export class SessionHub {
 		});
 
 		handle("thread/list", async (params) => {
+			if (params.allDirectories) return { threads: await this.allSessions(params.limit ?? 50) };
 			const cwd = this.dir(params.cwd);
 			const saved = (await (await this.catalogWorkspace(cwd)).sessionRepo.list()) as SessionMetadata[];
 			const threads: ThreadInfo[] = saved.map((metadata) => {
@@ -431,6 +468,28 @@ export class SessionHub {
 			connection.width = params.width;
 			return {};
 		});
+		// P59: pairing and devices, for the machine's own clients only.
+		const admin = (): RemoteAdmin => {
+			if (!connection.local)
+				throw new JsonRpcError(ERROR_CODES.invalidRequest, "Only this machine's clients manage devices");
+			if (!this.options.remote)
+				throw new JsonRpcError(ERROR_CODES.invalidRequest, "Remote access is off (tau serve remote on)");
+			return this.options.remote;
+		};
+		handle("server/pair", (params) => admin().pair(params.name));
+		handle("server/devices", () => {
+			const listed = admin().devices();
+			const online = new Set([...this.connections].map((candidate) => candidate.device));
+			return {
+				...listed,
+				devices: listed.devices.map((device) => ({ ...device, connected: online.has(device.name) })),
+			};
+		});
+		handle("server/revoke", (params) => {
+			const revoked = admin().revoke(params.name);
+			if (revoked) this.disconnectDevice(params.name);
+			return { revoked };
+		});
 		handle("server/shutdown", (params) => {
 			const { onShutdownRequest } = this.options;
 			if (!onShutdownRequest) throw new JsonRpcError(ERROR_CODES.invalidRequest, "This server is not stopped this way");
@@ -459,6 +518,11 @@ export class SessionHub {
 			await new Promise((resolve) => setTimeout(resolve, 50));
 		}
 		await this.close();
+	}
+
+	/** P59: close a device's connections (it was revoked). */
+	disconnectDevice(name: string): void {
+		for (const connection of this.connections) if (connection.device === name) connection.peer.close();
 	}
 
 	/** Stop every session and drop every client. */
@@ -632,6 +696,28 @@ export class SessionHub {
 		return previous && previous.workspace.cwd === cwd
 			? previous.workspace.sessionRepo
 			: (await this.catalogWorkspace(cwd)).sessionRepo;
+	}
+
+	/** P59: every directory's saved sessions, newest first (held ones as they are now). */
+	private async allSessions(limit: number): Promise<ThreadInfo[]> {
+		const listAll = this.host.listAllSessions;
+		if (!listAll) throw new JsonRpcError(ERROR_CODES.invalidRequest, "This server does not list every directory");
+		const saved = (await listAll(limit)) as SessionMetadata[];
+		return saved.map((metadata) => {
+			const details = savedDetails(metadata);
+			const loaded = this.threads.get(metadata.id);
+			return loaded
+				? { ...details, ...loaded.info() }
+				: {
+						...details,
+						id: metadata.id,
+						...(metadata.name ? { name: metadata.name } : {}),
+						cwd: metadata.cwd,
+						model: this.host.modelDisplay(),
+						status: "idle" as const,
+						loaded: false,
+					};
+		});
 	}
 
 	private catalogWorkspace(cwd: string): Promise<Workspace> {

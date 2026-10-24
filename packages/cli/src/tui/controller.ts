@@ -352,8 +352,8 @@ export class TuiController {
 			this.checkShortcuts();
 		};
 		useMarkdownTransforms((text, kind) => session.transformed(text, kind));
-		session.client.handle("item/tool/requestApproval", (params) => this.dialogs.answerApproval(params));
-		session.client.handle("ui/request", (params) => this.dialogs.answerRequest(params));
+		session.handle("item/tool/requestApproval", (params) => this.dialogs.answerApproval(params as never));
+		session.handle("ui/request", (params) => this.dialogs.answerRequest(params as never));
 	}
 
 	/** P46: the session moved (into or out of a worktree): the footer, completion and `!` commands follow. */

@@ -54,6 +54,64 @@ export function createMemoryTransportPair(): [MessageTransport, MessageTransport
 	return [a.end, b.end];
 }
 
+/** The part of a WebSocket the transport uses: the browser's `WebSocket`, or `ws` on Node. */
+export interface WebSocketLike {
+	readonly readyState: number;
+	send(data: string): void;
+	close(code?: number, reason?: string): void;
+	addEventListener(type: "message", listener: (event: { data: unknown }) => void): void;
+	addEventListener(type: "close" | "error", listener: () => void): void;
+}
+
+/**
+ * P59: a transport over an open WebSocket — one JSON message per text frame. Frames that are not
+ * JSON are dropped (and reported to `onError`).
+ */
+export function createWebSocketTransport(
+	socket: WebSocketLike,
+	options: { onError?: (error: Error, text: string) => void } = {},
+): MessageTransport {
+	let handler: ((message: JsonRpcMessage) => void) | undefined;
+	const closeHandlers: Array<() => void> = [];
+	let closed = false;
+	const end = (): void => {
+		if (closed) return;
+		closed = true;
+		for (const fn of closeHandlers) fn();
+	};
+	socket.addEventListener("message", (event) => {
+		const text = typeof event.data === "string" ? event.data : String(event.data);
+		let message: JsonRpcMessage;
+		try {
+			message = JSON.parse(text) as JsonRpcMessage;
+		} catch (error) {
+			options.onError?.(error instanceof Error ? error : new Error(String(error)), text);
+			return;
+		}
+		handler?.(message);
+	});
+	socket.addEventListener("close", end);
+	socket.addEventListener("error", end);
+	return {
+		send: (message) => {
+			// 1 = OPEN in both the browser and ws.
+			if (!closed && socket.readyState === 1) socket.send(JSON.stringify(message));
+		},
+		onMessage: (fn) => {
+			handler = fn;
+		},
+		onClose: (fn) => {
+			closeHandlers.push(fn);
+		},
+		close: () => {
+			try {
+				socket.close();
+			} catch {}
+			end();
+		},
+	};
+}
+
 /** Splits a byte stream's text into lines; a partial line waits for the rest. */
 export class LineBuffer {
 	/** The partial line, in the chunks it came in (a long line is joined once, when it ends). */
