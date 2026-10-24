@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-24（P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P59 规格书（远程与手机）**）
+> 最后更新：2026-10-24（P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P59（远程与手机）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -74,6 +74,10 @@
 | [P58](specs/phase-58-resident-service.md) | 常驻 tau 第三步：常驻服务——`tau serve --listen unix://`（Windows 命名管道）与 `tau serve start\|stop\|restart\|status`（照 Codex 的 daemon），一个服务管所有目录、会话的模型各归各的；TUI 有服务就连、没有时缺省先起一个，改服务配置的参数与 `--no-daemon` 在本进程；两个终端接同一会话，关掉终端会话照跑，`/resume` 列出服务持有的会话 | 2026-10-24 | D60 |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）。
+
+## Phase 59 🚧 远程与手机
+
+规格书（2026-10-24 确认；用户：「可以，做吧」）：[specs/phase-59-remote-phone.md](specs/phase-59-remote-phone.md)。分 59a 服务端（WebSocket、配对与设备、协议补充、TUI 断线续接）与 59b 网页客户端（`@yophon/tau-web`）两步提交，做完一起验收。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）⬜
 
