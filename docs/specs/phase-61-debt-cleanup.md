@@ -65,7 +65,7 @@
 
 ## 实施记录（2026-10-24）
 
-- 提交：10fac09 规格、eec0bf9 实现与文档（CI 的 gate 红：Linux 上的 SIGINT e2e，见下）、修正提交。
+- 提交：10fac09 规格、eec0bf9 实现与文档（CI 的 gate 红：Linux 上的 SIGINT e2e，见下）、132ec3c 修正。
 - 照规格实现：
   - #35：`modelTakesImages(model?)`（`main.ts`）按模型表里那个模型的 `input` 判断，不在表里看进程的端点；工作区的 `sessionModel` 由中枢给（`route.thread` 的当前模型，换会话交接后也跟着走），read 与子 agent 的工具都用它；TUI 的 `@文件` 提示用 `thread/state` 的模型。
   - #33：`TuiSession` 的变换缓存按宽度分开（另存一份不分宽度的，新宽度的取回前画它），新增 `streamMarkdown`、`streamingTransformed`（每种消息同时一个请求，文字长了再取）；`runs.ts` 的 `markdownSource` 决定何时去取，取回后 `relayout`；推理块流式中也按 `isStreaming: true`。controller 只换了一行（1495 行不变）。
@@ -79,3 +79,4 @@
 - 测试：全量 1536 个，1531 通过、5 跳过（P60 结束时 1530）；新增 6 个（`p61.test.ts`：#35 的 `tau serve` 与进程内中枢各一个；#33 流式中画变换结果、写完再取、新宽度再取，以及没有变换器时不发请求；#30 两句顺序跑完退出 0、最后一句失败退出 1）。
 - 冒烟：smoke-tui 第一次整套跑在 approval 场景空屏超时（窗格只有标题转义，WSL 下 /mnt/d 的老问题），单独重跑通过，整套再跑 41 个场景全过；pack smoke 通过。
 - 真 DeepSeek（`deepseek-flash`）：#30 管道一次灌两句，两句都答了（2、23），没有插话，退出码 0；#35 `tau serve` 以只收文字的条目启动，换到收图片的条目（同一个模型）后读一张红色图片，read 不附说明、模型答「红色」，换回只收文字的条目后 read 附上「模型不收图片」的说明。
+- CI：eec0bf9 的 run 40081734963 gate 失败（SIGINT e2e 的退出码，已修）；132ec3c 的 run 40083376624 gate、smoke、dialects 都通过。
