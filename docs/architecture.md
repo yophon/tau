@@ -185,7 +185,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `settings.ts` | 设置分层：用户的 `~/.tau/settings.json`，项目受信任时叠加项目设置（`USER_ONLY_KEYS` 不读）；`agentOptionsFromSettings` 把重试、压缩、队列模式、轮数上限转成 Agent 选项 |
 | `http-dispatcher.ts` | 照抄 pi：undici 的 `EnvHttpProxyAgent` 作全局 dispatcher，`httpProxy`/`httpIdleTimeoutMs` 设置 |
 | **工作区** | |
-| `workspace.ts` | 按一个工作目录装配的一切：扩展与项目信任、设置、文件系统与 shell（bash、PowerShell、后台命令）、权限、钩子、审计、项目上下文、会话库、建 Agent；`cwd` 可变（`moveTo` 搬全部依赖，下次空闲时重载扩展）；`sessionEnvironment` 给模型的命令带 `TAU_SESSION_*` |
+| `workspace.ts` | 按一个工作目录装配的一切：扩展与项目信任、设置、文件系统与 shell（bash、PowerShell、后台命令）、权限、钩子、审计、项目上下文、会话库、建 Agent；`cwd` 可变（`moveTo` 搬全部依赖，下次空闲时重载扩展）；`sessionEnvironment` 给模型的命令带 `TAU_SESSION_*`；read 收不收图片按会话当前的模型（P61：中枢给 `sessionModel`，模型表里有就看它的 `input`，否则看进程的端点） |
 | `project-trust.ts` | 项目信任：`~/.tau/trust.json` 记下审过内容的摘要，内容变了重新问；`GATED_PROJECT_RESOURCES`/`presentGatedResources` 列出要信任才加载的项目资源 |
 | `extension-loading.ts` | 加载扩展（全局 → 信任后的项目 → 设置里的 → `-e`）与加载报告、扩展 flag、系统提示的来源（`--system-prompt`/`--append-system-prompt`、`SYSTEM.md`/`APPEND_SYSTEM.md`）、缺省系统提示 |
 | `builtins.ts` | 用户扩展之前加载的内置扩展：tool_search、codemode（都 inactive）、提示工具行（每次 run 按 `getDeclaredTools()` 重写）、技能与模板（ext-resources，约定目录与 `--skill`/`--prompt-template`/`-ns`/`-np`）、设置里的资源与 `images.blockImages`、secret guard（排第一）、subagent 与子 agent 的 worktree 隔离（`setSubagentIsolation`）、todo、记忆、web_fetch/web_search、循环检测（设置 `loopDetection`）与 checkpoint（设置 `checkpoints`，`checkpointBackend` 给出 `~/.tau/checkpoints/<会话>` 的后端，启动时清掉 30 天没动的） |
@@ -224,7 +224,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `local-hub.ts` · `tui-hub.ts` · `rpc-hub.ts` | 本进程的中枢（P57）：起中枢与一个会话客户端、选第一个会话（P58：在客户端的目录，常驻服务时带 `-m`、`--permission-mode`）；TUI 与 rpc 各自接上去（信任问题在 TUI 上屏前走启动对话框，rpc 走 `extension_ui_request`）。`tui-hub.ts` 不读中枢一侧的对象（结构门禁第 4 条）：设置与 `@文件` 的图片在客户端算，项目信任与额外目录在 `thread/state`。P60：`startHub` 是中枢与一个连上它的客户端（`startLocalHub` 与 `--mode acp` 都用） |
 | `acp-hub.ts` | `--mode acp` 连谁（P60）：常驻服务，或本进程的中枢（宿主同 `tau serve`）；同 `tui-hub.ts` 不读中枢一侧的对象（结构门禁第 5 条） |
 | **模式（modes/）** | |
-| `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态 |
+| `repl.ts` | 逐行 REPL 与 `-p`：轮运行时输入的行进 steering 队列、`[y]/[a]/[N]` 审批、REPL 自己的斜杠命令、OSC 7501 状态。P61：stdin 是管道时行从一开始就排队（`PipedLines`），一轮开始前已读到的一句跑完再跑下一句，运行中新到的照旧插话；输入读完等排着的跑完再退出，最后一句失败退出码 1 |
 | `headless.ts` | `HeadlessSession`：一个会话的运行（一次一个，排队的输入 steer/followUp）、会话切换、无界面的斜杠命令；中枢的会话与网关用它（重载后换注册表、扩展报错与退出交给宿主） |
 | `json.ts` · `jsonl.ts` · `events.ts` | 一次运行的事件流与退出码；严格按 LF 分帧；把扩展事件写成 pi 线格式 |
 | `rpc.ts` | pi 的 RPC 命令集与 `extension_ui_request` 子协议；桥一建好就读 stdin。P57 起是协议上的适配层：命令映射到中枢的方法，事件来自 `thread/sessionEvent`（pi 的 JSON 模式记录）与 `thread/event`（压缩、重试）。协议说明见 [rpc.md](rpc.md) |
@@ -244,7 +244,7 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
 
 基于 Ink 5 + React 18（D31）。main.ts 不静态引入 Ink（有测试检查），TUI 只在进入时动态加载。
 
-P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻服务（D60，`tui-link.ts`）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。P58：`TuiSession` 带客户端的目录（列存档、换会话时给 `cwd`）与是否常驻；连接断了（服务停了）时以 `thread/closed` 让 TUI 退出。P59：连着常驻服务时连接断了，`TuiSession` 按退避重连最多 60 秒（审批与对话框的处理器随新连接走），重新加入原来的会话并以 `client/reconnected` 让 TUI 重画、结束没看到结尾的那一轮。会话类命令（`/name`、`/resume`、`/fork`、`/new`、`/clone`、`/session`、`/export`、`/import`）在 `session-commands.ts`；常驻服务时 `/resume`（别名 `/sessions`）也列出服务持有的各目录的会话。
+P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻服务（D60，`tui-link.ts`）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存（P61：按宽度分开，新宽度的取回之前画旧的；流式中的文字画最近一次取回的结果，`runs.ts` 的 `markdownSource` 决定何时去取）；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。P58：`TuiSession` 带客户端的目录（列存档、换会话时给 `cwd`）与是否常驻；连接断了（服务停了）时以 `thread/closed` 让 TUI 退出。P59：连着常驻服务时连接断了，`TuiSession` 按退避重连最多 60 秒（审批与对话框的处理器随新连接走），重新加入原来的会话并以 `client/reconnected` 让 TUI 重画、结束没看到结尾的那一轮。会话类命令（`/name`、`/resume`、`/fork`、`/new`、`/clone`、`/session`、`/export`、`/import`）在 `session-commands.ts`；常驻服务时 `/resume`（别名 `/sessions`）也列出服务持有的各目录的会话。
 
 - **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
 - **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者；`types.ts` 是共用类型。

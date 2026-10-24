@@ -96,7 +96,8 @@ export interface WorkspaceContext {
 	toolExecution: ToolExecutionMode | undefined;
 	/** The mode came from the flag or the environment (it wins over settings). */
 	explicitMode: boolean;
-	modelTakesImages: () => boolean;
+	/** Whether a model takes images (P36d); P61: `model` is the session's own (provider/id or id), absent = the process's. */
+	modelTakesImages: (model?: string) => boolean;
 	auditHost: AuditHost;
 	defaultTrigger: AuditTrigger;
 	/** A models.json model (provider/id) as a transport and model, as /model resolves it without switching: compaction.model (P53c), fallback models (P54c). */
@@ -123,6 +124,8 @@ export type WorkspaceSpec = {
 	mcp?: boolean;
 	/** P60: MCP servers a client brought for this workspace's session (an editor's); a name wins over the configured one. */
 	extraMcpServers?: ClientMcpServer[];
+	/** P61: the model this workspace's session uses now (the hub's sessions switch models on their own). */
+	sessionModel?: () => string | undefined;
 	/**
 	 * P35: ask_user for this workspace. Offered whenever there is a UI; `freeAnswer: false` when the
 	 * UI has no text input (ACP), `unavailable` says when nobody can answer (a gateway schedule), false = none.
@@ -168,6 +171,8 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 	} = context;
 	let cwd = spec.cwd;
 	let workspaceMode = spec.permissionMode;
+	/** Whether read may send images: the session's model when the hub says which (P61), else the process's. */
+	const supportsImages = () => modelTakesImages(spec.sessionModel?.());
 	// The audit ledger (P32c): who decided each approval, and a record per run and tool call.
 	const approvals = new ApprovalLog();
 	const settings = readSettings(join(userHome(), ".tau", "settings.json"));
@@ -455,7 +460,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 							images: imageProcessor,
 							...(childPowershell ? { powershell: { shell: childPowershell } } : {}),
 						},
-						{ mode: workspaceMode ?? run.permissionMode ?? "supervised", supportsImages: modelTakesImages },
+						{ mode: workspaceMode ?? run.permissionMode ?? "supervised", supportsImages },
 					);
 					return {
 						cwd: session.path,
@@ -572,7 +577,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 						}
 					: {}),
 			},
-			{ mode, supportsImages: modelTakesImages },
+			{ mode, supportsImages },
 		);
 		// P46 (Claude Code's TaskStop): task_stop also stops a background subagent by ID or name.
 		if (extended) {

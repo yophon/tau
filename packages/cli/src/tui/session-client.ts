@@ -143,8 +143,15 @@ export class TuiSession {
 	private lastSeq = 0;
 	private stateSeq = 0;
 	private commandsKey = "";
-	/** The extensions' markdown transformers' output, by message kind and text (P40d). */
+	/** The extensions' markdown transformers' output, by message kind, width and text (P40d; P61 the width). */
 	private readonly markdown = new Map<string, string>();
+	/** P61: the latest output for a text at any width (drawn until the one for a new width comes). */
+	private readonly markdownAnyWidth = new Map<string, string>();
+	/** P61: per kind, the output for a text still streaming, and whether a request for a newer one is on its way. */
+	private readonly streamingMarkdown = new Map<
+		MarkdownKind,
+		{ asking: boolean; next?: { text: string; width: number }; latest?: { source: string; result: string } }
+	>();
 	private markdownKey = "";
 
 	constructor(
@@ -346,20 +353,70 @@ export class TuiSession {
 
 	// --- Markdown transformers (P40d): the hub runs them; drawing reads what came back ----------
 
-	/** What the transformers made of `text`, once fetched (undefined: draw it as it is). */
-	transformed(text: string, kind: MarkdownKind): string | undefined {
-		return this.markdown.get(`${kind}\u0000${text}`);
+	/** What the transformers made of `text` at `width`, once fetched; else at another width (undefined: as it is). */
+	transformed(text: string, kind: MarkdownKind, width: number): string | undefined {
+		return this.markdown.get(`${kind}\u0000${width}\u0000${text}`) ?? this.markdownAnyWidth.get(`${kind}\u0000${text}`);
+	}
+
+	/** Whether the output of `text` at `width` was fetched (P61: another width's is only a stand-in). */
+	hasTransformed(text: string, kind: MarkdownKind, width: number): boolean {
+		return text === "" || this.markdown.has(`${kind}\u0000${width}\u0000${text}`);
+	}
+
+	/** P61: the latest output for a text still streaming (fetched for a shorter version of it), if any. */
+	streamingTransformed(text: string, kind: MarkdownKind): string | undefined {
+		const latest = this.streamingMarkdown.get(kind)?.latest;
+		return latest && text.startsWith(latest.source) ? latest.result : undefined;
+	}
+
+	/**
+	 * P61 (pi transforms streaming text too): ask for a streaming text's output (`isStreaming`). One
+	 * request per kind is on its way at a time; the text it has grown to meanwhile is asked next. True
+	 * when new output came.
+	 */
+	async streamMarkdown(text: string, kind: MarkdownKind, width: number): Promise<boolean> {
+		if (this.state.extensions.markdownTransformers === 0 || text === "") return false;
+		this.markdownSession();
+		let stream = this.streamingMarkdown.get(kind);
+		if (!stream) {
+			stream = { asking: false };
+			this.streamingMarkdown.set(kind, stream);
+		}
+		if (stream.latest?.source === text) return false;
+		if (stream.asking) {
+			stream.next = { text, width };
+			return false;
+		}
+		stream.asking = true;
+		try {
+			for (let want: { text: string; width: number } | undefined = { text, width }; want; want = stream.next) {
+				stream.next = undefined;
+				const { texts } = await this.request("markdown/transform", {
+					items: [{ text: want.text, messageType: kind, isStreaming: true, availableWidth: want.width }],
+				});
+				stream.latest = { source: want.text, result: texts[0] ?? want.text };
+			}
+		} finally {
+			stream.asking = false;
+		}
+		return true;
+	}
+
+	/** Output fetched for another session, or before the extensions loaded again, is dropped. */
+	private markdownSession(): void {
+		const key = `${this.id}:${this.state.extensionsVersion}`;
+		if (key === this.markdownKey) return;
+		this.markdown.clear();
+		this.markdownAnyWidth.clear();
+		this.streamingMarkdown.clear();
+		this.markdownKey = key;
 	}
 
 	/** Fetch the transformers' output for texts about to be drawn; true when something new came. */
 	async prefetchMarkdown(items: Array<{ text: string; kind: MarkdownKind }>, width: number): Promise<boolean> {
 		if (this.state.extensions.markdownTransformers === 0) return false;
-		const key = `${this.id}:${this.state.extensionsVersion}`;
-		if (key !== this.markdownKey) {
-			this.markdown.clear();
-			this.markdownKey = key;
-		}
-		const missing = items.filter((item) => item.text !== "" && !this.markdown.has(`${item.kind}\u0000${item.text}`));
+		this.markdownSession();
+		const missing = items.filter((item) => !this.hasTransformed(item.text, item.kind, width));
 		if (missing.length === 0) return false;
 		const { texts } = await this.request("markdown/transform", {
 			items: missing.map((item) => ({
@@ -370,8 +427,11 @@ export class TuiSession {
 			})),
 		});
 		if (this.markdown.size > MARKDOWN_CACHE_LIMIT) this.markdown.clear();
+		if (this.markdownAnyWidth.size > MARKDOWN_CACHE_LIMIT) this.markdownAnyWidth.clear();
 		missing.forEach((item, index) => {
-			this.markdown.set(`${item.kind}\u0000${item.text}`, texts[index] ?? item.text);
+			const result = texts[index] ?? item.text;
+			this.markdown.set(`${item.kind}\u0000${width}\u0000${item.text}`, result);
+			this.markdownAnyWidth.set(`${item.kind}\u0000${item.text}`, result);
 		});
 		return true;
 	}

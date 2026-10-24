@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-24（P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = P61（日常使用相关的三条技术债）**）
+> 最后更新：2026-10-24（P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = 待定（桌面端在讨论中，规格书暂不写）**）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -74,12 +74,9 @@
 | [P58](specs/phase-58-resident-service.md) | 常驻 tau 第三步：常驻服务——`tau serve --listen unix://`（Windows 命名管道）与 `tau serve start\|stop\|restart\|status`（照 Codex 的 daemon），一个服务管所有目录、会话的模型各归各的；TUI 有服务就连、没有时缺省先起一个，改服务配置的参数与 `--no-daemon` 在本进程；两个终端接同一会话，关掉终端会话照跑，`/resume` 列出服务持有的会话 | 2026-10-24 | D60 |
 | [P59](specs/phase-59-remote-phone.md) | 常驻 tau 第四步：手机——常驻服务的 WebSocket 与网页客户端（新包 `@yophon/tau-web`，Preact 构建时打包），`tau serve remote on`、`pair`（一次性码与二维码）、`devices`、`revoke`，设备令牌（只存摘要）、不自带 TLS（推荐 Tailscale）；手机上看会话、答审批与对话框、发话插话中止、附图、换模型与档位；网页与 TUI 断线自动重连补齐 | 2026-10-24 | D61 |
 | [P60](specs/phase-60-editor-acp.md) | 常驻 tau 第五步：编辑器——`--mode acp` 改成协议上的适配层，连接策略同 TUI；`session/list`（终端的会话排前）、load、resume、close；别的客户端的话与设置推给编辑器；审批先答为准、别处答了以 `$/cancel_request` 撤回；会话配置项（档位、模型、推理强度）；对话框走 `elicitation/create`；工具直接读写磁盘（去掉经编辑器读写）；协议加客户端带来的 MCP server（只限本机） | 2026-10-24 | D62 |
+| [P61](specs/phase-61-debt-cleanup.md) | 日常使用相关的三条技术债：常驻服务里图片支持按会话的模型（#35）；扩展的 Markdown 变换在流式时也生效、换宽度按新宽度取（#33）；管道一次灌给 `tau --repl` 的几行一句跑完再跑下一句、跑完退出（#30，原来一句都不跑） | 2026-10-24 | |
 
 真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）；P59 的手机两项（同一局域网扫码配对、接上终端的会话、答一次审批；有 Tailscale 时经它的 HTTPS 地址打开一次）；P60 的 Zed 一项（历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失）。
-
-## Phase 61 🚧 日常使用相关的三条技术债
-
-规格书（2026-10-24 确认；用户：「先做完p61，桌面端规格书先不急，我们得仔细讨论」）：[specs/phase-61-debt-cleanup.md](specs/phase-61-debt-cleanup.md)。常驻服务里图片支持按会话的模型（#35）、流式输出时的 Markdown 变换（#33）、管道里的 REPL 一句跑完再跑下一句（#30）。桌面端另行讨论。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）✅
 
@@ -169,11 +166,8 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 | 25 | 依赖落后大版本（P52）：Ink 5.2 → 8.0、React 18 → 19、string-width 7 → 8、wrap-ansi 9 → 10（highlight.js 10 与 TypeScript 5.9 属有意） | 越晚升越难；`render/wrap.ts` 是 wrap-ansi 9 的移植 | 复盘候选 E，单独一个阶段，跑全部 smoke 与真机 |
 | 27 | 同包内的重复实现（P52）：内核两份 `globToRegExp`、CLI 四份 `git()` 包装、`readGitBranch` 在 controller.ts 与 git-paths.ts 各一份等，全表见复盘 52b | 修一处漏一处 | 复盘候选 F |
 | 28 | 真机验收欠 16 个阶段（P34–P49）：P35、P37 的验收清单各 14、20 条手工场景，P34、P36、P38 各 1 条，P39–P49 规格书写着待用户执行（P52 登记） | 真实终端、输入法、剪贴板、通知、MCP 网页登录等自动化测不到的交互没人试过；真端点验收曾多次查出潜伏的 bug | 复盘候选 A：合并成一份清单，一次走完 |
-| 30 | REPL 从管道一次读到「提示词 + exit」时，提示词还没跑完就退出（P54 验收发现，原有） | 脚本把多行一次灌给 `tau --repl` 时只有前面的话可能被执行 | 非 TTY 时逐行排队、上一句跑完再读下一句（pi 的 print 模式只收一句，可参照 Claude Code 的 stdin 处理） |
 | 31 | `kernel/agent.ts` 2497 行，结构门禁上限 2500（P54） | 下一个改主循环的阶段一定撞线 | 那个阶段先按 D54 拆（候选：压缩操作、重试与降级的收尾），不调高上限 |
 | 32 | `cli/src/tui/controller.ts` 1495 行，结构门禁上限 1500（P55、P57；P58 把会话类命令移出了 `commands.ts`，它降到 1135 行、上限改为 1200） | 再加几个控制器方法就撞线 | 下一个动它的阶段先把指针与键盘处理移出去；不调高上限 |
-| 33 | 扩展的 Markdown 变换只作用于写完的文字：流式中的文字照原样画，变换结果按文字写完时的宽度取（P57，变换改在中枢运行） | 依赖 `isStreaming` 或宽度的变换器在流式时看不到效果，调宽度后用旧宽度的结果 | 出现真要流式变换的扩展时，按段增量取；宽度变化时重取 |
-| 35 | 常驻服务里各会话的模型各归各的（P58），但 read 工具收不收图片、`@文件` 的图片提示按进程的启动模型判断（工作区的 `modelTakesImages` 读进程的端点） | 一个会话换到与服务启动模型不同的模型后，图片支持可能判断错 | 让工作区按会话当前的模型判断（模型表的 `input`） |
 | 36 | `smoke:browser:runtime`（浏览器里跑内核与 OPFS）在 CI 上超时过一次（20 秒内 Chrome 没报结果，stderr 只有 dbus 的报错），重跑通过（P59 文档提交的 CI，run 40064221954） | CI 偶尔红一次 | 再出现时把超时放宽到 40 秒并打出页面状态；查是否 Chrome 启动慢 |
 
 （#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

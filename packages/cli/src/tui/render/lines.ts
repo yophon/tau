@@ -244,7 +244,7 @@ function blockOut(block: Block, options: LineOptions): Out {
 			if (options.showReasoning) {
 				const text = transformMarkdown(block.text, {
 					messageType: "assistant-thinking",
-					isStreaming: false,
+					isStreaming: !block.done,
 					availableWidth: width,
 				});
 				return wrapped([{ text: text.trim() }], width, colors, { dim: true, italic: true });

@@ -542,6 +542,54 @@ export class TuiRuns {
 		}
 	}
 
+	/** Finished texts drawn at a width their output was not fetched for (P61), fetched together. */
+	private readonly markdownWanted = new Map<number, Array<{ text: string; kind: MarkdownKind }>>();
+
+	/**
+	 * What drawing shows for a text (render/markdown.ts): the transformers' output fetched for it. A
+	 * finished text drawn at a new width shows the old output until the new one comes; a streaming
+	 * text shows the latest output fetched while a newer one is asked for (P61, pi transforms
+	 * streaming text too). Nothing is asked when the session has no transformers.
+	 */
+	readonly markdownSource = (
+		text: string,
+		kind: MarkdownKind,
+		width: number,
+		streaming: boolean,
+	): string | undefined => {
+		const session = this.host.session;
+		if (session.state.extensions.markdownTransformers === 0) return undefined;
+		if (streaming) {
+			void session
+				.streamMarkdown(text, kind, width)
+				.then((changed) => {
+					if (changed) this.host.dispatch({ type: "relayout" });
+				})
+				.catch(() => undefined);
+			return session.streamingTransformed(text, kind);
+		}
+		if (!session.hasTransformed(text, kind, width)) {
+			const wanted = this.markdownWanted.get(width);
+			if (wanted) wanted.push({ text, kind });
+			else {
+				this.markdownWanted.set(width, [{ text, kind }]);
+				queueMicrotask(() => {
+					const items = this.markdownWanted.get(width) ?? [];
+					this.markdownWanted.delete(width);
+					void session
+						.prefetchMarkdown(items, width)
+						.then((changed) => {
+							if (!changed) return;
+							markdownTransformsChanged();
+							this.host.dispatch({ type: "relayout" });
+						})
+						.catch(() => undefined);
+				});
+			}
+		}
+		return session.transformed(text, kind, width);
+	};
+
 	/** The transformers' output for the whole conversation, before it is drawn again (the start, a switch). */
 	async prefetchReplay(): Promise<void> {
 		if (this.host.session.state.extensions.markdownTransformers === 0) return;

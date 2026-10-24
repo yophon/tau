@@ -51,7 +51,15 @@ import {
 } from "./models.ts";
 import { runJsonMode } from "./modes/json.ts";
 import { stdoutWriter } from "./modes/jsonl.ts";
-import { type ApprovalChoice, createUi, nestedNote, readlineApprovalPrompt, runRepl, runTurn } from "./modes/repl.ts";
+import {
+	type ApprovalChoice,
+	createUi,
+	nestedNote,
+	PipedLines,
+	readlineApprovalPrompt,
+	runRepl,
+	runTurn,
+} from "./modes/repl.ts";
 import { RpcUiBridge } from "./modes/rpc.ts";
 import { type HostApprovalRequest, migrateLegacyPermissions, openAlwaysOptions } from "./permissions.ts";
 import { markActivity } from "./push-notification.ts";
@@ -334,6 +342,9 @@ async function main(): Promise<void> {
 	// P46: push_notification is not sent while you are typing at the REPL (any key or pasted
 	// text; a line that answers a question emits no "line" event).
 	if (readline) process.stdin.on("data", () => markActivity());
+	// P61: a pipe's lines are queued from the start (the REPL runs them one after another).
+	const pipedLines =
+		readline && !process.stdin.isTTY && options.print === undefined ? new PipedLines(readline) : undefined;
 	const out = stdoutWriter();
 	const rpcBridge = options.mode === "rpc" ? new RpcUiBridge(out) : undefined;
 	// Read stdin from the start: the project trust question below is asked through the bridge.
@@ -389,9 +400,15 @@ async function main(): Promise<void> {
 		// replaces it with a selector via setApprovalPrompt.
 		approvalPromptRef.current = readlineApprovalPrompt;
 	}
-	/** Whether the current model takes images (P36d: read says so when it does not). */
-	const modelTakesImages = (): boolean =>
-		endpoint.config.input === undefined || endpoint.config.input.includes("image");
+	/**
+	 * Whether a model takes images (P36d: read says so when it does not). P61: a session's own model
+	 * when it is a models.json one (its `input`, text only when omitted), else the process's endpoint.
+	 */
+	const modelTakesImages = (model?: string): boolean => {
+		const entry = model === undefined ? undefined : configuredModels.find((candidate) => modelRef(candidate) === model);
+		if (entry) return (entry.input ?? ["text"]).includes("image");
+		return endpoint.config.input === undefined || endpoint.config.input.includes("image");
+	};
 	/** What main() and the workspaces share and change during the run (P50): /mode, /thinking, enter_worktree. */
 	const run: RunState = { permissionMode, thinkingLevel, worktreeSession, worktreeOriginal };
 	const workspaceContext: WorkspaceContext = {
@@ -682,6 +699,7 @@ async function main(): Promise<void> {
 	if (!readline) throw new Error("interactive REPL requires readline");
 	await runRepl({
 		readline,
+		...(pipedLines ? { pipedLines } : {}),
 		agent,
 		buildAgent,
 		extensions,

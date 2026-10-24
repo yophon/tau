@@ -62,7 +62,7 @@
 | `registerFlag` | 0.80 | ✅ P2 | 默认值类型不符判加载失败；同名先注册者胜（P23c） |
 | `getFlag` | 0.80 | ✅ P2 | |
 | `registerMessageRenderer` | 0.80 | ✅ P8 | 按 role/customType 匹配 |
-| `registerMarkdownTransformer` | 1.2 | ✅ P40 | 每个扩展一个（再注册替换），按加载顺序作用于 TUI 里用户消息、助手消息与展开的推理；上下文 `messageType`、`isStreaming`、`availableWidth`。只改显示；inline 模式已写进终端历史的行不重画 |
+| `registerMarkdownTransformer` | 1.2 | ✅ P40 | 每个扩展一个（再注册替换），按加载顺序作用于 TUI 里用户消息、助手消息与展开的推理；上下文 `messageType`、`isStreaming`、`availableWidth`。只改显示；inline 模式已写进终端历史的行不重画。P61 起流式中也作用（同 pi，画最近一次的结果，比原文落后至多一个往返） |
 | `registerEntryRenderer` | 1.2 | ✅ P8 | ⚠ 同名异形：tau 早于 pi 自有（P8 形状，返回 string/`{text,format}`/组件，不接 Theme），代码注明偏离（D9/D10） |
 | `registerToolRenderer` | 1.2 | ✅ P8 | 同上 |
 | `sendMessage` | 0.80 | ✅ P3/P11 | deliverAs steer/followUp/nextTurn + triggerTurn。运行中 `triggerTurn:false` 暂存到当前 turn_end 之后提交、不触发请求（P23b，pi 0.84.4）；压缩/导航占槽期间暂存到其结束后（P23a） |

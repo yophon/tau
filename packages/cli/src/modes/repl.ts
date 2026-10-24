@@ -120,9 +120,50 @@ export function cancelPendingApproval(): void {
  * errored, was aborted or was cut off by the output limit, or the run threw —
  * -p turns that into exit code 1 (pi print mode). Failures go to stderr.
  */
+/**
+ * P61: lines from a pipe (stdin is not a terminal), queued from the start. Lines read before a turn
+ * starts wait their turn, one after another (`printf 'a\nb\nexit\n' | tau --repl` runs both); a
+ * line that arrives while a turn runs is steering, as typed in a terminal. The end of the input
+ * waits for the queued lines.
+ */
+export class PipedLines {
+	private readonly lines: string[] = [];
+	private ended = false;
+	private wake: (() => void) | undefined;
+	/** A turn runs: a new line is steering (runTurn's listener), not queued. */
+	turnRunning = false;
+
+	constructor(readline: Readline) {
+		readline.on("line", (line) => {
+			if (this.turnRunning) return;
+			this.lines.push(line);
+			this.wake?.();
+		});
+		readline.on("close", () => {
+			this.ended = true;
+			this.wake?.();
+		});
+	}
+
+	/** The next queued line; undefined once the input ended and nothing is left. */
+	async next(): Promise<string | undefined> {
+		while (this.lines.length === 0 && !this.ended) {
+			await new Promise<void>((resolve) => {
+				this.wake = resolve;
+			});
+		}
+		this.wake = undefined;
+		return this.lines.shift();
+	}
+}
+
+/** The REPL's piped input, when stdin is not a terminal (P61). */
+let pipedLines: PipedLines | undefined;
+
 export async function runTurn(agent: Agent, input: UserContent | null, readline: Readline): Promise<boolean> {
 	const controller = new AbortController();
 	turnState.controller = controller;
+	if (pipedLines) pipedLines.turnRunning = true;
 	const onSigint = (): void => {
 		controller.abort();
 	};
@@ -232,6 +273,7 @@ export async function runTurn(agent: Agent, input: UserContent | null, readline:
 		});
 		cancelPendingApproval();
 		turnState.controller = null;
+		if (pipedLines) pipedLines.turnRunning = false;
 		readline.removeListener("line", onLine);
 		process.removeListener("SIGINT", onSigint);
 		// Queues survive an abort (kernel contract): drop what the run left instead of
@@ -333,6 +375,8 @@ export interface ReplContext {
 	/** Sessions already given a title (P34f). */
 	titled: Set<string>;
 	worktreeSession: WorktreeSession | undefined;
+	/** P61: stdin is a pipe — its lines, queued since tau started reading. */
+	pipedLines?: PipedLines;
 }
 
 /** The line-based REPL until "exit" or the end of input. */
@@ -342,6 +386,9 @@ export async function runRepl(context: ReplContext): Promise<void> {
 	const { model, baseUrl: effectiveBaseUrl, provider, cwd, permissionMode } = context.banner;
 	const { contextWindow, worktreeSession } = context;
 	let { agent, store, recorder } = context;
+	pipedLines = context.pipedLines;
+	/** P61: with piped input, whether the last line's turn went well (the exit code, as -p). */
+	let lastTurnOk = true;
 	// P49: the REPL tells the terminal it is working, waiting or done (OSC 7501), with tui.title.
 	if (process.stdout.isTTY && context.terminalStatus) {
 		const { ProgramStatus } = await import("../tui/terminal-status.ts");
@@ -409,7 +456,11 @@ export async function runRepl(context: ReplContext): Promise<void> {
 		}
 	}
 	while (true) {
-		const line = await ask(readline, "tau> ");
+		let line: string | undefined;
+		if (pipedLines) {
+			process.stdout.write("tau> ");
+			line = await pipedLines.next();
+		} else line = await ask(readline, "tau> ");
 		if (line === undefined) break;
 		replStatus?.active();
 		const input = line.trim();
@@ -581,12 +632,13 @@ export async function runRepl(context: ReplContext): Promise<void> {
 			await runCommand(agent, extensions, input, readline);
 			continue;
 		}
-		await runTurn(agent, input, readline);
+		lastTurnOk = await runTurn(agent, input, readline);
 		// P34f: name the session after its first turn (in the background; failures are silent).
 		if (recorder && autoTitleOn(workspace.settings().autoTitle)) void autoTitle(agent, recorder, titled);
 	}
 	await extensions.notifySessionShutdown("quit", agent.extensionContext());
 	replStatus?.set("clear");
 	readline.close();
+	if (pipedLines && !lastTurnOk) process.exitCode = 1;
 	if (worktreeSession && process.stdin.isTTY) await finishWorktree(worktreeSession, workspace.background);
 }

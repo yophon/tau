@@ -163,7 +163,7 @@ TUI 的渲染全建在内核消息与事件上（pi 的形状，本来就是 JSO
 | `render/tool` `{ event, width }` | 工具渲染器（`event` 是内核的 RegisteredToolRenderEvent） |
 | `render/message` `{ message, width }` | 消息渲染器 |
 | `render/entry` `{ entry, width }` | 条目渲染器：选择器的一行（`{ kind: "label", label, description? }`）或画出来的内容 |
-| `markdown/transform` `{ items }` → `{ texts }` | Markdown 变换（P40d）。TUI 在一段文字写完、画出之前取一次；还在流式输出的文字照原样画 |
+| `markdown/transform` `{ items }` → `{ texts }` | Markdown 变换（P40d）。TUI 在一段文字写完、画出之前取一次；P61 起流式中的文字也取（`isStreaming: true`，同一段同时一个请求，画最近一次的结果），按新宽度画时按新宽度再取。会话没有变换器时一个也不发 |
 | `surfaces/read` `{ width, parts? }` → `{ status, widgets }` | 页眉页脚项与组件（`parts` 只取其一） |
 | `widget/click` `{ name }` | 点组件 |
 | `diagnostics/read` | `/diagnostics` 的内容：`session_start` 原因、计数、资源、各诊断的结果 |

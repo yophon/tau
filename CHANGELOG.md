@@ -4,6 +4,15 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Fixed (P61: three debts of daily use)
+- On the resident server, whether `read` may send an image follows the session's own model (its
+  models.json `input`) after a model switch, not the model the server started with.
+- Extension markdown transformers apply while text streams (pi), and finished text drawn at a new
+  width is transformed at that width. Sessions without transformers send no extra requests.
+- Lines piped into `tau --repl` at once run one after another and the REPL exits when they are done
+  (they used to be lost before the REPL listened); lines that arrive while a turn runs still steer it.
+  The exit code is 1 when the last line's turn fails.
+
 ### Changed (P60: editors on the resident session)
 - `tau --mode acp` is a client of tau's session hub: it uses the resident server as the TUI does
   (starting it when settings `daemon.autoStart` allow; `--no-daemon` runs in-process), so an editor

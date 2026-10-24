@@ -30,17 +30,20 @@ export interface MarkdownTransformContext {
 
 /**
  * The extensions' markdown transformers (P40d, pi registerMarkdownTransformer). P57: they run in
- * the hub; the TUI fetches their output for a text before it is drawn finished (session-client.ts)
- * and drawing reads it from here. Text still streaming is drawn as written.
+ * the hub; the TUI fetches their output (session-client.ts, runs.ts) and drawing reads it from here.
+ * P61: text still streaming too (the latest output fetched for it), and per width.
  */
-let transformed:
-	| ((text: string, messageType: MarkdownTransformContext["messageType"]) => string | undefined)
-	| undefined;
+type MarkdownSource = (
+	text: string,
+	messageType: MarkdownTransformContext["messageType"],
+	availableWidth: number,
+	isStreaming: boolean,
+) => string | undefined;
+
+let transformed: MarkdownSource | undefined;
 let transformersVersion = 0;
 
-export function useMarkdownTransforms(
-	source: ((text: string, messageType: MarkdownTransformContext["messageType"]) => string | undefined) | undefined,
-): void {
+export function useMarkdownTransforms(source: MarkdownSource | undefined): void {
 	transformed = source;
 	transformersVersion++;
 }
@@ -55,10 +58,10 @@ export function markdownTransformersVersion(): number {
 	return transformersVersion;
 }
 
-/** The text as the transformers made it (fetched beforehand), else as written. */
+/** The text as the transformers made it (fetched beforehand, or the latest while it streams), else as written. */
 export function transformMarkdown(text: string, context: MarkdownTransformContext): string {
-	if (context.isStreaming || !transformed) return text;
-	return transformed(text, context.messageType) ?? text;
+	if (!transformed) return text;
+	return transformed(text, context.messageType, context.availableWidth, context.isStreaming) ?? text;
 }
 
 /** One markdown line: what leads its first row, its text, and what leads the rows it wraps onto. */

@@ -28,8 +28,8 @@ export interface TuiHubContext extends LocalHubContext {
 	configuredModels: readonly ConfiguredModel[];
 	/** What the status line says about the provider (P37c). */
 	provider(): string;
-	/** Whether the current model takes images (P36d). */
-	modelTakesImages(): boolean;
+	/** Whether a model takes images (P36d); P61: the session's (a resident server's sessions switch models on their own). */
+	modelTakesImages(model?: string): boolean;
 	/** The startup dialogs (the project trust question before the TUI is on screen). */
 	ui: UiCapability | undefined;
 	/** The session reached its first prompt: from here an exit keeps a --worktree (main.ts). */
@@ -86,7 +86,7 @@ export async function runTuiOnHub(context: TuiHubContext): Promise<void> {
 			console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
 			process.exit(1);
 		}
-		if (files.images.length > 0 && !context.modelTakesImages()) {
+		if (files.images.length > 0 && !context.modelTakesImages(session.state.model)) {
 			console.error(dim("The current model does not take images: they are sent as a placeholder."));
 		}
 	}

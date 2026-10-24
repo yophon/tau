@@ -351,7 +351,7 @@ export class TuiController {
 			this.inputBox.commandsChanged();
 			this.checkShortcuts();
 		};
-		useMarkdownTransforms((text, kind) => session.transformed(text, kind));
+		useMarkdownTransforms(this.runs.markdownSource);
 		session.handle("item/tool/requestApproval", (params) => this.dialogs.answerApproval(params as never));
 		session.handle("ui/request", (params) => this.dialogs.answerRequest(params as never));
 	}

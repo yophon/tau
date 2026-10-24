@@ -231,6 +231,8 @@ export class HubThread {
 			trustPrompt: options.opener !== undefined,
 			...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
 			...(options.mcpServers && options.mcpServers.length > 0 ? { extraMcpServers: options.mcpServers } : {}),
+			// P61: images are judged by the model this session uses now (route.thread follows a handover).
+			sessionModel: () => route.thread?.session.modelDisplay,
 		});
 		// settings' permissions.defaultMode (P37a), as main.ts did for the TUI's one workspace.
 		const defaults =
