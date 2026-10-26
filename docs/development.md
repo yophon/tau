@@ -11,6 +11,7 @@
 - `npm run tau` — 跑 CLI（需 TAU_BASE_URL / TAU_API_KEY / TAU_MODEL 环境变量或对应 flag）
 - smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁：载体真实性 + 无 polyfill 预期失败 + 有 polyfill 全绿，polyfill 单源 `test-fixtures/quickjs/polyfills.ts`）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（weapp demo bundle 无 Node 泄漏）· `smoke:pack`（内核 tarball 在裸消费者项目安装/运行/类型检查）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）· `demo:weapp`（生成小程序 demo 的 lib/tau.js）
 - `node scripts/bench-long-session.mjs [--sizes 2000,10000,30000]` — 长会话基准（P42，不进 CI，要几分钟）：每轮内核开销与一致性检查、冷加载、`/resume` 列表、全屏渲染与搜索、`/tree`。改了会话、投影、全屏渲染、搜索或会话树之后跑一次，与 P42 规格书「实施记录」里的数字比；机器忙时波动大，可疑的项把旧版文件放进同一进程交替对比
+- `node scripts/baseline.mjs` — 基线（P62a，不进 CI）：启动、`-p` 一轮、常驻服务（起服务、接入、一轮、内存）、长会话、全量测试耗时，各跑几次取中位数，记进 [baseline.md](baseline.md)；TUI 首屏要 tmux（WSL 里量，见下）
 - `npm run smoke:dialects` — 真实端点方言冒烟（P17，on-demand，不进必跑 gate）：`TAU_DIALECT_DEEPSEEK_KEY`/`TAU_DIALECT_OPENROUTER_KEY`/`TAU_DIALECT_OLLAMA_BASE_URL`/`TAU_DIALECT_OPENAI_COMPAT_BASE_URL`+`_KEY`+`_MODEL` 有哪个跑哪个，缺凭据明示 SKIP，任一 FAIL 退出非零；CI 有 secrets 驱动的可选 job（continue-on-error）
 - **发布工程（P12）**：`npm run build`（tsc 出 dist，发布前置）· `npm run version:patch|minor|major`（锁步 bump + 内部依赖同步 + shrinkwrap 重生成）· `npm run publish:dry` / `publish:npm`（幂等，pack 校验；发布时临时把 manifest 改写为 dist 形态）· `npm run release -- patch`（bump → 门禁 → CHANGELOG 滚动 → commit+tag+push；发布仍手动）。CHANGELOG.md 的 `[Unreleased]` 段随改动随手记
 - **CI（P11 起）**：push/PR 到 main 自动跑 gate（check + `git diff --exit-code` 防格式漂移 + test）与 smoke 全家桶。提交前本地跑过 check 可避免 CI 因 biome 自动修复而红
@@ -20,7 +21,7 @@
 
 - pi 快照位于本仓库同级目录 `../pi`，**tag v1.4.0**（D51，2026-10-22 重锚；此前为 v1.2.0，见 D23，更早为 v0.80.3，见 D11）。快照不在仓库里，丢失或换机后用 `git clone --depth 1 --branch v1.4.0 https://github.com/earendil-works/pi ../pi` 重建（上游已由 `pi-mono` 更名为 `pi`）。核对：`../pi/packages/coding-agent/package.json` 的 version 为 1.4.0
 - "先读 pi / 照抄 pi" 一律以该快照为准。只照抄打过 tag 的版本，Unreleased 与 main 只作信息。升级快照 = 在 decisions.md 追加记录，并重跑 `node scripts/check-pi-parity.mjs`（从快照 `types.ts` 抽取扩展面成员，与 pi-parity.md 三张表比对；不进 `npm run check`，CI 没有快照）
-- CLI 的 TUI 基于 Ink（D31），不随参照快照走；TUI 的单测和集成测试用 ink-testing-library（`packages/cli/test/tui-*.test.ts`），真终端行为由 `npm run smoke:tui`（tmux）覆盖。Windows 本机在 WSL 里跑：`wsl.exe -e bash scripts/smoke-tui-wsl.sh`（P48，原技术债 #22：先把仓库 rsync 到 WSL 自己的 `~/.cache/tau-smoke/tau` 再跑，不经 `/mnt/d`；环境变量这样带进去：`wsl.exe -e env SMOKE_TUI_MODE=inline SMOKE_ONLY=p47 bash scripts/smoke-tui-wsl.sh`）
+- CLI 的 TUI 基于 Ink（D31），不随参照快照走；TUI 的单测和集成测试用 ink-testing-library（`packages/cli/test/tui-*.test.ts`），真终端行为由 `npm run smoke:tui`（tmux）覆盖。Windows 本机在 WSL 里跑：`wsl.exe -e bash scripts/smoke-tui-wsl.sh`（P48，原技术债 #22：`scripts/wsl-copy.sh` 先把仓库 rsync 到 WSL 自己的 `~/.cache/tau-smoke/tau`，并把 `node_modules/@yophon/*` 的工作区链接改指副本内部（P62：否则按包名的导入仍经 `/mnt/d`），再跑；环境变量这样带进去：`wsl.exe -e env SMOKE_TUI_MODE=inline SMOKE_ONLY=p47 bash scripts/smoke-tui-wsl.sh`）
 - 每个阶段的规格书列有"先读 pi"的具体文件清单；读了清单之外的关键文件，补记进规格书
 
 ## 硬规则
