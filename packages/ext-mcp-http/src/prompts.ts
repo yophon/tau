@@ -2,8 +2,9 @@
 // each prompt is the command /mcp__<server>__<prompt>; the words after it fill the
 // prompt's arguments in order; prompts/get's messages become one user message.
 // Pure ES.
-import type { ImageContent } from "@yophon/tau-kernel";
-import type { McpGetPromptResult, McpPrompt } from "./client.ts";
+import type { ExtensionAPI, ImageContent } from "@yophon/tau-kernel";
+import type { McpClient, McpGetPromptResult, McpPrompt } from "./client.ts";
+import type { McpExposure } from "./exposure.ts";
 import { type McpContentOptions, toModelContent } from "./result.ts";
 
 /**
@@ -78,4 +79,89 @@ export function promptMessageContent(
 		parts.push(labelled ? `${message.role === "assistant" ? "Assistant" : "User"}: ${text}` : text);
 	}
 	return { text: parts.join("\n\n"), images };
+}
+
+/** What the prompt commands read of a configured server (P62: moved here from servers.ts). */
+export interface PromptServer {
+	config: { name: string; exposure?: McpExposure; timeoutMs?: number };
+	client?: McpClient;
+	connecting?: Promise<unknown>;
+	/** Prompts the server offers now, by command name. */
+	prompts: Map<string, McpPrompt>;
+}
+
+export interface PromptCommandsHost<S extends PromptServer> {
+	/** The extension API once the extension is loaded. */
+	api(): ExtensionAPI | undefined;
+	/** False: no prompt commands (an option of the host). */
+	enabled: boolean;
+	/** How long a listing or prompts/get may take. */
+	timeoutMs: number;
+	withClient<T>(server: S, call: (client: McpClient) => Promise<T>): Promise<T>;
+	contentOptions(server: S): McpContentOptions;
+}
+
+/** The servers' prompts as commands: listed when a server connects or says its list changed. */
+export function createPromptCommands<S extends PromptServer>(host: PromptCommandsHost<S>) {
+	const timeout = (server: S) => server.config.timeoutMs ?? host.timeoutMs;
+
+	/** /mcp__<server>__<prompt>: prompts/get, then send its messages as a prompt (Claude Code). */
+	const runPrompt = async (
+		server: S,
+		name: string,
+		args: string,
+	): Promise<string | { action: "prompt"; text: string; images?: ImageContent[] }> => {
+		const prompt = server.prompts.get(name);
+		if (!prompt) return `MCP prompt /${name} is no longer available.`;
+		const parsed = promptArguments(name, prompt, args);
+		if ("error" in parsed) return parsed.error;
+		try {
+			const result = await host.withClient(server, (client) =>
+				client.getPrompt(prompt.name, parsed.values, { timeoutMs: timeout(server) }),
+			);
+			const { text, images } = promptMessageContent(result, host.contentOptions(server));
+			if (text === "" && images.length === 0) return `MCP prompt /${name} returned no messages.`;
+			return { action: "prompt", text, ...(images.length > 0 ? { images } : {}) };
+		} catch (cause) {
+			return `MCP prompt /${name} failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+		}
+	};
+
+	/** One command per prompt; commands of prompts the server dropped become hidden (P44). */
+	const register = (target: ExtensionAPI, server: S, prompts: McpPrompt[]): void => {
+		const previous = new Set(server.prompts.keys());
+		server.prompts = new Map(prompts.map((prompt) => [mcpPromptCommandName(server.config.name, prompt.name), prompt]));
+		for (const [name, prompt] of server.prompts) {
+			target.registerCommand(name, {
+				description: promptCommandDescription(prompt),
+				source: "mcp",
+				handler: (args) => runPrompt(server, name, args),
+			});
+		}
+		for (const name of previous) {
+			if (server.prompts.has(name)) continue;
+			target.registerCommand(name, {
+				description: "MCP prompt no longer offered",
+				hidden: true,
+				handler: () => runPrompt(server, name, ""),
+			});
+		}
+	};
+
+	/** List the server's prompts again (after it connected, or said the list changed). */
+	const refresh = async (server: S, client: McpClient): Promise<void> => {
+		await server.connecting;
+		const api = host.api();
+		if (server.client !== client || !api || !host.enabled) return;
+		if (client.serverCapabilities?.prompts === undefined) return;
+		if ((server.config.exposure ?? "direct") === "hidden") return;
+		try {
+			const prompts = await client.listPrompts({ timeoutMs: timeout(server) });
+			if (server.client === client) register(api, server, prompts);
+		} catch {
+			// A failed listing keeps the commands registered so far (Claude Code).
+		}
+	};
+
+	return { refresh };
 }

@@ -3,6 +3,8 @@
 // host's, pi ui.addAutocompleteProvider), and `@server:uri` in a message is read
 // and attached when it is sent. Pure ES.
 import type { AutocompleteItem, AutocompleteProvider, TauAbortSignal } from "@yophon/tau-kernel";
+import type { McpResource } from "./client.ts";
+import { isMcpAppResource } from "./resources.ts";
 
 export interface MentionResource {
 	server: string;
@@ -123,4 +125,34 @@ export function findMentions(text: string, servers: ReadonlySet<string>): Array<
 export function mentionBlock(server: string, uri: string, text: string): string {
 	const attribute = (value: string) => value.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
 	return `<mcp_resource server="${attribute(server)}" uri="${attribute(uri)}">\n${text}\n</mcp_resource>`;
+}
+
+/**
+ * Resources of these servers for `@` completion, MCP App resources left out. Each server's listing
+ * is cached on it (`resourceList`, dropped on resources/list_changed); a failed one is not kept.
+ */
+export async function listMentionResources<
+	S extends { config: { name: string }; resourceList?: Promise<MentionResource[]> },
+>(servers: readonly S[], list: (server: S) => Promise<McpResource[]>): Promise<MentionResource[]> {
+	const lists = await Promise.all(
+		servers.map((server) => {
+			server.resourceList ??= list(server)
+				.then((resources) =>
+					resources
+						.filter((resource) => !isMcpAppResource(resource))
+						.map((resource) => ({
+							server: server.config.name,
+							uri: resource.uri,
+							name: resource.name,
+							...(typeof resource.title === "string" ? { title: resource.title } : {}),
+						})),
+				)
+				.catch((error: unknown) => {
+					server.resourceList = undefined;
+					throw error;
+				});
+			return server.resourceList.catch(() => [] as MentionResource[]);
+		}),
+	);
+	return lists.flat();
 }

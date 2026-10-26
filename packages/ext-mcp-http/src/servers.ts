@@ -73,29 +73,29 @@ import {
 	toToolExposure,
 } from "./exposure.ts";
 import { type McpAuth, McpHttpError, McpSessionExpiredError } from "./http.ts";
+import { McpAbortError, McpConnectionClosedError, McpError, McpProbeExitedError, McpTimeoutError } from "./jsonrpc.ts";
 import {
-	JSON_RPC_ERROR_CODES,
-	McpAbortError,
-	McpConnectionClosedError,
-	McpError,
-	McpProbeExitedError,
-	McpTimeoutError,
-} from "./jsonrpc.ts";
-import { createMentionProvider, findMentions, type MentionResource, mentionBlock } from "./mentions.ts";
+	createMentionProvider,
+	findMentions,
+	listMentionResources,
+	type MentionResource,
+	mentionBlock,
+} from "./mentions.ts";
 import { createMcpToolName, mcpNamespace } from "./naming.ts";
-import { mcpPromptCommandName, promptArguments, promptCommandDescription, promptMessageContent } from "./prompts.ts";
-import { createMcpResourceTools, isMcpAppResource, type McpResourceServer, RESOURCE_TOOL_NAMES } from "./resources.ts";
+import { createPromptCommands } from "./prompts.ts";
+import { createMcpResourceTools, mcpResourceServer, RESOURCE_TOOL_NAMES } from "./resources.ts";
 import { convertMcpResult, limitMcpContent, type McpContentOptions, toModelContent } from "./result.ts";
 import type { McpTransport } from "./transport.ts";
+import { aborted, createWaitTool } from "./wait-tool.ts";
 
 const DEFAULT_HANDSHAKE_TIMEOUT_MS = 10_000;
 /** For calls made without a signal: an elicitation then waits for the user alone. */
 const neverAborted: TauAbortSignal = { aborted: false, addEventListener: () => {}, removeEventListener: () => {} };
 const DEFAULT_STARTUP_WAIT_MS = 10_000;
+
 /** wait_for_mcp_servers: how long it waits by default and at most (s; tau's numbers, Claude Code's are not public). */
-const WAIT_TOOL_DEFAULT_S = 60;
-const WAIT_TOOL_MAX_S = 300;
-export const WAIT_FOR_MCP_SERVERS_TOOL = "wait_for_mcp_servers";
+export { WAIT_FOR_MCP_SERVERS_TOOL } from "./wait-tool.ts";
+
 /** Retries of a failed HTTP connect (pi CONNECT_RETRY_DELAYS_MS). */
 const CONNECT_RETRY_DELAYS_MS = [250, 1_000];
 /** Reopening a dropped subscriptions/listen stream (the GET stream's numbers, P47). */
@@ -287,11 +287,6 @@ function isTransientError(error: unknown): boolean {
 	);
 }
 
-/** A promise that settles when `signal` aborts (never, without one). */
-function aborted(signal: ExtensionContext["signal"]): Promise<void> {
-	return new Promise((resolve) => signal?.addEventListener("abort", () => resolve()));
-}
-
 export function createMcpServers(options: McpServersOptions): McpServersHandle {
 	const states: ServerState[] = [];
 	for (const config of options.servers) {
@@ -404,7 +399,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				void refreshTools(state, client);
 			});
 			client.onNotification("notifications/prompts/list_changed", () => {
-				void refreshPrompts(state, client);
+				void promptCommands.refresh(state, client);
 			});
 			client.onNotification("notifications/resources/list_changed", () => {
 				state.resourceList = undefined;
@@ -543,94 +538,24 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		}
 	};
 
-	/** Names of the prompt commands registered so far, to hide the ones a server drops. */
-	const promptCommandNames = new Set<string>();
-
-	const refreshPrompts = async (state: ServerState, client: McpClient): Promise<void> => {
-		await state.connecting;
-		if (state.client !== client || !api || options.promptCommands === false) return;
-		if (client.serverCapabilities?.prompts === undefined) return;
-		if ((state.config.exposure ?? "direct") === "hidden") return;
-		try {
-			const prompts = await client.listPrompts({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS });
-			if (state.client === client) registerPrompts(api, state, prompts);
-		} catch {
-			// A failed listing keeps the commands registered so far (Claude Code).
-		}
-	};
-
-	/** One command per prompt; commands of prompts the server dropped become hidden (P44). */
-	const registerPrompts = (target: ExtensionAPI, state: ServerState, prompts: McpPrompt[]): void => {
-		const previous = new Set(state.prompts.keys());
-		state.prompts = new Map(prompts.map((prompt) => [mcpPromptCommandName(state.config.name, prompt.name), prompt]));
-		for (const [name, prompt] of state.prompts) {
-			promptCommandNames.add(name);
-			target.registerCommand(name, {
-				description: promptCommandDescription(prompt),
-				source: "mcp",
-				handler: (args) => runPrompt(state, name, args),
-			});
-		}
-		for (const name of previous) {
-			if (state.prompts.has(name)) continue;
-			target.registerCommand(name, {
-				description: "MCP prompt no longer offered",
-				hidden: true,
-				handler: () => runPrompt(state, name, ""),
-			});
-		}
-	};
-
-	/** /mcp__<server>__<prompt>: prompts/get, then send its messages as a prompt (Claude Code). */
-	const runPrompt = async (
-		state: ServerState,
-		name: string,
-		args: string,
-	): Promise<string | { action: "prompt"; text: string; images?: ImageContent[] }> => {
-		const prompt = state.prompts.get(name);
-		if (!prompt) return `MCP prompt /${name} is no longer available.`;
-		const parsed = promptArguments(name, prompt, args);
-		if ("error" in parsed) return parsed.error;
-		try {
-			const result = await withClient(state, (client) =>
-				client.getPrompt(prompt.name, parsed.values, {
-					timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
-				}),
-			);
-			const { text, images } = promptMessageContent(result, contentOptions(state));
-			if (text === "" && images.length === 0) return `MCP prompt /${name} returned no messages.`;
-			return { action: "prompt", text, ...(images.length > 0 ? { images } : {}) };
-		} catch (cause) {
-			return `MCP prompt /${name} failed: ${messageOf(cause)}`;
-		}
-	};
+	/** The servers' prompts as commands (P44; prompts.ts). */
+	const promptCommands = createPromptCommands<ServerState>({
+		api: () => api,
+		get enabled() {
+			return options.promptCommands !== false;
+		},
+		timeoutMs: DEFAULT_HANDSHAKE_TIMEOUT_MS,
+		withClient: (state, call) => withClient(state, call),
+		contentOptions: (state) => contentOptions(state),
+	});
 
 	/** Resources of every connected server with resources, for `@` completion (listed once, cached). */
-	const mentionResources = async (): Promise<MentionResource[]> => {
-		const lists = await Promise.all(
-			mentionStates().map((state) => {
-				state.resourceList ??= withClient(state, (client) =>
-					client.listResources({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS }),
-				)
-					.then((resources) =>
-						resources
-							.filter((resource) => !isMcpAppResource(resource))
-							.map((resource) => ({
-								server: state.config.name,
-								uri: resource.uri,
-								name: resource.name,
-								...(typeof resource.title === "string" ? { title: resource.title } : {}),
-							})),
-					)
-					.catch((error: unknown) => {
-						state.resourceList = undefined;
-						throw error;
-					});
-				return state.resourceList.catch(() => [] as MentionResource[]);
-			}),
+	const mentionResources = (): Promise<MentionResource[]> =>
+		listMentionResources(mentionStates(), (state) =>
+			withClient(state, (client) =>
+				client.listResources({ timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS }),
+			),
 		);
-		return lists.flat();
-	};
 
 	/** Connected servers whose resources `@` reaches: resources offered, not hidden. */
 	const mentionStates = (): ServerState[] =>
@@ -708,34 +633,9 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		}
 	};
 
-	/** Servers that do not implement resources/templates/list have no templates (pi). */
-	const withoutTemplates = async <T>(list: () => Promise<T>, empty: T): Promise<T> => {
-		try {
-			return await list();
-		} catch (error) {
-			if (error instanceof McpError && error.code === JSON_RPC_ERROR_CODES.methodNotFound) return empty;
-			throw error;
-		}
-	};
-
 	/** Servers with resources whose exposure is not `hidden`, which the resource tools reach (pi). */
 	const resourceStates = (): ServerState[] =>
 		states.filter((state) => state.hasResources && !state.conflict && (state.config.exposure ?? "direct") !== "hidden");
-
-	const resourceServer = (state: ServerState): McpResourceServer => ({
-		name: state.config.name,
-		timeoutMs: state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
-		resourcesPage: (cursor, requestOptions) =>
-			withClient(state, (client) => client.listResourcesPage(cursor, requestOptions)),
-		resourceTemplatesPage: (cursor, requestOptions) =>
-			withClient(state, (client) =>
-				withoutTemplates(() => client.listResourceTemplatesPage(cursor, requestOptions), { resourceTemplates: [] }),
-			),
-		allResources: (requestOptions) => withClient(state, (client) => client.listResources(requestOptions)),
-		allResourceTemplates: (requestOptions) =>
-			withClient(state, (client) => withoutTemplates(() => client.listResourceTemplates(requestOptions), [])),
-		readResource: (uri, requestOptions) => withClient(state, (client) => client.readResource(uri, requestOptions)),
-	});
 
 	/** Exposure the resource tools were last registered with; undefined until a server has resources. */
 	let resourceToolsExposure: McpExposure | undefined;
@@ -753,7 +653,12 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 		resourceToolsExposure = next;
 		const tools = createMcpResourceTools({
 			exposure: toToolExposure(next),
-			servers: () => resourceStates().map(resourceServer),
+			servers: () =>
+				resourceStates().map((state) =>
+					mcpResourceServer(state.config.name, state.config.timeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS, (call) =>
+						withClient(state, call),
+					),
+				),
 			content: {
 				...(options.images === false ? { images: false } : {}),
 				...(options.saveBinary ? { saveBinary: options.saveBinary } : {}),
@@ -858,7 +763,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				}
 				state.client = client;
 				if (api) registerTools(api, state, tools);
-				void refreshPrompts(state, client);
+				void promptCommands.refresh(state, client);
 				return report({
 					server,
 					state: "connected",
@@ -904,71 +809,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 	const registerWaitTool = (target: ExtensionAPI): void => {
 		if (waitToolRegistered || options.waitTool === false) return;
 		waitToolRegistered = true;
-		target.registerTool(
-			{
-				name: WAIT_FOR_MCP_SERVERS_TOOL,
-				description:
-					"Wait for MCP servers that are still connecting in the background, so their tools become available in this conversation. Call it when a server you need is not connected yet. Returns each server's state and how many tools it offers.",
-				promptSnippet: "Wait for MCP servers still connecting",
-				parameters: {
-					type: "object",
-					properties: {
-						servers: {
-							type: "array",
-							items: { type: "string" },
-							description: "Server names to wait for; all servers still connecting when omitted",
-						},
-						timeout_seconds: {
-							type: "number",
-							description: `How long to wait at most (default ${WAIT_TOOL_DEFAULT_S}, at most ${WAIT_TOOL_MAX_S})`,
-						},
-					},
-				},
-				execute: async (args, signal) => {
-					const named = Array.isArray(args.servers)
-						? args.servers.filter((name): name is string => typeof name === "string" && name.trim() !== "")
-						: undefined;
-					const unknown = (named ?? []).filter((name) => !states.some((state) => state.config.name === name));
-					const targets = named
-						? states.filter((state) => named.includes(state.config.name))
-						: states.filter((state) => state.connecting);
-					const seconds = Math.min(
-						WAIT_TOOL_MAX_S,
-						Math.max(1, typeof args.timeout_seconds === "number" ? args.timeout_seconds : WAIT_TOOL_DEFAULT_S),
-					);
-					const pending = targets.flatMap((state) => (state.connecting ? [state.connecting] : []));
-					if (pending.length > 0) {
-						const timer = new AbortHandle();
-						const sleep = options.platform.sleep;
-						await Promise.race([
-							Promise.all(pending),
-							aborted(signal),
-							...(sleep ? [sleep(seconds * 1000, timer.signal).catch(() => undefined)] : []),
-						]);
-						timer.abort();
-					}
-					const line = (state: ServerState): string => {
-						const name = state.config.name;
-						if (state.connecting) return `${name}: still connecting`;
-						if (state.client?.connectionState === "connected") {
-							return `${name}: connected (${state.tools.size} tool${state.tools.size === 1 ? "" : "s"})`;
-						}
-						const status = lastStatus.get(name);
-						return `${name}: offline${status?.error ? ` — ${status.error}` : ""}`;
-					};
-					const lines = [
-						...(targets.length === 0 && !named ? ["No MCP server is connecting."] : []),
-						...targets.map(line),
-						...unknown.map(
-							(name) =>
-								`${name}: no such server (configured: ${states.map((state) => state.config.name).join(", ") || "none"})`,
-						),
-					];
-					return { content: [{ type: "text", text: lines.join("\n") }] };
-				},
-			},
-			{ risk: "low" },
-		);
+		target.registerTool(createWaitTool(states, lastStatus, options.platform.sleep), { risk: "low" });
 	};
 
 	/** Wait for these servers' connections in flight, until `signal` aborts. */

@@ -10,7 +10,14 @@
 // icons. Read resources become text and images for the model; binary resources are
 // saved where the host can. Scripts get the JSON payloads.
 import type { JsonSchema, JsonValue, TauAbortSignal, Tool, ToolExposure, ToolResult } from "@yophon/tau-kernel";
-import type { McpReadResourceResult, McpRequestOptions, McpResource, McpResourceTemplate } from "./client.ts";
+import type {
+	McpClient,
+	McpReadResourceResult,
+	McpRequestOptions,
+	McpResource,
+	McpResourceTemplate,
+} from "./client.ts";
+import { JSON_RPC_ERROR_CODES, McpError } from "./jsonrpc.ts";
 import {
 	limitMcpContent,
 	type McpContentOptions,
@@ -339,4 +346,35 @@ export function createMcpResourceTools(options: McpResourceToolsOptions): Tool[]
 	};
 
 	return [listResources, listTemplates, readResource];
+}
+
+/** Servers that do not implement resources/templates/list have no templates (pi). */
+async function withoutTemplates<T>(list: () => Promise<T>, empty: T): Promise<T> {
+	try {
+		return await list();
+	} catch (error) {
+		if (error instanceof McpError && error.code === JSON_RPC_ERROR_CODES.methodNotFound) return empty;
+		throw error;
+	}
+}
+
+/** A connected server as the resource tools see it (P62: moved here from servers.ts). */
+export function mcpResourceServer(
+	name: string,
+	timeoutMs: number,
+	run: <T>(call: (client: McpClient) => Promise<T>) => Promise<T>,
+): McpResourceServer {
+	return {
+		name,
+		timeoutMs,
+		resourcesPage: (cursor, requestOptions) => run((client) => client.listResourcesPage(cursor, requestOptions)),
+		resourceTemplatesPage: (cursor, requestOptions) =>
+			run((client) =>
+				withoutTemplates(() => client.listResourceTemplatesPage(cursor, requestOptions), { resourceTemplates: [] }),
+			),
+		allResources: (requestOptions) => run((client) => client.listResources(requestOptions)),
+		allResourceTemplates: (requestOptions) =>
+			run((client) => withoutTemplates(() => client.listResourceTemplates(requestOptions), [])),
+		readResource: (uri, requestOptions) => run((client) => client.readResource(uri, requestOptions)),
+	};
 }
