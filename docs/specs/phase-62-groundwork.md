@@ -231,3 +231,23 @@
   - **8.3 短路径**（Windows 5 个 worktree 测试、TUI 扩展界面测试）：CI 的临时目录是 `C:\Users\RUNNER~1\…`，git 与 `realpathSync.native` 给出长路径 `runneradmin`；测试拿 `realpathSync`（不展开短名）的结果比。测试改用 `realpathSync.native`，TUI 测试台的工作目录也取真实路径（短名下的目录不显示成 `~`，状态栏被挤掉一项）。代码里几份路径比较的实现不一致（`git-paths` 的 `canonical` 用不展开短名的 `realpathSync`，ACP 的 `samePath` 只 `resolve`），合并时统一（62e）。
   - **CI 的 Windows 以管理员运行**：tau 按设计在管理员下不用常驻服务（照 Codex），P58 的四个「用哪个中枢」测试与 P60 的「编辑器接终端的会话」测试在管理员下改为跳过并写明原因（`tui-link.ts` 的 `elevatedOnWindows` 导出给测试用）。
   - **P56 的补发断言是竞态**（Windows 与 Node 24 都出现）：取「看到的最后一条」之后，会话收尾还可能再发一条，补发因此多一条。断言改成：看到的都补发了、补发到的不早于看到的。
+- 修好后 CI 三路 gate、smoke、dialects 全绿（run 40264761526）。
+
+### 62d 拆文件
+
+| 文件 | 拆前 | 拆后 | 拆出 |
+|---|---|---|---|
+| `kernel/src/agent.ts` | 2499 | 2214 | `turn-stream.ts`（拉流，pi 的 `streamAssistantResponse`）、`turn-recovery.ts`（失败后的溢出压缩重跑、重试、换模型，返回「重跑 / 中止 / 出错」，循环自己 `continue`/`return`）、`compaction-run.ts`（一次压缩，`compact()` 与循环共用）；`throwIfAborted` 进 `abort.ts`（内核两份合一，报错文字用参数保留） |
+| `cli/src/tui/controller.ts` | 1495 | 939 | `tui/key-commands.ts`（按键命令表，连同连按 Esc、Ctrl+C 两次的计时与 `/btw` 的滚动上限）、`tui/input-router.ts`（按键、粘贴、鼠标与焦点报告的分派，点击目标，挂件、列表、审批面板的点击）；控制器上外部用到的 `filterInput`、`setLayout`、`execute` 等留作一行转调，加了 `repaintAll()` |
+| `kernel/src/extensions.ts` | 2338 | 1100 | `extension-events.ts`（事件与结果，连同注册表用的 `HandlerLists`）、`extension-types.ts`（API、上下文、注册类型）；`extensions.ts` 用 `export *` 转出，别处的 import 不变 |
+| `ext-mcp-http/src/servers.ts` | 1145 | 986 | `wait-tool.ts`（`wait_for_mcp_servers`）；`prompts.ts` 加 `createPromptCommands`、`resources.ts` 加 `mcpResourceServer`、`mentions.ts` 加 `listMentionResources`；删掉只写不读的 `promptCommandNames` |
+| `cli/src/server/thread.ts` | 975 | 847 | `server/requests.ts`（`ThreadRequests`：发给所有客户端、先答为准、撤回、补发，连同审批的参数组装）、`server/completion.ts`（扩展的输入补全链） |
+| `cli/src/hooks.ts` | 1173（62b 后 1134） | 712 | `hooks-extension.ts`（把钩子接到扩展事件上、PostToolBatch、PermissionRequest 先答）；导入它们的四个源文件与四个测试改从新文件导入，避免两个模块互相运行时导入 |
+| `cli/src/tui/model.ts` | 1022 | 825 | `tui/model-blocks.ts`（实时块怎么变：编号、推入、分组、流式追加、改工具块、可读的错误与 diff） |
+| `kernel/src/permission-rules.ts` | 1020 | 688 | `shell-tokens.ts`（shell 分词：引号、运算符、重定向、heredoc、嵌套命令） |
+
+- **与规格的偏差**：
+  - `extensions.ts` 拆后 1100 行，比目标 1050 多 50 行：其中约 80 行是事件类型的导入清单（biome 一名一行）。
+  - `model.ts` 移出的是实时块的小函数，不是 `reduceEvent`：`reduceEvent` 用到十几个这类小函数，单独移走会让两个模块互相运行时导入。
+- **门禁上限**按确认的规则改：拆完仍超 1000 行的 `agent.ts` 2450、`extensions.ts` 1300；其余六个降到 1000 以下，从 `LIMITS` 删掉。`main.ts` 原来的 1000 与缺省相同，一并删去。`commands.ts`、`ext-mcp-http/src/client.ts` 不在这次拆的范围，上限照旧。
+- 内核新模块的导出列进 barrel 测试的 INTERNAL；没有行为变化，测试只改了导入路径。

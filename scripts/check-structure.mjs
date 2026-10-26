@@ -3,9 +3,9 @@
 // points from loading the TUI.
 //
 // 1. Line limits. Every source file under packages/*/src stays within DEFAULT_LIMIT lines; the files
-//    already above it have their own ceiling (their size when the gate was added, rounded up to 50),
-//    and the three files P50 split keep P50's targets. Over the limit: split the file, or raise its
-//    ceiling here on purpose, with the reason in a comment.
+//    above it have their own ceiling (P62: a split file's size plus 200; the others their size when
+//    the gate was added, rounded up to 50). Over the limit: split the file, or raise its ceiling here
+//    on purpose, with the reason in a comment.
 // 2. Dependency direction. The CLI's root modules and modes/ must not reach tui/controller.ts through
 //    static imports: -p, the REPL, json, rpc and acp do not load the TUI (main.ts imports it
 //    dynamically when the TUI starts).
@@ -23,19 +23,14 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const DEFAULT_LIMIT = 1000;
 const LIMITS = {
-	// P50's targets for the files it split.
-	"packages/cli/src/main.ts": 1000,
-	"packages/cli/src/tui/controller.ts": 1500,
-	"packages/kernel/src/agent.ts": 2500,
+	// P62 split the files near their limits; one still above the default keeps its size after the
+	// split plus 200, rounded up to 50 (room for the next feature, not for growing back).
+	"packages/kernel/src/agent.ts": 2450,
+	"packages/kernel/src/extensions.ts": 1300,
 	// Above the default when the gate was added (2026-10-23): no further growth.
-	"packages/kernel/src/extensions.ts": 2350,
 	// P58: the session commands moved to tui/session-commands.ts (technical debt #32).
 	"packages/cli/src/tui/commands.ts": 1200,
 	"packages/ext-mcp-http/src/client.ts": 1250,
-	"packages/cli/src/hooks.ts": 1200,
-	"packages/ext-mcp-http/src/servers.ts": 1150,
-	"packages/kernel/src/permission-rules.ts": 1050,
-	"packages/cli/src/tui/model.ts": 1050,
 };
 
 const sources = [];
