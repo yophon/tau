@@ -10,10 +10,7 @@ import type { CheckpointBackend } from "@yophon/tau-ext-checkpoint";
 import {
 	type AgentEvent,
 	type AgentMessage,
-	type ApprovalRequest,
-	type AutocompleteProvider,
 	type AutocompleteProviderFactory,
-	type AutocompleteSuggestions,
 	type ExtensionRegistry,
 	type FileSystem,
 	type PermissionMode,
@@ -25,12 +22,10 @@ import {
 	type UserContent,
 } from "@yophon/tau-kernel";
 import {
-	type CompletionItem,
 	ERROR_CODES,
 	type Item,
 	type JoinResult,
 	JsonRpcError,
-	type JsonRpcId,
 	type JsonRpcPeer,
 	type McpServerSpec,
 	NATIVE_NOTIFICATIONS,
@@ -46,13 +41,14 @@ import {
 } from "@yophon/tau-protocol";
 import { sessionEventStream } from "../modes/events.ts";
 import { HeadlessSession, type ModelSwitch, type RunOutcome } from "../modes/headless.ts";
-import { openAlwaysOptions } from "../permissions.ts";
 import { autoTitle } from "../session-title.ts";
 import type { Workspace, WorkspaceSpec } from "../workspace.ts";
+import { ThreadCompletion } from "./completion.ts";
 import { reload, setModel } from "./control.ts";
 import { ItemTracker, itemsFromMessages, lastStop, type PendingNotification, toUserInput } from "./items.ts";
 import { changesMessages, MessageMirror, threadState } from "./native.ts";
-import { bottomProvider, CLIENT_APPLIES, threadUi, type UiRoute } from "./ui.ts";
+import { ThreadRequests } from "./requests.ts";
+import { threadUi, type UiRoute } from "./ui.ts";
 
 /** What the hub needs from the CLI. */
 export interface HubHost {
@@ -102,18 +98,6 @@ const streamedRegistries = new WeakSet<ExtensionRegistry>();
 /** The notifications a thread keeps for clients that join later (Codex keeps the rollout; tau a window). */
 export const LOG_LIMIT = 20_000;
 
-interface PendingRequest {
-	requestId: string;
-	method: ServerRequestMethod;
-	params: Record<string, unknown>;
-	/** What the request comes to when nobody can answer any more (the session stops, a turn is interrupted). */
-	fallback: unknown;
-	resolve: (result: unknown) => void;
-	sent: Map<Subscriber, JsonRpcId>;
-	/** Timers and listeners to drop once it settles. */
-	cleanup: Array<() => void>;
-}
-
 interface Turn {
 	id: string;
 	/** Started by the session itself (an extension's follow-up), not by turn/start. */
@@ -136,15 +120,17 @@ export class HubThread {
 	readonly ui: ReturnType<typeof threadUi>;
 	private readonly route: UiRoute;
 	private readonly subscribers = new Set<Subscriber>();
+	/** Approvals and dialogs waiting for the clients (requests.ts). */
+	private readonly requests: ThreadRequests = this.threadRequests();
+	/** The extensions' input completion (completion.ts). */
+	private readonly completions = new ThreadCompletion();
 	private readonly log: ServerNotification[] = [];
 	private seq = 0;
 	private items = 0;
 	private turns = 0;
-	private requests = 0;
 	private readonly tracker: ItemTracker;
 	private turn: Turn | undefined;
 	private readonly queue: Array<{ turnId: string; input: UserContent }> = [];
-	private readonly pending = new Map<string, PendingRequest>();
 	private status: ThreadStatus = "idle";
 	private task: { kind: TaskKind; activity: string; controller: AbortController } | undefined;
 	private readonly mirror: MessageMirror;
@@ -156,11 +142,6 @@ export class HubThread {
 	lastSessionStart: "startup" | "resume" | "reload";
 	/** Bumps on every /reload (P57 ThreadState.extensionsVersion). */
 	extensionsVersion = 0;
-	private autocomplete: AutocompleteProviderFactory[] = [];
-	private chain: AutocompleteProvider | undefined;
-	private completionAbort: AbortController | undefined;
-	/** The next ui/request is an MCP sign-in page (P49). */
-	private signIn = false;
 	/** P60: aborted when the thread stops (its title request). */
 	private readonly stopping = new AbortController();
 	private readonly titled = new Set<string>();
@@ -226,7 +207,7 @@ export class HubThread {
 		const workspace = await host.openWorkspace({
 			cwd: options.cwd ?? host.cwd,
 			ui,
-			onApproval: async (request) => (route.thread ? route.thread.approve(request) : false),
+			onApproval: async (request) => (route.thread ? route.thread.requests.approve(request) : false),
 			// Without a client opening it, nobody can answer: an untrusted project's resources stay off (P56).
 			trustPrompt: options.opener !== undefined,
 			...(options.permissionMode ? { permissionMode: options.permissionMode } : {}),
@@ -367,7 +348,7 @@ export class HubThread {
 			...(this.task ? { task: { kind: this.task.kind, activity: this.task.activity } } : {}),
 			lastSessionStart: this.lastSessionStart,
 			extensionsVersion: this.extensionsVersion,
-			autocompleteProviders: this.autocomplete.length,
+			autocompleteProviders: this.completions.count,
 			foregroundCommands: this.workspace.background?.foregroundCount ?? 0,
 			fallbackCwd: this.workspace.cwd,
 			projectTrusted: this.workspace.isProjectTrusted?.() ?? false,
@@ -391,7 +372,7 @@ export class HubThread {
 
 	/** Nothing holds it: it may be unloaded. */
 	get idle(): boolean {
-		return this.subscribers.size === 0 && !this.busy && this.queue.length === 0 && this.pending.size === 0;
+		return this.subscribers.size === 0 && !this.busy && this.queue.length === 0 && this.requests.size === 0;
 	}
 
 	/** Only `subscriber` holds it and it is doing nothing: its workspace can move to the session the client goes to. */
@@ -401,7 +382,7 @@ export class HubThread {
 			this.subscribers.has(subscriber) &&
 			!this.busy &&
 			this.queue.length === 0 &&
-			this.pending.size === 0
+			this.requests.size === 0
 		);
 	}
 
@@ -414,9 +395,7 @@ export class HubThread {
 	subscribe(subscriber: Subscriber, afterSeq?: number): JoinResult {
 		this.subscribers.add(subscriber);
 		void this.ensureSessionEvents();
-		setTimeout(() => {
-			for (const request of this.pending.values()) this.send(request, subscriber);
-		}, 0);
+		setTimeout(() => this.requests.sendOpen(subscriber), 0);
 		this.syncMessages();
 		const startSeq = this.turn?.startSeq;
 		const current = (visible: (event: ServerNotification) => boolean): ServerNotification[] =>
@@ -454,13 +433,7 @@ export class HubThread {
 
 	unsubscribe(subscriber: Subscriber): boolean {
 		const had = this.subscribers.delete(subscriber);
-		for (const request of this.pending.values()) {
-			const id = request.sent.get(subscriber);
-			if (id !== undefined) {
-				subscriber.peer.withdraw(id);
-				request.sent.delete(subscriber);
-			}
-		}
+		this.requests.withdrawFrom(subscriber);
 		if (had) this.checkIdle();
 		return had;
 	}
@@ -500,14 +473,14 @@ export class HubThread {
 	interrupt(): void {
 		this.session.abort();
 		this.task?.controller.abort();
-		for (const request of [...this.pending.values()]) this.settle(request, request.fallback, false);
+		this.requests.settleAll();
 	}
 
 	async stop(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
 		this.stopping.abort();
-		for (const request of [...this.pending.values()]) this.settle(request, request.fallback, false);
+		this.requests.settleAll();
 		this.queue.length = 0;
 		await this.session.stop();
 	}
@@ -539,7 +512,7 @@ export class HubThread {
 		const metadata = store ? await store.getMetadata() : { id: randomUUID() };
 		const next = new HubThread(this.host, workspace, session, this.route, this.ui, metadata, started);
 		next.modelChoices = this.modelChoices;
-		next.autocomplete = this.autocomplete;
+		next.completions.adopt(this.completions);
 		next.extensionsVersion = this.extensionsVersion;
 		next.keepModel(display, thinking);
 		this.route.thread = next;
@@ -557,7 +530,7 @@ export class HubThread {
 
 	/** Approvals and dialogs waiting for an answer (P58 ThreadInfo.waiting). */
 	get waiting(): number {
-		return this.pending.size;
+		return this.requests.size;
 	}
 
 	/** session_before_switch: whether the extensions let the client leave for another session. */
@@ -659,73 +632,29 @@ export class HubThread {
 	// --- Autocomplete providers (ui.addAutocompleteProvider) -------------------------------------
 
 	addAutocompleteProvider(factory: AutocompleteProviderFactory): void {
-		this.autocomplete.push(factory);
-		this.chain = undefined;
+		this.completions.add(factory);
 	}
 
 	get autocompleteProviderCount(): number {
-		return this.autocomplete.length;
+		return this.completions.count;
 	}
 
 	/** After a reload the new extensions add their providers again. */
 	resetAutocomplete(): void {
-		this.autocomplete = [];
-		this.chain = undefined;
-	}
-
-	/** The client's own completion for the request being answered (the bottom of the chain). */
-	private completionBase: AutocompleteSuggestions | null = null;
-
-	private providerChain(): AutocompleteProvider {
-		this.chain ??= this.autocomplete.reduce<AutocompleteProvider>(
-			(current, factory) => factory(current),
-			bottomProvider(() => this.completionBase),
-		);
-		return this.chain;
+		this.completions.reset();
 	}
 
 	/** The providers' suggestions for the input; a newer request aborts the one before. */
-	async completion(
-		lines: string[],
-		line: number,
-		col: number,
-		force?: boolean,
-		base?: { items: CompletionItem[]; prefix: string },
-	): Promise<{ items: CompletionItem[]; prefix: string } | null> {
-		if (this.autocomplete.length === 0) return null;
-		this.completionAbort?.abort();
-		const abort = new AbortController();
-		this.completionAbort = abort;
-		this.completionBase = base ?? null;
-		const suggestions = await this.providerChain().getSuggestions(lines, line, col, {
-			signal: abort.signal,
-			...(force ? { force } : {}),
-		});
-		if (!suggestions || suggestions.items.length === 0) return null;
-		return {
-			items: suggestions.items.map((item) => ({
-				value: item.value,
-				label: item.label,
-				...(item.description !== undefined ? { description: item.description } : {}),
-			})),
-			prefix: suggestions.prefix,
-		};
+	completion(...args: Parameters<ThreadCompletion["suggest"]>): ReturnType<ThreadCompletion["suggest"]> {
+		return this.completions.suggest(...args);
 	}
 
-	applyCompletion(
-		lines: string[],
-		line: number,
-		col: number,
-		item: CompletionItem,
-		prefix: string,
-	): { lines: string[]; line: number; col: number } | null {
-		const applied = this.providerChain().applyCompletion(lines, line, col, item, prefix);
-		if (applied.cursorLine === CLIENT_APPLIES) return null;
-		return { lines: applied.lines, line: applied.cursorLine, col: applied.cursorCol };
+	applyCompletion(...args: Parameters<ThreadCompletion["apply"]>): ReturnType<ThreadCompletion["apply"]> {
+		return this.completions.apply(...args);
 	}
 
 	expectSignIn(): void {
-		this.signIn = true;
+		this.requests.expectSignIn();
 	}
 
 	/** Its name changed (/name, a title, thread/setName). */
@@ -875,30 +804,6 @@ export class HubThread {
 		return notification;
 	}
 
-	private async approve(request: ApprovalRequest): Promise<boolean> {
-		const always = openAlwaysOptions.get(request.toolCallId);
-		const result = await this.ask(
-			"item/tool/requestApproval",
-			{
-				toolCallId: request.toolCallId,
-				toolName: request.toolName,
-				args: request.args,
-				risk: request.risk,
-				...(request.reason ? { reason: request.reason } : {}),
-				...(always ? { always: always.label, alwaysKind: always.kind } : {}),
-				...(request.subagent ? { subagent: request.subagent } : {}),
-				...(request.rule ? { rule: request.rule } : {}),
-				...(request.protectedPath ? { protectedPath: request.protectedPath } : {}),
-				...(request.parentToolCallId ? { parentToolCallId: request.parentToolCallId } : {}),
-				...(request.detached ? { detached: true } : {}),
-			},
-			{ decision: "deny" },
-		);
-		const decision = (result as { decision?: unknown }).decision;
-		if (decision === "always") always?.apply();
-		return decision === "once" || decision === "always";
-	}
-
 	/**
 	 * Send a request to every subscriber (and to those who subscribe later); the first answer counts.
 	 * P57: a signal or a timeout closes it with the fallback (the dialog is withdrawn everywhere).
@@ -909,55 +814,22 @@ export class HubThread {
 		fallback: ServerRequests[M]["result"],
 		options: { signal?: AbortSignal; timeoutMs?: number } = {},
 	): Promise<ServerRequests[M]["result"]> {
-		if (this.stopped || options.signal?.aborted) return Promise.resolve(fallback);
-		const requestId = `r${++this.requests}`;
-		const signIn = method === "ui/request" && this.signIn;
-		if (method === "ui/request") this.signIn = false;
-		return new Promise((resolve) => {
-			const request: PendingRequest = {
-				requestId,
-				method,
-				params: { ...params, threadId: this.id, requestId, ...(signIn ? { signIn: true } : {}) },
-				fallback,
-				resolve: resolve as (result: unknown) => void,
-				sent: new Map(),
-				cleanup: [],
-			};
-			this.pending.set(requestId, request);
-			if (options.timeoutMs !== undefined) {
-				// Not unref'd: the dialog is work the session waits on.
-				const timer = setTimeout(() => this.settle(request, fallback, false), options.timeoutMs);
-				request.cleanup.push(() => clearTimeout(timer));
-			}
-			const signal = options.signal;
-			if (signal) {
-				const onAbort = (): void => this.settle(request, fallback, false);
-				signal.addEventListener("abort", onAbort, { once: true });
-				request.cleanup.push(() => signal.removeEventListener("abort", onAbort));
-			}
-			for (const subscriber of this.subscribers) this.send(request, subscriber);
+		return this.requests.ask(method, params, fallback, options);
+	}
+
+	private threadRequests(): ThreadRequests {
+		const thread = this;
+		return new ThreadRequests({
+			get id() {
+				return thread.id;
+			},
+			get stopped() {
+				return thread.stopped;
+			},
+			subscribers: thread.subscribers,
+			emit: (notification) => thread.emit(notification),
+			checkIdle: () => thread.checkIdle(),
 		});
-	}
-
-	private send(request: PendingRequest, subscriber: Subscriber): void {
-		if (!this.pending.has(request.requestId) || request.sent.has(subscriber)) return;
-		request.sent.set(subscriber, subscriber.peer.peekNextId());
-		subscriber.peer.request(request.method, request.params).then(
-			(result) => this.settle(request, result, true),
-			// This client could not answer (it closed, or does not handle the request): others still can.
-			() => request.sent.delete(subscriber),
-		);
-	}
-
-	private settle(request: PendingRequest, result: unknown, answered: boolean): void {
-		if (!this.pending.delete(request.requestId)) return;
-		for (const cleanup of request.cleanup) cleanup();
-		for (const [subscriber, id] of request.sent) subscriber.peer.withdraw(id);
-		request.resolve(result ?? request.fallback);
-		if (answered || request.sent.size > 0) {
-			this.emit({ method: "serverRequest/resolved", params: { requestId: request.requestId } });
-		}
-		this.checkIdle();
 	}
 
 	private checkIdle(): void {
