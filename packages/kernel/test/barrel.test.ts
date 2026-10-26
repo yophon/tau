@@ -39,6 +39,19 @@ const INTERNAL = new Set([
 	"nested-calls.ts:NestedToolCallRunner",
 	// Rule matching's helper; callers match with matchPermissionRules / powerShellPatternMatches (P40b).
 	"powershell-command.ts:canonicalPowerShellPattern",
+	// The kernel's abort check (P62); hosts pass signals.
+	"abort.ts:throwIfAborted",
+	// Pieces of the agent loop (P62 split); hosts call agent.prompt / agent.compact.
+	"compaction-run.ts:CompactionOutcome",
+	"compaction-run.ts:CompactionRunHost",
+	"compaction-run.ts:runCompactionOperation",
+	"compaction-run.ts:compactWithEvents",
+	"turn-recovery.ts:RecoveryState",
+	"turn-recovery.ts:RecoveryHost",
+	"turn-recovery.ts:recoverFromFailure",
+	"turn-stream.ts:TurnStreamHost",
+	"turn-stream.ts:StreamedResponse",
+	"turn-stream.ts:pullResponse",
 ]);
 
 function exportedNames(source: string): string[] {

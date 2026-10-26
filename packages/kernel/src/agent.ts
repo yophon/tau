@@ -10,11 +10,10 @@ import {
 	completeText,
 	DEFAULT_COMPACTION_SETTINGS,
 	estimateProjectedContextTokens,
-	prepareCompaction,
-	runCompaction,
 	type SummarizationRetry,
 	shouldCompact,
 } from "./compaction.ts";
+import { compactWithEvents, runCompactionOperation } from "./compaction-run.ts";
 import { SessionError, TauError, toError } from "./errors.ts";
 import {
 	type ActivityOutcome,
@@ -57,7 +56,6 @@ import {
 import { runNavigation } from "./navigation.ts";
 import { type ExecuteToolOptions, NestedToolCallRunner } from "./nested-calls.ts";
 import {
-	type ChatStreamEvent,
 	type ChatTransport,
 	createOpenAICompatTransport,
 	OPENAI_COMPLETIONS_API,
@@ -82,13 +80,7 @@ import {
 	sumSessionUsage,
 	toToolDeclaration,
 } from "./projection.ts";
-import {
-	DEFAULT_RETRY_SETTINGS,
-	isContextOverflowError,
-	isRetryableAssistantError,
-	type RetrySettings,
-	retryDelayMs,
-} from "./retry.ts";
+import { DEFAULT_RETRY_SETTINGS, type RetrySettings } from "./retry.ts";
 import { InMemorySessionStore, type SessionEntry, type SessionMetadata, SessionRecorder } from "./session.ts";
 import { runSubagent } from "./subagent-spawn.ts";
 import {
@@ -109,6 +101,8 @@ import {
 	type ToolResult,
 	type ToolUpdateStream,
 } from "./tools.ts";
+import { type RecoveryState, recoverFromFailure } from "./turn-recovery.ts";
+import { pullResponse } from "./turn-stream.ts";
 import { uuidv7 } from "./uuid.ts";
 
 /**
@@ -116,11 +110,6 @@ import { uuidv7 } from "./uuid.ts";
  * branch summary never overlap); a second entry throws TauError("busy").
  */
 export type AgentOperation = "prompt" | "resume" | "compact" | "navigate";
-
-type CompactionOutcome =
-	| { kind: "none" }
-	| { kind: "done"; result: CompactionResult }
-	| { kind: "failed"; errorMessage?: string; aborted: boolean; cancelledByExtension: boolean; error: Error };
 
 /** What Agent.setModel switches along with the model (P28). */
 export interface SetModelOptions {
@@ -1390,7 +1379,7 @@ export class Agent {
 	): Promise<CompactionResult | undefined> {
 		const handle = this.beginOperation("compact", signal);
 		try {
-			const outcome = await this.runCompactionOperation(customInstructions, reason, handle.signal, onEvent);
+			const outcome = await runCompactionOperation(this.internals, customInstructions, reason, handle.signal, onEvent);
 			if (outcome.kind === "none") return undefined;
 			if (outcome.kind === "done") return outcome.result;
 			if (outcome.cancelledByExtension) throw new TauError("cancelled", "Compaction cancelled");
@@ -1398,84 +1387,6 @@ export class Agent {
 			throw new TauError("compaction_failed", outcome.error.message, outcome.error);
 		} finally {
 			this.endOperation();
-		}
-	}
-
-	/**
-	 * The compaction itself, shared by compact() and the loop (pi
-	 * _runAutoCompaction / compact): never throws. Aborts are checked around every
-	 * asynchronous step, and a failure — abort, extension cancel, summary error —
-	 * is reported as session_compact_failed and leaves the log untouched.
-	 */
-	private async runCompactionOperation(
-		customInstructions: string | undefined,
-		reason: CompactionReason,
-		signal: TauAbortSignal | undefined,
-		onEvent?: (event: AgentEvent) => void,
-		/** P40d (pi): an overflow recovery runs the turn again after this compaction. */
-		willRetry = false,
-	): Promise<CompactionOutcome> {
-		const ctx = this.extensionContext();
-		// session_before_compact always gets a signal (pi: required); without a caller's, one that never fires.
-		const hookSignal = signal ?? new AbortHandle().signal;
-		let fromExtension = false;
-		let cancelledByExtension = false;
-		try {
-			await this.flushWrites();
-			const pathEntries = await this.session.store.getPathToRoot(this.session.currentLeafId);
-			const preparation = prepareCompaction(pathEntries, this.effectiveCompactionSettings());
-			if (!preparation) return { kind: "none" };
-			throwIfAborted(signal);
-
-			const decision = this.extensions
-				? await this.extensions.runSessionBeforeCompact(
-						{ preparation, customInstructions, reason, willRetry, signal: hookSignal },
-						ctx,
-					)
-				: {};
-			if (decision.cancel) {
-				cancelledByExtension = true;
-				throw new TauError("cancelled", "Compaction cancelled");
-			}
-			throwIfAborted(signal);
-			fromExtension = decision.result !== undefined;
-			const result =
-				decision.result ??
-				(await runCompaction(
-					this.summaryTransport(),
-					preparation,
-					customInstructions,
-					signal,
-					this.summarizationRetry({ source: "compaction", reason }, onEvent),
-					this.summaryMaxTokens(),
-				));
-			throwIfAborted(signal);
-			if (result.usage) result.usage = this.priced(result.usage);
-
-			await this.enqueueWrite(async () => {
-				// The boundary checkpoints the full prompt/tool state: the system messages it
-				// summarizes leave the context with it (pi CompactionEntry.systemMessage).
-				const systemMessage = getCurrentSystemMessage(this.messages);
-				await this.session.recordCompaction({
-					...result,
-					fromHook: fromExtension || undefined,
-					...(systemMessage ? { systemMessage } : {}),
-				});
-				await this.refresh();
-			});
-			await this.extensions?.notifySessionCompact({ result, fromExtension, reason, willRetry }, ctx);
-			return { kind: "done", result };
-		} catch (cause) {
-			const error = toError(cause);
-			const aborted = signal?.aborted === true || cancelledByExtension;
-			const errorMessage = aborted
-				? undefined
-				: `${reason === "manual" ? "Compaction" : "Auto-compaction"} failed: ${error.message}`;
-			await this.extensions?.notifySessionCompactFailed(
-				{ reason, errorMessage, aborted, willRetry, fromExtension },
-				ctx,
-			);
-			return { kind: "failed", errorMessage, aborted, cancelledByExtension, error };
 		}
 	}
 
@@ -1811,9 +1722,7 @@ export class Agent {
 		signal: TauAbortSignal | undefined,
 		state: { turnIndex: number },
 	): AsyncGenerator<AgentEvent, ActivityOutcome> {
-		let retryAttempt = 0;
-		/** P40d (pi): an overflow was compacted and its turn retried; reset by a request that goes through. */
-		let overflowRecoveryAttempted = false;
+		const recovery: RecoveryState = { retryAttempt: 0, overflowRecoveryAttempted: false };
 		let lengthStreak = 0;
 		/** P53c: replies cut off by the output cap continued in a row. */
 		let continuedReplies = 0;
@@ -1834,7 +1743,7 @@ export class Agent {
 				// Abort observed between turns (e.g. signalled during tool execution) ends
 				// the run before the next LLM call instead of waiting to fail inside it.
 				if (signal?.aborted) {
-					yield* this.endRun(ctx, retryAttempt, pending);
+					yield* this.endRun(ctx, recovery.retryAttempt, pending);
 					return "aborted";
 				}
 				if (state.turnIndex >= this.maxTurnsPerPrompt) {
@@ -1858,9 +1767,7 @@ export class Agent {
 				}
 				if (compactionReason !== undefined) {
 					const reason = compactionReason;
-					const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
-						this.runCompactionOperation(customInstructions, reason, signal, emit),
-					);
+					const outcome = yield* compactWithEvents(this.internals, customInstructions, reason, signal);
 					if (outcome.kind === "done") yield { type: "compaction", result: outcome.result, reason };
 					if (outcome.kind === "failed") {
 						yield {
@@ -1872,7 +1779,7 @@ export class Agent {
 					}
 					// Aborted while compacting: the run ends here (D14: agent_end, no throw).
 					if (signal?.aborted) {
-						yield* this.endRun(ctx, retryAttempt, pending);
+						yield* this.endRun(ctx, recovery.retryAttempt, pending);
 						return "aborted";
 					}
 				}
@@ -1889,7 +1796,7 @@ export class Agent {
 				pending = [];
 				// An abort that landed in turn_start handlers must not send the request (pi #9340's kin).
 				if (signal?.aborted) {
-					yield* this.endRun(ctx, retryAttempt);
+					yield* this.endRun(ctx, recovery.retryAttempt);
 					return "aborted";
 				}
 
@@ -1921,9 +1828,6 @@ export class Agent {
 				const requestStart = partial.timestamp;
 				await this.extensions?.notifyMessageStart(partial, ctx);
 
-				let assistantMessage: AssistantMessage | undefined;
-				let streamFailure: TauError | undefined;
-				let streamEnded = false;
 				// Awaited here, outside the stream: a failing headers handler is a bug, not a stream error.
 				const headers = await this.providerHeaders(ctx);
 				const hooks = this.providerEventHooks(ctx, this.currentModel);
@@ -1935,66 +1839,9 @@ export class Agent {
 					...(headers ? { headers } : {}),
 					...hooks,
 				});
-				// Pull manually so only stream failures are converted to error messages;
-				// exceptions thrown by extension hooks inside the loop still propagate as bugs.
-				const iterator = stream[Symbol.asyncIterator]();
-				while (true) {
-					let iteration: IteratorResult<ChatStreamEvent>;
-					try {
-						iteration = await iterator.next();
-					} catch (error) {
-						streamFailure =
-							error instanceof TauError ? error : new TauError("stream_error", toError(error).message, error);
-						break;
-					}
-					if (iteration.done) break;
-					if (streamEnded) break;
-					const event = iteration.value;
-					switch (event.type) {
-						case "text_delta": {
-							const last = partial.content.at(-1);
-							if (last?.type === "text") last.text += event.delta;
-							else partial.content.push({ type: "text", text: event.delta });
-							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-							yield { type: "text_delta", delta: event.delta };
-							break;
-						}
-						case "reasoning_delta": {
-							const last = partial.content.at(-1);
-							if (last?.type === "thinking") last.thinking += event.delta;
-							else partial.content.push({ type: "thinking", thinking: event.delta });
-							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-							yield { type: "reasoning_delta", delta: event.delta };
-							break;
-						}
-						case "tool_call_delta":
-							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-							yield {
-								type: "tool_call_delta",
-								index: event.index,
-								name: event.name,
-								argumentsText: event.argumentsText,
-							};
-							break;
-						case "tool_call":
-							partial.content.push(event.toolCall);
-							await this.extensions?.notifyMessageUpdate(partial, event, ctx);
-							break;
-						case "response_end":
-							assistantMessage = event.message;
-							// Measured by the agent for every transport alike (pi 1.1.0); Date.now()
-							// differences, where pi uses performance.now() (kernel purity).
-							assistantMessage.durationMs = Math.max(0, Date.now() - requestStart);
-							{
-								const pricing = this.pricingFor(assistantMessage.model);
-								if (pricing) assistantMessage.usage.cost = computeUsageCost(assistantMessage.usage, pricing);
-							}
-							// The response is complete: stop pulling, so nothing a transport yields
-							// after its final message reaches extensions or the host (pi).
-							streamEnded = true;
-							break;
-					}
-				}
+				const streamed = yield* pullResponse(this.internals, stream, partial, ctx, requestStart);
+				const streamFailure = streamed.failure;
+				let assistantMessage = streamed.message;
 				if (streamFailure) {
 					// As in pi (agent-loop.ts streamAssistantResponse): a stream failure does not
 					// throw — it becomes an assistant message with stopReason error/aborted that
@@ -2015,105 +1862,20 @@ export class Agent {
 					await this.runTurnEndBoundary(turnIndex, finalMessage, failedEntryId, [], [], ctx);
 					for (const message of this.boundaryMessages.splice(0)) yield { type: "user_message", message };
 
-					// Auto-retry, as in pi (agent-session._prepareRetry): exponential backoff and
-					// an abortable sleep. The failed attempt stays in the log and leaves the
-					// context through a context_edit omission (pi _omitRecoveryAttempt), so a
-					// resumed session no longer replays it.
-					const retryEligible =
-						finalMessage.stopReason === "error" &&
-						this.retrySettings.enabled &&
-						this.platform.sleep !== undefined &&
-						isRetryableAssistantError(finalMessage);
-					// Overflow recovery (P40d, pi _checkCompaction): the request ran out of context. Leave the
-					// failed attempt out, compact, and run this turn again; once until a request succeeds.
-					if (finalMessage.stopReason === "error" && isContextOverflowError(finalMessage)) {
-						if (!overflowRecoveryAttempted) {
-							overflowRecoveryAttempted = true;
-							await this.enqueueWrite(async () => {
-								await this.session.appendContextEdit(failedEntryId, null);
-								await this.refresh();
-							});
-							const outcome = yield* pumpEvents<CompactionOutcome>((emit) =>
-								this.runCompactionOperation(undefined, "overflow", signal, emit, true),
-							);
-							if (outcome.kind === "done") {
-								yield { type: "compaction", result: outcome.result, reason: "overflow" };
-								hasMoreToolCalls = true;
-								continue;
-							}
-							if (outcome.kind === "failed") {
-								yield {
-									type: "compaction_failed",
-									reason: "overflow",
-									...(outcome.errorMessage !== undefined ? { errorMessage: outcome.errorMessage } : {}),
-									aborted: outcome.aborted,
-								};
-							}
-							if (signal?.aborted) {
-								yield* this.endRun(ctx, retryAttempt, pending);
-								return "aborted";
-							}
-						} else {
-							const errorMessage =
-								"Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.";
-							yield { type: "compaction_failed", reason: "overflow", errorMessage, aborted: false };
-							await this.extensions?.notifySessionCompactFailed(
-								{ reason: "overflow", errorMessage, aborted: false, willRetry: false, fromExtension: false },
-								ctx,
-							);
-						}
-					}
-					if (retryEligible && retryAttempt < this.retrySettings.maxRetries) {
-						retryAttempt++;
-						const delayMs = retryDelayMs(this.retrySettings, retryAttempt);
-						const startEvent = {
-							attempt: retryAttempt,
-							maxAttempts: this.retrySettings.maxRetries,
-							delayMs,
-							errorMessage: finalMessage.errorMessage ?? "Unknown error",
-						};
-						await this.extensions?.notifyAutoRetryStart(startEvent, ctx);
-						yield { type: "auto_retry_start", ...startEvent };
-						await this.enqueueWrite(async () => {
-							await this.session.appendContextEdit(failedEntryId, null);
-							await this.refresh();
-						});
-						try {
-							await this.platform.sleep?.(delayMs, signal);
-						} catch {
-							yield* this.endRun(ctx, retryAttempt, pending);
-							return "aborted";
-						}
-						// A retried request does not consume the turn budget; it re-runs this turn.
-						hasMoreToolCalls = true;
-						continue;
-					}
-					if (finalMessage.stopReason === "aborted") {
-						state.turnIndex++;
-						// An aborted retry closes its cycle as cancelled (pi _finishCancelledRetry).
-						yield* this.endRun(ctx, retryAttempt, pending);
-						return "aborted";
-					}
-					if (retryAttempt > 0) {
-						const endEvent = { success: false, attempt: retryAttempt, finalError: finalMessage.errorMessage };
-						await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
-						yield { type: "auto_retry_end", ...endEvent };
-						retryAttempt = 0;
-					}
-					// P54c: retries spent (or none apply); a run nothing has answered yet moves to the next route.
-					if (fallback?.fallBack(streamFailure)) {
-						await this.enqueueWrite(async () => {
-							await this.session.appendContextEdit(failedEntryId, null);
-							await this.refresh();
-						});
-						hasMoreToolCalls = true;
-						continue;
-					}
-					state.turnIndex++;
-					await this.flushWrites();
-					await this.extensions?.notifyAgentEnd(this.messages, ctx);
-					yield { type: "agent_end", messages: this.messages };
-					return "error";
+					const decision = yield* recoverFromFailure(this.internals, {
+						failed: finalMessage,
+						failedEntryId,
+						failure: streamFailure,
+						recovery,
+						run: state,
+						signal,
+						ctx,
+						fallback,
+						endRun: (attempt) => this.endRun(ctx, attempt, pending),
+					});
+					if (decision !== "again") return decision;
+					hasMoreToolCalls = true;
+					continue;
 				}
 				if (!assistantMessage) {
 					throw new TauError("stream_error", "Stream ended without a final message");
@@ -2125,14 +1887,14 @@ export class Agent {
 				yield { type: "assistant_message", message: assistantMessage };
 				// A request that went through: the next overflow may be recovered again (pi).
 				if (assistantMessage.stopReason !== "error" && assistantMessage.stopReason !== "length") {
-					overflowRecoveryAttempted = false;
+					recovery.overflowRecoveryAttempted = false;
 				}
-				if (retryAttempt > 0) {
+				if (recovery.retryAttempt > 0) {
 					// A clean response after retries closes the cycle (pi resets on success).
-					const endEvent = { success: true, attempt: retryAttempt };
+					const endEvent = { success: true, attempt: recovery.retryAttempt };
 					await this.extensions?.notifyAutoRetryEnd(endEvent, ctx);
 					yield { type: "auto_retry_end", ...endEvent };
-					retryAttempt = 0;
+					recovery.retryAttempt = 0;
 				}
 
 				const toolCalls = toolCallsOf(assistantMessage);
@@ -2415,53 +2177,6 @@ export class Agent {
 			},
 		};
 	}
-}
-
-function throwIfAborted(signal: TauAbortSignal | undefined): void {
-	if (signal?.aborted) throw new TauError("aborted", "Aborted");
-}
-
-/**
- * Run work that reports progress through emit, yielding those events live while
- * it runs (the generator cannot yield from inside a callback); returns its value.
- */
-async function* pumpEvents<T>(work: (emit: (event: AgentEvent) => void) => Promise<T>): AsyncGenerator<AgentEvent, T> {
-	const queue: AgentEvent[] = [];
-	let wake: (() => void) | undefined;
-	let done = false;
-	let value: T | undefined;
-	let failure: { error: unknown } | undefined;
-	const notify = (): void => {
-		wake?.();
-		wake = undefined;
-	};
-	work((event) => {
-		queue.push(event);
-		notify();
-	}).then(
-		(result) => {
-			value = result;
-			done = true;
-			notify();
-		},
-		(error: unknown) => {
-			failure = { error };
-			done = true;
-			notify();
-		},
-	);
-	while (!done || queue.length > 0) {
-		const event = queue.shift();
-		if (event) {
-			yield event;
-			continue;
-		}
-		await new Promise<void>((resolve) => {
-			wake = resolve;
-		});
-	}
-	if (failure) throw failure.error;
-	return value as T;
 }
 
 /** Consecutive turns whose tool calls were cut off by the output cap before the run ends (tau guard). */

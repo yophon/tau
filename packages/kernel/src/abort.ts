@@ -1,4 +1,10 @@
+import { TauError } from "./errors.ts";
 import type { TauAbortSignal } from "./platform.ts";
+
+/** Stop with TauError("aborted") once the signal fired (the agent: "Aborted"; a request: "Request aborted"). */
+export function throwIfAborted(signal: TauAbortSignal | undefined, message = "Aborted"): void {
+	if (signal?.aborted) throw new TauError("aborted", message);
+}
 
 /**
  * Pure-ES abort handle over the structural TauAbortSignal. The kernel cannot

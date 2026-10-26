@@ -1,4 +1,4 @@
-import { AbortHandle } from "./abort.ts";
+import { AbortHandle, throwIfAborted } from "./abort.ts";
 import { describeError, HttpError, TauError } from "./errors.ts";
 import type { ThinkingLevel } from "./extensions.ts";
 import { parseToolCallArguments } from "./json.ts";
@@ -416,10 +416,6 @@ function hostOf(baseUrl: string): string {
 	return match ? match[1] : "";
 }
 
-function throwIfAborted(signal: TauAbortSignal | undefined): void {
-	if (signal?.aborted) throw new TauError("aborted", "Request aborted");
-}
-
 const DEFAULT_STALL_TIMEOUT_MS = 120_000;
 
 /**
@@ -481,7 +477,7 @@ export async function* streamChatCompletion(
 	} & Pick<TransportRequest, "onPayload" | "onResponse" | "onStreamEvent">,
 ): AsyncGenerator<ChatStreamEvent> {
 	const model = options?.model ?? config.model;
-	throwIfAborted(options?.signal);
+	throwIfAborted(options?.signal, "Request aborted");
 	// pi v0.80.3 stamps the message at request start, on success and failure alike.
 	const startedAt = Date.now();
 
@@ -542,7 +538,7 @@ export async function* streamChatCompletion(
 		);
 	} catch (cause) {
 		// An aborted fetch surfaces as the platform's own abort rejection; report it as ours.
-		throwIfAborted(options?.signal);
+		throwIfAborted(options?.signal, "Request aborted");
 		if (cause instanceof TauError && cause.code === "timeout") throw cause;
 		throw new TauError("network_error", `Network request failed: ${describeError(cause)}`, cause);
 	}
@@ -663,13 +659,13 @@ export async function* streamChatCompletion(
 
 	try {
 		while (!done) {
-			throwIfAborted(options?.signal);
+			throwIfAborted(options?.signal, "Request aborted");
 			let readResult: { done: boolean; value?: Uint8Array };
 			try {
 				readResult = await withStallTimeout(reader.read(), platform, config.stallTimeoutMs, "Response stream");
 			} catch (cause) {
 				// Reads interrupted by abort reject with the platform's own error; report it as ours.
-				throwIfAborted(options?.signal);
+				throwIfAborted(options?.signal, "Request aborted");
 				if (cause instanceof TauError && cause.code === "timeout") throw cause;
 				throw new TauError("stream_error", `Stream read failed: ${describeError(cause)}`, cause);
 			}
@@ -698,7 +694,7 @@ export async function* streamChatCompletion(
 		}
 	}
 
-	throwIfAborted(options?.signal);
+	throwIfAborted(options?.signal, "Request aborted");
 	// Strict end-of-stream semantics (pi): an error finish_reason fails the request,
 	// and so does a stream that ended without any — unless the endpoint is declared
 	// not to send one. Thrown as stream errors, so the agent records an error message
