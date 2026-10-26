@@ -13,33 +13,25 @@ import type { PermissionMode, ThinkingLevel, UiCapability } from "@yophon/tau-ke
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
 import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
 import { openUrl } from "../open-url.ts";
-import { markActivity, presence } from "../push-notification.ts";
+import { presence } from "../push-notification.ts";
 
 import { type StatusLineFacts, statusLineInput } from "../statusline-input.ts";
 import { copyToClipboard } from "./clipboard.ts";
 
-import { runCommand, shortcutItems } from "./commands.ts";
+import { runCommand } from "./commands.ts";
 import { TuiDialogs } from "./dialogs.ts";
 import { widgetLines } from "./extensions.ts";
 import { conversationLength, errorText, type Tone } from "./format.ts";
-import { acceptCompletion } from "./input/completion.ts";
 import * as ed from "./input/editor.ts";
 import { PersistentHistory } from "./input/history.ts";
-import { InputSplitter, type InputToken } from "./input/keys.ts";
-import { inputReport, type PointerEvent, WHEEL_ROWS } from "./input/mouse.ts";
 import { expandPastes } from "./input/paste.ts";
 import { TuiInputBox } from "./input-box.ts";
-import {
-	getKeybindings,
-	Keybindings,
-	keybindingsTemplate,
-	normalizeKey,
-	pressedKey,
-	setKeybindings,
-} from "./keybindings.ts";
-import { builtinKeys, type KeyCommand, type KeyLike, keyId, routeKey } from "./keymap.ts";
-import { approvalOptions, initialState } from "./model.ts";
-import { INLINE_LIST_ROWS, type ListMove, listWindow, moveInList } from "./render/list.ts";
+import { type ScreenLayout, TuiInputRouter } from "./input-router.ts";
+import { TuiKeyCommands } from "./key-commands.ts";
+import { getKeybindings, Keybindings, keybindingsTemplate, normalizeKey, setKeybindings } from "./keybindings.ts";
+import { builtinKeys, type KeyCommand } from "./keymap.ts";
+import { initialState } from "./model.ts";
+import { INLINE_LIST_ROWS, type ListMove, moveInList } from "./render/list.ts";
 import { useMarkdownTransforms } from "./render/markdown.ts";
 import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
@@ -56,27 +48,9 @@ import type { RunTuiOptions, TuiDeps } from "./types.ts";
 // Kept importable from here (tests, P38).
 export { filterItems } from "./dialogs.ts";
 export { applyEditorCommand, completePathAt } from "./input-box.ts";
+export type { ScreenLayout } from "./input-router.ts";
 export { parseUserBash } from "./runs.ts";
 
-const ARM_WINDOW_MS = 3000;
-
-/** Screen rows (0-based) of the clickable parts, reported by the full-screen view after each layout. */
-export interface ScreenLayout {
-	/** The transcript view: its first row and its height. */
-	view?: { top: number; height: number };
-	/** The first visible item of the open list (completion menu or picker). */
-	list?: { top: number };
-	/** The first approval option. */
-	approval?: { top: number };
-	/** The first row of the widgets above the input box (P35). */
-	widgets?: { top: number };
-}
-
-type PointerTarget =
-	| { kind: "list"; index: number }
-	| { kind: "approval"; index: number }
-	| { kind: "widget"; index: number }
-	| { kind: "view"; index: 0 };
 const FLASH_MS = 2000;
 /** A terminal that never reports focus gets a "done" notification only after a run this long. */
 const LONG_RUN_MS = 30_000;
@@ -87,6 +61,8 @@ export class TuiController {
 	readonly view: TuiTranscriptView = new TuiTranscriptView(this);
 	readonly inputBox: TuiInputBox = new TuiInputBox(this);
 	readonly dialogs: TuiDialogs = new TuiDialogs(this);
+	readonly keys: TuiKeyCommands = new TuiKeyCommands(this);
+	readonly input: TuiInputRouter = new TuiInputRouter(this);
 	readonly store: TuiStore;
 	readonly options: RunTuiOptions;
 	/** The session shown, through the hub (P57). */
@@ -97,14 +73,6 @@ export class TuiController {
 	private readonly startMode: string;
 
 	readonly deps: TuiDeps;
-	private readonly splitter = new InputSplitter();
-	/** pi's 50 ms wait for the rest of an escape sequence cut off at the end of a read. */
-	private splitTimer: ReturnType<typeof setTimeout> | undefined;
-	/** The widget each row above the input box belongs to, for clicks (P35). */
-	private widgetRows: string[] = [];
-	private exitTimer: ReturnType<typeof setTimeout> | undefined;
-	/** When the last Esc on an empty, idle input came (pi's double-Esc window, P37b); 0 when none counts. */
-	private lastEscapeAt = 0;
 	/** P37c: the custom status line runner, and what it last knew about the session. */
 	private statusLineRunner: { trigger(input: () => unknown): void; stop(): void } | undefined;
 	private readonly startedAt: number;
@@ -330,14 +298,9 @@ export class TuiController {
 	async stop(): Promise<void> {
 		if (this.stopped) return;
 		this.stopped = true;
-		this.clearTimers();
+		this.keys.clearTimers();
 		this.statusLineRunner?.stop();
 		this.resolveDone?.();
-	}
-
-	private clearTimers(): void {
-		if (this.exitTimer) clearTimeout(this.exitTimer);
-		this.exitTimer = undefined;
 	}
 
 	/**
@@ -474,22 +437,8 @@ export class TuiController {
 			}
 		}
 		const { above, below, rows, clickable } = widgetLines(widgets, width);
-		this.widgetRows = rows;
-		this.clickableWidgets = clickable;
+		this.input.setWidgets(rows, clickable);
 		this.dispatch({ type: "widgets", above, below });
-	}
-
-	/** The widgets with an onClick, as the last refresh found. */
-	private clickableWidgets = new Set<string>();
-
-	/** A click on a widget above the input box (P35): its onClick, then a fresh look. */
-	private clickWidget(row: number): void {
-		const name = this.widgetRows[row] ?? "";
-		if (!this.clickableWidgets.has(name)) return;
-		void this.session
-			.request("widget/click", { name })
-			.catch((error) => this.notice("error", `Widget ${name} failed: ${errorText(error)}`))
-			.finally(() => void this.refreshWidgets().catch(() => undefined));
 	}
 
 	// ── input ────────────────────────────────────────────────────────────────
@@ -503,12 +452,11 @@ export class TuiController {
 		this.listHeight = Math.max(1, rows);
 	}
 
-	/** How far the open /btw answer can scroll, as the last frame laid it out (P39c). */
-	private asideMax = 0;
 	private asideSeq = 0;
 
+	/** How far the open /btw answer can scroll, as the last frame laid it out (P39c). */
 	setAsideMaxScroll(rows: number): void {
-		this.asideMax = Math.max(0, rows);
+		this.keys.asideMax = Math.max(0, rows);
 	}
 
 	/** Reopen the /btw overlay on the newest exchange (`/btw` with no question). */
@@ -543,7 +491,7 @@ export class TuiController {
 	}
 
 	/** The open list: a picker, else the completion menu with items. */
-	private openList(): { kind: "picker" | "menu"; count: number; selected: number; start: number } | undefined {
+	openList(): { kind: "picker" | "menu"; count: number; selected: number; start: number } | undefined {
 		const { picker, menu } = this.state;
 		if (picker) {
 			return { kind: "picker", count: picker.items.length, selected: picker.selected, start: picker.start ?? 0 };
@@ -574,145 +522,38 @@ export class TuiController {
 		return true;
 	}
 
-	/**
-	 * A click on item `index` of the open list: a menu item completes (Tab), a picker item
-	 * confirms (Enter), a multi-select item is checked or unchecked (Space).
-	 */
-	clickList(index: number): void {
-		const list = this.openList();
-		if (!list || index < 0 || index >= list.count) return;
-		this.moveList({ kind: "index", index });
-		if (list.kind === "picker" && this.state.picker?.checked) this.execute({ type: "picker-toggle" });
-		else this.execute({ type: list.kind === "picker" ? "picker-confirm" : "menu-accept" });
-	}
-
-	/** A click on approval option `index`: the same as pressing its number. */
-	clickApproval(index: number): void {
-		if (this.state.approval && index >= 0 && index < approvalOptions(this.state.approval.request).length) {
-			this.execute({ type: "approval-choose", index });
-		}
-	}
-
 	// ── raw input (P34): reports and keys Ink must not see ─────────────────
+
+	// ── input (input-router.ts) ──────────────────────────────────────────────
+
+	/** Whether the terminal window has focus; undefined until the terminal reports it. */
+	get focused(): boolean | undefined {
+		return this.input.focused;
+	}
+
+	/** Where the clickable parts are on screen, from the last full-screen layout. */
+	get layout(): ScreenLayout {
+		return this.input.layout;
+	}
+
+	setLayout(layout: ScreenLayout): void {
+		this.input.setLayout(layout);
+	}
+
+	/** One read from the terminal (the app's filtered stdin; tests). */
+	filterInput(data: string): string {
+		return this.input.filterInput(data);
+	}
+
+	setKittyKeys(active: boolean): void {
+		this.input.setKittyKeys(active);
+	}
 
 	/** Full screen: the default (the test harness renders without a screen option). */
 	get fullscreen(): boolean {
 		return this.options.screen !== "inline";
 	}
 
-	/** Whether the terminal window has focus; undefined until the terminal reports it. */
-	focused: boolean | undefined;
-	/** Where the clickable parts are on screen, from the last full-screen layout. */
-	layout: ScreenLayout = {};
-	/** The left button's press: where, and what was under it. */
-	private press: { x: number; y: number; target: PointerTarget | undefined } | undefined;
-
-	setLayout(layout: ScreenLayout): void {
-		this.layout = layout;
-	}
-
-	/**
-	 * One read from the terminal (P38a): tau parses it whole — keys, pastes, mouse and focus
-	 * reports — so nothing is left for Ink, which only keeps the terminal in raw mode.
-	 */
-	filterInput(data: string): string {
-		// Keys and pastes count as you being here; mouse and focus reports do not (P46).
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: the reports start with ESC
-		if (!/^\x1b\[(?:I|O|<|M)/.test(data)) {
-			markActivity((this.deps.now ?? Date.now)());
-			// P49: typing after a run ends sets the terminal's status back to idle.
-			if (this.state.task === undefined) this.terminalStatus?.active?.();
-		}
-		if (this.splitTimer) clearTimeout(this.splitTimer);
-		this.splitTimer = undefined;
-		this.handleTokens(this.splitter.feed(data));
-		if (this.splitter.pending) {
-			this.splitTimer = setTimeout(() => {
-				this.splitTimer = undefined;
-				this.handleTokens(this.splitter.flush());
-			}, 50);
-			this.splitTimer.unref?.();
-		}
-		return "";
-	}
-
-	/** Tell the splitter whether the terminal took kitty keyboard flags (tests; the reply sets it too). */
-	setKittyKeys(active: boolean): void {
-		this.splitter.kittyActive = active;
-	}
-
-	private handleTokens(tokens: readonly InputToken[]): void {
-		for (const token of tokens) {
-			if (token.kind === "paste") this.inputBox.insertPaste(token.text);
-			else if (token.kind === "text") this.handleText(token.text);
-			else if (token.kind === "key") this.handleKey(token.ch, token.key);
-			else this.handleSequence(token.sequence);
-		}
-	}
-
-	/** Typed text: the panels take it one key at a time ("1" chooses, it does not type). */
-	private handleText(text: string): void {
-		// "?" alone on an empty input is a key, not text (the shortcuts).
-		if (text === "?" && this.state.editor.text === "" && !this.state.approval && !this.state.picker) {
-			this.handleKey("?", {});
-			return;
-		}
-		if (this.state.approval || this.state.picker || this.state.aside) {
-			for (const ch of text) this.handleKey(ch, {});
-		} else if (this.state.search) {
-			this.execute({ type: "search-insert", text });
-		} else {
-			this.disarmExit();
-			this.execute({ type: "insert", text });
-		}
-	}
-
-	/** Mouse and focus reports; the kitty keyboard reply (pi). Other sequences are not input. */
-	private handleSequence(sequence: string): void {
-		const report = inputReport(sequence);
-		if (report?.kind === "focus") {
-			this.focused = report.focused;
-			presence.focused = report.focused;
-		} else if (report) this.handlePointer(report);
-		// biome-ignore lint/suspicious/noControlCharactersInRegex: the reply starts with ESC
-		else if (/^\x1b\[\?\d+u$/.test(sequence)) this.splitter.kittyActive = true;
-	}
-
-	private handlePointer(event: PointerEvent): void {
-		if (event.kind === "wheel") {
-			if (this.listItemAt(event.y) !== undefined) this.moveList({ kind: "wheel", delta: event.delta });
-			else if (this.fullscreen) this.view.scrollBy(event.delta * WHEEL_ROWS);
-			return;
-		}
-		if (event.kind === "press") {
-			if (event.button !== 0) {
-				this.press = undefined;
-				// Full screen holds the mouse, so Windows Terminal's right-click paste never fires: paste here (pi).
-				if (event.button === 2 && (this.deps.platform ?? process.platform) === "win32") void this.inputBox.pasteText();
-				return;
-			}
-			const target = this.targetAt(event.y);
-			this.press = { x: event.x, y: event.y, target };
-			if (target?.kind === "view") this.view.pressView(event.x, event.y);
-			return;
-		}
-		if (event.kind === "drag") {
-			if (this.view.dragging) this.view.dragView(event.x, event.y);
-			return;
-		}
-		const press = this.press;
-		this.press = undefined;
-		if (this.view.dragging) {
-			this.view.releaseView(event.x, event.y);
-			return;
-		}
-		// A click: press and release on the same target.
-		const target = this.targetAt(event.y);
-		if (!press?.target || !target || target.kind !== press.target.kind || target.index !== press.target.index) return;
-		if (target.kind === "list") this.clickList(target.index);
-		else if (target.kind === "approval") this.clickApproval(target.index);
-		else if (target.kind === "widget") this.clickWidget(target.index);
-	}
 	private flashTimer: ReturnType<typeof setTimeout> | undefined;
 
 	/** A short message in the hint line. */
@@ -726,80 +567,6 @@ export class TuiController {
 		}, FLASH_MS);
 	}
 
-	private targetAt(y: number): PointerTarget | undefined {
-		const approval = this.layout.approval;
-		if (
-			this.state.approval &&
-			approval &&
-			y >= approval.top &&
-			y < approval.top + approvalOptions(this.state.approval.request).length
-		) {
-			return { kind: "approval", index: y - approval.top };
-		}
-		const item = this.listItemAt(y);
-		if (item !== undefined) return { kind: "list", index: item };
-		const widgets = this.layout.widgets;
-		if (widgets && y >= widgets.top && y < widgets.top + this.widgetRows.length) {
-			return { kind: "widget", index: y - widgets.top };
-		}
-		const view = this.layout.view;
-		if (view && y >= view.top && y < view.top + view.height) return { kind: "view", index: 0 };
-		return undefined;
-	}
-
-	/** The list item on screen row `y`, if a list is open and shown there. */
-	private listItemAt(y: number): number | undefined {
-		const shown = this.layout.list;
-		const list = this.openList();
-		if (!shown || !list) return undefined;
-		const window = listWindow(list.count, list.selected, this.listHeight, list.start);
-		const offset = y - shown.top;
-		return offset >= 0 && offset < window.end - window.start ? window.start + offset : undefined;
-	}
-
-	private handleKey(ch: string, key: KeyLike): void {
-		const state = this.state;
-		const idle =
-			state.task === undefined &&
-			!state.approval &&
-			!state.picker &&
-			!state.aside &&
-			!state.prompt &&
-			state.editor.text === "";
-		if (idle && this.session.shortcuts.size > 0) {
-			// A plain printable key is text, not a shortcut (keyId); the rest compare in one spelling (P39e).
-			const id = keyId(ch, key) === undefined ? undefined : pressedKey(ch, key);
-			if (id !== undefined && !builtinKeys().has(id)) {
-				for (const shortcut of this.session.shortcuts.values()) {
-					if ((normalizeKey(shortcut.key) ?? shortcut.key.toLowerCase()) === id) {
-						void this.runs.runShortcut(shortcut.name);
-						return;
-					}
-				}
-			}
-		}
-		const menu = this.inputBox.completion();
-		const command = routeKey(ch, key, {
-			approvalOpen: state.approval !== undefined,
-			pickerOpen: state.picker !== undefined,
-			treeOpen: state.picker?.tree !== undefined,
-			asideOpen: state.aside !== undefined,
-			menuOpen: menu !== undefined && menu.items.length > 0,
-			promptActive: state.prompt !== undefined,
-			fullscreen: this.fullscreen,
-			searchOpen: state.search !== undefined && !state.approval && !state.picker,
-			selectionActive: state.selection !== undefined,
-			running: state.task !== undefined,
-			foregroundCommand: this.session.state.foregroundCommands > 0 || this.runs.runningCommands.size > 0,
-			bufferEmpty: state.editor.text === "",
-			...this.inputBox.cursorRows(),
-			platform: this.deps.platform ?? process.platform,
-		});
-		if (!command) return;
-		if (command.type !== "exit-request") this.disarmExit();
-		this.execute(command);
-	}
-
 	setEditor(editor: ed.EditorState): void {
 		this.dispatch({ type: "editor", editor });
 		this.inputBox.syncMenu();
@@ -807,33 +574,6 @@ export class TuiController {
 
 	setInput(text: string): void {
 		this.setEditor(ed.fromText(text));
-	}
-
-	/** pi's window for Esc twice. */
-	static readonly DOUBLE_ESCAPE_MS = 500;
-
-	/**
-	 * Esc while idle (P37b). With text: clear it and keep it in history so ↑ brings it
-	 * back (Claude Code). On an empty input: two presses within 500 ms open the session
-	 * tree, or the fork picker (pi doubleEscapeAction); only these presses count.
-	 */
-	private escape(): void {
-		if (this.state.editor.text !== "") {
-			this.inputBox.clearDraft();
-			this.lastEscapeAt = 0;
-			return;
-		}
-		// P44 (Claude Code): Esc stops a self-paced /loop waiting for its next iteration.
-		void this.session.request("thread/escape", {}).catch(() => undefined);
-		const action = this.options.doubleEscapeAction ?? "tree";
-		if (action === "none") return;
-		const now = this.now();
-		if (this.lastEscapeAt !== 0 && now - this.lastEscapeAt < TuiController.DOUBLE_ESCAPE_MS) {
-			this.lastEscapeAt = 0;
-			void this.runs.runSlash(`/${action}`);
-			return;
-		}
-		this.lastEscapeAt = now;
 	}
 
 	/**
@@ -900,306 +640,16 @@ export class TuiController {
 		this.notice("info", "Handoff ready. Edit it, then press Enter to send.");
 	}
 
+	/** Run a key's command (P62: key-commands.ts). */
 	execute(command: KeyCommand): void {
-		const state = this.state;
-		// Esc on an idle input (P37b): clears a draft into history, or counts toward Esc twice.
-		if (command.type === "clear-input") {
-			this.escape();
-			return;
-		}
-		this.lastEscapeAt = 0;
-		if (this.inputBox.editCommand(command)) return;
-		switch (command.type) {
-			case "clear-draft":
-				this.inputBox.clearDraft();
-				return;
-			case "exit":
-				void this.stop();
-				return;
-			case "scroll-page":
-				this.view.scrollBy(command.direction * Math.max(1, this.view.viewport.height - 2));
-				return;
-			case "scroll-edge":
-				this.view.scrollTo(command.to);
-				return;
-			case "jump-prompt":
-				this.view.jumpToPrompt(command.direction);
-				return;
-			case "list-edge":
-				this.moveList({ kind: "edge", to: command.to });
-				return;
-			case "history-search":
-				void this.inputBox.searchHistory();
-				return;
-			case "redraw":
-				if (!this.fullscreen) this.redraw();
-				else if (this.fullRepaint) this.fullRepaint();
-				else this.relayout();
-				return;
-			case "shortcuts":
-				void this.dialogs.pick("Keyboard shortcuts", shortcutItems(this.session));
-				return;
-			case "complete-path":
-				this.inputBox.completePath();
-				return;
-			case "suspend":
-				this.deps.suspend?.();
-				return;
-			case "background-command":
-				void this.session.request("thread/backgroundCommand", {}).then(
-					({ moved }) => {
-						if (moved > 0)
-							this.flash(`Moved ${moved === 1 ? "the command" : `${moved} commands`} to the background (/tasks)`);
-					},
-					() => undefined,
-				);
-				return;
-			case "aside-close":
-				this.dispatch({ type: "aside-close" });
-				return;
-			case "aside-scroll": {
-				const scroll = Math.max(0, Math.min(this.asideMax, (state.aside?.scroll ?? 0) + command.delta));
-				if (state.aside && scroll !== state.aside.scroll) {
-					this.dispatch({ type: "aside-scroll", delta: scroll - state.aside.scroll });
-				}
-				return;
-			}
-			case "aside-step":
-				this.dispatch({ type: "aside-step", delta: command.delta });
-				return;
-			case "aside-copy": {
-				const shown = state.aside ? state.asides[state.aside.index] : undefined;
-				if (shown && shown.answer !== "") void this.view.copySelection(shown.answer);
-				return;
-			}
-			case "aside-clear":
-				this.dispatch({ type: "aside-clear" });
-				return;
-			case "approval-up":
-			case "approval-down":
-				this.dispatch({ type: "approval-move", delta: command.type === "approval-up" ? -1 : 1 });
-				return;
-			case "approval-confirm":
-				this.dialogs.decideApproval(state.approval?.selected ?? 0);
-				return;
-			case "approval-choose":
-				this.dialogs.decideApproval(command.index);
-				return;
-			case "approval-reject":
-				// One Esc denies (P38c, Claude Code and Codex; two presses came from yo-agent).
-				if (!state.approval) return;
-				this.dialogs.decideApproval(
-					approvalOptions(state.approval.request).findIndex((option) => option.choice === "deny"),
-				);
-				return;
-			case "prompt-cancel":
-				this.dialogs.cancelPrompt();
-				return;
-			case "tree-key":
-				void this.dialogs.treeKey(command.action);
-				return;
-			case "picker-up":
-			case "picker-down": {
-				const tree = this.dialogs.activeTree();
-				if (tree) {
-					// pi's tree wraps around at either end.
-					tree.view.move(command.type === "picker-up" ? -1 : 1);
-					this.dialogs.showTree();
-					return;
-				}
-				this.moveList({ kind: "step", delta: command.type === "picker-up" ? -1 : 1 });
-				return;
-			}
-			case "list-page":
-				this.moveList({ kind: "page", direction: command.direction });
-				return;
-			case "search-open":
-				this.view.openSearch(state.search?.query ?? "");
-				return;
-			case "search-insert":
-				if (state.search) this.view.editSearch(state.search.query + command.text);
-				return;
-			case "search-backspace":
-				if (state.search) this.view.editSearch([...state.search.query].slice(0, -1).join(""));
-				return;
-			case "search-next":
-			case "search-prev":
-				this.view.stepSearch(command.type === "search-next" ? 1 : -1);
-				return;
-			case "search-close":
-				this.dispatch({ type: "search" });
-				return;
-			case "selection-clear":
-				this.dispatch({ type: "selection" });
-				return;
-			case "picker-toggle": {
-				const picker = state.picker;
-				if (picker?.checked) this.dispatch({ type: "picker-toggle", id: picker.id, index: picker.selected });
-				else if (picker?.all) this.dialogs.filterPicker(`${picker.query ?? ""} `);
-				return;
-			}
-			case "picker-action": {
-				const picker = state.picker;
-				const value = picker?.items[picker.selected]?.value;
-				if (!picker?.actions?.some((action) => action.key === command.key) || value === undefined) return;
-				this.dispatch({ type: "picker-close", id: picker.id });
-				this.dialogs.settlePicker(picker.id, value, command.key);
-				return;
-			}
-			case "picker-backspace": {
-				const tree = this.dialogs.activeTree();
-				if (tree) {
-					tree.view.backspace();
-					this.dialogs.showTree();
-					return;
-				}
-				const query = state.picker?.query;
-				if (query) this.dialogs.filterPicker([...query].slice(0, -1).join(""));
-				return;
-			}
-			case "picker-confirm": {
-				const picker = state.picker;
-				if (!picker) return;
-				if (picker.checked) {
-					// Nothing checked: Enter does nothing (Esc cancels).
-					if (picker.checked.length === 0) return;
-					this.dispatch({ type: "picker-close", id: picker.id });
-					this.dialogs.settleMany(
-						picker.id,
-						picker.checked.map((index) => picker.items[index]?.value).filter((value) => value !== undefined),
-					);
-					return;
-				}
-				this.dispatch({ type: "picker-close", id: picker.id });
-				this.dialogs.settlePicker(picker.id, picker.items[picker.selected]?.value);
-				return;
-			}
-			case "picker-alt": {
-				const picker = state.picker;
-				const value = picker?.items[picker.selected]?.value;
-				if (!picker?.alt || value === undefined) return;
-				this.dispatch({ type: "picker-close", id: picker.id });
-				this.dialogs.settlePicker(picker.id, value, true);
-				return;
-			}
-			case "picker-key": {
-				const tree = this.dialogs.activeTree();
-				if (tree) {
-					tree.view.type(command.key);
-					this.dialogs.showTree();
-					return;
-				}
-				const picker = state.picker;
-				if (picker?.all) {
-					this.dialogs.filterPicker((picker.query ?? "") + command.key);
-					return;
-				}
-				const item = picker?.items.find((candidate) => candidate.key === command.key.toLowerCase());
-				if (!picker || !item) return;
-				this.dispatch({ type: "picker-close", id: picker.id });
-				this.dialogs.settlePicker(picker.id, item.value);
-				return;
-			}
-			case "picker-cancel":
-				if (!state.picker) return;
-				// The tree's Esc clears its search first (pi).
-				if (this.dialogs.activeTree()?.view.clearSearch()) {
-					this.dialogs.showTree();
-					return;
-				}
-				this.dispatch({ type: "picker-close", id: state.picker.id });
-				if (state.picker.checked) this.dialogs.settleMany(state.picker.id, undefined);
-				else this.dialogs.settlePicker(state.picker.id, undefined);
-				return;
-			case "menu-up":
-			case "menu-down":
-				this.moveList({ kind: "step", delta: command.type === "menu-up" ? -1 : 1 });
-				return;
-			case "menu-accept": {
-				const completion = this.inputBox.completion();
-				const item = completion?.items[Math.min(state.menu.selected, completion.items.length - 1)];
-				if (!completion || !item) return;
-				const runs = command.submit === true && (completion.kind === "slash" || completion.kind === "argument");
-				// Enter on a command or argument completes and runs it in one step (pi, Claude Code).
-				if (runs && item.value === completion.token) {
-					this.runs.submit();
-					return;
-				}
-				const accept = (next: { text: string; cursor: number }): void => {
-					this.inputBox.pushUndo();
-					this.inputBox.leaveHistory();
-					this.setEditor(ed.fromText(runs ? next.text.trimEnd() : next.text, next.cursor));
-					if (runs) this.runs.submit();
-				};
-				const next = completion.apply ? completion.apply(item) : acceptCompletion(state.editor.text, completion, item);
-				if (next instanceof Promise) {
-					// Unchanged meanwhile: the provider's answer replaces the input as it was asked about.
-					const asked = state.editor.text;
-					void next.then(
-						(applied) => {
-							if (this.state.editor.text === asked) accept(applied);
-						},
-						(error: unknown) => this.notice("error", `Completion failed: ${errorText(error)}`),
-					);
-				} else accept(next);
-				return;
-			}
-			case "menu-close": {
-				const completion = this.inputBox.completion();
-				if (completion) this.dispatch({ type: "menu-suppress", token: completion.token });
-				this.dispatch({ type: "menu-select", index: 0 });
-				return;
-			}
-			case "interrupt":
-				this.runs.interrupt();
-				return;
-			case "exit-request":
-				if (state.exitArmed) {
-					void this.stop();
-					return;
-				}
-				this.dispatch({ type: "armed", exit: true });
-				this.exitTimer = setTimeout(() => this.disarmExit(), ARM_WINDOW_MS);
-				return;
-			case "cycle-mode":
-				this.cycleMode();
-				return;
-			case "queue":
-				this.runs.queueFollowUp();
-				return;
-			case "submit":
-				this.runs.submit();
-				return;
-			case "toggle-verbose":
-				this.dispatch({ type: "toggle-verbose" });
-				// Toggles say so on the hint line, not in the conversation (P38b, pi showStatus).
-				// Inline, what is in the scrollback stays as written; full screen redraws every block.
-				this.flash(
-					`Tool details ${this.state.verbose ? "expanded" : "collapsed"}${this.fullscreen ? "" : " for new output"}`,
-				);
-				return;
-			case "toggle-reasoning":
-				this.dispatch({ type: "toggle-reasoning" });
-				// Ctrl+T is for reading what was thought: inline, the history is written again with it
-				// (full screen redraws every block anyway).
-				if (!this.fullscreen) this.redraw();
-				this.flash(`Reasoning ${this.state.showReasoning ? "shown" : "collapsed"}`);
-				return;
-			case "external-editor":
-				this.openExternalEditor();
-				return;
-			case "paste-clipboard":
-				void this.inputBox.pasteClipboard();
-				return;
-			case "history-prev":
-				this.inputBox.historyPrev();
-				return;
-			case "history-next":
-				this.inputBox.historyNext();
-				return;
-			default:
-				return;
-		}
+		this.keys.execute(command);
+	}
+
+	/** Ctrl+L: paint everything again (full screen: the whole frame; inline: the history too). */
+	repaintAll(): void {
+		if (!this.fullscreen) this.redraw();
+		else if (this.fullRepaint) this.fullRepaint();
+		else this.relayout();
 	}
 
 	/** /copy */
@@ -1275,12 +725,6 @@ export class TuiController {
 		this.inputBox.pushUndo();
 		this.inputBox.leaveHistory();
 		this.setEditor(ed.fromText(edited.replace(/\r\n/g, "\n").replace(/\n+$/, "")));
-	}
-
-	private disarmExit(): void {
-		if (this.exitTimer) clearTimeout(this.exitTimer);
-		this.exitTimer = undefined;
-		if (this.state.exitArmed) this.dispatch({ type: "armed", exit: false });
 	}
 
 	/** Clear the visible screen and the scrollback; <Static> then starts over. */
