@@ -1,6 +1,8 @@
 // P22 验收：tau 能正确读 pi 1.2.0 写的会话（D13 补记 ②，单向兼容）。夹具按 pi
-// session-format.md 的条目示例拼成；期望值按 pi buildSessionContext 源码推导
-// （本机未安装 pi 依赖，不能直接运行 pi 的实现）。
+// session-format.md 的条目示例拼成。前两个测试的期望值（消息、system prompt、工具、会话名、
+// usage 合计）P62f 用 pi v1.4.0 自己的 buildSessionContext / buildSessionProjection /
+// getCurrentSystemPrompt / getCurrentTools / getSessionName / getUsageCostBreakdown 跑过这份
+// 夹具核对，逐项一致；第三个测试是 tau 接着写 pi 会话，pi 没有对应行为可比。
 import assert from "node:assert/strict";
 import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

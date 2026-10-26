@@ -187,11 +187,11 @@
 ## 验收清单
 
 - [ ] 62a：`scripts/baseline.mjs` 可跑，`docs/baseline.md` 有阶段前后两列
-- [ ] 62b：七项移进 `archive/2026-10-25/`；`tau gateway` 不再存在；CLI 只给网关用的分支删掉，其他宿主行为不变；cron 搬进 CLI 且测试随行；`smoke:weapp`、`smoke:quickjs:mcp` 改完通过；`archive/README.md` 写明找回方法；secret-guard 与凭据审计对网关文件的保护照旧
-- [ ] 62c：CI 的 Ubuntu Node 22、Ubuntu Node 24、Windows 三路 gate 与 smoke 全绿
-- [ ] 62d：8 个文件都在拆后目标以内；`check-structure.mjs` 的上限按规则更新
-- [ ] 62e：列出的重复各自只剩一份或改名说明差别；死代码、多余导出、空 `catch`、类型断言处理完，实施记录有数字
-- [ ] 62f：补的测试通过；偶发失败各有结论；全量测试墙钟时间前后对比；#18 的期望值来自 pi 的实现
+- [x] 62b：七项移进 `archive/2026-10-25/`；`tau gateway` 不再存在；CLI 只给网关用的分支删掉，其他宿主行为不变；cron 搬进 CLI 且测试随行；`smoke:weapp`、`smoke:quickjs:mcp` 改完通过；`archive/README.md` 写明找回方法；secret-guard 与凭据审计对网关文件的保护照旧
+- [x] 62c：CI 的 Ubuntu Node 22、Ubuntu Node 24、Windows 三路 gate 与 smoke 全绿
+- [ ] 62d：8 个文件都在拆后目标以内；`check-structure.mjs` 的上限按规则更新（`extensions.ts` 拆后 1100 行，超目标 50 行，见实施记录 62d 的偏差）
+- [x] 62e：列出的重复各自只剩一份或改名说明差别；死代码、多余导出、空 `catch`、类型断言处理完，实施记录有数字
+- [x] 62f：补的测试通过；偶发失败各有结论；全量测试墙钟时间前后对比；#18 的期望值来自 pi 的实现
 - [ ] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
 - [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制
 - [ ] 62i：所列文档逐句核过；README 标明未实测路径
@@ -264,3 +264,28 @@
 - **空 `catch`**：9 个文件 12 处都是该吞的（退出时清理已结束的进程、坏 JSON 或坏 URL 走缺省、关已断开的 socket、浏览器存储不可用、列目录时文件被删），各加一句注释。
 - **类型断言**：61 处 → 41 处。协议线上的 JSON 与内核类型之间的 28 处收进新文件 `cli/src/wire.ts`（16 个转换函数，在那里说明一次：tau/1 原样携带内核的值，P57）；Node 计时器的 `unref` 两处本来不需要断言，去掉。其余 25 处（校验过的解析结果、WebSocket 与 readline 的运行时对象、结构上是 JSON 的值、Proxy）各加一句注释。**顺带查出**：RPC 与 TUI 把可能缺失的 `params.form` 直接断言成 `UiForm`，缺失时会在读 `title` 时崩；照 ACP 已有的做法补上缺省表单。
 - 没改：scripts 里几处 Windows 上用 `shell: true` 跑 `npm.cmd` 并传参数数组，Node 24 报 DEP0190 弃用警告，登记为技术债。
+- **漏跑的一步**：62e 提交前没跑 pack smoke。它的 TUI 消费端只拷列出的 CLI 模块，新加的 `wire.ts` 没在单子上，CI 的 smoke 红了一次；`util.ts` 加载时读 `package.json`，于是把它用到的两个文字函数移进新文件 `text.ts`，单子补上 `text.js`、`wire.js`（8bd2a2d）。以后新加 TUI 会导入的 CLI 根目录模块，提交前跑 `npm run smoke:pack`。
+
+### 62f 测试
+
+- **补的测试**（c1835c2）：`cli/test/p62.test.ts` 7 个——`tau credentials` 的 set（从 stdin 读、去掉末尾换行）、list（不打印值、标出用在哪个文件）、remove 与坏名字，`tau mcp logout`，二维码，`openUrlCommand`，未提交文件计数，REPL 的 `/name`、`/sessions`、`/compact` 与 `--no-session` 下的回答；`host-node/test/p62-exif.test.ts` 2 个——手拼 JPEG APP1 与 WebP EXIF 块，八个方向、两种字节序。`clipboard.ts` 要真剪贴板、inline 的 `tui/app.ts` 由 smoke 覆盖，照规格不硬补。
+- **顺带修的**：`open-url.ts` 原来在 Windows 上用 `cmd /c start` 打开链接，cmd 把 `&` 当命令分隔符，OAuth 登录地址在第一个 `&` 处被截断；改用 `rundll32 url.dll,FileProtocolHandler`，并只接受 `http(s):` 与 `file:`。`tau credentials` 的帮助里去掉网关。
+- **覆盖率**（按行/分支/函数，全量带覆盖率）：92.7/82.3/89.8 → 94.0/83.2/91.5。
+
+  | 文件 | 前 | 后 |
+  |---|---|---|
+  | `cli/src/tool-commands.ts` | 50.8/50.8/64.7 | 74.5/44.6/73.9 |
+  | `host-node/src/image/exif-orientation.ts` | 27.6/13.6/18.2 | 89.7/85.3/100 |
+  | `cli/src/qr.ts` | 32.1/100/0 | 100/100/100 |
+  | `cli/src/open-url.ts` | 33.3/100/0 | 62.1/100/50（`openUrl` 本身要起浏览器，只测拼出的命令） |
+  | `cli/src/dirty-repo.ts` | 58.3/100/50 | 100/100/100 |
+  | `cli/src/modes/repl.ts` | 70.5/52.3/53.9 | 81.5/64.7/53.9 |
+
+- **测试数**：1439 个（1435 通过、4 跳过），62b 后的 1430 个加这次的 9 个。
+- **偶发失败**：
+  - smoke-tui 的 approval 空屏：62a 修了 WSL 副本里指向 `/mnt/d` 的工作区链接之后，在 WSL 里把 smoke-tui 两种模式各完整跑了一遍（各 41 个场景，approval 在内），都通过，没再出现。原因按 62a 的发现推断为启动时经 9P 读文件卡住，跑一遍不算证明，以后再出现照旧记下。
+  - `smoke:browser:runtime` 在 CI 上超时（#36）：本地与 CI 都没复现；超时放宽到 40 秒，并在超时报错里带上页面何时发出第一个模型请求，下次出现能看出卡在页面加载还是模型那边。#36 留在技术债表。
+  - 全量测试里出现过一次子进程中 Node 自带类型剥离（amaro）编译 WebAssembly 出错（62b 记录），属 Node 内部，单独与重跑都通过，不处理。
+- **慢测试**：最慢的组都是起 CLI 子进程的 e2e（P46c 26 秒、P41b 25 秒、P40c 23 秒、P59 20 秒、P58 17 秒）。这台 Windows 机器上光起一个 Node 进程就要约 330 毫秒（WSL 里约 30 毫秒），`tau --version` 406 毫秒，tau 自己只占约 80 毫秒；剩下的固定等待（P46 worktree 的 2.5 秒分块、ext-subagents 的 800 毫秒）是在排先后顺序，换成等条件要改用例结构，规格不允许。所以没有改，墙钟持平：全量带覆盖率 166 秒 → 164 秒（归档移走 110 个测试，与新增的抵掉）。
+- **Windows 上跳过的测试**：62c 起 Linux 与 Windows 两边的 CI 都跑；development.md 写明改了信号、文件权限或 REPL 时，本地在 WSL 里跑对应的测试文件（给了命令，`e2e.test.ts` 在 WSL 里试过）。
+- **技术债 #18**：在 `../pi`（v1.4.0）只给 coding-agent 工作区装依赖（`npm ci --ignore-scripts`，227 个包），不编译 dist，用一个解析钩子把 `@earendil-works/*` 指到各包的 `src/index.ts`，跑 pi 的 `buildSessionContext`、`buildSessionProjection`、`getCurrentSystemPrompt`、`getCurrentTools`、`getSessionName`、`getUsageCostBreakdown`。`session-pi.test.ts` 前两个测试的期望值（恢复后的消息、system prompt、工具、会话名、`a4000001` 之前的投影与工具结果、usage 合计 5950）与 pi 的输出逐项一致，tau 不用改；测试头部的说明改成已用 pi 的实现核对。用完删掉了 `../pi/node_modules`。
