@@ -22,15 +22,7 @@ export const cyan = (text: string): string => `\x1b[36m${text}\x1b[0m`;
 
 export const red = (text: string): string => `\x1b[31m${text}\x1b[0m`;
 
-/** The first line, cut to `max` characters with an ellipsis. */
-export function firstLine(text: string, max = 60): string {
-	const line = text.split("\n")[0] ?? "";
-	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
-
-export function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
+export { errorText, firstLine } from "./text.ts";
 
 /** `~` and `~/…` (or `~\…`) against the home directory; other paths as given. */
 export function expandHome(path: string, home: string = homedir()): string {

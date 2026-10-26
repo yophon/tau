@@ -277,7 +277,7 @@ try {
 	cpSync(join(packageDir("cli"), "dist", "tui"), join(tuiDir, "tui"), { recursive: true });
 	// The TUI also loads the CLI modules it shares with the REPL (P34f: session titles).
 	// P37: handoff, the uncommitted-changes check, git paths and the status line JSON; P39: /diff; P44: opening links;
-	// P46: presence for push_notification.
+	// P46: presence for push_notification; P62: the shared text helpers and the protocol conversions.
 	for (const shared of [
 		"session-title.js",
 		"handoff.js",
@@ -287,6 +287,8 @@ try {
 		"git-diff.js",
 		"open-url.js",
 		"push-notification.js",
+		"text.js",
+		"wire.js",
 	]) {
 		cpSync(join(packageDir("cli"), "dist", shared), join(tuiDir, shared));
 	}

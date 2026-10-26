@@ -5,7 +5,7 @@
 import { homedir } from "node:os";
 import type { RiskLevel } from "@yophon/tau-kernel";
 
-export { errorText, firstLine } from "../util.ts";
+export { errorText, firstLine } from "../text.ts";
 
 export type Tone = "info" | "warn" | "error" | "dim" | "success";
 
