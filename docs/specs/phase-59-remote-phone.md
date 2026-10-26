@@ -102,7 +102,7 @@
 - [x] 59a 端到端（mock 模型）：`tau serve remote on` 后用 Node 的 WebSocket 客户端配对、带令牌连上、跑一轮、在 WebSocket 上答审批、断开后 `afterSeq` 补齐；本机 socket 的客户端同时在场，两边看到同样的东西。
 - [x] TUI 断线续接：服务停了又起（测试里重启中枢），TUI 自动重连回到同一会话，不退出；超时才退出。
 - [x] 59b 网页客户端：headless Chrome 冒烟（CI 的 Linux 与本机）：配对、看到会话列表、接上 TUI 那边的会话、发话看到流式回复、答审批、断网（关掉连接）后自动重连补齐。手机尺寸（390×844）截图检查布局。
-- [ ] 真机：手机（用户）在同一局域网扫码配对、接上终端里的会话、答一次审批；经 Tailscale 的 HTTPS 地址打开一次（用户有 Tailscale 时）。
+- [ ] 真机：手机（用户）在同一局域网扫码配对、接上终端里的会话、答一次审批；经 Tailscale 的 HTTPS 地址打开一次（用户有 Tailscale 时）。（P62j：列进 docs/device-acceptance.md）
 - [x] 真 DeepSeek：网页客户端（headless Chrome）一轮，带一次审批。
 - [x] check、全量测试、pack smoke（新包进 pack smoke）、smoke-tui；push 后 CI 通过；D61；文档（protocol.md、README 的手机一节、远程与安全说明）。
 

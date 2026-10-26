@@ -98,7 +98,7 @@ P38 完成后，这些都按 pi、Claude Code 或 Codex 的做法改好。
 - [x] 38d：字宽、差量重画、补全次数有基准测试，写进完成记录。
 - [x] smoke-tui 增加按键、diff、选择器场景；全部场景在全屏和 inline 下各跑一遍。
 - [x] 真 DeepSeek：写大文件时参数边生成边显示；推理折叠；编辑显示 diff。
-- [ ] 真机（Windows Terminal，用户执行）：Shift+Enter 换行、Tab 排队、Home/End/Delete/Ctrl+←→/Ctrl+Backspace、Ctrl+Z 撤销、中文输入法候选框位置、链接点击、右键粘贴、右边框完整。
+- [ ] 真机（Windows Terminal，用户执行）：Shift+Enter 换行、Tab 排队、Home/End/Delete/Ctrl+←→/Ctrl+Backspace、Ctrl+Z 撤销、中文输入法候选框位置、链接点击、右键粘贴、右边框完整。（P62j：列进 docs/device-acceptance.md）
 - [x] DoD 通用项（见 development.md）。
 
 ## 风险与开放问题

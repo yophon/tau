@@ -273,7 +273,7 @@ menu: { selected: number; start: number; ... };
 - [x] 会话标题单测：`firstMessage` 与 `messageCount`（含分支、压缩后的会话）、`titleFromReply` 的清理、`sessionLabel` 的退回顺序、相对时间、第一轮后只请求一次、已有名字不请求、`session.autoTitle: false` 不请求、请求失败不影响会话、手动 `/name` 覆盖自动标题。
 - [x] tmux 冒烟「会话标题」：mock 模型对标题请求回一个固定标题，跑一轮后退出再开，`/resume` 列表里显示这个标题而不是 id。
 - [x] 现有 17 个场景在两种模式下仍通过。
-- [ ] 真机验收（用户，Windows Terminal）：Ctrl+F 搜索；拖选、双击、三击后粘贴到别处；点工具块；切到别的窗口后收到「完成」和「等你批准」的系统通知；标签上有进度；新会话跑一轮后 `/resume` 里看到自动标题；输入 `/` 能翻到全部命令，鼠标点一下就选中。
+- [ ] 真机验收（用户，Windows Terminal）：Ctrl+F 搜索；拖选、双击、三击后粘贴到别处；点工具块；切到别的窗口后收到「完成」和「等你批准」的系统通知；标签上有进度；新会话跑一轮后 `/resume` 里看到自动标题；输入 `/` 能翻到全部命令，鼠标点一下就选中。（P62j：列进 docs/device-acceptance.md）
 - [x] DoD 通用项。
 
 ## 风险

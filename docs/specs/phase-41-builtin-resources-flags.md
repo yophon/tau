@@ -69,21 +69,21 @@
 
 ## 验收清单
 
-- [ ] 41a：
-  - [ ] 没有任何导入文件时，`~/.tau/skills`、`~/.agents/skills` 里的技能出现在提示词里，`/skill:名字` 可用，`~/.tau/prompts` 的模板成为命令。
-  - [ ] 项目的 `.tau/skills`、`.pi/skills`、`.agents/skills`（含上级目录到仓库根）只在受信任时加载；工作目录或上级目录里有 `.agents/skills` 会让项目进入信任判断。
-  - [ ] 加载规则：`SKILL.md` 目录不再往下找；点目录与 `node_modules` 跳过；子目录里的独立 `.md` 不算技能；重名保留先找到的并警告；显式的 `.md` 文件路径可用；同一文件不重复。
-  - [ ] `enableSkillCommands: false` 时菜单与 `/help` 里没有 `/skill:名字`，输入它照样发出技能。
-  - [ ] 保留旧的导入文件时，技能列表只出现一次。
-- [ ] 41b：
-  - [ ] `-e` 加载扩展（未受信任的目录里也加载）；`-ne` 时不加载自动发现与设置里的扩展，`-e` 仍加载。
-  - [ ] `--no-mcp` 时没有 MCP 工具和 `/mcp`。
-  - [ ] `--skill`、`-ns`、`--prompt-template`、`-np` 按 pi 的规则生效。
-  - [ ] `--system-prompt` 与 `-s` 接受文字和文件；`--append-system-prompt` 可重复，位置在项目上下文之前。
-  - [ ] `SYSTEM.md`、`APPEND_SYSTEM.md` 的优先级与命令行覆盖照 pi；项目的只在受信任时读。
-  - [ ] `-v` 打印版本。
-- [ ] smoke-tui 全部场景在全屏与 inline 下通过；真 DeepSeek 用一个 `~/.agents/skills` 里的技能完成一次任务。
-- [ ] DoD 通用项（见 development.md）；决策记为 D44。
+- [x] 41a：（P62j：子项都有证据）
+  - [x] 没有任何导入文件时，`~/.tau/skills`、`~/.agents/skills` 里的技能出现在提示词里，`/skill:名字` 可用，`~/.tau/prompts` 的模板成为命令。（P62j：p41「~/.tau/skills, ~/.agents/skills and ~/.tau/prompts work without an import file」）
+  - [x] 项目的 `.tau/skills`、`.pi/skills`、`.agents/skills`（含上级目录到仓库根）只在受信任时加载；工作目录或上级目录里有 `.agents/skills` 会让项目进入信任判断。（P62j：p41「a trusted project's .agents/skills load from the working directory up to the repository root」）
+  - [x] 加载规则：`SKILL.md` 目录不再往下找；点目录与 `node_modules` 跳过；子目录里的独立 `.md` 不算技能；重名保留先找到的并警告；显式的 `.md` 文件路径可用；同一文件不重复。（P62j：ext-resources 测试「a SKILL.md directory ends the search; dot directories and node_modules are skipped…」「the first skill of a name wins and the later one is reported…」）
+  - [x] `enableSkillCommands: false` 时菜单与 `/help` 里没有 `/skill:名字`，输入它照样发出技能。（P62j：p41「enableSkillCommands false hides /skill:name from the list; typing it still works…」）
+  - [x] 保留旧的导入文件时，技能列表只出现一次。（P62j：同上（「an old import file adds nothing」））
+- [x] 41b：（P62j：子项都有证据）
+  - [x] `-e` 加载扩展（未受信任的目录里也加载）；`-ne` 时不加载自动发现与设置里的扩展，`-e` 仍加载。（P62j：p41「-e loads an extension even in an untrusted directory; -ne drops the discovered ones but keeps -e」）
+  - [x] `--no-mcp` 时没有 MCP 工具和 `/mcp`。（P62j：p41「--no-mcp: no MCP servers and no /mcp」）
+  - [x] `--skill`、`-ns`、`--prompt-template`、`-np` 按 pi 的规则生效。（P62j：p41「--skill and --prompt-template add paths; -ns and -np keep only those」）
+  - [x] `--system-prompt` 与 `-s` 接受文字和文件；`--append-system-prompt` 可重复，位置在项目上下文之前。（P62j：p41「--system-prompt and -s take text or a file; --append-system-prompt goes before the project context…」）
+  - [x] `SYSTEM.md`、`APPEND_SYSTEM.md` 的优先级与命令行覆盖照 pi；项目的只在受信任时读。（P62j：p41「SYSTEM.md and APPEND_SYSTEM.md: a trusted project's win over the user's, flags win over both」）
+  - [x] `-v` 打印版本。（P62j：p41「-v prints the version」）
+- [x] smoke-tui 全部场景在全屏与 inline 下通过；真 DeepSeek 用一个 `~/.agents/skills` 里的技能完成一次任务。（P62j：smoke-tui P62 在 WSL 里两种模式全部通过；实施记录的真 DeepSeek（`~/.agents/skills` 的技能））
+- [x] DoD 通用项（见 development.md）；决策记为 D44。（P62j：实施记录；D44）
 
 ## 风险与开放问题
 

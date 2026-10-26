@@ -368,26 +368,26 @@ export interface ToolPolicy {
 
 ## 验收清单
 
-- [ ] 规则：`deny: ["Edit(.env*)"]` 后让模型改 `.env`，被拒，模型看到 `Denied by policy` 和规则文字；bypass 档位下同样被拒。
-- [ ] 规则：`allow: ["Bash(npm run test *)"]` 后 `npm run test -- --watch` 不问；`npm run test && rm -rf x` 仍然要问（第二段没命中 allow）；加上 `deny: ["Edit(.env)"]` 后 `npm run test > .env` 被拒。
-- [ ] 规则：`ask: ["Bash(git push --force *)"]` 在 autonomous 档位下也问，而 `allow: ["Bash(git push *)"]` 放行普通 push。
-- [ ] 规则：直接复制一段 Claude Code 写法（`"Bash(git diff:*)"`、`"WebFetch(domain:github.com)"`、`"Read(//c/Users/**/secrets/**)"`）能生效。
-- [ ] 审批：对 `npm test` 点 `Always allow in this project: Bash(npm test *)`，`.tau/settings.local.json` 出现这条，`.git/info/exclude` 有对应一行；重启后 `npm test --coverage` 不问，在另一个项目里仍然问。对 `edit` 选 `Allow all edits this session` 后档位变为 accept-edits。危险命令的审批也有「总是允许」，写保护路径的没有。
-- [ ] `/permissions` 列出三类规则及来源，能加（三个去处）、能删；写错的规则列在诊断里。
-- [ ] 未信任项目的 `.tau/settings.json`：deny 生效，allow 不生效；信任后 allow 生效。
-- [ ] 只有 `.tau/mcp.json` 的项目启动时弹信任确认，信任后里面的服务器连上。
-- [ ] `--disallowed-tools Bash` 后模型的工具列表里没有 bash；`--allowed-tools "Bash(ls *),Bash(git status)"` 这次运行不问这两条。
-- [ ] `--add-dir ../shared` 后 accept-edits 下写 `../shared/x` 不问，系统提示里有这一行；`/add-dir` 选 Remember 后写进本地设置。
-- [ ] accept-edits 下 `edit <cwd>/../other/x.ts` 要问（修好 `..` 越界）。
-- [ ] `tau audit` 里规则放行与拒绝的来源是 `rule_allow`、`rule_deny`，带规则文字。
-- [ ] 旧 `~/.tau/permissions.json`（你本机现在就有一条 bash 的「总是允许」）启动时转成 `~/.tau/settings.json` 里的 `allow: ["Bash"]`，提示一次，旧文件改名；普通 bash 照旧不问。
-- [ ] `/handoff 把同样的检查也加到 REPL 里`：转圈中 Esc 能取消；不取消时进入新会话，输入框里有 Context / Files involved / Task 结构的提示，`/session` 显示来源会话；原会话 `/resume` 回去内容不变。
-- [ ] 缺省不问；`session.dirtyRepoGuard: true` 后仓库有未提交改动时 `/new` 先问，选「No」留在原会话；非 git 目录不问。
-- [ ] 空输入框连按两下 Esc 打开会话树；间隔超过 500 毫秒不打开；打了字连按两下只清空、不打开，↑ 找回草稿；`doubleEscapeAction: "fork"` 打开分叉选择器。
-- [ ] 状态栏：配一个输出两行带颜色文字的脚本，内置状态行上面显示两行彩色；脚本收到的 JSON 里有模型、上下文百分比、cwd；助手回复后刷新；脚本退出 1 时这两行空着、内置状态行照旧；未信任项目里项目 settings 的 `statusLine` 不跑。`/statusline 显示模型和分支` 让模型写出可用的脚本。
-- [ ] worktree：`tau --worktree` 生成名字，`.tau/worktrees/<名字>` 与分支 `worktree-<名字>` 存在，`.worktreeinclude` 里的 `.env` 被复制，`symlinkDirectories: ["node_modules"]` 生效；什么都不改退出后目录与分支都没了；改了文件退出时问，选保留后打印恢复命令，`tau --worktree <名字> --continue` 接着上次的会话；选删除后链接指向的主仓库 `node_modules` 还在。worktree 里底栏显示分支，AGENTS.md 只加载一份，`memory_write` 写进主仓库那份项目记忆，「总是允许」存进主仓库的本地设置。`tau --worktree -c` 不会建出名叫 `-c` 的 worktree。
-- [ ] 真 DeepSeek 跑一遍 handoff、规则（含「总是允许」）、状态栏、worktree。
-- [ ] DoD 通用项（见 development.md）
+- [x] 规则：`deny: ["Edit(.env*)"]` 后让模型改 `.env`，被拒，模型看到 `Denied by policy` 和规则文字；bypass 档位下同样被拒。（P62j：permission-rules.test「precedence: deny → ask → allow; modes; protected paths…」，p37「merges user, project, local and flag rules…」，实施记录的真 DeepSeek）
+- [x] 规则：`allow: ["Bash(npm run test *)"]` 后 `npm run test -- --watch` 不问；`npm run test && rm -rf x` 仍然要问（第二段没命中 allow）；加上 `deny: ["Edit(.env)"]` 后 `npm run test > .env` 被拒。（P62j：permission-rules.test「compound commands: allow needs every subcommand…」「Read and Edit deny rules reach bash file commands and redirections…」）
+- [x] 规则：`ask: ["Bash(git push --force *)"]` 在 autonomous 档位下也问，而 `allow: ["Bash(git push *)"]` 放行普通 push。（P62j：permission-rules.test「precedence: deny → ask → allow; modes…」）
+- [x] 规则：直接复制一段 Claude Code 写法（`"Bash(git diff:*)"`、`"WebFetch(domain:github.com)"`、`"Read(//c/Users/**/secrets/**)"`）能生效。（P62j：permission-rules.test 的 `Bash(npm:*)`（旧前缀）、`WebFetch(domain:…)`、「path patterns: anchors…」（`//` 路径））
+- [x] 审批：对 `npm test` 点 `Always allow in this project: Bash(npm test *)`，`.tau/settings.local.json` 出现这条，`.git/info/exclude` 有对应一行；重启后 `npm test --coverage` 不问，在另一个项目里仍然问。对 `edit` 选 `Allow all edits this session` 后档位变为 accept-edits。危险命令的审批也有「总是允许」，写保护路径的没有。（P62j：p37「saving writes the local file once, keeps it out of commits, and applies at once」「bash prefixes…」，smoke-tui 的 permissions，实施记录的真 DeepSeek）
+- [x] `/permissions` 列出三类规则及来源，能加（三个去处）、能删；写错的规则列在诊断里。（P62j：p37「lists rules without a UI; adds and removes rules through one」「re-reads a settings file when it changes; reports rules that cannot be read」）
+- [x] 未信任项目的 `.tau/settings.json`：deny 生效，allow 不生效；信任后 allow 生效。（P62j：p37「merges user, project, local and flag rules; project allow waits for trust」）
+- [x] 只有 `.tau/mcp.json` 的项目启动时弹信任确认，信任后里面的服务器连上。（P62j：e2e「a project with only .tau/mcp.json goes through the trust gate (P37a)」）
+- [x] `--disallowed-tools Bash` 后模型的工具列表里没有 bash；`--allowed-tools "Bash(ls *),Bash(git status)"` 这次运行不问这两条。（P62j：e2e「--disallowed-tools takes a tool off the wire (P37a)」「settings rules and --allowed-tools decide in -p…」）
+- [x] `--add-dir ../shared` 后 accept-edits 下写 `../shared/x` 不问，系统提示里有这一行；`/add-dir` 选 Remember 后写进本地设置。（P62j：e2e「--add-dir: accept-edits writes there without asking; the system prompt names it」，p37「/add-dir adds for the session or remembers in the local file」）
+- [x] accept-edits 下 `edit <cwd>/../other/x.ts` 要问（修好 `..` 越界）。（P62j：policy.test「accept-edits allows edits inside the working directory and asks for the rest」）
+- [x] `tau audit` 里规则放行与拒绝的来源是 `rule_allow`、`rule_deny`，带规则文字。（P62j：e2e「settings rules and --allowed-tools decide in -p; the audit names the rule (P37a)」）
+- [x] 旧 `~/.tau/permissions.json`（你本机现在就有一条 bash 的「总是允许」）启动时转成 `~/.tau/settings.json` 里的 `allow: ["Bash"]`，提示一次，旧文件改名；普通 bash 照旧不问。（P62j：p37「becomes rules: bash → Bash, edits dropped, file renamed」）
+- [ ] `/handoff 把同样的检查也加到 REPL 里`：转圈中 Esc 能取消；不取消时进入新会话，输入框里有 Context / Files involved / Task 结构的提示，`/session` 显示来源会话；原会话 `/resume` 回去内容不变。（P62j：开新会话、结果进输入框有测试（tui-p37「asks the model with pi's prompt and opens a new session…」），实施记录的真 DeepSeek 看过提示的结构；转圈中 Esc 取消、`/session` 显示来源会话没有测试，列进 docs/device-acceptance.md）
+- [x] 缺省不问；`session.dirtyRepoGuard: true` 后仓库有未提交改动时 `/new` 先问，选「No」留在原会话；非 git 目录不问。（P62j：tui-p37「is off by default; on, it asks before /new and keeps the session on No」，p62「counts uncommitted files…」（不是仓库时不问））
+- [x] 空输入框连按两下 Esc 打开会话树；间隔超过 500 毫秒不打开；打了字连按两下只清空、不打开，↑ 找回草稿；`doubleEscapeAction: "fork"` 打开分叉选择器。（P62j：tui-p37 的连按两次 Esc 五个用例）
+- [x] 状态栏：配一个输出两行带颜色文字的脚本，内置状态行上面显示两行彩色；脚本收到的 JSON 里有模型、上下文百分比、cwd；助手回复后刷新；脚本退出 1 时这两行空着、内置状态行照旧；未信任项目里项目 settings 的 `statusLine` 不跑。`/statusline 显示模型和分支` 让模型写出可用的脚本。（P62j：statusline.test「shows the rows above the status line and feeds the session JSON」，smoke-tui 的 statusline）
+- [x] worktree：`tau --worktree` 生成名字，`.tau/worktrees/<名字>` 与分支 `worktree-<名字>` 存在，`.worktreeinclude` 里的 `.env` 被复制，`symlinkDirectories: ["node_modules"]` 生效；什么都不改退出后目录与分支都没了；改了文件退出时问，选保留后打印恢复命令，`tau --worktree <名字> --continue` 接着上次的会话；选删除后链接指向的主仓库 `node_modules` 还在。worktree 里底栏显示分支，AGENTS.md 只加载一份，`memory_write` 写进主仓库那份项目记忆，「总是允许」存进主仓库的本地设置。`tau --worktree -c` 不会建出名叫 `-c` 的 worktree。（P62j：worktree.test「creates the worktree with its branch, copied ignored files and linked directories…」，e2e「--worktree runs the session in a new worktree…」，smoke-tui 的 worktree）
+- [ ] 真 DeepSeek 跑一遍 handoff、规则（含「总是允许」）、状态栏、worktree。（P62j：实施记录：真 DeepSeek 跑过 handoff、规则（含「总是允许」）、worktree；状态栏没有，列进 docs/device-acceptance.md（真模型一组））
+- [x] DoD 通用项（见 development.md）（P62j：实施记录）
 
 ## 风险与开放问题
 

@@ -195,7 +195,7 @@
 - [x] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
 - [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制
 - [x] 62i：所列文档逐句核过；README 标明未实测路径
-- [ ] 62j：五份规格书的清单对完账；`docs/device-acceptance.md` 成稿；技术债表复核完
+- [x] 62j：五份规格书的清单对完账；`docs/device-acceptance.md` 成稿；技术债表复核完
 - [ ] 真 DeepSeek 回归：`-p` 带工具调用；从不通的端口降级到 DeepSeek（走拆出去的重试与换模型）；REPL、rpc、ACP 各一轮；WSL 里 TUI 一轮（审批、Ctrl+C、`/compact`、缩放）；常驻服务两端接同一会话；会话内定时（`/loop` 或 `cron_create`，走搬进 CLI 的 cron）
 - [ ] DoD 通用项（见 development.md）
 
@@ -350,3 +350,11 @@
 - **hooks.md**：补一句会话在常驻服务里时钩子在服务里跑、用服务启动时的环境。
 - **protocol.md**：62g 已改过；这次补一句几个客户端同时打开同一个存档会话时只开一次。
 - 核过没有要改的：`rpc.md`（P60 已改成适配层的说法）、`statusline.md`（300 毫秒合并、刷新间隔至少 1 秒等对过代码）、`worktrees.md`（`--worktree` 不与 rpc/acp 同用，`main.ts` 里拦着）、`memory.md`（`session_search` 也搜设置里的 `sessionDir`，代码里还在）、`subagents.md`（8 个、同时 4 个、压缩窗口范围对过）、`connectors.md`（LSP 的超时、重启次数、诊断等待、推荐对话框的数字对过）、`archive/README.md`；`baseline.md` 的「P62 之后」一列阶段末量。
+
+### 62j 账目
+
+- **验收清单对账**（P35、P37、P39、P40、P41 原来没勾的 96 条）：每条行末注明 P62j 的结论与证据（测试名、smoke 场景、实施记录里的真 DeepSeek、或这次实测）。勾上 78 条；P41 全部勾上。没勾的 18 条：P39a 暂缓的 5 条（标注见实施记录）、网关 1 条（已归档）、只能真机看或缺一部分证据的 8 条（列进真机清单，每条写明缺的是哪一半）、P40 的「表里每个键各有测试」1 条（大部分键有测试，没有逐键核）、分组标题 3 条（P39 一条、P40 两条，它们下面有没勾的）。
+- **对账时查出一个漏做的**：P35 定了子代理没有 `ask_user`（照 Claude Code，有疑问写进结果交回主会话），规格也写了「子代理的工具列表排除它」，可代码没排除；子代理的 `ui` 继承自父会话，所以子代理调 `ask_user` 会真的去问用户。先写复现（`modes.test`「a subagent does not get ask_user」，起真 CLI 的 `--mode rpc`，看 mock 收到的子代理那次请求声明的工具），确认失败后把 `ask_user` 加进 CLI 给子代理扩展的 `parentOnlyTools`。subagents.md、CHANGELOG 同步。
+- **这次实测的**（scratchpad 的脚本，mock 模型）：`--mode rpc` 下 `ask_user` 的单选、多选分别发成 `select`、`multiselect`；`-p` 声明的工具里没有 `ask_user`。顺带重跑 `check-pi-parity.mjs`：91 个成员通过。
+- **真机清单** `docs/device-acceptance.md`（技术债 #28 改写成指向它）：P34–P60 只能真机验的场景，分 11 组——全屏显示与鼠标（P62 换了 Ink 8，排第一）、输入与按键、剪贴板与图片、通知、MCP 网页登录（P62f 改了 Windows 上打开链接的方式）、常驻服务与多客户端、手机、编辑器、会话与命令、真模型、网络；每条写了步骤与预期。各规格书里对应的真机项注明已列进清单。README 的文档列表加上它。
+- **技术债表**：还清删行 #18（62f）、#25（62h）、#27（62e）、#31、#32（62d），写进表下的说明；改写 #13（没发过 npm 的包实际是 10 个）、#24（undici 等两周规则）、#28（指向真机清单）、#36（62f 的诊断）；62g 新登记 #38。#9、#10 是设计取舍，照旧。

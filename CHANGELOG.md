@@ -47,6 +47,8 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   empty form, as ACP did).
 - On Windows, paths that differ only in case or in an 8.3 short name count as the same directory
   where tau compares them (worktrees, git paths, ACP sessions).
+- Subagents no longer get `ask_user` (P35 meant them not to, as in Claude Code: a subagent puts its
+  questions in its result); one could ask you directly before.
 
 ### Fixed (P61: three debts of daily use)
 - On the resident server, whether `read` may send an image follows the session's own model (its

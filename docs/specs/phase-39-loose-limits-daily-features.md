@@ -178,29 +178,29 @@
 
 ## 验收清单
 
-- [ ] 39a：
-  - [ ] bash 里 `echo $OPENAI_API_KEY` 能拿到值；MCP stdio 服务器拿到完整环境变量。
-  - [ ] read `~/.tau/credentials.json` 不再被拦。
-  - [ ] 信任过的项目改了 `.tau/skills` 不再重问；信任父目录后子目录不问。
-  - [ ] memory_write 超过旧上限也能写入；超过 200 行时结果里有整理提醒，提示词只有前 200 行。
-  - [ ] 旧的信任记录和 `shell.envAllow` 照常读取，不报错。
-- [ ] 39b：`/diff` 显示已暂存、未暂存的改动和未跟踪文件；不在仓库、没有改动时各有提示；运行中可用。
-- [ ] 39c：
-  - [ ] 运行中 `/btw` 能拿到答案，主线不受影响，会话日志里没有这次问答。
-  - [ ] 浮层按键都可用；第二个问题能看到第一个问题的问答。
-  - [ ] 运行中带着还没有结果的工具调用时，请求不报错。
-- [ ] 39d：
-  - [ ] Ctrl+B 让前台命令转到后台，结果里有任务号，输出文件包含转后台前的输出，结束时收到通知。
-  - [ ] 超时转后台，`sleep` 开头的命令照旧停止。
-  - [ ] 没有前台命令时 Ctrl+B 仍是光标左移。
-- [ ] 39e：
-  - [ ] 改键文件能改编辑键、全局键、选择器和树的键，`/reload` 后生效；冲突和写错的键有提示。
-  - [ ] `/keybindings` 能创建并打开文件；`/hotkeys` 显示改过的键。
-- [ ] 39f：
-  - [ ] 有分叉的会话里树形正确（与 pi 的规则一致）；当前分支排在前面并标 `•`。
-  - [ ] 五种过滤、折叠、搜索、标签、复制都可用；选中后行为与 P38 一致。
-- [ ] smoke-tui 新增场景（/btw、Ctrl+B、树），全屏与 inline 都通过；真 DeepSeek 试 /btw 和超时转后台。
-- [ ] DoD 通用项（见 development.md）；决策记为 D42。
+- [ ] 39a：（P62j：39a 的环境变量、secret-guard、信任三项暂缓（见实施记录），记忆一项做了）
+  - [ ] bash 里 `echo $OPENAI_API_KEY` 能拿到值；MCP stdio 服务器拿到完整环境变量。（P62j：暂缓（39a））
+  - [ ] read `~/.tau/credentials.json` 不再被拦。（P62j：暂缓（39a））
+  - [ ] 信任过的项目改了 `.tau/skills` 不再重问；信任父目录后子目录不问。（P62j：暂缓（39a））
+  - [x] memory_write 超过旧上限也能写入；超过 200 行时结果里有整理提醒，提示词只有前 200 行。（P62j：todo-memory.test「writes past the load limit and reminds the model to tidy up」）
+  - [ ] 旧的信任记录和 `shell.envAllow` 照常读取，不报错。（P62j：暂缓（39a））
+- [ ] 39b：`/diff` 显示已暂存、未暂存的改动和未跟踪文件；不在仓库、没有改动时各有提示；运行中可用。（P62j：tui-p39 的三个 /diff 用例；运行中可用没有测试，列进 docs/device-acceptance.md）
+- [x] 39c：（P62j：子项都有证据）
+  - [x] 运行中 `/btw` 能拿到答案，主线不受影响，会话日志里没有这次问答。（P62j：tui-p39「answers from the conversation while a tool runs, without joining it…」，实施记录的真 DeepSeek）
+  - [x] 浮层按键都可用；第二个问题能看到第一个问题的问答。（P62j：tui-p39 同上与「shows in the full-screen view and scrolls a long answer」，实施记录的真 DeepSeek（第二问带上第一问））
+  - [x] 运行中带着还没有结果的工具调用时，请求不报错。（P62j：tui-p39「answers from the conversation while a tool runs…」）
+- [x] 39d：（P62j：子项都有证据）
+  - [x] Ctrl+B 让前台命令转到后台，结果里有任务号，输出文件包含转后台前的输出，结束时收到通知。（P62j：kernel p39「says why it moved, with the task id, the output file and what it printed」，tui-p39「moves the running bash command to the background…」，实施记录的真 DeepSeek）
+  - [x] 超时转后台，`sleep` 开头的命令照旧停止。（P62j：kernel p39「a sleep is stopped by its timeout (Claude Code)…」「the tool says that a command still running at the timeout moves to the background」）
+  - [x] 没有前台命令时 Ctrl+B 仍是光标左移。（P62j：tui-p39「…otherwise it is pi's cursor left」）
+- [x] 39e：（P62j：子项都有证据）
+  - [x] 改键文件能改编辑键、全局键、选择器和树的键，`/reload` 后生效；冲突和写错的键有提示。（P62j：tui-p39「a user entry replaces that action's defaults; conflicts and mistakes are reported」「is read at start, … /reload reads again」）
+  - [x] `/keybindings` 能创建并打开文件；`/hotkeys` 显示改过的键。（P62j：tui-p39「is read at start, /keybindings writes the file with every action, /hotkeys shows the keys in force…」）
+- [ ] 39f：（P62j：见 201）
+  - [x] 有分叉的会话里树形正确（与 pi 的规则一致）；当前分支排在前面并标 `•`。（P62j：tui-p39「draws branches as pi does: the current branch first and marked…」）
+  - [ ] 五种过滤、折叠、搜索、标签、复制都可用；选中后行为与 P38 一致。（P62j：过滤、搜索、折叠、标签有测试（tui-p39 的三个树用例）；复制没有，列进 docs/device-acceptance.md）
+- [x] smoke-tui 新增场景（/btw、Ctrl+B、树），全屏与 inline 都通过；真 DeepSeek 试 /btw 和超时转后台。（P62j：smoke-tui 的 p39 场景，P62 在 WSL 里两种模式跑过；实施记录的真 DeepSeek）
+- [x] DoD 通用项（见 development.md）；决策记为 D42。（P62j：实施记录；D42）
 
 ## 风险与开放问题
 

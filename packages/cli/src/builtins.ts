@@ -379,7 +379,9 @@ export function builtinExtensions(): Extension[] {
 		createSubagentsExtension({
 			tasksCommand: false,
 			// P44: scheduled tasks and monitors belong to the session, not to a child that ends.
+			// P35 (Claude Code): a child does not ask the user; it puts its questions in its result.
 			parentOnlyTools: [
+				"ask_user",
 				"cron_create",
 				"cron_list",
 				"cron_delete",

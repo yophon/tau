@@ -569,4 +569,35 @@ describe("P40 regression: openWorkspace", () => {
 			}
 		});
 	});
+
+	it("a subagent does not get ask_user: it reports its questions back (P35, Claude Code; P62j)", async () => {
+		await sandbox(async ({ cwd, home }) => {
+			const mock = await startMockOpenAI([
+				() => mockToolCallTurn("subagent", { task: "look around" }),
+				() => mockTextTurn("child done"),
+				() => mockTextTurn("parent done"),
+			]);
+			try {
+				const rpc = startMode(["--mode", "rpc", "--permission-mode", "autonomous"], {
+					cwd,
+					home,
+					baseUrl: mock.baseUrl,
+				});
+				rpc.send({ id: "p1", type: "prompt", message: "delegate" });
+				await rpc.waitFor((r) => r.type === "agent_settled", "the run", 20_000);
+				const toolsOf = (index: number) =>
+					((mock.requests[index]?.tools ?? []) as Array<{ function?: { name?: string } }>).map(
+						(tool) => tool.function?.name,
+					);
+				// Ended first: a failing assertion would leave the CLI holding the directory.
+				rpc.end();
+				await rpc.exit();
+				assert.ok(toolsOf(0).includes("ask_user"), "the parent has it");
+				assert.ok(toolsOf(1).includes("read"), "the second request is the child's");
+				assert.ok(!toolsOf(1).includes("ask_user"), toolsOf(1).join(","));
+			} finally {
+				await mock.close();
+			}
+		});
+	});
 });

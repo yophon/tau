@@ -144,7 +144,7 @@
   - 现有 40 个场景照旧，在不起常驻服务时（即本进程中枢）全屏、inline 各跑一遍；
   - 新增两三个场景在常驻服务下跑：两个 tmux 窗格接同一会话，一边发话另一边看到；一轮还在跑时关掉一个窗格，另开一个窗格用 `/sessions` 接回，看到这一轮的结果。
 - [x] 长会话基准加一列：经 socket 接上 2000、10000、30000 条记录的会话。
-- [ ] 真机：
+- [ ] 真机：（P62j：列进 docs/device-acceptance.md）
   - Windows（PowerShell，命名管道）：`tau serve start` 后两个终端接同一会话；关掉起服务的那个终端，服务还在；`tau serve stop`；
   - WSL tmux：两个 TUI 接同一会话；
   - 真 DeepSeek 各一轮。

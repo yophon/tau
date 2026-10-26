@@ -325,20 +325,20 @@ interface HookOutput {
 
 ## 验收清单
 
-- [ ] TUI 等待模式（`askUser.wait: true`）：让模型「问我用哪种方案再动手」，出现选择器；点选一项后模型按选择继续；选「Write my own answer…」写字也能被模型读到；多选问题用空格和鼠标各勾两项，模型拿到两项；Esc 后这一轮停下，输入框可用。
-- [ ] TUI：窗口不在前台时出现问题，收到桌面通知。
-- [ ] TUI 不等待模式（缺省）：模型问完继续调用别的工具；Esc 放着后输入框上方有挂起行，Ctrl+Q 与单击都能重新打开；运行中回答，答案在下一轮出现；空闲时回答，自动开始新的一轮。
-- [ ] `-p` 运行时模型的工具列表里没有 `ask_user`；子代理里也没有。
-- [ ] RPC：`ask_user` 发出 `extension_ui_request`（select、multiselect），回应后结果正确。ACP：脚本客户端收到 `session/request_permission`，选项为问题的选项。
-- [ ] 网关（假渠道插件）：模型提问后收到带编号的消息；回「2」选中第二项；多选问题回「1 3」选中两项；回一句话作为自写答案；等待上限到后模型自行决定并说明假设；不等待模式下回编号送达答案、回其他文字按普通消息处理。
-- [ ] 钩子：`PostToolUse` 配 `edit|write` → 一个故意写错类型的 `.ts`，模型在同一轮看到 tsc 报错并修好。
-- [ ] 钩子：`PreToolUse` 配 `bash` → 脚本对 `git push --force` 退出 2，模型收到理由并改用别的做法；审计里这次调用的来源是 `hook`。另一个脚本用 `updatedInput` 改写命令，实际执行的是改后的命令。supervised 模式下 `permissionDecision: "allow"` 让 bash 不弹审批直接执行，只读模式下仍被拒；`PermissionRequest` 钩子返回 deny 时审批面板不出现、调用被拒。
-- [ ] 钩子：直接拿一份 Claude Code 写法的配置（`"matcher": "Edit|Write"`）能生效。
-- [ ] 钩子：`UserPromptSubmit` 的 stdout 被模型读到，原文不变；退出 2 时提示没有发出。
-- [ ] 钩子：`Stop` 退出 2 时模型接着做，脚本见到 `stop_hook_active` 后放行；未受信任项目的 `.tau/settings.json` 里的钩子不跑。
-- [ ] 钩子：超时与退出 1 只显示警告；Esc 能终止正在跑的钩子；`async` 钩子不阻塞这一轮。
-- [ ] 真 DeepSeek 跑一遍上面的 TUI 与钩子场景。
-- [ ] DoD 通用项（见 development.md）
+- [x] TUI 等待模式（`askUser.wait: true`）：让模型「问我用哪种方案再动手」，出现选择器；点选一项后模型按选择继续；选「Write my own answer…」写字也能被模型读到；多选问题用空格和鼠标各勾两项，模型拿到两项；Esc 后这一轮停下，输入框可用。（P62j：ask-user.test「asks in turn…」「waiting: the answer is the tool result…」，tui-p35「Space and clicks check items…」）
+- [ ] TUI：窗口不在前台时出现问题，收到桌面通知。（P62j：要真窗口与桌面通知，列进 docs/device-acceptance.md）
+- [x] TUI 不等待模式（缺省）：模型问完继续调用别的工具；Esc 放着后输入框上方有挂起行，Ctrl+Q 与单击都能重新打开；运行中回答，答案在下一轮出现；空闲时回答，自动开始新的一轮。（P62j：tui-p35「not waiting: the run goes on; Esc…, Ctrl+Q…」，ask-user.test「not waiting: Esc puts the question aside…」，smoke-tui 的 ask-user）
+- [x] `-p` 运行时模型的工具列表里没有 `ask_user`；子代理里也没有。（P62j：`-p`：P62j 用 mock 实测，声明的工具里没有 ask_user；子代理：P62j 查出原来子代理拿得到 ask_user（规格写的排除没做），已修，modes.test「a subagent does not get ask_user」）
+- [x] RPC：`ask_user` 发出 `extension_ui_request`（select、multiselect），回应后结果正确。ACP：脚本客户端收到 `session/request_permission`，选项为问题的选项。（P62j：RPC：P62j 用 mock 实测，单选、多选各发 `select`、`multiselect`；ACP：p60-acp「asks through elicitation forms when the editor takes them, else falls back」）
+- [ ] 网关（假渠道插件）：模型提问后收到带编号的消息；回「2」选中第二项；多选问题回「1 3」选中两项；回一句话作为自写答案；等待上限到后模型自行决定并说明假设；不等待模式下回编号送达答案、回其他文字按普通消息处理。（P62j：已归档（网关））
+- [x] 钩子：`PostToolUse` 配 `edit|write` → 一个故意写错类型的 `.ts`，模型在同一轮看到 tsc 报错并修好。（P62j：hooks.test「PostToolUse: additionalContext and exit-2 stderr reach the model after the result」；真模型修好的那半见本清单的真 DeepSeek 一条）
+- [x] 钩子：`PreToolUse` 配 `bash` → 脚本对 `git push --force` 退出 2，模型收到理由并改用别的做法；审计里这次调用的来源是 `hook`。另一个脚本用 `updatedInput` 改写命令，实际执行的是改后的命令。supervised 模式下 `permissionDecision: "allow"` 让 bash 不弹审批直接执行，只读模式下仍被拒；`PermissionRequest` 钩子返回 deny 时审批面板不出现、调用被拒。（P62j：hooks.test「PreToolUse: exit 2 blocks…」「PreToolUse: updatedInput rewrites the call…」，audit.test「classifies calls that never ran…」）
+- [x] 钩子：直接拿一份 Claude Code 写法的配置（`"matcher": "Edit|Write"`）能生效。（P62j：hooks.test「matches tool names the way Claude Code does…」「parses Claude Code's shape…」）
+- [x] 钩子：`UserPromptSubmit` 的 stdout 被模型读到，原文不变；退出 2 时提示没有发出。（P62j：hooks.test「UserPromptSubmit: exit 2 drops the prompt…」）
+- [x] 钩子：`Stop` 退出 2 时模型接着做，脚本见到 `stop_hook_active` 后放行；未受信任项目的 `.tau/settings.json` 里的钩子不跑。（P62j：hooks.test「Stop: exit 2 keeps the run going…」「reads the user's file, the project's only when trusted…」）
+- [ ] 钩子：超时与退出 1 只显示警告；Esc 能终止正在跑的钩子；`async` 钩子不阻塞这一轮。（P62j：超时、退出 1、async 有测试（hooks.test「an async hook does not hold the run; a failing or slow hook only warns」）；Esc 终止正在跑的钩子没有测试，列进 docs/device-acceptance.md）
+- [ ] 真 DeepSeek 跑一遍上面的 TUI 与钩子场景。（P62j：实施记录里没有真 DeepSeek 的记录，列进 docs/device-acceptance.md（真模型一组））
+- [x] DoD 通用项（见 development.md）（P62j：实施记录：check、全量测试、smoke-tui 两种模式）
 
 ## 风险与开放问题
 

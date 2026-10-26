@@ -11,7 +11,7 @@
 | 链式 | `{chain: [{agent, task, name?, isolation?, effort?}, ...]}` | 任务里的 `{previous}` 换成上一步的输出 |
 | 后台 | 以上任一种加 `background: true` | 工具立刻返回，结果之后作为后续消息送回；`/tasks` 里能看到，运行中选「View」看它最近的工具调用与回复末尾（最近 18 行，P53，照 yo-agent 的任务面板），结束后看它的回答 |
 
-子 agent 从父会话的工具里挑（永远不带 `subagent`，不能再派子 agent），权限模式取父子里更严的那个，审批框里写明是哪个子 agent 发起的。
+子 agent 从父会话的工具里挑（永远不带 `subagent`，不能再派子 agent；也不带 `ask_user`，有疑问写进结果交回主会话，照 Claude Code；定时任务、`monitor`、推送通知、进出 worktree 这些属于会话的工具也不带），权限模式取父子里更严的那个，审批框里写明是哪个子 agent 发起的。
 
 `effort`（`low`、`medium`、`high`、`xhigh`、`max`，P49，照 Claude Code）是这次运行的思考级别，优先于 agent 定义里的；都没写时跟主会话一样。`send_message` 续接时沿用第一次运行的级别。
 

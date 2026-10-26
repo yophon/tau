@@ -103,7 +103,7 @@
   - 现有的 ACP 测试按新行为改（经编辑器读写的那些改成磁盘）。
 - [x] 结构门禁：适配层不读中枢一侧的对象。
 - [x] 真 DeepSeek：脚本化的 ACP 客户端连常驻服务，load 终端里的会话，发一句需要审批的话，审批在 ACP 这边答。
-- [ ] 真机（用户）：Zed 里 tau 的历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失。
+- [ ] 真机（用户）：Zed 里 tau 的历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失。（P62j：列进 docs/device-acceptance.md）
 - [x] check、全量测试、pack smoke、smoke-tui；push 后 CI 通过；D62；文档（protocol.md、rpc.md 的 ACP 一节、README 的编辑器一节）。
 
 ## 风险

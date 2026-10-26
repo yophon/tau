@@ -119,30 +119,30 @@
 
 ## 验收清单
 
-- [ ] 40a：
-  - [ ] 设了 `HTTPS_PROXY`（或只设 `httpProxy`）时，模型请求、`web_fetch`、MCP HTTP 都经过一个本地测试代理；`NO_PROXY` 里的地址直连。
-  - [ ] `httpIdleTimeoutMs` 设得很小时，迟迟不回响应头的请求按超时失败；设 0 不超时。
-  - [ ] 没有代理环境变量时行为不变；`tau gateway` 不装 dispatcher。
-- [ ] 40b：
-  - [ ] Windows 上默认有 `powershell` 工具，`Get-ChildItem`、中文输出正确；`--tools -powershell` 能关掉。
-  - [ ] PowerShell 命令能超时转后台、`run_in_background`、Ctrl+B。
-  - [ ] 规则：`PowerShell(Get-ChildItem *)` 允许 `gci`；`gci; Remove-Item x` 不被它允许；`PowerShell(Remove-Item *)` 的 deny 拦下 `ls | rm x`；带 `$(...)` 的命令照常询问；不分大小写。
-  - [ ] 有 Bash deny 规则、没有 PowerShell 规则时没有 PowerShell 工具；加一条 PowerShell 规则后又有了。
-  - [ ] `shellPath` 指向的 bash 被使用，路径不存在时启动报错；`shellCommandPrefix` 对 bash 工具和 `!` 命令生效，对 PowerShell 不生效。
-- [ ] 40c：
-  - [ ] 表里每个键各有测试证明生效。
-  - [ ] 信任过的项目里 `.tau/settings.json` 覆盖用户层，不信任时不读；只认用户层的键在项目层里写了也不生效。
-  - [ ] `defaultTools` 两层合并符合 pi 的规则；`--tools` 在它之上再改。
-  - [ ] `docs/settings.md` 列全。
-- [ ] 40d：
-  - [ ] 三个模型请求事件在 OpenAI 兼容和 Anthropic 两种传输上都触发，替换请求体生效；传输层不支持时注册报错。
-  - [ ] 扩展弹窗前后各有一次 `ui_prompt_start`、`ui_prompt_end`。
-  - [ ] Markdown 变换在 TUI 里生效，多个扩展按顺序作用。
-  - [ ] 模拟端点第一次返回溢出错误时，压缩一次后重试成功，事件带 `overflow`、`willRetry: true`；连续两次溢出时报 pi 的原话，不无限重试。
-  - [ ] `session_before_tree` 带 `userWantsSummary`；处理器给的 `label` 出现在分支摘要条目上。
-  - [ ] `node scripts/check-pi-parity.mjs` 通过，表里没有 📍Backlog。
-- [ ] 真 DeepSeek：经本地代理跑一轮对话；在 Windows 上让模型用 PowerShell 查一次进程或文件。
-- [ ] DoD 通用项（见 development.md）；决策记为 D43。
+- [ ] 40a：（P62j：见 123）
+  - [ ] 设了 `HTTPS_PROXY`（或只设 `httpProxy`）时，模型请求、`web_fetch`、MCP HTTP 都经过一个本地测试代理；`NO_PROXY` 里的地址直连。（P62j：模型请求、web_fetch、NO_PROXY 有测试（p40 的三个代理用例）；MCP HTTP 走代理没有单独测试，列进 docs/device-acceptance.md）
+  - [x] `httpIdleTimeoutMs` 设得很小时，迟迟不回响应头的请求按超时失败；设 0 不超时。（P62j：p40「httpIdleTimeoutMs bounds the wait for response headers」）
+  - [x] 没有代理环境变量时行为不变；`tau gateway` 不装 dispatcher。（P62j：没有代理变量是所有其他测试的情形；网关的一半已归档）
+- [x] 40b：（P62j：子项都有证据）
+  - [x] Windows 上默认有 `powershell` 工具，`Get-ChildItem`、中文输出正确；`--tools -powershell` 能关掉。（P62j：p40「on Windows the tool is on by default; --tools -powershell…」，实施记录的真 DeepSeek（PowerShell 列目录））
+  - [x] PowerShell 命令能超时转后台、`run_in_background`、Ctrl+B。（P62j：kernel p40「runs through its own shell; Start-Sleep stops at its timeout, other commands move to the background」）
+  - [x] 规则：`PowerShell(Get-ChildItem *)` 允许 `gci`；`gci; Remove-Item x` 不被它允许；`PowerShell(Remove-Item *)` 的 deny 拦下 `ls | rm x`；带 `$(...)` 的命令照常询问；不分大小写。（P62j：kernel p40 的 PowerShell 规则用例（cmdlet 覆盖别名、复合命令、拆不清的不放行、重定向按 Edit））
+  - [x] 有 Bash deny 规则、没有 PowerShell 规则时没有 PowerShell 工具；加一条 PowerShell 规则后又有了。（P62j：p40「a Bash deny rule turns PowerShell off unless some rule names PowerShell」）
+  - [x] `shellPath` 指向的 bash 被使用，路径不存在时启动报错；`shellCommandPrefix` 对 bash 工具和 `!` 命令生效，对 PowerShell 不生效。（P62j：p40「shellCommandPrefix reaches the bash tool; a missing shellPath stops tau with pi's message」）
+- [ ] 40c：（P62j：见 133）
+  - [ ] 表里每个键各有测试证明生效。（P62j：p40 测了大部分键（重试、压缩、队列、轮数、defaultTools、sessionDir、扩展与资源、images、treeFilterMode、externalEditor 等）；没有逐键核到每一个）
+  - [x] 信任过的项目里 `.tau/settings.json` 覆盖用户层，不信任时不读；只认用户层的键在项目层里写了也不生效。（P62j：p40「reads the project's file only when trusted…」「the project layer overrides, merges sections…」）
+  - [x] `defaultTools` 两层合并符合 pi 的规则；`--tools` 在它之上再改。（P62j：p40「defaultTools picks the tools at start; --tools changes it; a trusted project's +/- list changes it too」）
+  - [x] `docs/settings.md` 列全。（P62j：P62i 用脚本对过 settings.md 的键表与 `TauSettings`、`USER_ONLY_KEYS`）
+- [x] 40d：（P62j：子项都有证据）
+  - [x] 三个模型请求事件在 OpenAI 兼容和 Anthropic 两种传输上都触发，替换请求体生效；传输层不支持时注册报错。（P62j：kernel p40「before_provider_request replaces the payload…」「a transport that does not report them makes those handlers an error…」）
+  - [x] 扩展弹窗前后各有一次 `ui_prompt_start`、`ui_prompt_end`。（P62j：kernel p40「an extension's prompt is bracketed by the two events…」）
+  - [x] Markdown 变换在 TUI 里生效，多个扩展按顺序作用。（P62j：p40「change how user and assistant messages are drawn, in extension order」）
+  - [x] 模拟端点第一次返回溢出错误时，压缩一次后重试成功，事件带 `overflow`、`willRetry: true`；连续两次溢出时报 pi 的原话，不无限重试。（P62j：kernel p40「compacts with reason overflow and runs the turn again」「a second overflow in a row ends with pi's message…」）
+  - [x] `session_before_tree` 带 `userWantsSummary`；处理器给的 `label` 出现在分支摘要条目上。（P62j：kernel p40 的两个 userWantsSummary 用例）
+  - [x] `node scripts/check-pi-parity.mjs` 通过，表里没有 📍Backlog。（P62j：P62j 重跑 `check-pi-parity.mjs`：91 个成员通过）
+- [x] 真 DeepSeek：经本地代理跑一轮对话；在 Windows 上让模型用 PowerShell 查一次进程或文件。（P62j：实施记录的真 DeepSeek（经本地代理一轮、PowerShell 列目录））
+- [x] DoD 通用项（见 development.md）；决策记为 D43。（P62j：实施记录；D43）
 
 ## 风险与开放问题
 

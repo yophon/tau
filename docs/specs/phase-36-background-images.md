@@ -190,7 +190,7 @@ export interface BackgroundTaskInfo {
 - [x] CLI：结束通知在空闲时开始新的一轮、运行中插入当前轮；被 `task_stop` 结束的不通知；进程退出时没有遗留子进程（Windows 用 `tasklist` 核对）。
 - [x] 网关：有后台命令的对话不被空闲卸载；`gateway stop` 后进程全部结束。
 - [x] TUI：状态栏计数与点击；`/tasks` 列出子代理与命令，查看输出、结束；smoke-tui 新增 `background` 场景（启动一个每秒打印一行的 node 脚本、查看、结束），全屏与 inline 各跑一遍。
-- [ ] 粘贴：Windows 上复制一张截图按 Alt+V 插入临时文件路径；复制一个文件插入原路径；没有图片时粘贴文字；剪贴板读取写成可注入命令执行器的单元测试，四种系统的分支都有用例。
+- [ ] 粘贴：Windows 上复制一张截图按 Alt+V 插入临时文件路径；复制一个文件插入原路径；没有图片时粘贴文字；剪贴板读取写成可注入命令执行器的单元测试，四种系统的分支都有用例。（P62j：列进 docs/device-acceptance.md）
 - [x] `@file`：文字内联、图片附上；不存在报错；`-p` 下可用。
 - [x] 缩放：4000×3000 的 PNG 读出来不超过 2000×2000 且 base64 不超过 4.5 MB；BMP 转 PNG；不支持图片的模型看到说明文字。
 - [x] 真实模型：DeepSeek 启动一个开发服务器（`node server.mjs`）、读输出文件确认端口、`curl` 一次、`task_stop` 结束；支持图片的模型（Anthropic 路由）读一张截图并描述内容。
