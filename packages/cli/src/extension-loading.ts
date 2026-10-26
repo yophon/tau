@@ -7,7 +7,8 @@ import { importExtensionFiles, listExtensionFiles, loadExtensionsFromDir } from 
 import { type Extension, ExtensionRegistry, type InlineExtension, type UiCapability } from "@yophon/tau-kernel";
 import type { McpServerSpec } from "@yophon/tau-protocol";
 import { builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
-import { createHooksExtension, type HookRunner, loadHookConfig } from "./hooks.ts";
+import { type HookRunner, loadHookConfig } from "./hooks.ts";
+import { createHooksExtension } from "./hooks-extension.ts";
 import type { LspHost } from "./lsp.ts";
 import { isProjectTrusted, presentGatedResources } from "./project-trust.ts";
 import { stdioServer } from "./secrets.ts";

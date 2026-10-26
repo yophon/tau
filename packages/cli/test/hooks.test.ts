@@ -6,15 +6,8 @@ import { join } from "node:path";
 import { after, describe, it } from "node:test";
 import { Agent, type AgentEvent, ExtensionRegistry, type Tool, toolResultText } from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
-import {
-	createHooksExtension,
-	type HookConfig,
-	HookRunner,
-	loadHookConfig,
-	matcherMatches,
-	parseHooks,
-	withHookApprovals,
-} from "../src/hooks.ts";
+import { type HookConfig, HookRunner, loadHookConfig, matcherMatches, parseHooks } from "../src/hooks.ts";
+import { createHooksExtension, withHookApprovals } from "../src/hooks-extension.ts";
 
 const dirs: string[] = [];
 after(() => {

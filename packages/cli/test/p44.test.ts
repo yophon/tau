@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { after, afterEach, describe, it } from "node:test";
 import { parseElicitation } from "@yophon/tau-ext-mcp-http";
 import type { Extension, UiCapability } from "@yophon/tau-kernel";
-import { elicitationDecision, type HookConfig, type HookOutcome, HookRunner, withHookApprovals } from "../src/hooks.ts";
+import { elicitationDecision, type HookConfig, type HookOutcome, HookRunner } from "../src/hooks.ts";
+import { withHookApprovals } from "../src/hooks-extension.ts";
 import { createElicitHandler } from "../src/mcp-elicit.ts";
 import { DOWN, ENTER, ESC, type Harness, type HarnessOptions, harness as start } from "./tui-harness.ts";
 

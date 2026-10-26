@@ -5,7 +5,7 @@
  */
 import { isAbsolute, relative } from "node:path";
 import type { Extension, PermissionRuleKind, UiCapability } from "@yophon/tau-kernel";
-import { DIRECTORY_ADDED_CHANNEL } from "./hooks.ts";
+import { DIRECTORY_ADDED_CHANNEL } from "./hooks-extension.ts";
 import type { ListedRule, RuleDestination, WorkspacePermissions } from "./permissions.ts";
 
 const KIND_TITLES: Record<PermissionRuleKind, string> = { allow: "Allow", ask: "Ask", deny: "Deny" };

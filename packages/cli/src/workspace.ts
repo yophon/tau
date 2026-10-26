@@ -57,7 +57,8 @@ import {
 	systemPromptSources,
 } from "./extension-loading.ts";
 import { shadowedContextFile } from "./git-paths.ts";
-import { HookRunner, postToolBatch, withHookApprovals } from "./hooks.ts";
+import { HookRunner } from "./hooks.ts";
+import { postToolBatch, withHookApprovals } from "./hooks-extension.ts";
 import { createPermissionsExtension } from "./permission-commands.ts";
 import { openAlwaysOptions, powershellAllowedBy, WorkspacePermissions } from "./permissions.ts";
 import { saveProjectTrust } from "./project-trust.ts";

@@ -11,14 +11,13 @@ import {
 	ExtensionRegistry,
 	type ToolResultMessage,
 } from "@yophon/tau-kernel";
+import { type HookConfig, HookRunner } from "../src/hooks.ts";
 import {
 	createHooksExtension,
 	DIRECTORY_ADDED_CHANNEL,
-	type HookConfig,
-	HookRunner,
 	postToolBatch,
 	stopFailureType,
-} from "../src/hooks.ts";
+} from "../src/hooks-extension.ts";
 
 const dirs: string[] = [];
 after(() => {
