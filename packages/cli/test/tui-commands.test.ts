@@ -141,8 +141,9 @@ describe("P27 built-in commands", () => {
 		await h.submit("count tokens please");
 		await h.waitFor((f) => f.includes("first answer") && /Worked for \d/.test(f), "the answer");
 		await h.submit("/cost");
-		const frame = await h.waitFor((f) => f.includes("session total, every branch"), "the table");
-		assert.match(frame, /1\s+\d+.*count tokens please/);
+		// The first /usage table is on screen too: wait for the one with the turn in it.
+		const frame = await h.waitFor((f) => /1\s+\d+.*count tokens please/.test(f), "the table with the turn");
+		assert.match(frame, /session total, every branch/);
 	});
 
 	it("/context shows the window estimate by part", async () => {

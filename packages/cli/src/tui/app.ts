@@ -7,7 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import { Box, Static, Text, useInput, useStdout } from "ink";
+import { Box, Static, Text, useInput } from "ink";
 import React, { useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
 import { stripEscapes, strWidth } from "./input/width.ts";
@@ -15,6 +15,7 @@ import { ASIDE_ROWS, type Block, type UiState } from "./model.ts";
 import { asideMaxScroll } from "./render/aside.ts";
 import { renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineOptions } from "./render/lines.ts";
+import { useTerminal } from "./terminal.ts";
 import type { RunTuiOptions, TuiDeps } from "./types.ts";
 
 const h = React.createElement;
@@ -41,8 +42,8 @@ export function liveRows(live: readonly Block[], options: LineOptions, screenRow
 export function App(props: { controller: TuiController }): React.ReactElement {
 	const { controller } = props;
 	const state = useSyncExternalStore(controller.store.subscribe, controller.store.getState);
-	const { stdout } = useStdout();
-	const columns = stdout?.columns ?? 80;
+	const terminal = useTerminal();
+	const columns = terminal.columns;
 
 	// Keys reach the controller through the filtered stdin (P38a); this keeps Ink's raw mode on.
 	useInput(() => undefined);
@@ -51,7 +52,7 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 		width: columns,
 		verbose: state.verbose,
 		showReasoning: state.showReasoning,
-		colors: stdout?.hasColors?.() === true,
+		colors: terminal.colors,
 	};
 	asideLimit(controller, state, columns);
 	return h(
@@ -65,7 +66,7 @@ export function App(props: { controller: TuiController }): React.ReactElement {
 				return h(BlockRows, { key: block.id, block, options });
 			},
 		}),
-		state.live.length > 0 ? h(Text, { key: "live" }, liveRows(state.live, options, stdout?.rows ?? 24)) : null,
+		state.live.length > 0 ? h(Text, { key: "live" }, liveRows(state.live, options, terminal.rows)) : null,
 		renderBottom(state, columns, controller.completion()),
 	);
 }
@@ -171,31 +172,53 @@ export function rewrappedRows(frame: string, width: number): number {
 	return rows;
 }
 
-/** The parts of Ink's instance the resize passes need: the frame it drew last, its line counter, its unthrottled render. */
+/**
+ * The parts of Ink's instance (Ink 8) the TUI uses: the frame it rendered last (and what it
+ * wrote for it, and its height), its line counter, its throttled writer, its unthrottled render.
+ */
 interface InkFrameState {
 	lastOutput: string;
-	/** Everything <Static> printed; a redraw remounts it, so it is emptied first (P38d). */
-	fullStaticOutput?: string;
+	lastOutputToRender?: string;
+	lastOutputHeight?: number;
 	log: { done(): void };
+	throttledLog?: { flush?(): void };
 	onRender?(): void;
 }
 
 /**
- * Ink's instance for this stream (internal: `build/instances.js`, outside the package
- * exports, imported by path so it is the module Ink itself uses). Undefined if a future Ink
- * changes shape; the TUI then falls back to full redraws only.
+ * A module of Ink's own (internal: `build/…`, outside the package exports, imported by path so it
+ * is the module Ink itself uses); its default export. Undefined if a future Ink moves it.
  */
-async function inkFrameState(stdout: object): Promise<InkFrameState | undefined> {
+async function inkModule(file: string): Promise<unknown> {
 	try {
-		const url = new URL("./instances.js", import.meta.resolve("ink"));
-		const instances = (await import(url.href)).default as WeakMap<object, unknown>;
-		const ink = instances.get(stdout) as Partial<InkFrameState> | undefined;
-		return ink && typeof ink.lastOutput === "string" && typeof ink.log?.done === "function"
-			? (ink as InkFrameState)
-			: undefined;
+		return (await import(new URL(`./${file}`, import.meta.resolve("ink")).href)).default;
 	} catch {
 		return undefined;
 	}
+}
+
+/** Ink's instances by stream. */
+async function inkInstances(): Promise<WeakMap<object, unknown> | undefined> {
+	const instances = await inkModule("instances.js");
+	return instances instanceof WeakMap ? instances : undefined;
+}
+
+/**
+ * Commit React's pending work now, through Ink's reconciler (what Ink's own render does): the
+ * store's flush() draws its frame at once (P62, React 19). Without it, frames come a microtask later.
+ */
+async function setInkCommit(controller: TuiController): Promise<void> {
+	const reconciler = (await inkModule("reconciler.js")) as { flushSyncWork?: () => void } | undefined;
+	const flush = reconciler?.flushSyncWork;
+	if (typeof flush === "function") controller.store.setCommit(() => flush.call(reconciler));
+}
+
+/** Ink's instance for this stream, if it has the shape the TUI knows; else full redraws only. */
+function inkFrameState(instances: WeakMap<object, unknown> | undefined, stdout: object): InkFrameState | undefined {
+	const ink = instances?.get(stdout) as Partial<InkFrameState> | undefined;
+	return ink && typeof ink.lastOutput === "string" && typeof ink.log?.done === "function"
+		? (ink as InkFrameState)
+		: undefined;
 }
 
 /** Run the TUI until the user quits. Needs a TTY. */
@@ -327,6 +350,7 @@ async function runInline(controller: TuiController, render: InkRender): Promise<
 	// Ctrl+C belongs to the TUI (interrupt, or press twice to exit).
 	const before = new Set(process.stdout.listeners("resize"));
 	const { filteredStdin } = await import("./input/stdin.ts");
+	await setInkCommit(controller);
 	const instance = render(h(App, { controller }), {
 		stdin: filteredStdin(process.stdin, (data) => controller.filterInput(data)),
 		exitOnCtrlC: false,
@@ -334,12 +358,7 @@ async function runInline(controller: TuiController, render: InkRender): Promise<
 	});
 	// A width change re-wraps the screen under Ink: repaint it all in one synchronized frame.
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
-	const ink = await inkFrameState(process.stdout);
-	// A redraw writes the history again; Ink would otherwise keep the old copy too and write
-	// both whenever its frame fills the screen.
-	controller.setBeforeRedraw(() => {
-		if (ink && typeof ink.fullStaticOutput === "string") ink.fullStaticOutput = "";
-	});
+	const ink = inkFrameState(await inkInstances(), process.stdout);
 	const stopRedrawOnResize = takeOverResize(process.stdout, inkListeners, {
 		live: () => {
 			if (!ink) {
@@ -347,12 +366,16 @@ async function runInline(controller: TuiController, render: InkRender): Promise<
 				return;
 			}
 			controller.repaintLive(() => {
-				// The cursor sits on the line after Ink's frame: go up over its re-wrapped rows, clear
-				// to the end of the screen, and let Ink start counting again.
+				// The frame Ink rendered last is on screen once its throttled write is out. The cursor
+				// sits on the line after it: go up over its re-wrapped rows, clear to the end of the
+				// screen, and let Ink start counting again with no frame of its own drawn.
+				ink.throttledLog?.flush?.();
 				const rows = rewrappedRows(ink.lastOutput, process.stdout.columns ?? 80);
 				process.stdout.write(`\r\x1b[${rows}A\x1b[0J`);
 				ink.log.done();
 				ink.lastOutput = "";
+				ink.lastOutputToRender = "";
+				ink.lastOutputHeight = 0;
 			});
 		},
 		full: () => controller.redraw(),
@@ -390,27 +413,31 @@ async function runFullscreen(
 	const stdout = fullscreen.fullscreenStdout(process.stdout);
 	const before = new Set(process.stdout.listeners("resize"));
 	const { filteredStdin } = await import("./input/stdin.ts");
+	const instances = await inkInstances();
+	await setInkCommit(controller);
 	const instance = render(h(fullscreen.FullscreenApp, { controller, cache }), {
 		stdout,
 		// Mouse and focus reports go to the controller before Ink parses keys.
 		stdin: filteredStdin(process.stdin, (data) => controller.filterInput(data)),
 		exitOnCtrlC: false,
 		patchConsole: false,
+		// After each render, its frame is in Ink's lastOutput: tau paints it (P62; Ink's own
+		// writes, which differ by platform and version, are dropped by the stdout above).
+		onRender: () => {
+			const frame = inkFrameState(instances, stdout)?.lastOutput;
+			if (frame !== undefined) stdout.paint(frame);
+		},
 	});
 	const inkListeners = process.stdout.listeners("resize").filter((listener) => !before.has(listener)) as (() => void)[];
-	const ink = await inkFrameState(stdout);
+	const ink = inkFrameState(instances, stdout);
 	const repaint = (): void => {
-		// Lay out at the new size, then draw that frame now rather than after Ink's 32 ms render
-		// throttle, the whole screen (frames otherwise write only the rows that changed, P38d).
+		// Lay out at the new size, then render that frame now rather than after Ink's render
+		// throttle; onRender paints it, the whole screen after invalidate (frames otherwise write
+		// only the rows that changed, P38d).
 		stdout.invalidate();
 		controller.relayout();
-		if (ink?.onRender) {
-			ink.lastOutput = "";
-			ink.onRender();
-			// Ink writes nothing when its frame is unchanged (log-update compares with what it
-			// wrote last) or throttles the write: paint the frame here, all of it after invalidate.
-			stdout.write(ink.lastOutput);
-		}
+		if (ink?.onRender) ink.onRender();
+		else if (ink) stdout.paint(ink.lastOutput);
 	};
 	const stopRepaint = fullscreen.repaintOnResize(process.stdout, inkListeners, repaint);
 	controller.setFullRepaint(repaint);

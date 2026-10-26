@@ -734,9 +734,6 @@ export class TuiController {
 		// write only the rows that changed, P38d), without clearing first.
 		else if (this.fullscreen && this.fullRepaint) this.fullRepaint();
 		else process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
-		// Inline: Ink's copy of the history goes with the screen, or Ink writes the old one back
-		// whenever a frame is as tall as the terminal (/clear, /resume, /tree, a redraw).
-		this.beforeRedraw?.();
 	}
 
 	/**
@@ -758,12 +755,6 @@ export class TuiController {
 
 	/** Full screen: paint the whole screen again (Ctrl+L), set by the app. */
 	private fullRepaint: (() => void) | undefined;
-	/** Inline: what the app does before the history is written again (Ink's static buffer). */
-	private beforeRedraw: (() => void) | undefined;
-
-	setBeforeRedraw(hook: () => void): void {
-		this.beforeRedraw = hook;
-	}
 
 	setFullRepaint(repaint: () => void): void {
 		this.fullRepaint = repaint;

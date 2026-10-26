@@ -352,18 +352,4 @@ describe("P38 review: the screen", () => {
 			h.cleanup();
 		}
 	});
-
-	it("inline, a new session empties Ink's copy of the old history", async () => {
-		const h = await harness({ responses: [], sessions: true });
-		try {
-			let resets = 0;
-			h.controller.setBeforeRedraw(() => {
-				resets++;
-			});
-			await h.submit("/new");
-			await h.waitFor(() => resets > 0, "the history reset");
-		} finally {
-			h.cleanup();
-		}
-	});
 });

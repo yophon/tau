@@ -238,12 +238,12 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
 
 ## TUI（packages/cli/src/tui/）
 
-基于 Ink 5 + React 18（D31）。main.ts 不静态引入 Ink（有测试检查），TUI 只在进入时动态加载。
+基于 Ink 8 + React 19（D31；P62 从 Ink 5 + React 18 升上来）。main.ts 不静态引入 Ink（有测试检查），TUI 只在进入时动态加载。
 
 P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻服务（D60，`tui-link.ts`）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存（P61：按宽度分开，新宽度的取回之前画旧的；流式中的文字画最近一次取回的结果，`runs.ts` 的 `markdownSource` 决定何时去取）；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。P58：`TuiSession` 带客户端的目录（列存档、换会话时给 `cwd`）与是否常驻；连接断了（服务停了）时以 `thread/closed` 让 TUI 退出。P59：连着常驻服务时连接断了，`TuiSession` 按退避重连最多 60 秒（审批与对话框的处理器随新连接走），重新加入原来的会话并以 `client/reconnected` 让 TUI 重画、结束没看到结尾的那一轮。会话类命令（`/name`、`/resume`、`/fork`、`/new`、`/clone`、`/session`、`/export`、`/import`）在 `session-commands.ts`；常驻服务时 `/resume`（别名 `/sessions`）也列出服务持有的各目录的会话。
 
-- **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
-- **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者；`types.ts` 是共用类型。
+- **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行（P62：Ink 自己的写入丢掉，每次渲染后从 Ink 实例的 `lastOutput` 取这一帧来画）、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
+- **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者（P62：`flush()` 之后经 Ink 的 reconciler 当场提交，React 19 不再同步提交外部 store 的更新）；`types.ts` 是共用类型。
 - **控制器**：`controller.ts` 不依赖 Ink，持有会话客户端（`session`），把会话的推送与扩展渲染的结果派发成 action，对外是一个对象；它的几块各自成文件，状态只放在一处。每一块导出自己的 host 类型（`DialogsHost`、`InputBoxHost`、`TranscriptViewHost`、`RunsHost`、`SessionsHost`）：`Pick<TuiController, 它用到的成员>` 加上它调用的其他部分的方法（例如 `{ readonly runs: Pick<TuiRuns, "sendQueued"> }`），控制器传 `this`，编译器保证不越界。`commands.ts` 的命令收 `CommandHost`，参数补全器只收 `CompletionHost`；runs 会执行任意命令，所以 `RunsHost` 包含 `CommandHost`：
   - `dialogs.ts`：审批、选择器与多选、输入框里的提问、表单、会话树选择器，以及对话框叠放；中枢发来的审批与对话框（`answerApproval`、`answerRequest`），别的客户端先答了（`serverRequest/resolved`）就关掉；
   - `input-box.ts`：输入框编辑（撤销、kill ring、粘贴折叠）、历史（含 Ctrl+C 清掉的草稿）、补全与路径补全（扩展的自动补全经 `completion/request`，送去自己的补全作链的底层）、剪贴板粘贴；
@@ -251,7 +251,7 @@ P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻�
   - `runs.ts`：提交与排队（轮中输入的 steer、follow-up 与命令）；会话的推送：轮（不论哪个客户端发起）与任务的开始结束、内核事件、工具与消息渲染（请求中枢）、提示、不在任务中加进对话的扩展消息；自己发起的任务先占住任务槽（`runJob`），中枢的推送结束它；
   - `sessions.ts`：切换会话（中枢做，扩展可拒绝）并重放（`replay.ts`）、重载扩展、切模型与思考等级。
 - **输入**（`input/`）：`stdin.ts` 过滤 Ink 读的 stdin，`keys.ts` 照 pi 拆序列并解析按键（传统 VT、xterm 修饰、kitty、Windows Terminal 的 win32-input-mode），`mouse.ts`（SGR 鼠标与焦点），`editor.ts`（字素簇编辑器）、`kill-ring.ts`、`paste.ts`、`history.ts`（`~/.tau/history.jsonl`）、`completion.ts`（`/` 与 `@` 补全）、`width.ts`。`keymap.ts` 按层路由，`keybindings.ts` 是 pi 的动作名与缺省键，`~/.tau/keybindings.json` 可改。
-- **渲染**（`render/`）：`lines.ts`（块按宽度渲染成终端行并缓存）、`wrap.ts`（wrap-ansi 在 Ink 那一档的移植，逐字节相同）、`markdown.ts`、`highlight.ts`、`diff.ts`、`tool-views.ts`（按工具的视图，读取合并，流式参数用 `partial-json.ts`）、`approval.ts`、`blocks.ts`、`bottom.ts`（底部区）、`list.ts`、`search.ts`（Ctrl+F，移植 pi）、`aside.ts`（`/btw` 浮层）、`git-diff.ts`、`row-meta.ts`、`spans.ts`。
+- **渲染**（`render/`）：`lines.ts`（块按宽度渲染成终端行并缓存）、`wrap.ts`（wrap-ansi 10 在 Ink 那一档的移植，逐字节相同）、`markdown.ts`、`highlight.ts`、`diff.ts`、`tool-views.ts`（按工具的视图，读取合并，流式参数用 `partial-json.ts`）、`approval.ts`、`blocks.ts`、`bottom.ts`（底部区）、`list.ts`、`search.ts`（Ctrl+F，移植 pi）、`aside.ts`（`/btw` 浮层）、`git-diff.ts`、`row-meta.ts`、`spans.ts`。
 - **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先；扩展命令在中枢运行）、`rewind.ts`（`/rewind`：选一条消息，按中枢的 checkpoint 恢复代码，或经 `runs.navigate` 回到那条消息之前，或两者）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`（中枢送来的渲染结果与组件 → 终端行）、`format.ts`、`ink-env.ts`。
 - **交互面**：`›` 用户、markdown 回复、`● 工具(参数)` 加 `⎿` 结果（缺省折叠）、审批面板、活动行、状态栏、提示行；对话框占输入框的位置。命令表见 `/help`，键位见 `/hotkeys`。
 - **宿主契约**（在中枢一侧）：先挂宿主动作再发 `session_start`（启动与 `/reload`）；一次一件事，轮排在任务之后；run 结束时排队文本回填编辑器（`thread/clearQueue`）。

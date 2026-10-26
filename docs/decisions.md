@@ -160,6 +160,7 @@ P8 的 TUI 基于 pi-tui，消息与工具输出是手拼的 ANSI 字符串，`t
 - **扩展渲染接口不变**（字符串、`{ text, format }` 或 `render(width)` 组件，D9/D10），换底座不影响扩展作者；组件只渲染，`handleInput` 不再调用。
 - **交互式终端默认进 TUI**，`--repl` 保留逐行 REPL，非 TTY 仍走 REPL。
 - 内核为 Shift+Tab 新增 `Agent.setPermissionMode()`，**不写进会话**：恢复的会话由宿主重新给档位，不会比宿主启动时更宽松（偏离规格书草拟时「写进会话以便恢复」的设想）。
+- **P62 补记：升到 Ink 8 + React 19**（依赖规则：发布满两周的最新版）。Ink 8 在主屏不再重放 `<Static>` 的历史，tau 重画前清空它的钩子随之删掉；全屏不再解析 Ink 写出的转义序列（各平台、各版本不同），Ink 的写入丢掉（只放行显示与隐藏光标），每次渲染后从 Ink 实例的 `lastOutput` 取这一帧，照旧只重写变了的行；React 19 的 reconciler 没有了同步提交的 legacy 路径，store 的 `flush()` 之后经 Ink 的 reconciler（`flushSyncWork`）当场提交，重画与缩放仍在一次同步输出里出帧。`render/wrap.ts` 照 wrap-ansi 10 重写（按字素簇断词、tab 展开、换行处关掉并重开全部样式），保留快速路径，与 wrap-ansi 10 逐字节对照。
 
 ## D32：补齐 yo-agent 能力的取舍（2026-10-17，P26，用户确认）
 

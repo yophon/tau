@@ -20,6 +20,10 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 - `scripts/baseline.mjs` times startup, a `-p` turn, the resident server, long sessions and the test
   suite (docs/baseline.md); `scripts/wsl-copy.sh` keeps the WSL copy smoke-tui runs in from importing
   packages over `/mnt` (2.3 s → 0.3 s for `tau --version` there).
+- Dependencies, each the newest release at least two weeks old: Ink 8 with React 19, string-width 8
+  and wrap-ansi 10 (the TUI's text wrapping follows wrap-ansi 10: long words break between grapheme
+  clusters, tabs expand to multiples of 8, styles reopen in full on each row), Preact 11 for the web
+  client, esbuild 0.28.2 and Biome 2.5.15.
 
 ### Fixed (P62: found reviewing the resident server and adding tests)
 - Two ways anyone who could reach the remote port could stop the resident server, before pairing:

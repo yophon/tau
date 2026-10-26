@@ -131,14 +131,12 @@ describe("P33 view slice", () => {
 describe("P33 terminal plumbing", () => {
 	it("paints each Ink frame as the whole screen in one synchronized write, never clearing first", () => {
 		const paint = (rows: string) => `${SYNC_BEGIN}\x1b[H${rows}\x1b[J${SYNC_END}`;
-		// log-update: erase the previous frame line by line, then the frame and a newline.
-		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[Gab\ncd\n"), paint("ab\x1b[K\ncd\x1b[K"));
+		assert.equal(paintFrame("ab\ncd"), paint("ab\x1b[K\ncd\x1b[K"));
 		assert.equal(paintFrame("first\n"), paint("first\x1b[K"));
-		// Ink's whole-screen path (clearTerminal, Windows and elsewhere) has no trailing newline.
-		assert.equal(paintFrame("\x1b[2J\x1b[0fab\ncd"), paint("ab\x1b[K\ncd\x1b[K"));
-		assert.equal(paintFrame("\x1b[2J\x1b[3J\x1b[Hab"), paint("ab\x1b[K"));
-		// Only erasing (log.clear): nothing to paint.
-		assert.equal(paintFrame("\x1b[2K\x1b[1A\x1b[2K\x1b[G"), "");
+		// A row as wide as the screen is not erased after: that would wipe its last cell.
+		assert.equal(paintFrame("abc\nd", 3), paint("abc\nd\x1b[K"));
+		// No frame: nothing to paint.
+		assert.equal(paintFrame(""), "");
 	});
 
 	it("after the first frame, writes only the rows that changed (P38d, pi); invalidate repaints all", () => {
@@ -152,18 +150,19 @@ describe("P33 terminal plumbing", () => {
 		const written: string[] = [];
 		const target = { columns: 80, write: (chunk: string) => written.push(chunk) > 0 };
 		const stdout = fullscreenStdout(target as unknown as NodeJS.WriteStream);
-		stdout.write("one\ntwo\n");
-		stdout.write("one\nTWO\n");
+		stdout.paint("one\ntwo");
+		stdout.paint("one\nTWO");
+		stdout.paint("one\nTWO");
 		stdout.invalidate();
-		stdout.write("one\nTWO\n");
+		stdout.paint("one\nTWO");
 		assert.deepEqual(written, [
-			paintFrame("one\ntwo\n"),
+			paintFrame("one\ntwo"),
 			`${SYNC_BEGIN}\x1b[2;1HTWO\x1b[K${SYNC_END}`,
-			paintFrame("one\nTWO\n"),
+			paintFrame("one\nTWO"),
 		]);
 	});
 
-	it("draws Ink's writes through paintFrame and drops the empty ones", () => {
+	it("drops Ink's own writes (P62: tau paints its frames) but lets the cursor be shown and hidden", () => {
 		const written: unknown[] = [];
 		let called = 0;
 		const target = {
@@ -176,11 +175,17 @@ describe("P33 terminal plumbing", () => {
 			},
 		};
 		const stdout = fullscreenStdout(target as unknown as NodeJS.WriteStream);
-		stdout.write("frame\n");
-		stdout.write("\x1b[2K\x1b[G", () => called++);
+		// Ink 8: a synchronized frame after erasing the last one, the Windows full clear.
+		stdout.write("\x1b[?2026h");
+		stdout.write("\x1b[2K\x1b[1A\x1b[2K\x1b[Gframe\n", () => called++);
+		stdout.write("\x1b[1;1H\x1b[Jframe");
+		stdout.write("\x1b[?2026l");
+		stdout.write("\x1b[?25l");
 		assert.equal(stdout.columns, 80);
-		assert.deepEqual(written, [paintFrame("frame\n")]);
+		assert.deepEqual(written, ["\x1b[?25l"]);
 		assert.equal(called, 1);
+		stdout.paint("frame");
+		assert.deepEqual(written, ["\x1b[?25l", paintFrame("frame")]);
 	});
 
 	it("repaints once per burst of resizes and once more when it settles; Ink's listeners come back", async () => {

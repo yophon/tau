@@ -8,7 +8,7 @@
  * the main screen, where it stays in the scrollback.
  */
 
-import { Box, type DOMElement, measureElement, Text, useInput, useStdout } from "ink";
+import { Box, type DOMElement, measureElement, Text, useInput } from "ink";
 import React, { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { TuiController } from "./controller.ts";
 import { stripEscapes, strWidth } from "./input/width.ts";
@@ -18,6 +18,7 @@ import { CARET_END, CARET_MARK, renderBottom } from "./render/bottom.ts";
 import { blockLines, type LineCache, type LineOptions } from "./render/lines.ts";
 import { listRows } from "./render/list.ts";
 import { markdownTransformersVersion } from "./render/markdown.ts";
+import { useTerminal } from "./terminal.ts";
 import {
 	buildTranscript,
 	type Highlight,
@@ -89,26 +90,19 @@ export function tailRows(
 	return parts.reverse().flat();
 }
 
-// How Ink starts a frame: log-update erases the previous one line by line (ansi-escapes
-// eraseLines); the whole-screen path starts with clearTerminal.
-// biome-ignore lint/suspicious/noControlCharactersInRegex: Ink's escape sequences are what this strips
-const INK_ERASE = /^(?:\x1b\[2K(?:\x1b\[1A)?)*(?:\x1b\[G)?/;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: Ink's escape sequences are what this strips
-const INK_CLEAR = /^\x1b\[2J(?:\x1b\[3J)?(?:\x1b\[H|\x1b\[0f)/;
-
 /**
  * One Ink frame as a whole-screen paint in one synchronized write: from the top-left
  * corner, every row cleared to its end, then the rest of the screen. Nothing is ever
  * cleared first, so the terminal never shows a blank screen between frames, and the paint
  * does not depend on where the cursor was left (a resize can move it). Empty: nothing to paint.
  */
-export function paintFrame(chunk: string, columns?: number): string {
-	return paintDiff(chunk, columns, undefined).out;
+export function paintFrame(frame: string, columns?: number): string {
+	return paintDiff(frame, columns, undefined).out;
 }
 
 /** Ink's frame as screen rows, and where the caret mark puts the real cursor (P38a, pi). */
-function frameRows(chunk: string): { rows: string[]; caret: string } | undefined {
-	let frame = chunk.replace(INK_CLEAR, "").replace(INK_ERASE, "");
+function frameRows(text: string): { rows: string[]; caret: string } | undefined {
+	let frame = text;
 	if (frame === "") return undefined;
 	// The caret: the real cursor ends up there, for the input method's window.
 	let caret = "";
@@ -137,11 +131,11 @@ function frameRows(chunk: string): { rows: string[]; caret: string } | undefined
  * (P38b: the boxes lost their right border).
  */
 export function paintDiff(
-	chunk: string,
+	frame: string,
 	columns: number | undefined,
 	previous: readonly string[] | undefined,
 ): { out: string; rows: string[] | undefined } {
-	const parsed = frameRows(chunk);
+	const parsed = frameRows(frame);
 	if (!parsed) return { out: "", rows: previous ? [...previous] : undefined };
 	const { rows, caret } = parsed;
 	const paint = (row: string): string => {
@@ -162,25 +156,38 @@ export function paintDiff(
 	return { out: `${SYNC_BEGIN}${body}${caret}${SYNC_END}`, rows };
 }
 
-/** The stdout Ink draws on in full screen: every write is painted with paintFrame. */
-export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream & { invalidate(): void } {
+// biome-ignore lint/suspicious/noControlCharactersInRegex: showing and hiding the cursor
+const CURSOR_VISIBILITY = /^(?:\x1b\[\?25[hl])+$/;
+
+/**
+ * The stdout Ink draws on in full screen (P62). Ink's own writes — erasing and rewriting its
+ * frame, differently by platform and version — are dropped, except showing and hiding the
+ * cursor; `paint` draws a frame Ink rendered (its lastOutput), only the rows that changed.
+ */
+export function fullscreenStdout(
+	stdout: NodeJS.WriteStream,
+): NodeJS.WriteStream & { invalidate(): void; paint(frame: string): void } {
 	// The rows on screen, for painting only what changed; undefined repaints it all.
 	let onScreen: string[] | undefined;
 	return new Proxy(stdout, {
 		get(target, property) {
+			const write = (...args: unknown[]) => (target.write as (...a: unknown[]) => boolean).apply(target, args);
 			// After a resize, a hand-over or Ctrl+L the screen is not what we last wrote.
 			if (property === "invalidate") {
 				return () => {
 					onScreen = undefined;
 				};
 			}
+			if (property === "paint") {
+				return (frame: string) => {
+					const painted = paintDiff(frame, target.columns, onScreen);
+					onScreen = painted.rows;
+					if (painted.out !== "") write(painted.out);
+				};
+			}
 			if (property === "write") {
 				return (chunk: unknown, ...rest: unknown[]) => {
-					const write = (...args: unknown[]) => (target.write as (...a: unknown[]) => boolean).apply(target, args);
-					if (typeof chunk !== "string") return write(chunk, ...rest);
-					const painted = paintDiff(chunk, target.columns, onScreen);
-					onScreen = painted.rows;
-					if (painted.out !== "") return write(painted.out, ...rest);
+					if (typeof chunk !== "string" || CURSOR_VISIBILITY.test(chunk)) return write(chunk, ...rest);
 					const callback = rest.find((arg): arg is () => void => typeof arg === "function");
 					callback?.();
 					return true;
@@ -192,7 +199,7 @@ export function fullscreenStdout(stdout: NodeJS.WriteStream): NodeJS.WriteStream
 		set(target, property, value) {
 			return Reflect.set(target, property, value, target);
 		},
-	}) as NodeJS.WriteStream & { invalidate(): void };
+	}) as NodeJS.WriteStream & { invalidate(): void; paint(frame: string): void };
 }
 
 /** The view's rows with a scrollbar thumb in the last column: where `top` is in `total` rows. */
@@ -310,9 +317,9 @@ export function restoreOnExit(write: (data: string) => void): { restore: () => v
 export function FullscreenApp(props: { controller: TuiController; cache: LineCache }): React.ReactElement {
 	const { controller, cache } = props;
 	const state = useSyncExternalStore(controller.store.subscribe, controller.store.getState);
-	const { stdout } = useStdout();
-	const columns = stdout?.columns ?? 80;
-	const screenRows = stdout?.rows ?? 24;
+	const terminal = useTerminal();
+	const columns = terminal.columns;
+	const screenRows = terminal.rows;
 
 	// Mouse and focus reports never get here: the filtered stdin hands them to the controller.
 	// Keys reach the controller through the filtered stdin (P38a); this keeps Ink's raw mode on.
@@ -341,7 +348,7 @@ export function FullscreenApp(props: { controller: TuiController; cache: LineCac
 		width: columns,
 		verbose: state.verbose,
 		showReasoning: state.showReasoning,
-		colors: stdout?.hasColors?.() === true,
+		colors: terminal.colors,
 	};
 	// Finished blocks never change: their rows come from the cache, so a keystroke does not re-wrap history.
 	// A new epoch (/clear, a session switch) drops the old blocks, and their rows with them.
