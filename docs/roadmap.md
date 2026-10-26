@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-24（P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = [P62](specs/phase-62-groundwork.md) 全方位打底子**；桌面端在讨论中，规格书暂不写）
+> 最后更新：2026-10-26（P62 打底子完成，undici 的升级等两周规则，见技术债 #24；P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；**当前工作 = [P62](specs/phase-62-groundwork.md) 全方位打底子**；桌面端在讨论中，规格书暂不写）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -75,8 +75,9 @@
 | [P59](specs/phase-59-remote-phone.md) | 常驻 tau 第四步：手机——常驻服务的 WebSocket 与网页客户端（新包 `@yophon/tau-web`，Preact 构建时打包），`tau serve remote on`、`pair`（一次性码与二维码）、`devices`、`revoke`，设备令牌（只存摘要）、不自带 TLS（推荐 Tailscale）；手机上看会话、答审批与对话框、发话插话中止、附图、换模型与档位；网页与 TUI 断线自动重连补齐 | 2026-10-24 | D61 |
 | [P60](specs/phase-60-editor-acp.md) | 常驻 tau 第五步：编辑器——`--mode acp` 改成协议上的适配层，连接策略同 TUI；`session/list`（终端的会话排前）、load、resume、close；别的客户端的话与设置推给编辑器；审批先答为准、别处答了以 `$/cancel_request` 撤回；会话配置项（档位、模型、推理强度）；对话框走 `elicitation/create`；工具直接读写磁盘（去掉经编辑器读写）；协议加客户端带来的 MCP server（只限本机） | 2026-10-24 | D62 |
 | [P61](specs/phase-61-debt-cleanup.md) | 日常使用相关的三条技术债：常驻服务里图片支持按会话的模型（#35）；扩展的 Markdown 变换在流式时也生效、换宽度按新宽度取（#33）；管道一次灌给 `tau --repl` 的几行一句跑完再跑下一句、跑完退出（#30，原来一句都不跑） | 2026-10-24 | |
+| [P62](specs/phase-62-groundwork.md) | 打底子：基线（`scripts/baseline.mjs`、`docs/baseline.md`）；网关、两个渠道、飞书扩展与三个示例应用归档；CI 加 Ubuntu Node 24 与 Windows 两路 gate；8 个快撞线的文件拆分；重复实现、死代码、空 catch、类型断言（协议边界收进 `wire.ts`）；补测试、偶发失败结论、#18 用 pi 自己的实现核对；常驻服务这条线自查（7 处修正，其中两处未配对就能让服务退出）；依赖升级（Ink 8 + React 19 与 wrap-ansi 10 的移植、Preact 11、Biome 2.5、esbuild；undici 等两周规则）；文档逐句对代码；账目（五份验收清单、真机清单、技术债表；查出子代理拿得到 `ask_user`） | 2026-10-26 | D63（D31、D54 补记） |
 
-真机验收待用户执行的阶段：P34–P49（各规格书验收清单里标着「真机」的项）；P58 的 Windows 两项（两个 TUI 窗口接同一会话；Windows Terminal 与 VS Code 终端里起服务后关窗口）；P59 的手机两项（同一局域网扫码配对、接上终端的会话、答一次审批；有 Tailscale 时经它的 HTTPS 地址打开一次）；P60 的 Zed 一项（历史列表看到终端的会话，打开、发话，终端里看到；审批在终端答，Zed 里的请求消失）。
+真机验收：只能在真终端、手机、编辑器里看的场景都在 [device-acceptance.md](device-acceptance.md)（P34–P60，P62 合成），用户找时间走一遍。
 
 ## 常驻 tau：一个会话，多个客户端（P56–P60）✅
 

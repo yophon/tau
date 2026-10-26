@@ -1,6 +1,6 @@
 # Phase 62：全方位打底子 规格书
 
-> 状态：已确认（2026-10-25）。用户：「都按你的建议来，三那个都archive」——门禁上限降到拆后加 200；依赖升级放在本阶段、代码整理之后；搁置的网关、两个渠道、飞书扩展与 Flutter/RN/小程序示例归档；技术债 #18 在 `../pi` 装依赖后用 pi 的实现生成期望值。
+> 状态：已完成（2026-10-26）；undici 的升级等两周规则（10-29 起，技术债 #24），WSL 里人工看缩放、滚动、选择复制列进真机清单。已确认（2026-10-25）。用户：「都按你的建议来，三那个都archive」——门禁上限降到拆后加 200；依赖升级放在本阶段、代码整理之后；搁置的网关、两个渠道、飞书扩展与 Flutter/RN/小程序示例归档；技术债 #18 在 `../pi` 装依赖后用 pi 的实现生成期望值。
 > 对应 roadmap 阶段：Phase 62。起因：P61 后讨论下一阶段，用户：「是得打底子了，我们最近进展太猛了」；第一版草稿只有拆文件与合并重复，用户：「感觉这些优化太少，撑不起一个阶段，我们既然要打底子，就要全方位的搞」。
 
 ## 目标
@@ -186,18 +186,18 @@
 
 ## 验收清单
 
-- [ ] 62a：`scripts/baseline.mjs` 可跑，`docs/baseline.md` 有阶段前后两列
+- [x] 62a：`scripts/baseline.mjs` 可跑，`docs/baseline.md` 有阶段前后两列
 - [x] 62b：七项移进 `archive/2026-10-25/`；`tau gateway` 不再存在；CLI 只给网关用的分支删掉，其他宿主行为不变；cron 搬进 CLI 且测试随行；`smoke:weapp`、`smoke:quickjs:mcp` 改完通过；`archive/README.md` 写明找回方法；secret-guard 与凭据审计对网关文件的保护照旧
 - [x] 62c：CI 的 Ubuntu Node 22、Ubuntu Node 24、Windows 三路 gate 与 smoke 全绿
 - [ ] 62d：8 个文件都在拆后目标以内；`check-structure.mjs` 的上限按规则更新（`extensions.ts` 拆后 1100 行，超目标 50 行，见实施记录 62d 的偏差）
 - [x] 62e：列出的重复各自只剩一份或改名说明差别；死代码、多余导出、空 `catch`、类型断言处理完，实施记录有数字
 - [x] 62f：补的测试通过；偶发失败各有结论；全量测试墙钟时间前后对比；#18 的期望值来自 pi 的实现
 - [x] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
-- [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制
+- [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制（undici 等两周规则；人工看缩放、滚动、选择复制列进真机清单）
 - [x] 62i：所列文档逐句核过；README 标明未实测路径
 - [x] 62j：五份规格书的清单对完账；`docs/device-acceptance.md` 成稿；技术债表复核完
-- [ ] 真 DeepSeek 回归：`-p` 带工具调用；从不通的端口降级到 DeepSeek（走拆出去的重试与换模型）；REPL、rpc、ACP 各一轮；WSL 里 TUI 一轮（审批、Ctrl+C、`/compact`、缩放）；常驻服务两端接同一会话；会话内定时（`/loop` 或 `cron_create`，走搬进 CLI 的 cron）
-- [ ] DoD 通用项（见 development.md）
+- [x] 真 DeepSeek 回归：`-p` 带工具调用；从不通的端口降级到 DeepSeek（走拆出去的重试与换模型）；REPL、rpc、ACP 各一轮；WSL 里 TUI 一轮（审批、Ctrl+C、`/compact`、缩放）；常驻服务两端接同一会话；会话内定时（`/loop` 或 `cron_create`，走搬进 CLI 的 cron）（见实施记录「收尾」）
+- [x] DoD 通用项（见 development.md）（每个子阶段：check、全量测试；最后一次改代码的提交 e3d4a11 的 CI 三路 gate、smoke、dialects 全绿，之后只改文档）
 
 ## 风险
 
@@ -207,7 +207,7 @@
 - **Ink 8**：内部接口可能已经变了，全屏绘制要跟着改，这是本阶段最可能拖时间的一项。
 - **Windows CI**：第一次跑可能红一片，要留出修的时间。
 
-## 实施记录（进行中）
+## 实施记录
 
 ### 62a 基线（0ddc8d4）
 
@@ -358,3 +358,10 @@
 - **这次实测的**（scratchpad 的脚本，mock 模型）：`--mode rpc` 下 `ask_user` 的单选、多选分别发成 `select`、`multiselect`；`-p` 声明的工具里没有 `ask_user`。顺带重跑 `check-pi-parity.mjs`：91 个成员通过。
 - **真机清单** `docs/device-acceptance.md`（技术债 #28 改写成指向它）：P34–P60 只能真机验的场景，分 11 组——全屏显示与鼠标（P62 换了 Ink 8，排第一）、输入与按键、剪贴板与图片、通知、MCP 网页登录（P62f 改了 Windows 上打开链接的方式）、常驻服务与多客户端、手机、编辑器、会话与命令、真模型、网络；每条写了步骤与预期。各规格书里对应的真机项注明已列进清单。README 的文档列表加上它。
 - **技术债表**：还清删行 #18（62f）、#25（62h）、#27（62e）、#31、#32（62d），写进表下的说明；改写 #13（没发过 npm 的包实际是 10 个）、#24（undici 等两周规则）、#28（指向真机清单）、#36（62f 的诊断）；62g 新登记 #38。#9、#10 是设计取舍，照旧。
+
+### 收尾
+
+- **真 DeepSeek 回归**（deepseek-flash，官方端点；脚本在 scratchpad 的 `deepseek-p62.mjs`、`deepseek-p62-cron.mjs`、`p62-tui-deepseek*.sh`）：`-p` 读文件答出暗号；主端点指向不通的端口时 `--fallback-model` 换到 DeepSeek 答对；REPL 管道两句都跑完、退出码 0；`--mode rpc` 读文件答对；`--mode acp`（`--no-daemon`）一轮 `end_turn`；常驻服务上两个客户端接同一会话，另一端看到回复、`tau serve status` 报 2 个客户端；常驻服务上模型用 `cron_create` 定了下一分钟的一次性任务，一分钟后会话空闲时自己开了一轮。WSL 里 TUI（Ink 8）：全屏（自动起常驻服务）与 `--inline --no-daemon` 各读一次文件；全屏 supervised 一轮里批准一次 bash、Ctrl+C 中断 `sleep 40`（工具结果 aborted、■ Interrupted）、`/compact`（保留 2/7 条）、把窗口从 120×40 改成 90×30 后只有一个输入框、对话都在。第一次写的检查有三处条件写错（拿命令本身含的词、对话太短时正确的「Nothing to compact.」当失败），改正后重跑全过；`--mode rpc` 本来就没有 cron 工具（P44：只给 TUI 与 REPL，常驻服务的会话按 REPL 算），定时那一项改在常驻服务上做。
+- **冒烟**：smoke-tui 两种模式整套（各 41 个场景，WSL）在 62f 后、Ink 8 升级后各跑过，62g 后跑过全屏；pack smoke、`smoke:web`、`build:web`、`smoke:weapp`、`smoke:quickjs`、`smoke:quickjs:mcp`、`smoke:browser`、`smoke:browser:runtime` 在 62h 跑过。
+- **基线**（`docs/baseline.md` 的「P62 之后」）：启动、`-p`、常驻服务、TUI 首屏与 P62 之前持平。变的两项单独核过：全屏首次全部渲染在 2000 条时慢约 12 ms（同一进程里新旧 wrap 移植交替对比，是 wrap-ansi 10 的移植多做的事；10000 条时持平）；全量测试两次 177 s、200 s（测试少了 88 个，这天机器波动大，单独跑时报的耗时是 154–164 s）。
+- **没做完的**：undici（`npm audit` 剩它一个高危，修复版 10-15 发的，10-29 起合规则，等用户定）；WSL 里人工看缩放、滚动、选择复制（列进真机清单第一组）；62d 的 `extensions.ts` 比目标多 50 行（见 62d 的偏差）。
