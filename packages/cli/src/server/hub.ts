@@ -4,7 +4,7 @@
 // P57: everything the TUI does with a session, so the TUI can be a client too (docs/protocol.md).
 
 import { resolve } from "node:path";
-import type { PermissionMode, SessionStore, ThinkingLevel } from "@yophon/tau-kernel";
+import type { PermissionMode, SessionStore, ThinkingLevel, UserContent } from "@yophon/tau-kernel";
 import { messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
@@ -367,9 +367,9 @@ export class SessionHub {
 			return {};
 		});
 
-		handle("turn/start", (params) => thread(params.threadId).startTurn(params.input));
-		handle("turn/steer", (params) => thread(params.threadId).steer(params.input));
-		handle("turn/followUp", (params) => thread(params.threadId).followUp(params.input));
+		handle("turn/start", (params) => thread(params.threadId).startTurn(userInput(params.input)));
+		handle("turn/steer", (params) => thread(params.threadId).steer(userInput(params.input)));
+		handle("turn/followUp", (params) => thread(params.threadId).followUp(userInput(params.input)));
 		handle("turn/interrupt", (params) => {
 			thread(params.threadId).interrupt();
 			return {};
@@ -498,6 +498,9 @@ export class SessionHub {
 		});
 		handle("server/shutdown", (params) => {
 			const { onShutdownRequest } = this.options;
+			// P62: a remote device works in sessions; stopping the server is for this machine.
+			if (!connection.local)
+				throw new JsonRpcError(ERROR_CODES.invalidRequest, "Only this machine's clients stop the server");
 			if (!onShutdownRequest) throw new JsonRpcError(ERROR_CODES.invalidRequest, "This server is not stopped this way");
 			// After the answer is on its way.
 			setTimeout(() => onShutdownRequest(params.graceSeconds), 0);
@@ -598,40 +601,64 @@ export class SessionHub {
 					)
 				: undefined);
 		const metadata = store ? await store.getMetadata() : undefined;
-		const existing = target.thread ?? (reason === "new" || !metadata ? undefined : this.threads.get(metadata.id));
 		const targetFile = target.thread ? target.thread.info().filePath : metadata?.filePath;
+		if (previous && !(await previous.beforeSwitch(reason === "new" ? "new" : "resume", targetFile))) {
+			throw cancelled("switch");
+		}
+		// P62: a saved session another client is opening right now is joined, not opened a second time
+		// (two threads would write one file). No await between this check and the claim below.
+		const saved = reason === "new" || target.thread ? undefined : metadata?.id;
+		let existing = target.thread ?? (saved !== undefined ? this.threads.get(saved) : undefined);
+		const pending = existing === undefined && saved !== undefined ? this.opening.get(saved) : undefined;
+		if (pending) existing = await pending;
 		if (previous) {
-			if (!(await previous.beforeSwitch(reason === "new" ? "new" : "resume", targetFile))) throw cancelled("switch");
 			if (!existing && previous.canHandOver(connection) && previous.workspace.cwd === target.cwd) {
-				this.cancelUnload(previous.id);
-				const next = await previous.handover(store, reason, connection);
-				this.threads.delete(previous.id);
-				connection.threads.delete(previous.id);
-				this.adopt(next);
-				try {
-					if (opening.model !== undefined) await next.chooseModel(false, { model: opening.model });
-					if (opening.permissionMode) next.session.setPermissionMode(opening.permissionMode);
-				} catch (error) {
-					this.threads.delete(next.id);
-					await next.stop();
-					throw error;
-				}
-				return next;
+				return this.claim(saved, async () => {
+					this.cancelUnload(previous.id);
+					const next = await previous.handover(store, reason, connection);
+					this.threads.delete(previous.id);
+					connection.threads.delete(previous.id);
+					this.adopt(next);
+					try {
+						if (opening.model !== undefined) await next.chooseModel(false, { model: opening.model });
+						if (opening.permissionMode) next.session.setPermissionMode(opening.permissionMode);
+					} catch (error) {
+						this.threads.delete(next.id);
+						await next.stop();
+						throw error;
+					}
+					return next;
+				});
 			}
 			connection.threads.delete(previous.id);
 			previous.unsubscribe(connection);
 		}
 		if (existing) return existing;
-		const opened = await HubThread.open(this.host, {
-			...(reason === "new" ? {} : { store }),
-			...(reason === "new" && target.parentSession !== undefined ? { parentSession: target.parentSession } : {}),
-			...(target.ephemeral ? { ephemeral: true } : {}),
-			cwd: target.cwd,
-			opener: connection,
-			...opening,
+		return this.claim(saved, async () => {
+			const opened = await HubThread.open(this.host, {
+				...(reason === "new" ? {} : { store }),
+				...(reason === "new" && target.parentSession !== undefined ? { parentSession: target.parentSession } : {}),
+				...(target.ephemeral ? { ephemeral: true } : {}),
+				cwd: target.cwd,
+				opener: connection,
+				...opening,
+			});
+			this.adopt(opened);
+			return opened;
 		});
-		this.adopt(opened);
-		return opened;
+	}
+
+	/** P62: while saved session `id` opens, a second request for it waits for this one (load, switchTo). */
+	private claim(id: string | undefined, open: () => Promise<HubThread>): Promise<HubThread> {
+		if (id === undefined) return open();
+		const pending = open();
+		this.opening.set(id, pending);
+		void pending
+			.finally(() => {
+				if (this.opening.get(id) === pending) this.opening.delete(id);
+			})
+			.catch(() => undefined);
+		return pending;
 	}
 
 	private loaded(threadId: string): HubThread {
@@ -646,9 +673,9 @@ export class SessionHub {
 	private async load(threadId: string, cwd: string, opener?: Subscriber, opening: Opening = {}): Promise<HubThread> {
 		const loaded = this.threads.get(threadId);
 		if (loaded) return loaded;
-		let pending = this.opening.get(threadId);
-		if (!pending) {
-			pending = (async () => {
+		return (
+			this.opening.get(threadId) ??
+			this.claim(threadId, async () => {
 				const metadata = await this.findSaved(threadId, cwd);
 				const opened = await HubThread.open(this.host, {
 					metadata,
@@ -658,11 +685,8 @@ export class SessionHub {
 				});
 				this.adopt(opened);
 				return opened;
-			})();
-			this.opening.set(threadId, pending);
-			void pending.finally(() => this.opening.delete(threadId)).catch(() => undefined);
-		}
-		return pending;
+			})
+		);
 	}
 
 	private async findSaved(threadId: string, cwd: string): Promise<SessionMetadata> {
@@ -771,6 +795,23 @@ export class SessionHub {
 		if (timer) clearTimeout(timer);
 		this.unloadTimers.delete(threadId);
 	}
+}
+
+/**
+ * P62: turn input as the protocol has it — text, or text and image blocks. Anything else is refused
+ * here: a turn that started with it would fail outside any request, with nobody to tell.
+ */
+function userInput(input: unknown): UserContent {
+	if (typeof input === "string") return input;
+	const blocks: Exclude<UserContent, string> = [];
+	for (const block of Array.isArray(input) ? input : [undefined]) {
+		const { type, text, data, mimeType } = (block ?? {}) as Record<string, unknown>;
+		if (type === "text" && typeof text === "string") blocks.push({ type, text });
+		else if (type === "image" && typeof data === "string" && typeof mimeType === "string")
+			blocks.push({ type, data, mimeType });
+		else throw new JsonRpcError(ERROR_CODES.invalidParams, "input is text or a list of text and image blocks");
+	}
+	return blocks;
 }
 
 /** What a saved session's metadata says for a picker (P57 ThreadInfo fields). */

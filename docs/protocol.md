@@ -17,7 +17,7 @@ TUI 有常驻服务就连上它，没有时按设置先起一个，否则在自�
 
 ## 线格式
 
-JSON-RPC 2.0。stdio 与本机 socket 上一行一条消息（UTF-8，`\n` 结尾）；每个 socket 连接是一个客户端。客户端先发 `initialize`，之前的调用都被拒绝。
+JSON-RPC 2.0。stdio 与本机 socket 上一行一条消息（UTF-8，`\n` 结尾）；每个 socket 连接是一个客户端。客户端先发 `initialize`，之前的调用都被拒绝。不是 JSON 的行与帧、不是 JSON 对象的消息（数字、字符串、`null`、数组）丢掉（P62）。
 
 | 传输 | 写法 | 说明 |
 |---|---|---|
@@ -80,7 +80,7 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 | `turn/followUp` `{ threadId, input }` → `{ disposition }` | 排在这一轮之后（pi 的 follow-up） |
 | `turn/interrupt` `{ threadId }` | 停下这一轮或正在做的事；等待中的审批算拒绝，对话框算取消 |
 
-`input` 是字符串，或 `[{ "type": "text", "text" }, { "type": "image", "data": "<base64>", "mimeType" }]`。任何订阅了的客户端都能发；会话是共享的。
+`input` 是字符串，或 `[{ "type": "text", "text" }, { "type": "image", "data": "<base64>", "mimeType" }]`；别的形状回 `-32602`（P62）。任何订阅了的客户端都能发；会话是共享的。
 
 除了轮，一个会话同时只做一件事（TUI 的任务槽）：压缩、`/tree` 里的移动、`!` 命令、重新加载、交接。正在做时别的事报 `-32002`，`turn/start` 排到它之后。开始与结束推送 `thread/task/started { kind, activity }`、`thread/task/ended { kind, error? }`（`kind`：`compaction`、`navigate`、`bash`、`reload`、`handoff`）。
 
@@ -114,7 +114,7 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 
 ## 推送
 
-都带 `threadId` 与 `seq`（这个会话里递增）。客户端记住最后的 `seq`，断开后用 `thread/resume { afterSeq }` 补齐。server 为每个已加载的会话保留最近 20000 条。只发给部分客户端的推送也占编号，所以别的客户端看到的 `seq` 会跳号。
+都带 `threadId` 与 `seq`（这个会话里递增）。客户端记住最后的 `seq`，断开后用 `thread/resume { afterSeq }` 补齐。server 为每个已加载的会话保留最近 20000 条。只发给部分客户端的推送也占编号，所以别的客户端看到的 `seq` 会跳号。`turn/start` 让一轮立刻开始时，它的 `turn/started` 先于 `turn/start` 的应答到达。
 
 | 推送 | 参数 |
 |---|---|
@@ -187,11 +187,11 @@ TUI 的渲染全建在内核消息与事件上（pi 的形状，本来就是 JSO
 
 ## 常驻服务
 
-`tau serve start` 在后台起 `tau serve --listen unix://`（脱离终端，工作目录设在家目录，输出写 `~/.tau/daemon/serve.log`），等它能回 `initialize` 再返回；已在运行就直接返回。`stop` 让它退出，`restart` 先停再起（升级 tau 后用），`status` 报告是否在运行、pid、版本、地址、会话数与客户端数。每个命令往 stdout 写一个 JSON 对象（照 Codex 的 `codex app-server daemon`）。服务把自己写进 `~/.tau/daemon/daemon.json`（pid、版本、地址、启动时间、启动目录）。一个家目录一个服务：同一位置已有服务在听时，第二个不起。
+`tau serve start` 在后台起 `tau serve --listen unix://`（脱离终端，工作目录设在家目录，输出写 `~/.tau/daemon/serve.log`），等它能回 `initialize` 再返回；已在运行就直接返回。`stop` 让它退出（`server/shutdown`，宽限期过了还在就按 pid 强杀；答不了协议的另一版本的服务先收到 SIGTERM，同样等过宽限期，P62），`restart` 先停再起（升级 tau 后用），`status` 报告是否在运行、pid、版本、地址、会话数与客户端数。每个命令往 stdout 写一个 JSON 对象（照 Codex 的 `codex app-server daemon`）。服务把自己写进 `~/.tau/daemon/daemon.json`（pid、版本、地址、启动时间、启动目录）。一个家目录一个服务：同一位置已有服务在听时，第二个不起。
 
 | 方法 | 说明 |
 |---|---|
-| `server/shutdown` `{ graceSeconds? }` | 服务退出：不再开始新的事，排队的轮丢掉，正在跑的在宽限期内跑完（缺省 60 秒，settings `daemon.shutdownGraceSeconds`，0–300），然后中止。先回答再退出。只有常驻服务接受它（`tau serve stop` 用它；stdio 与进程内的回错误） |
+| `server/shutdown` `{ graceSeconds? }` | 服务退出：不再开始新的事，排队的轮丢掉，正在跑的在宽限期内跑完（缺省 60 秒，settings `daemon.shutdownGraceSeconds`，0–300），然后中止。先回答再退出。只有常驻服务接受它（`tau serve stop` 用它；stdio 与进程内的回错误），也只接受本机的客户端（P62：远程设备回 `-32600`） |
 
 几个约定（照 Codex）：
 

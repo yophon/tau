@@ -165,5 +165,6 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 | 32 | `cli/src/tui/controller.ts` 1495 行，结构门禁上限 1500（P55、P57；P58 把会话类命令移出了 `commands.ts`，它降到 1135 行、上限改为 1200） | 再加几个控制器方法就撞线 | 下一个动它的阶段先把指针与键盘处理移出去；不调高上限 |
 | 36 | `smoke:browser:runtime`（浏览器里跑内核与 OPFS）在 CI 上超时过一次（20 秒内 Chrome 没报结果，stderr 只有 dbus 的报错），重跑通过（P59 文档提交的 CI，run 40064221954） | CI 偶尔红一次 | 再出现时把超时放宽到 40 秒并打出页面状态；查是否 Chrome 启动慢 |
 | 37 | `scripts/` 里几处在 Windows 上用 `shell: true` 跑 `npm.cmd` 并传参数数组（smoke-pack、build-packages、publish），Node 24 报 DEP0190 弃用警告（P62） | 以后的 Node 可能改成报错；发布与 pack smoke 在 Windows 上跑不了 | 动发布脚本时把命令与参数自己拼成一条带引号的命令行，或改用 `npm.cmd` 的绝对路径不经 shell |
+| 38 | `tau serve remote on`/`off` 重启常驻服务时只带默认参数，上次 `tau serve start -m …` 给的参数丢了；`restart` 用这次命令行给的（P62g 查到） | 用 `-m` 等参数起的服务，开关远程访问后换回缺省模型 | 启动参数记进 `daemon.json`，`remote on\|off` 与不带参数的 `restart` 沿用 |
 
 （#19、#20 已于 P62 随网关归档销案。#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

@@ -287,7 +287,10 @@ async function stopDaemon(home: string, graceSeconds: number): Promise<StopResul
 		clearTimeout(timer);
 		probe.client.close();
 	}
-	const deadline = Date.now() + (probe.state === "running" ? 10_000 : 0);
+	// P62: a server of another version cannot be asked over the protocol; SIGTERM is its graceful exit
+	// (running turns finish within the grace period), and only then the kill.
+	if (probe.state === "incompatible" && pid !== undefined && alive(pid)) process.kill(pid, "SIGTERM");
+	const deadline = Date.now() + (probe.state === "running" ? 10_000 : (graceSeconds + 10) * 1000);
 	while (pid !== undefined && alive(pid) && Date.now() < deadline) await sleep(100);
 	let forced = false;
 	if (pid !== undefined && alive(pid)) {

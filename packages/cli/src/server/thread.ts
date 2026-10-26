@@ -395,7 +395,10 @@ export class HubThread {
 	subscribe(subscriber: Subscriber, afterSeq?: number): JoinResult {
 		this.subscribers.add(subscriber);
 		void this.ensureSessionEvents();
-		setTimeout(() => this.requests.sendOpen(subscriber), 0);
+		// Unless it left meanwhile (P62).
+		setTimeout(() => {
+			if (this.subscribers.has(subscriber)) this.requests.sendOpen(subscriber);
+		}, 0);
 		this.syncMessages();
 		const startSeq = this.turn?.startSeq;
 		const current = (visible: (event: ServerNotification) => boolean): ServerNotification[] =>
@@ -767,10 +770,11 @@ export class HubThread {
 	}
 
 	private async runTurn(turnId: string, input: UserContent): Promise<void> {
-		this.beginTurn(turnId, false, input);
-		for (const notification of this.tracker.userInput(input)) this.emit(this.withTurn(notification));
 		let outcome: RunOutcome;
 		try {
+			// Inside the try (P62): nothing awaits this run, so whatever throws ends the turn with an error.
+			this.beginTurn(turnId, false, input);
+			for (const notification of this.tracker.userInput(input)) this.emit(this.withTurn(notification));
 			outcome = await this.session.run(input);
 		} catch (error) {
 			outcome = { stopReason: "error", aborted: false, errorMessage: errorText(error) };

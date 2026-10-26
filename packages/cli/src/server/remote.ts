@@ -126,6 +126,9 @@ export async function startRemote(options: RemoteOptions): Promise<RemoteListene
 	}
 
 	server.on("upgrade", (request, socket, head) => {
+		// P62: once a request asks to upgrade, Node no longer handles its socket's errors; a client that
+		// resets would end the process.
+		socket.on("error", () => undefined);
 		const url = new URL(request.url ?? "/", "http://local");
 		if (url.pathname !== "/rpc" || !sameOrigin(request)) {
 			socket.end("HTTP/1.1 403 Forbidden\r\n\r\n");

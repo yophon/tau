@@ -192,7 +192,7 @@
 - [ ] 62d：8 个文件都在拆后目标以内；`check-structure.mjs` 的上限按规则更新（`extensions.ts` 拆后 1100 行，超目标 50 行，见实施记录 62d 的偏差）
 - [x] 62e：列出的重复各自只剩一份或改名说明差别；死代码、多余导出、空 `catch`、类型断言处理完，实施记录有数字
 - [x] 62f：补的测试通过；偶发失败各有结论；全量测试墙钟时间前后对比；#18 的期望值来自 pi 的实现
-- [ ] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
+- [x] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
 - [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制
 - [ ] 62i：所列文档逐句核过；README 标明未实测路径
 - [ ] 62j：五份规格书的清单对完账；`docs/device-acceptance.md` 成稿；技术债表复核完
@@ -285,7 +285,36 @@
 - **偶发失败**：
   - smoke-tui 的 approval 空屏：62a 修了 WSL 副本里指向 `/mnt/d` 的工作区链接之后，在 WSL 里把 smoke-tui 两种模式各完整跑了一遍（各 41 个场景，approval 在内），都通过，没再出现。原因按 62a 的发现推断为启动时经 9P 读文件卡住，跑一遍不算证明，以后再出现照旧记下。
   - `smoke:browser:runtime` 在 CI 上超时（#36）：本地与 CI 都没复现；超时放宽到 40 秒，并在超时报错里带上页面何时发出第一个模型请求，下次出现能看出卡在页面加载还是模型那边。#36 留在技术债表。
-  - 全量测试里出现过一次子进程中 Node 自带类型剥离（amaro）编译 WebAssembly 出错（62b 记录），属 Node 内部，单独与重跑都通过，不处理。
+  - 本机全量测试里两次（62b、62g 各一次）有一个测试进程没起来：Node 自带的类型剥离（amaro）编译它内置的 WebAssembly 时报错，两次报错的函数与位置都不同。字节是 Node 二进制里的常量，推断是这台机器上 V8 的偶发问题，与 tau 无关；CI 上没出现过，单独跑与整套重跑都通过。不处理，再出现照样整套重跑。
 - **慢测试**：最慢的组都是起 CLI 子进程的 e2e（P46c 26 秒、P41b 25 秒、P40c 23 秒、P59 20 秒、P58 17 秒）。这台 Windows 机器上光起一个 Node 进程就要约 330 毫秒（WSL 里约 30 毫秒），`tau --version` 406 毫秒，tau 自己只占约 80 毫秒；剩下的固定等待（P46 worktree 的 2.5 秒分块、ext-subagents 的 800 毫秒）是在排先后顺序，换成等条件要改用例结构，规格不允许。所以没有改，墙钟持平：全量带覆盖率 166 秒 → 164 秒（归档移走 110 个测试，与新增的抵掉）。
 - **Windows 上跳过的测试**：62c 起 Linux 与 Windows 两边的 CI 都跑；development.md 写明改了信号、文件权限或 REPL 时，本地在 WSL 里跑对应的测试文件（给了命令，`e2e.test.ts` 在 WSL 里试过）。
 - **技术债 #18**：在 `../pi`（v1.4.0）只给 coding-agent 工作区装依赖（`npm ci --ignore-scripts`，227 个包），不编译 dist，用一个解析钩子把 `@earendil-works/*` 指到各包的 `src/index.ts`，跑 pi 的 `buildSessionContext`、`buildSessionProjection`、`getCurrentSystemPrompt`、`getCurrentTools`、`getSessionName`、`getUsageCostBreakdown`。`session-pi.test.ts` 前两个测试的期望值（恢复后的消息、system prompt、工具、会话名、`a4000001` 之前的投影与工具结果、usage 合计 5950）与 pi 的输出逐项一致，tau 不用改；测试头部的说明改成已用 pi 的实现核对。用完删掉了 `../pi/node_modules`。
+
+### 62g 常驻服务这条线自查
+
+- **读了哪些**：逐行读的：`protocol/src` 的 `jsonrpc.ts`、`transport.ts`、`client.ts`；`cli/src/server/` 的 `hub.ts`、`thread.ts`、`requests.ts`、`completion.ts`、`control.ts`、`ui.ts`、`items.ts`、`devices.ts`、`remote.ts`、`serve.ts`；`daemon.ts`、`tui-link.ts`、`local-hub.ts`、`acp-hub.ts`；`web/src/connection.ts`。只读了相关部分的：`tui/session-client.ts`（连接、重连、加入）、`modes/acp.ts`（读入与派发、坏输入）、`web/src` 的链接与登录页（`markdown.ts`、`views.tsx`）。没细读：`protocol/src/types.ts`（只对照字段）、`server/native.ts`、`modes/acp-updates.ts`（数据转换，不碰资源与权限）。
+- **查出并修掉的**（`cli/test/p62-resident.test.ts` 9 个测试，修之前各自按预期失败）：
+
+  | 发现 | 后果 | 修法 |
+  |---|---|---|
+  | 远程端口上被拒的 WebSocket upgrade（路径或 `Origin` 不对），客户端随后发 RST | Node 在 upgrade 之后不再管这个 socket 的错误，`ECONNRESET` 没人接，**进程退出**；不用配对，能连上端口就行 | upgrade 一进来先给 socket 挂错误处理 |
+  | 合法 JSON 但不是对象的消息（`5`、`null`、`"x"`） | `JsonRpcPeer` 用 `in` 判断消息种类，抛 TypeError，**进程退出**；WebSocket 上不用配对，本机 socket 与 stdio 同样 | 不是对象（含数组）的消息丢掉，与不是 JSON 的行一样 |
+  | `turn/start` 不带 `input` 或形状不对 | 轮在没有请求等着的地方失败，成了没接住的 rejection，**进程退出**，会话的轮也一直开着 | 中枢校验 `input`（文字，或 text、image 块），别的回 `-32602`；`runTurn` 把开始轮的几步也放进 `try`，出什么错都以出错结束这一轮 |
+  | `server/shutdown` 不查连接来自哪里 | 配对过的远程设备能停掉服务 | 只接受本机的连接，与管设备一样 |
+  | 两个客户端同时打开同一个存档会话：一个 `thread/resume`，一个从别的会话换过来（`previousThreadId`） | 换会话的路径不看「正在打开」的表，开出第二个线程，**两个线程写同一个文件** | `load` 与换会话共用一张认领表：检查与认领之间不 `await`，正在打开的就等那一次 |
+  | 客户端加入后立刻离开 | 加入时排在下一轮事件循环里补发的待答请求，照样发给已经离开的它，它的回答也算数 | 补发前看它还在不在 |
+  | `tau serve stop` 遇上答不了协议的另一版本的服务 | 直接 SIGKILL，正在跑的轮没有宽限期 | 先 SIGTERM（tau 收到它就优雅退出），等宽限期加 10 秒，还在才强杀 |
+
+- **看过、不改的**：
+  - **配对与令牌**：6 位码、10 分钟、同一个码错 5 次作废、一次只有一个码；令牌只存 SHA-256、定长比较；`/pair` 与 `/rpc` 查 `Origin`；`devices.json` 0600、所在目录 0700。与规格一致。别人连错 5 次能把正在等的码作废（只能本机再发一个），不算问题。
+  - **本机通道的访问控制**：Unix socket 靠 0700 的目录（`prepareUserDirectory` 拒绝别人的目录与符号链接）。Windows 命名管道由 Node（libuv）按缺省安全描述符建：本用户、管理员、SYSTEM 完全控制，Everyone 只读。只读连上的发不了 `initialize`，服务在 `initialize` 之前什么也不发，所以别的用户驱动不了 tau；与 protocol.md「只有本用户、管理员与 SYSTEM 能写」一致。
+  - **远程设备能做什么**：配对过的设备当作用户本人（P59 的设计）——任何目录开会话、`!` 命令（`thread/bash`）、改权限模式、导入任意路径的会话文件，与在终端里一样。只给本机的：管设备、停服务（这次补上）、带 MCP server（P60）。
+  - **通知顺序**：`turn/start` 让一轮立刻开始时，`turn/started` 先于应答到达。ACP 适配层与网页客户端都按这个顺序写的，不改；protocol.md 补了一句。
+  - **重连**：TUI 的会话客户端重连有总时限、退避到 4 秒，重连后用 `thread/resume` 重新加入；网页客户端退避 1、2、4…30 秒。补发的竞态（P56）62c 已修。
+  - **资源**：断线时连接的订阅撤掉、发给它的请求副本撤回；会话停下时待答请求按缺省结算；停服务时连接全关、会话全停、socket 文件与 `daemon.json` 删掉、最多等一秒让连接写完；交接后旧线程不再有订阅者。只有一处一直留着：列会话、读存档用的「目录工作区」（每个问过的目录一个，加载扩展但不起 MCP，扩展收不到 `session_start`，不会起进程），服务活着时不释放，内存随问过的目录数增长。记下不改。
+  - **客户端给的宽度没有上限**：扩展组件按它画，极端值可能多占内存；画出错只回错误，不崩。记下不改。
+  - **网页客户端**：链接只放行 `http(s):` 与 `mailto:`，登录页链接只取 `http(s)`；令牌存在 `localStorage`（同源，CSP 不许外部脚本）。`initialize` 没有超时：服务接了 WebSocket 却不回时页面停在「连接中」。记下不改。
+  - **没有加进程级的 `unhandledRejection` 处理**：常驻服务里没接住的错误仍让进程退出（Node 缺省）。这次把查到的路径都堵上了；全局吞掉会让状态半坏的服务继续跑，还会盖住问题。
+  - **`tau serve remote on|off` 重启服务时丢掉上次 `tau serve start` 的参数**：登记为技术债 #38。
+- 文档：protocol.md（坏消息丢掉、`input` 校验、`turn/started` 的顺序、`server/shutdown` 只给本机、停另一版本的服务）、architecture.md（中枢、`daemon.ts`、协议包三处）、CHANGELOG（Fixed，连同 62e、62f 里用户看得到的修正）。
+- 验证：全量测试 1448 个（1444 通过、4 跳过；第一遍撞上上面那个 amaro 偶发，整套重跑全过）；WSL 里 smoke-tui 默认模式整套 41 个场景通过（中枢换会话的路径改过）。

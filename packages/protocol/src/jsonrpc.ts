@@ -156,6 +156,9 @@ export class JsonRpcPeer {
 	}
 
 	private receive(message: JsonRpcMessage): void {
+		// P62: not a message at all (a number, a string, null, a batch): dropped, as text that is not
+		// JSON is. It arrives before anyone authenticated; throwing here would end the process.
+		if (typeof message !== "object" || message === null || Array.isArray(message)) return;
 		if (isRequest(message)) {
 			void this.answer(message);
 			return;

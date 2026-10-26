@@ -21,6 +21,29 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   suite (docs/baseline.md); `scripts/wsl-copy.sh` keeps the WSL copy smoke-tui runs in from importing
   packages over `/mnt` (2.3 s → 0.3 s for `tau --version` there).
 
+### Fixed (P62: found reviewing the resident server and adding tests)
+- Two ways anyone who could reach the remote port could stop the resident server, before pairing:
+  a WebSocket upgrade it refused (wrong path or `Origin`) whose client then reset the connection, and
+  a frame that is valid JSON but not an object (`5`, `null`). Both now leave the server running; a
+  message that is not a JSON-RPC object is dropped, on every transport.
+- `turn/start`, `turn/steer` and `turn/followUp` with an `input` that is not text or text and image
+  blocks answer `-32602`; such a turn used to fail where no request could report it, which ended the
+  server and left the session's turn open.
+- A remote device can no longer stop the resident server (`server/shutdown` is for this machine's
+  clients, as pairing and devices are).
+- Two clients opening the same saved session at the same moment (one resuming it, one moving to it
+  from another session) get the one session; it used to open twice, two threads writing one file.
+- A client that leaves a session right after joining it no longer gets the approvals that were
+  waiting there.
+- `tau serve stop` with a server of another version that cannot answer the protocol sends it SIGTERM
+  and waits the grace period before killing it, instead of killing it at once.
+- `tau mcp login` and other links opened on Windows are no longer cut at the first `&` (OAuth sign-in
+  addresses were).
+- A form dialog request without its `form` no longer breaks `--mode rpc` and the TUI (they show an
+  empty form, as ACP did).
+- On Windows, paths that differ only in case or in an 8.3 short name count as the same directory
+  where tau compares them (worktrees, git paths, ACP sessions).
+
 ### Fixed (P61: three debts of daily use)
 - On the resident server, whether `read` may send an image follows the session's own model (its
   models.json `input`) after a model switch, not the model the server started with.
