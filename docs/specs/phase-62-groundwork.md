@@ -194,7 +194,7 @@
 - [x] 62f：补的测试通过；偶发失败各有结论；全量测试墙钟时间前后对比；#18 的期望值来自 pi 的实现
 - [x] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
 - [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制
-- [ ] 62i：所列文档逐句核过；README 标明未实测路径
+- [x] 62i：所列文档逐句核过；README 标明未实测路径
 - [ ] 62j：五份规格书的清单对完账；`docs/device-acceptance.md` 成稿；技术债表复核完
 - [ ] 真 DeepSeek 回归：`-p` 带工具调用；从不通的端口降级到 DeepSeek（走拆出去的重试与换模型）；REPL、rpc、ACP 各一轮；WSL 里 TUI 一轮（审批、Ctrl+C、`/compact`、缩放）；常驻服务两端接同一会话；会话内定时（`/loop` 或 `cron_create`，走搬进 CLI 的 cron）
 - [ ] DoD 通用项（见 development.md）
@@ -318,3 +318,35 @@
   - **`tau serve remote on|off` 重启服务时丢掉上次 `tau serve start` 的参数**：登记为技术债 #38。
 - 文档：protocol.md（坏消息丢掉、`input` 校验、`turn/started` 的顺序、`server/shutdown` 只给本机、停另一版本的服务）、architecture.md（中枢、`daemon.ts`、协议包三处）、CHANGELOG（Fixed，连同 62e、62f 里用户看得到的修正）。
 - 验证：全量测试 1448 个（1444 通过、4 跳过；第一遍撞上上面那个 amaro 偶发，整套重跑全过）；WSL 里 smoke-tui 默认模式整套 41 个场景通过（中枢换会话的路径改过）。
+
+### 62h 依赖升级
+
+- **版本**（按 2026-10-26，取发布满两周的最新版）：esbuild 0.28.2（4146c19）；Preact 11.0.1（faa52f4，11.0.2 是 10-23 发的）；Biome 2.5.15（20706a2）；Ink 8.0.0 + React 19.3.0 + @types/react 19.3.0 + string-width 8.3.0 + wrap-ansi 10.0.2（a4cfa75）。不升的照规格：highlight.js 10、TypeScript 7、@types/node、quickjs-emscripten-legacy。
+- **与规格的偏差**：
+  - Biome 规格里写的是 2.6，可 2.6.0 是 10-21 才发的，不满两周，取 2.5.15。新规则报出的：测试里 16 处 `(a?.b as T).c`（`noUnsafeOptionalChaining`，改成 `(a?.b as T | undefined)?.c` 或先取值再判断）；`useHyperlinks`、`useMarkdownTransforms` 被当成 React hook（`useHookAtTopLevel`，其实是设置模块状态的函数，改名 `setHyperlinks`、`setMarkdownTransforms`）；4 处 `!x || x.k !== v` 写成 `x?.k !== v`；格式化规则对「最后一个参数是函数」的调用排法变了（测试大段重排，内容不变）。
+  - string-width、wrap-ansi 没有各自单独提交：Ink 8 依赖的正是 string-width ^8.3.0、wrap-ansi ^10.0.2，TUI 量宽与折行要和 Ink 一致，三者与 React 一起作一组。
+  - Preact 11 按 `type` 的字面值区分 input 的属性类型，表单对话框的文字框与数字框拆成两个元素。
+- **wrap-ansi 10**：几乎重写（222 行到 662 行）：按字素簇断长词、tab 展开到 8 的倍数、文字先 NFC 规范化、换行处关掉并重开全部生效的样式（9 只重开最后一个简单 SGR）、超链接带参数。直接用 wrap-ansi 10 比移植慢约 2.3 倍，所以照 10 重写移植，保留不改变输出的捷径（ASCII 不做规范化、只有一行时不做样式恢复、SGR 参数解析结果缓存）。与 wrap-ansi 10 在 4000 段随机文本与各宽度的样式文字上逐字节一致；按文本类型计时，短的带样式行、纯代码与旧移植持平或更快，长的带样式行与中文段落慢约 25–50%，整体比 wrap-ansi 10 快约 1.7 倍。
+- **Ink 8 对上 tau 用的内部**（先读了 Ink 8 的 `ink.js`、`log-update.js`、`Static`、`render.js`）：
+  - 全屏：Ink 8 写帧时另外写出同步输出的开头与结尾、光标显隐与定位，Windows 上整屏帧还先写 `homeAndEraseDown`；tau 原来按 Ink 5 的写法解析这些写入，会把它们当成画面。改成 stdout 代理丢掉 Ink 的写入（只放行显示与隐藏光标），每次渲染后（Ink 的 `onRender` 选项）从实例的 `lastOutput` 取这一帧，照旧只重写变了的行。绘制方式（tau 自己按行画）没变，所以没有停下来问。
+  - React 19.3 的 reconciler 没有了 legacy root 的同步提交：外部 store 的更新在微任务里才提交，全屏缩放时先画了一帧「旧树、新宽度」的整屏，再出一帧差分，smoke 的「每一帧都是整屏」因此失败。`TuiStore.flush()` 通知完之后经 Ink 的 reconciler（`flushSyncWork`，Ink 自己的 `render` 也这样做）当场提交，由 app 注入。
+  - 内联：缩放时的即时重画先冲掉 Ink 8 新加的写入节流，再把 `lastOutputToRender`、`lastOutputHeight` 也清零。Ink 8 在主屏不再重放 `<Static>` 的历史（只在 debug 与备用屏累积 `fullStaticOutput`），重画前清空它的钩子 `setBeforeRedraw` 随之删掉，连同它的测试。
+  - `useStdout()` 的类型放宽成任意可写流：新文件 `tui/terminal.ts` 读一次尺寸与颜色。
+  - Ink 7 改的 Backspace 与 Escape：tau 自己解析按键；启动对话框（`startup.ts`）用 Ink 的按键，Backspace 与 Delete 本来就同样处理。
+  - 测试：`tui-commands` 的 `/usage` 测试等的那句话第一张表里就有，Ink 8 的出帧时机把它暴露出来；改成等带这一轮的那张表。
+- **验证**：check、全量测试（1447 个）、WSL 里 smoke-tui 两种模式整套（各 41 个场景）、pack smoke、`smoke:web`、`build:web`、`smoke:weapp`、`smoke:quickjs`、`smoke:quickjs:mcp`、`smoke:browser`、`smoke:browser:runtime` 通过。WSL 里人工看缩放、滚动、选择复制还没做（要用户在真终端里看），列进真机验收。
+- **undici 与 `npm audit`**：`npm audit` 剩一个高危，undici 8.10.2 的三条 10 月公告，8.12.2 起修复；8.12.2 是 10-15 发的，按两周的规则 10-29 才能升（技术债 #24）。等用户定。
+
+### 62i 文档
+
+- **怎么核的**：能机械对的用脚本对代码，其余逐句读、遇到具体说法（数字、命令、键名、行为）就去代码里查。逐句读完的：README、README.zh-CN、`development.md`、`settings.md`、`permissions.md`、`hooks.md`、`protocol.md`、`rpc.md`、`connectors.md`、`subagents.md`、`worktrees.md`、`memory.md`、`audit.md`、`statusline.md`、`archive/README.md`、`baseline.md`、`architecture.md`（代码地图另用脚本对源码树）。
+- **architecture.md**：源码里 37 个模块在文档里一次也没出现（62d、62e、62h 拆出与新加的，加上一直按目录笼统描述的宿主、OAuth、网页客户端），逐个补进代码地图；网页客户端（`packages/web`）新加一节。提到的文件里有一个已不存在：启动顺序里还写着 `tau gateway` 的管理子命令与 `gateway.ts`、网关为每个对话开工作区（62b 漏改）。发布的包数「十九」改成二十一。数据流图补上 Responses 与 Gemini 的端点。
+- **README**：权限档位写的是五个（少了 `ci`）；开头只说 Anthropic 走扩展包；说 TUI 总在自己进程里起中枢（P58 起先连常驻服务）；示例模型名前后不一致。按规格加了「只有 mock 测试、没对过真服务」的一段：`web_search`、OpenAI Responses 与 Gemini 两个 transport、Anthropic 官方端点（只经兼容网关跑过）、React Native 适配器在 Android 上（依据 P54 规格与 10-23 复盘的记录）。
+- **README.zh-CN**：照英文版整份重写。它缺「常驻服务」「在手机上」两节、包表里的五个包、未实测的说明，编辑器一节还是 P29 的说法（「读写走编辑器缓冲区」，P60 起直接读写磁盘），模型一节少了三个供应商与几项说明。
+- **development.md**：测试模式里「helpers.ts 若尚未抽出」早就抽出了；smoke 清单补上 `smoke:web`、`smoke:quickjs:mcp`；硬规则 11 的上限规则改成 P62 确认的「拆后加 200、取整到 50」。
+- **settings.md**：键表用脚本对 `TauSettings`（文档写 JSON 的原始键，代码是归一后的名字，逐个对上映射）与 `USER_ONLY_KEYS`（「项目可设」一列全对）；开头「只认用户设置」的几类漏了常驻服务。
+- **permissions.md**：最后一句说规则的决定来源也能在 `/runs` 里看到，`/runs` 是归档的网关的聊天命令（62b 在 audit.md 改过同样的错，这里漏了）。
+- **audit.md**：「谁决定的」表缺 `rule_allow`、`rule_deny`、`hook_allow` 三种来源（代码里有，permissions.md 与 hooks.md 也提到它们）。
+- **hooks.md**：补一句会话在常驻服务里时钩子在服务里跑、用服务启动时的环境。
+- **protocol.md**：62g 已改过；这次补一句几个客户端同时打开同一个存档会话时只开一次。
+- 核过没有要改的：`rpc.md`（P60 已改成适配层的说法）、`statusline.md`（300 毫秒合并、刷新间隔至少 1 秒等对过代码）、`worktrees.md`（`--worktree` 不与 rpc/acp 同用，`main.ts` 里拦着）、`memory.md`（`session_search` 也搜设置里的 `sessionDir`，代码里还在）、`subagents.md`（8 个、同时 4 个、压缩窗口范围对过）、`connectors.md`（LSP 的超时、重启次数、诊断等待、推荐对话框的数字对过）、`archive/README.md`；`baseline.md` 的「P62 之后」一列阶段末量。

@@ -7,7 +7,7 @@ tau 读两份设置文件，键名尽量照 pi：
 
 有几类键只认用户设置，项目里写了也不生效：
 
-- 在问信任之前就要用到的：网络、TUI、启动模型、worktree；
+- 在问信任之前就要用到的：网络、TUI、启动模型、worktree、常驻服务；
 - 本来就只该由用户自己定的：搜索端点和密钥、给命令留的密钥变量、审计细节。
 
 权限规则另有 `.tau/settings.local.json`（Claude Code），见 [permissions.md](permissions.md)。

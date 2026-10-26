@@ -5,8 +5,8 @@
 Runtime-agnostic coding agent kernel. The kernel is pure ECMAScript plus one
 injectable platform seam; every host capability (filesystem, shell, HTTP,
 UI, …) is provided by plugins. BYOK only. The kernel ships an OpenAI-compatible
-client; other protocols plug in through the `ChatTransport` seam — an Anthropic
-Messages transport ships as an extension package.
+client; other protocols plug in through the `ChatTransport` seam — Anthropic
+Messages, OpenAI Responses and Gemini transports ship as extension packages.
 
 Architecture and interface design are heavily inspired by
 [pi](https://github.com/earendil-works/pi) (MIT), pushed one step further:
@@ -29,8 +29,8 @@ inject a small adapter instead of polyfilling globals.
   `todo_write`, long-term memory ([docs/memory.md](docs/memory.md)),
   `session_search`, `web_fetch` / `web_search`, `ask_user`, `/loop` and
   scheduled prompts, `monitor`, and `push_notification`.
-- **Permissions** — five modes (read-only, supervised, accept-edits, autonomous,
-  bypass) and Claude Code's `permissions.allow/ask/deny` rules
+- **Permissions** — six modes (read-only, supervised, ci, accept-edits,
+  autonomous, bypass) and Claude Code's `permissions.allow/ask/deny` rules
   ([docs/permissions.md](docs/permissions.md)); user hooks in Claude Code's
   format ([docs/hooks.md](docs/hooks.md)).
 - **Models and settings** — providers and models in `~/.tau/models.json` (pi's
@@ -56,6 +56,11 @@ inject a small adapter instead of polyfilling globals.
   RPC, ACP), browser (OPFS) and a bare QuickJS engine, verified end-to-end in CI;
   `Platform` adapters for WeChat mini-programs and React Native (their demo apps
   and the Flutter phone demo are archived, see [archive/README.md](archive/README.md)).
+
+Not yet run against the real services, only against mocks: `web_search` (no search key was at
+hand), the OpenAI Responses and Gemini transports, Anthropic's own endpoint (the Anthropic
+transport has only gone through a compatible gateway), and the React Native adapter on Android.
+The OpenAI-compatible path is checked against DeepSeek at the end of every phase.
 
 The kernel's only host dependency is the four-method `Platform` seam, so the
 agent loop runs anywhere with a JS engine and an HTTP path to an
@@ -126,12 +131,12 @@ npm run tau -- --list-models      # what is configured and usable
 # Or point it at any OpenAI-compatible endpoint ad hoc (BYOK)
 export TAU_BASE_URL=https://api.deepseek.com/v1
 export TAU_API_KEY=sk-...
-export TAU_MODEL=deepseek-chat
+export TAU_MODEL=deepseek-flash
 npm run tau -- --repl             # line-based REPL instead
 npm run tau -- -p "list the files here and summarize"
 
 # Or speak a vendor API natively (base URL optional)
-npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5 -p "hi"
+npm run tau -- --provider anthropic -k sk-ant-... -m claude-sonnet-5-5 -p "hi"
 npm run tau -- --provider openai-responses -k sk-... -m gpt-5.5 -p "hi"
 npm run tau -- --provider google -k ... -m gemini-3-pro-preview -p "hi"
 ```
@@ -142,8 +147,9 @@ the terminal's scrollback). Keys follow pi and can be changed in
 `~/.tau/keybindings.json`; `/btw` asks a side question while the agent works,
 Ctrl+B moves a running command to the background, `/diff` shows uncommitted
 changes. `TAU_KEYBOARD=legacy` turns extended key reporting off for unusual
-terminals. The TUI is a client of tau's own protocol: it runs a session hub in
-its process and talks to it as any other client would (docs/protocol.md).
+terminals. The TUI is a client of tau's own protocol: it talks to the resident
+server, or to a session hub in its own process, as any other client would (see
+"Resident server" below and docs/protocol.md).
 
 The CLI and TUI default to `--permission-mode supervised`: bash commands and
 file writes ask for approval in a terminal and are denied in headless runs.

@@ -67,7 +67,7 @@ server 发起的请求 id 以 `s` 开头（`"s1"`）。错误码除 JSON-RPC 的
 
 **客户端带来的 MCP server**（P60，编辑器经 ACP 给的那些）：`mcpServers: [{ name, command?, args?, env?, url?, headers? }]`，stdio 或 http（同 ACP 的形状）。打开会话时在它的工作区启动：stdio 的从去掉密钥的环境起（P32b）再加上给的 `env`，同名的盖过 `~/.tau/mcp.json` 里的；会话卸载时一起停。只接受本机的客户端：远程设备带它回 `-32600`，免得经网络让服务启动程序。名字为空、`command` 与 `url` 都没有的条目略过；`--no-mcp` 起的中枢一个也不起。
 
-**换会话**：带 `previousThreadId` 表示调用者离开那个会话。它的扩展先被问 `session_before_switch`，拒绝时报 `-32001`（`data.by: "switch"`）。只有调用者订阅着、它闲着、目标在同一个目录时，它的工作区与扩展直接服务新会话（同 TUI 的 `/new`、`/resume`：不再起第二套扩展与 MCP server）；否则调用者退出它，新会话自己打开（或接上已在运行的）。
+**换会话**：带 `previousThreadId` 表示调用者离开那个会话。它的扩展先被问 `session_before_switch`，拒绝时报 `-32001`（`data.by: "switch"`）。只有调用者订阅着、它闲着、目标在同一个目录时，它的工作区与扩展直接服务新会话（同 TUI 的 `/new`、`/resume`：不再起第二套扩展与 MCP server）；否则调用者退出它，新会话自己打开（或接上已在运行的）。几个客户端同时打开同一个存档会话（接上的、换过来的都算）时只打开一次，后到的等它打开好再接上（P62）。
 
 没有客户端订阅、没在运行、没有排队和等待中的请求时，会话 60 秒后从内存卸载（磁盘上照旧在），再 `thread/resume` 即可。扩展要求退出（`ctx.shutdown`）时会话结束，订阅者收到 `thread/closed`。
 

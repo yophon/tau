@@ -115,5 +115,5 @@
 
 ## 审计
 
-规则放行与拒绝的调用在 `tau audit`、`/runs` 里的决定来源是 `rule_allow`、`rule_deny`，带上命中的规则和它所在的文件。
+规则放行与拒绝的调用在 `tau audit` 里的决定来源是 `rule_allow`、`rule_deny`，带上命中的规则和它所在的文件。
 

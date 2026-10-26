@@ -82,7 +82,7 @@
 
 `PreModelSwitch` 不带 Claude Code 的缓存与费用字段（`prompt_cache_warm`、`estimated_cache_write_usd` 等）：tau 没有定价数据（D19）。`source` 目前总是 `command`。
 
-环境变量是你自己的完整环境，另加 `TAU_PROJECT_DIR` 和 `CLAUDE_PROJECT_DIR`（都是会话的工作目录，后者照顾现成脚本）。命令用与 bash 工具相同的 shell 执行（Windows 上是 Git Bash）。
+环境变量是你自己的完整环境，另加 `TAU_PROJECT_DIR` 和 `CLAUDE_PROJECT_DIR`（都是会话的工作目录，后者照顾现成脚本）。命令用与 bash 工具相同的 shell 执行（Windows 上是 Git Bash）。会话在常驻服务里时（P58），钩子在服务里运行，「你的环境」是服务启动时的环境，与工具和 `!` 命令一样（见 [protocol.md](protocol.md)）。
 
 ## 命令怎么回话
 

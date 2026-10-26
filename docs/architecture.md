@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-26（P62 归档：网关、两个渠道、飞书扩展与三个示例应用移进 `archive/2026-10-25/`，CLI 的 cron 搬进 `cron.ts`；P60：编辑器接常驻会话——`--mode acp` 改成协议上的适配层（`modes/acp.ts`、`modes/acp-updates.ts`、`acp-hub.ts`），协议加客户端带来的 MCP server；P59：远程设备与网页客户端——`server/remote.ts`、`server/devices.ts`、新包 `@yophon/tau-web`，TUI 断线重连；P58：常驻服务与本机 socket——`daemon.ts`、`tui-link.ts`、`tau serve --listen unix://` 与 `start|stop|restart|status`，中枢服务多个目录；P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-26（P62：拆出的模块、常驻服务自查的修正、Ink 8；P62 归档：网关、两个渠道、飞书扩展与三个示例应用移进 `archive/2026-10-25/`，CLI 的 cron 搬进 `cron.ts`；P60：编辑器接常驻会话——`--mode acp` 改成协议上的适配层（`modes/acp.ts`、`modes/acp-updates.ts`、`acp-hub.ts`），协议加客户端带来的 MCP server；P59：远程设备与网页客户端——`server/remote.ts`、`server/devices.ts`、新包 `@yophon/tau-web`，TUI 断线重连；P58：常驻服务与本机 socket——`daemon.ts`、`tui-link.ts`、`tau serve --listen unix://` 与 `start|stop|restart|status`，中枢服务多个目录；P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -59,7 +59,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `prompt-shim.ts` | `withPromptToolShim(transport)`（yo-agent 的 PromptShimProvider）：给没有原生工具调用的模型，请求里去掉工具声明、把工具与调用格式写进系统提示、之前的调用与结果写成文字；整段回复缓冲后把 fenced `tool_call` 块解析成工具调用（`shim_call_<n>`），坏块丢掉，截在半截的块剥掉 |
 | `retry.ts` | 错误分类逐字照抄 pi 1.4（先排除额度与上下文溢出，再匹配瞬态失败；413 算溢出）与 `RetrySettings`（缺省开、3 次、2 s 指数退避）。策略在 agent 循环里执行，重试用完后才轮到 `fallback.ts` 的降级 |
 | **Agent** | |
-| `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。tool-state、subagent-spawn、aside、navigation 是从它拆出的独立块（P50），经 `agent-internals.ts` 读它的私有状态；pending-queue 是 P53 拆出的队列，`Agent` 的公开方法不变 |
+| `agent.ts` | `Agent` 类与它的公开面：`prompt`/`resume`（返回 AsyncGenerator<AgentEvent>）、`steer`/`followUp`、`compact`、`navigateTo`、`abort`、`setModel`/`setThinkingLevel`/`setPermissionMode`、工具集方法、`askAside`、`completeText`、`setLabel`、`getContextUsage`、`appendMessage`。内部是运行槽、串行写入器、会话投影、扩展钩子的派发、压缩操作和主循环（`runLoop` 管续跑与 settle，`runTurns` 管轮内步骤）。tool-state、subagent-spawn、aside、navigation 是从它拆出的独立块（P50），经 `agent-internals.ts` 读它的私有状态；pending-queue 是 P53 拆出的队列，`Agent` 的公开方法不变。P62 又拆出 `turn-stream.ts`（拉一次模型回复的流，pi 的 `streamAssistantResponse`）、`turn-recovery.ts`（失败后的溢出压缩重跑、重试、换模型，返回重跑、中止或出错）、`compaction-run.ts`（一次压缩，`compact()` 与循环共用） |
 | `agent-internals.ts` | `AgentInternals`：拆出的模块可以读的 Agent 状态与方法。Agent 里只有一个适配器（`exposeInternals`，getter 读当前值、方法转调），建一次；各模块的 host 类型是它的 `Pick`（`ToolStateHost` 等），所以每个模块碰了 Agent 的什么一眼可见，`Agent` 的公开面不因此变宽 |
 | `tool-state.ts` | 工具集（`ToolState`）：已注册工具的合并（基础工具，扩展工具按名覆盖）、active 集（声明给模型的那些）、从转录恢复的名字等它注册（pi `_pendingToolNames`）、`setDefaultTools` 的 `+/-`、按请求算 loadout（`prepareLoadout` 改描述、隐藏声明）；`withoutHiddenDeclarations` 把隐藏的声明滤出请求 |
 | `tool-batch.ts` | `ToolBatchRunner`：逐个 preflight（tool_call 钩子 → 参数校验 → 策略与审批 → tool_execution_start）、sequential/parallel 执行与更新泵、tool_result 钩子；按请求时的工具快照分派，结果按源序提交 |
@@ -82,10 +82,10 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 | `context-files.ts` | 项目上下文文件（照抄 pi）：全局目录，再从根到 cwd 每层取 `AGENTS.override.md`/`AGENTS.md`/`CLAUDE.md` 中第一个，渲染为 `<project_context>` |
 | **权限** | |
 | `policy.ts` | 权限档位（read-only/supervised/ci/accept-edits/autonomous/bypass）× 风险（low/medium/high）→ allow/ask/deny（ci 的矩阵同 accept-edits，要问的由工具批次直接拒绝，P53）；`createDefaultPolicy` 的静态规则（保护路径、危险命令、accept-edits 放行 cwd 内的编辑）与权限规则（deny/ask 在所有档位生效，`deniesTool` 让被整体拒绝的工具从请求里消失）。内核缺省 autonomous，CLI 缺省 supervised；write/edit/apply_patch 的目标路径（apply_patch 的取自补丁，`patchTargets`）判保护路径与 accept-edits 的工作目录 |
-| `permission-rules.ts` | 权限规则（照抄 Claude Code，D40）：`parsePermissionRule`、`matchPermissionRules`（deny → ask → allow；bash 拆复合与嵌套命令，allow 要每段命中；gitignore 式路径；`domain:`；MCP 名字）、`canonicalPath`；`Edit(...)` 规则也管 apply_patch 补丁里的每个路径 |
+| `permission-rules.ts` | 权限规则（照抄 Claude Code，D40）：`parsePermissionRule`、`matchPermissionRules`（deny → ask → allow；bash 拆复合与嵌套命令，allow 要每段命中；gitignore 式路径；`domain:`；MCP 名字）、`canonicalPath`；`Edit(...)` 规则也管 apply_patch 补丁里的每个路径。shell 分词（引号、运算符、重定向、heredoc、嵌套命令）在 `shell-tokens.ts`（P62 拆出） |
 | `powershell-command.ts` | PowerShell 命令拆段、别名还原成 cmdlet、重定向记为写入；拆不清时 allow 规则不生效 |
 | **扩展** | |
-| `extensions.ts` | 扩展系统，**API 形状照抄 pi**（见下节）：`ExtensionRegistry`、`ExtensionAPI`、`ExtensionContext`、事件类型、`UiCapability` |
+| `extensions.ts` | 扩展系统，**API 形状照抄 pi**（见下节）：`ExtensionRegistry`、`ExtensionAPI`、`ExtensionContext`、事件类型、`UiCapability`。P62：事件与结果类型在 `extension-events.ts`，API、上下文与注册类型在 `extension-types.ts`，由 `extensions.ts` 转出 |
 | `ui-form.ts` | `UiForm` 表单、校验、`askFormStepByStep`（没有表单 UI 的宿主逐个字段问） |
 | `index.ts` | 唯一的公开出口。`test/barrel.test.ts` 检查每个模块导出都经它再导出，内部件列在 INTERNAL |
 
@@ -130,7 +130,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
   verifyTranscript：JSON 往返重放日志 ≡ messages，否则 invalid_state
   context 钩子（作用于副本）→ 滤掉隐藏的声明
   ChatTransport({ messages, model, thinkingLevel, headers })
-       缺省 = POST {baseUrl}/chat/completions (stream: true)；Anthropic = POST {baseUrl}/v1/messages
+       缺省 = POST {baseUrl}/chat/completions (stream: true)；Anthropic = POST {baseUrl}/v1/messages；Responses = POST {baseUrl}/responses；Gemini = models/{model}:streamGenerateContent
   SSE 流 → delta 实时 yield → response_end 组装 AssistantMessage → 追加 assistant 条目
   对每个 toolCall：tool_call 钩子 → 参数校验 → 策略与审批 → execute → tool_result 钩子 → 追加 toolResult 条目
   finishTurn → turn_end（草稿入日志，可要求 continue）→ 拉 steering
@@ -141,25 +141,25 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 
 - **`@yophon/tau-ext-subagents`**（`agents.ts`、`index.ts`）：`subagent` 工具照抄 pi 示例的单个 `{agent, task}`、并行 `{tasks}`（最多 8 个、同时 4 个）、串联 `{chain}`，加后台运行（结果以 follow-up 回注）。agent 定义是 Markdown（name/description/tools/model/mode/effort/autoCompactWindow/disallowedTools/maxTurns/background）：内置 worker、scout、planner、reviewer，用户级 `~/.pi/agent/agents`、`~/.tau/agents` 与信任项目的 `.pi/agents`、`.tau/agents` 按名覆盖。每个子 agent 一条记录（`sub-N`、名字、工具集、模型、权限、消息），存 `<会话>/subagents/`；`send_message` 续接已结束的或给运行中的插话；`isolation: "worktree"` 经宿主的 `isolate` 拿到独立工作区；`/tasks`、`/agents`。使用说明见 [subagents.md](subagents.md)。
 - **`@yophon/tau-ext-resources`**：skills 与 prompt templates（加载规则对齐 pi 1.2）：skills 经 `before_agent_start` 注入 `<available_skills>`，模板注册成斜杠命令；`resources_discover` 收别的扩展给的路径。CLI 作为内置扩展加载。
-- **`@yophon/tau-ext-mcp-http`**（纯 ES，零依赖，两个 MCP 包共享的核心）：`client.ts` 的 `McpClient`（握手：2025-11-25 与 2026-07-28 新协议并存，`auto` 先 `server/discover` 再回退；请求关联、翻页、进度与取消、服务器请求的处理器、多轮请求、`listen()`）；`http.ts` 的 Streamable HTTP（SSE 用内核 `SseParser`、按事件 id 续流、401/403 交给 `McpAuth`）；`servers.ts` 的 `createMcpServers`（连接、注册工具与提示命令、暴露档位、`tools/list_changed`、等服务器、`wait_for_mcp_servers`）；`resources.ts`（资源工具）、`result.ts`（结果转换与限长）、`prompts.ts`、`mentions.ts`（`@` 资源）、`elicitation.ts`、`exposure.ts`、`naming.ts`（`mcp__<server>__<tool>`）、`headers.ts`、`jsonrpc.ts`。`createHttpMcpExtension` 给移动场景：离线静默降级、会话过期时重连。
-- **`@yophon/tau-ext-mcp`**（Node）：`createMcpExtension({ servers, onStatus })`，`command` 服务器走 `StdioTransport`（Windows `.cmd` 经 cross-spawn，关闭时 stdin → SIGTERM → SIGKILL，Windows `taskkill /T`），`url` 服务器走 ext-mcp-http；截断结果全文写 0600 临时文件。`oauth/` 移植自 pi-mcp（发现、动态注册、PKCE 流程、本地回调、刷新、challenge 与 `insufficient_scope` 升级、按授权服务器存凭据）。
+- **`@yophon/tau-ext-mcp-http`**（纯 ES，零依赖，两个 MCP 包共享的核心）：`client.ts` 的 `McpClient`（握手：2025-11-25 与 2026-07-28 新协议并存，`auto` 先 `server/discover` 再回退；请求关联、翻页、进度与取消、服务器请求的处理器、多轮请求、`listen()`）；`http.ts` 的 Streamable HTTP（SSE 用内核 `SseParser`、按事件 id 续流、401/403 交给 `McpAuth`）；`servers.ts` 的 `createMcpServers`（连接、注册工具与提示命令、暴露档位、`tools/list_changed`、等服务器）；`wait-tool.ts`（`wait_for_mcp_servers`，P62 拆出）；`transport.ts`（传输接口）；`resources.ts`（资源工具）、`result.ts`（结果转换与限长）、`prompts.ts`、`mentions.ts`（`@` 资源）、`elicitation.ts`、`exposure.ts`、`naming.ts`（`mcp__<server>__<tool>`）、`headers.ts`、`jsonrpc.ts`。`createHttpMcpExtension` 给移动场景：离线静默降级、会话过期时重连。
+- **`@yophon/tau-ext-mcp`**（Node）：`createMcpExtension({ servers, onStatus })`，`command` 服务器走 `stdio.ts` 的 `StdioTransport`（Windows `.cmd` 经 cross-spawn，关闭时 stdin → SIGTERM → SIGKILL，Windows `taskkill /T`），`url` 服务器走 ext-mcp-http；截断结果全文写 0600 临时文件。`oauth/` 移植自 pi-mcp（`discovery.ts` 发现与动态注册、`flow.ts` 的 PKCE 流程、`callback.ts` 本地回调、`provider.ts`/`auth-provider.ts` 刷新、challenge 与 `insufficient_scope` 升级、按授权服务器存凭据）。
 - **`@yophon/tau-ext-tool-search`**（纯 ES）：照抄 pi 的 BM25 排序与 `tool_search` 工具，在 codemode/deferred 档且未 active 的工具里检索，命中的经 `setActiveTools` 激活。
 - **`@yophon/tau-ext-codemode`**：`codemode` 工具（脚本没有环境权限，经 `ctx.executeTool` 调工具，每个嵌套调用照样过权限门）。纯 ES 入口过纯度门禁；`./node` 接 pi-codemode 的 worker 线程 QuickJS 沙箱（工作进程池缺省 2，`TAU_CODEMODE_MAX_WORKERS`）；`store()`/`load()` 读写活动分支上的条目。
 - **`@yophon/tau-ext-web`**（纯 Platform）：`web_fetch`（HTML 经 `html.ts` 转 markdown，50 KB 分页）与 `web_search`（Brave、Tavily、Exa、SearXNG，自带 key，没有就不注册）。
-- **`@yophon/tau-ext-lsp`**（纯 ES 入口，`./node` 启进程）：`config.ts`（Claude Code 的 `.lsp.json`）、`framing.ts`（按字节的 Content-Length 分帧）、`connection.ts`（JSON-RPC）、`client.ts`（一个服务器：懒启动、文档同步、崩溃后重启）、`manager.ts`（按扩展名路由、等诊断）、`diagnostics.ts`、`tool.ts`（`lsp` 工具，九种操作）、`extension.ts`（改完文件后在 `turn_end` 追加诊断、`/lsp`）、`catalog.ts`（Claude Code 官方 12 个语言插件的配置）、`node.ts`。使用说明见 [connectors.md](connectors.md)。
+- **`@yophon/tau-ext-lsp`**（纯 ES 入口，`./node` 启进程）：`config.ts`（Claude Code 的 `.lsp.json`）、`framing.ts`（按字节的 Content-Length 分帧）、`connection.ts`（JSON-RPC）、`client.ts`（一个服务器：懒启动、文档同步、崩溃后重启）、`manager.ts`（按扩展名路由、等诊断）、`diagnostics.ts`、`tool.ts`（`lsp` 工具，九种操作）、`extension.ts`（改完文件后在 `turn_end` 追加诊断、`/lsp`）、`catalog.ts`（Claude Code 官方 12 个语言插件的配置）、`gitignore.ts`（照 Claude Code，从定义、引用、实现、工作区符号的结果里去掉被 gitignore 的路径）、`node.ts`。使用说明见 [connectors.md](connectors.md)。
 - **`@yophon/tau-ext-provider-anthropic`**（纯 Platform，零依赖）：`createAnthropicTransport(config, platform)`，手写 Anthropic Messages 流式协议，消息与事件映射照抄 pi：thinking 原生流式（signature、redacted）、`none` 在支持的模型上发 disabled、tool_result 图片、`cache_control` 打点、cacheRead/cacheWrite 用量。
 - **`@yophon/tau-ext-provider-openai-responses`**（纯 Platform，零依赖）：`createOpenAIResponsesTransport(config, platform)`，手写 OpenAI Responses 流式协议（`POST {baseUrl}/responses`），映射照抄 pi 的 shared：指令作 developer（推理模型）或 system 输入、function tools、`reasoning.effort` 按思考级别、`store: false` 加 `reasoning.encrypted_content`，推理项与消息项 id（`textSignature`）同模型原样回放，tool call id 是 `call_id|item_id`，用量减去缓存命中，`incomplete`/`failed` 映射到 stopReason。没有模型目录：`reasoning`、`input` 由配置给。
 - **`@yophon/tau-ext-provider-google`**（纯 Platform，零依赖）：`createGoogleTransport(config, platform)`，手写 Gemini API 流式协议（`models/{model}:streamGenerateContent?alt=sse`，`x-goog-api-key`），映射照抄 pi 的 google-shared：`systemInstruction`、user/model 内容与 `functionCall`/`functionResponse` 部件（Gemini 3 起带 id，一轮的结果合进一个 user 轮，图片在 3 起嵌进结果）、`parametersJsonSchema`、思考摘要与 `thoughtSignature` 同模型回放、思考级别按模型族（3 用 `thinkingLevel`，2.5 用 pi 的预算表）、finishReason 与用量。
 - **`@yophon/tau-ext-loop-detection`**（纯 ES）：Gemini CLI 的检测——同一个调用连续 5 次、或 2–5 个调用的循环重复 5 遍——拦下并结束这次运行；同一次回复里的同参调用只算一次、连续 3 次时给一次隐藏提醒（yo-agent）；`/loop-detection on|off|status`。
 - **`@yophon/tau-ext-checkpoint`**（纯 ES，经 FileSystem）：Claude Code 的 checkpoint：每次运行开始（叶子是用户消息）建一个，write/edit/apply_patch 第一次碰某文件前存下原样；`CheckpointBackend` 接口（begin、recordBefore、list、restore），现有「文件备份」后端（每个会话一个目录，`<id>.json` 加 `<id>.<n>.txt`）。不记 bash 的改动。
-- **`@yophon/tau-protocol`**（纯 ES，零依赖）：客户端协议 tau/1 的类型（照 Codex app-server：thread/turn/item、server 发起的请求与 `serverRequest/resolved`）、`JsonRpcPeer`（JSON-RPC 2.0 两端互发请求；P62：不是 JSON 对象的消息丢掉，不抛）、`createMemoryTransportPair`（进程内，对象直接传）、`createLineTransport`/`LineBuffer`（字节流的行分帧）、`TauClient`（类型化客户端）。说明见 [protocol.md](protocol.md)。
+- **`@yophon/tau-protocol`**（纯 ES，零依赖）：客户端协议 tau/1 的类型（照 Codex app-server：thread/turn/item、server 发起的请求与 `serverRequest/resolved`）、`JsonRpcPeer`（JSON-RPC 2.0 两端互发请求；P62：不是 JSON 对象的消息丢掉，不抛）、`transport.ts` 的 `createMemoryTransportPair`（进程内，对象直接传）、`createLineTransport`/`LineBuffer`（字节流的行分帧）、`createWebSocketTransport`（一帧一条，P59）、`TauClient`（类型化客户端）。说明见 [protocol.md](protocol.md)。
 
 ## 宿主包
 
-- **`@yophon/tau-host-node`**：`fs.ts` 的 `NodeFileSystem`；`shell.ts` 的 `NodeShell`（bash，Windows 上找 Git Bash；`shellInvocation` 决定程序与参数；`findPowerShell`/`locatePowerShell`；`argv` 不经 shell；每条命令取 `commandEnv`）；`background.ts` 的 `NodeBackgroundShell`（输出写 `<临时目录>/tau/<进程号>-<序号>/tasks/<id>.output`，整棵进程树结束，前台 `run` 可转后台，`forPowerShell()` 共用任务表）；三者都有 `moveTo(cwd)`；`digest.ts`（信任用的目录摘要）；`extension-loader.ts`；`image/`（pi 的 photon 缩放与 EXIF 方向，跑在 worker 里）。
-- **`@yophon/tau-host-browser`**：`BrowserMemoryFileSystem`、`OpfsFileSystem`、`createBrowserSessionRepo()`（复用 `JsonlSessionRepo`）。浏览器只给 FileSystem，bash 自动缺席。
-- **`@yophon/tau-host-weapp`**：`createWeappPlatform(wx)`，`wx.request({ enableChunked: true })` 的推模式转成拉模式的 body reader，中止时 reject 挂起的读取。
-- **`@yophon/tau-host-rn`**：`createRnPlatform({ fetch })`，必传 expo/fetch（RN 全局 fetch 不流式），解码用内核的 UTF-8 解码器。
+- **`@yophon/tau-host-node`**：`fs.ts` 的 `NodeFileSystem`；`shell.ts` 的 `NodeShell`（bash，Windows 上找 Git Bash；`shellInvocation` 决定程序与参数；`findPowerShell`/`locatePowerShell`；`argv` 不经 shell；每条命令取 `commandEnv`）；`background.ts` 的 `NodeBackgroundShell`（输出写 `<临时目录>/tau/<进程号>-<序号>/tasks/<id>.output`，整棵进程树结束，前台 `run` 可转后台，`forPowerShell()` 共用任务表）；三者都有 `moveTo(cwd)`；`digest.ts`（信任用的目录摘要）；`extension-loader.ts`；`image/`（pi 的 photon 缩放与 EXIF 方向：`processor.ts` 把处理交给 worker 线程（`worker.ts`），`resize.ts` 缩放、`exif-orientation.ts` 转正）。
+- **`@yophon/tau-host-browser`**：`memory-fs.ts` 的 `BrowserMemoryFileSystem`、`opfs.ts` 的 `OpfsFileSystem`（路径规整在 `path.ts`）、`createBrowserSessionRepo()`（复用 `JsonlSessionRepo`）。浏览器只给 FileSystem，bash 自动缺席。
+- **`@yophon/tau-host-weapp`**：`weapp.ts` 的 `createWeappPlatform(wx)`，`wx.request({ enableChunked: true })` 的推模式转成拉模式的 body reader，中止时 reject 挂起的读取。
+- **`@yophon/tau-host-rn`**：`rn.ts` 的 `createRnPlatform({ fetch })`，必传 expo/fetch（RN 全局 fetch 不流式），解码用内核的 UTF-8 解码器。
 
 适配器的**信号桥接义务**：内核的 `TauAbortSignal` 是结构子集，原生传输层普遍拒收，适配器要按需桥接——`defaultPlatform`/host-rn 是正向桥（结构化 signal → 真 `AbortSignal`），host-weapp 是反向桥（监听中止 → `RequestTask.abort()`，且中止后挂起的读取必须 reject）。
 
@@ -167,7 +167,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 
 ### 启动
 
-`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau serve start|stop|restart|status`（`daemon.ts`）→ `tau gateway` 的管理子命令（`gateway.ts`；`run` 继续往下装配）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 进入模式。TUI（交互终端缺省，`--tui` 显式要求，`tui-hub.ts`）先由 `tui-link.ts` 决定连谁：常驻服务（P58；没有时按设置先起一个），或本进程的中枢；`--mode rpc`（`rpc-hub.ts`）总在本进程起中枢、经进程内通道连上（`local-hub.ts`：中枢、会话客户端、照旧选第一个会话——新的、`-c` 最近的、`--session` 指定的），由中枢为会话开工作区；`--mode acp`（`acp-hub.ts`，P60）同 TUI 的连接策略，在本进程时起的中枢用 `tau serve` 的同一个宿主；`tau serve`（`server/`）是同一个中枢，经 stdio 或本机 socket 服务客户端。其余模式为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）：REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json`。网关拿到同一个 `openWorkspace` 为每个对话再开工作区。
+`main.ts` 依次：装 HTTP 代理（`http-dispatcher.ts`）→ 不要模型的子命令（`tau credentials`/`tau mcp`/`tau audit`，`tool-commands.ts`）→ `parseArgs`（`args.ts`）→ `tau serve start|stop|restart|status`（`daemon.ts`）→ `tau gateway` 只说一句已归档就退出（P62）→ 读设置与模型表 → `resolveStartupEndpoint`（`endpoint.ts`）→ 需要时建 worktree 并 `chdir` 进去（`worktree.ts`）→ 进入模式。TUI（交互终端缺省，`--tui` 显式要求，`tui-hub.ts`）先由 `tui-link.ts` 决定连谁：常驻服务（P58；没有时按设置先起一个），或本进程的中枢；`--mode rpc`（`rpc-hub.ts`）总在本进程起中枢、经进程内通道连上（`local-hub.ts`：中枢、会话客户端、照旧选第一个会话——新的、`-c` 最近的、`--session` 指定的），由中枢为会话开工作区；`--mode acp`（`acp-hub.ts`，P60）同 TUI 的连接策略，在本进程时起的中枢用 `tau serve` 的同一个宿主；`tau serve`（`server/`）是同一个中枢，经 stdio 或本机 socket 服务客户端。其余模式为 `process.cwd()` 开一个工作区（`workspace.ts` 的 `openWorkspaceIn`）：REPL（`--repl` 或非 TTY，`modes/repl.ts`）、`-p` 单次、`--mode json`。
 
 ### 代码地图
 
@@ -176,7 +176,8 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | **启动与端点** | |
 | `main.ts` | 入口：上面的启动顺序、各模式的装配 |
 | `args.ts` | 用法文本、`CliOptions`、`parseArgs`，参数与环境变量取的数字、定价、档位值；`-r/--resume` 让 TUI 启动即打开 `/resume` 的选择器，`--session` 认文件路径或会话 id、名字（P53，照 pi） |
-| `util.ts` | `~/.tau` 所在（`userHome`）、`CLI_VERSION`、终端颜色、`firstLine`、`ask` |
+| `util.ts` · `text.ts` | `~/.tau` 所在（`userHome`）、`CLI_VERSION`、终端颜色、`ask`，P62 收拢的几份重复：`expandHome`、`isSymlink`、`formatShellOutput`；`text.ts` 的 `firstLine`、`errorText`（不读 `package.json`，pack smoke 的 TUI 消费端也能用） |
+| `wire.ts` | 协议线上的 JSON 与内核类型之间的转换（P62：tau/1 原样携带内核的值，协议边界上的类型断言都在这里） |
 | `endpoint.ts` | 会话跑在哪个模型与端点上：启动时的选择（`-m` → settings 缺省 → 第一个可用模型 → 环境变量；`-b`/`-k`/`--provider` 是只对一种协议生效的临时端点）、`buildEndpoint`（按 `api` 给出 OpenAI 兼容配置与 `native` 联合——Anthropic、Responses、Gemini 的 transport 配置——填 `maxOutputTokens`）、`endpointTransport`（建对应的 transport，models.json `toolCalling: "prompt"` 或 `TAU_TOOL_SHIM=1` 时套 prompt shim）、`createPricing`、`createModelSwitch`（TUI 的 `/model`，跨供应商） |
 | `models.ts` | `~/.tau/models.json`（pi 格式子集：供应商 `baseUrl`/`api`（openai-completions、anthropic-messages、openai-responses、google-generative-ai）/`apiKey`/`headers`，模型 `contextWindow`/`maxTokens`/`cost`/`input`/`reasoning`/`toolCalling`；`apiKey` 支持 `$NAME`、`!command`、`${cred:…}`），只列密钥可用的模型；`--list-models` |
 | `settings.ts` | 设置分层：用户的 `~/.tau/settings.json`，项目受信任时叠加项目设置（`USER_ONLY_KEYS` 不读）；`agentOptionsFromSettings` 把重试、压缩、队列模式、轮数上限转成 Agent 选项 |
@@ -187,7 +188,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `extension-loading.ts` | 加载扩展（全局 → 信任后的项目 → 设置里的 → `-e`）与加载报告、扩展 flag、系统提示的来源（`--system-prompt`/`--append-system-prompt`、`SYSTEM.md`/`APPEND_SYSTEM.md`）、缺省系统提示 |
 | `builtins.ts` | 用户扩展之前加载的内置扩展：tool_search、codemode（都 inactive）、提示工具行（每次 run 按 `getDeclaredTools()` 重写）、技能与模板（ext-resources，约定目录与 `--skill`/`--prompt-template`/`-ns`/`-np`）、设置里的资源与 `images.blockImages`、secret guard（排第一）、subagent 与子 agent 的 worktree 隔离（`setSubagentIsolation`）、todo、记忆、web_fetch/web_search、循环检测（设置 `loopDetection`）与 checkpoint（设置 `checkpoints`，`checkpointBackend` 给出 `~/.tau/checkpoints/<会话>` 的后端，启动时清掉 30 天没动的） |
 | `permissions.ts` · `permission-commands.ts` | `WorkspacePermissions`：读用户、项目（allow 要信任）、`.tau/settings.local.json` 的规则与 `--allowed-tools`/`--disallowed-tools`/`--add-dir`，按修改时间重读交给内核策略；「总是允许」的规则怎么写（`alwaysOption`）；`/permissions`、`/add-dir` |
-| `hooks.ts` | 用户钩子（Claude Code 格式，用户与信任项目的 `settings.json`）：`HookRunner`（command/exec/http，并行、超时、后台、`onFailure`）与 `createHooksExtension`（把二十多个钩子事件翻译到内核事件）、`withHookApprovals`。使用说明见 [hooks.md](hooks.md) |
+| `hooks.ts` | 用户钩子（Claude Code 格式，用户与信任项目的 `settings.json`）：`HookRunner`（command/exec/http，并行、超时、后台、`onFailure`）；`hooks-extension.ts`（P62 拆出）：`createHooksExtension`（把二十多个钩子事件翻译到内核事件）、PostToolBatch、`withHookApprovals`（PermissionRequest 先答）。使用说明见 [hooks.md](hooks.md) |
 | `mcp-config.ts` · `mcp-elicit.ts` | 用户级与信任项目的 `mcp.json`（项目级不得引用凭据），`withOAuth`，协议协商；elicitation 的钩子与对话框 |
 | `lsp.ts` | `~/.tau/lsp.json` 与信任项目的 `.tau/lsp.json`、推荐对话框 |
 | `credentials.ts` · `secrets.ts` · `secret-guard.ts` | 凭据库（`~/.tau/credentials.json`，`${cred:…}`）；记下解析出的密钥值、按名字和值去环境变量、打码；排第一的内置扩展：拦读凭据文件、工具结果打码（都不是安全边界，见 D36） |
@@ -209,6 +210,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | **会话中枢（server/，P56–P58）** | 一个 tau 持有会话、多个客户端接上同一个会话；TUI 与 `--mode rpc` 也是它的客户端；常驻服务服务各个目录。协议见 [protocol.md](protocol.md) |
 | `server/hub.ts` | `SessionHub`：已加载的会话与连接（`HubConnection`：一个 `JsonRpcPeer`，加上它声明的能力——原样数据、pi 事件记录、宽度），协议方法的分发（未 `initialize` 拒绝；P62：轮的 `input` 先校验，`server/shutdown` 只给本机的连接），换会话（`previousThreadId`：先问 `session_before_switch`，只有这个客户端持有且闲着时把工作区交给新会话），存档会话的列出、读取、改名、删除（借已加载会话的工作区，没有时按目录各开一个不起 MCP 的），请求带 `cwd` 时按那个目录开会话、找存档（P58），按需加载（P62：同一个存档会话正被打开时，`load` 与换会话都等那一次，不开第二个）、空闲 60 秒卸载，扩展要求退出时卸下；P58：`thread/loaded/list`，按连接记住换过的模型与推理强度（`isolateModels` 时它之后开的会话从那里起），`server/shutdown` 与 `shutdown()`（不再开始新的事，正在跑的在宽限期内跑完） |
 | `server/thread.ts` | `HubThread`：一个工作区 + 一个 `HeadlessSession`；推送编号（`seq`）并保留 20000 条，只发给部分客户端的推送（原样数据、pi 事件记录）也占编号；订阅者与加入结果（补齐或快照，原样客户端拿对话与状态）；打开会话的客户端在扩展启动前就订阅、信任问题问它；审批与对话框发给所有订阅者、先答为准、其余收到 `serverRequest/resolved`、没人接着时等待，对话框可带信号与超时；一次一件事（`runTask`：轮之外的压缩、移动、`!` 命令、重载、交接），`turn/start` 排在后面；会话自己发起的运行也算一轮；一轮结束后 worktree 移动触发重载、无名会话取标题；`handover` 把工作区与扩展交给客户端移去的会话（同一目录时；不存的会话 `/new` 出的也不存）；P58：`isolateModels`（`tau serve`）时换模型不动进程的端点，重建的 agent 由 `keepModel` 回到会话自己的模型与推理强度，开会话时 `chooseModel` 按客户端的 `-m`、会话自己的上一个模型、客户端换过的模型的顺序选；自动补全 provider 链（底层是客户端送来的自己的补全） |
+| `server/requests.ts` · `server/completion.ts` | P62 从 thread.ts 拆出：`ThreadRequests`（审批与对话框发给所有订阅者、先答为准、撤回、补发给后加入的、信号与超时）；`ThreadCompletion`（扩展的自动补全 provider 链） |
 | `server/control.ts` | 会话控制，照 TUI 原来的代码：换模型与推理强度（经扩展钩子）、权限模式、命名、条目、压缩与 `/tree` 移动（任务）、`!` 命令（任务，输出作为 `bash` 调用的工具事件推出）、`/btw`、取回排队、重载（失败时恢复旧扩展）、交接、检查点 |
 | `server/ui.ts` | 扩展的界面在中枢一侧：会话的 `UiCapability`（对话框成为 `ui/request`，含表单、超时、登录页），工具/消息/条目渲染器、组件、状态项、诊断、Markdown 变换的结果以数据发出（组件按客户端给的宽度画成行），扩展命令与快捷键、参数补全 |
 | `server/native.ts` | 原样数据：对话镜像（按消息身份比较，追加或重置）与会话状态（`ThreadState`） |
@@ -243,19 +245,24 @@ CLI/TUI 缺省 supervised。审批：TUI 是审批面板，REPL 是 readline 问
 P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻服务（D60，`tui-link.ts`）：它不持有 Agent、扩展注册表与会话文件（结构门禁：`tui/` 不 import `Agent`、`ExtensionRegistry`，也不 import `server/`），一切经协议。`session-client.ts` 的 `TuiSession` 是 TUI 这一侧：一个 `TauClient`，加入会话（开始、接上、导入、分叉，按 `seq` 排好加入前后到达的推送），对话镜像（内核消息）、会话状态、扩展命令表（找不到命令时、斜杠菜单打开时再读）、Markdown 变换结果的缓存（P61：按宽度分开，新宽度的取回之前画旧的；流式中的文字画最近一次取回的结果，`runs.ts` 的 `markdownSource` 决定何时去取）；推送按序交给控制器（前一条处理完才处理下一条），TUI 上屏前到达的先等着。P58：`TuiSession` 带客户端的目录（列存档、换会话时给 `cwd`）与是否常驻；连接断了（服务停了）时以 `thread/closed` 让 TUI 退出。P59：连着常驻服务时连接断了，`TuiSession` 按退避重连最多 60 秒（审批与对话框的处理器随新连接走），重新加入原来的会话并以 `client/reconnected` 让 TUI 重画、结束没看到结尾的那一轮。会话类命令（`/name`、`/resume`、`/fork`、`/new`、`/clone`、`/session`、`/export`、`/import`）在 `session-commands.ts`；常驻服务时 `/resume`（别名 `/sessions`）也列出服务持有的各目录的会话。
 
 - **两种画面**（D37）：缺省全屏（`fullscreen.ts`：备用屏幕、鼠标、只重写和上一帧不同的行（P62：Ink 自己的写入丢掉，每次渲染后从 Ink 实例的 `lastOutput` 取这一帧来画）、对话视图自己滚动、空闲时预渲染并建搜索语料、退出时把整段对话写回主屏幕）；inline（`app.ts`，`<Static>` 写进滚动记录）。`--inline`/`--fullscreen`、`TAU_TUI_MODE`、设置的 `tui.mode` 选择。两种画面共用控制器、底部区与块的渲染。
-- **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者（P62：`flush()` 之后经 Ink 的 reconciler 当场提交，React 19 不再同步提交外部 store 的更新）；`types.ts` 是共用类型。
+- **状态**：`model.ts` 是纯 reducer，AgentEvent 与本地交互折叠成区块（已完成的最长前缀移入 committed；实时块怎么变在 `model-blocks.ts`，P62 拆出），对话框、队列、状态栏、滚动位置都在 `UiState`；`store.ts` 同步 reduce、按帧通知订阅者（P62：`flush()` 之后经 Ink 的 reconciler 当场提交，React 19 不再同步提交外部 store 的更新）；`types.ts` 是共用类型。
 - **控制器**：`controller.ts` 不依赖 Ink，持有会话客户端（`session`），把会话的推送与扩展渲染的结果派发成 action，对外是一个对象；它的几块各自成文件，状态只放在一处。每一块导出自己的 host 类型（`DialogsHost`、`InputBoxHost`、`TranscriptViewHost`、`RunsHost`、`SessionsHost`）：`Pick<TuiController, 它用到的成员>` 加上它调用的其他部分的方法（例如 `{ readonly runs: Pick<TuiRuns, "sendQueued"> }`），控制器传 `this`，编译器保证不越界。`commands.ts` 的命令收 `CommandHost`，参数补全器只收 `CompletionHost`；runs 会执行任意命令，所以 `RunsHost` 包含 `CommandHost`：
   - `dialogs.ts`：审批、选择器与多选、输入框里的提问、表单、会话树选择器，以及对话框叠放；中枢发来的审批与对话框（`answerApproval`、`answerRequest`），别的客户端先答了（`serverRequest/resolved`）就关掉；
   - `input-box.ts`：输入框编辑（撤销、kill ring、粘贴折叠）、历史（含 Ctrl+C 清掉的草稿）、补全与路径补全（扩展的自动补全经 `completion/request`，送去自己的补全作链的底层）、剪贴板粘贴；
   - `transcript-view.ts`：全屏对话区的滚动、点选与拖选复制、搜索、跳到上一条提示；
   - `runs.ts`：提交与排队（轮中输入的 steer、follow-up 与命令）；会话的推送：轮（不论哪个客户端发起）与任务的开始结束、内核事件、工具与消息渲染（请求中枢）、提示、不在任务中加进对话的扩展消息；自己发起的任务先占住任务槽（`runJob`），中枢的推送结束它；
-  - `sessions.ts`：切换会话（中枢做，扩展可拒绝）并重放（`replay.ts`）、重载扩展、切模型与思考等级。
+  - `sessions.ts`：切换会话（中枢做，扩展可拒绝）并重放（`replay.ts`）、重载扩展、切模型与思考等级；
+  - `key-commands.ts`：按键命令表，连同连按 Esc、Ctrl+C 两次的计时与 `/btw` 的滚动上限；`input-router.ts`：按键、粘贴、鼠标与焦点报告的分派、点击目标（两者 P62 拆出）。
 - **输入**（`input/`）：`stdin.ts` 过滤 Ink 读的 stdin，`keys.ts` 照 pi 拆序列并解析按键（传统 VT、xterm 修饰、kitty、Windows Terminal 的 win32-input-mode），`mouse.ts`（SGR 鼠标与焦点），`editor.ts`（字素簇编辑器）、`kill-ring.ts`、`paste.ts`、`history.ts`（`~/.tau/history.jsonl`）、`completion.ts`（`/` 与 `@` 补全）、`width.ts`。`keymap.ts` 按层路由，`keybindings.ts` 是 pi 的动作名与缺省键，`~/.tau/keybindings.json` 可改。
 - **渲染**（`render/`）：`lines.ts`（块按宽度渲染成终端行并缓存）、`wrap.ts`（wrap-ansi 10 在 Ink 那一档的移植，逐字节相同）、`markdown.ts`、`highlight.ts`、`diff.ts`、`tool-views.ts`（按工具的视图，读取合并，流式参数用 `partial-json.ts`）、`approval.ts`、`blocks.ts`、`bottom.ts`（底部区）、`list.ts`、`search.ts`（Ctrl+F，移植 pi）、`aside.ts`（`/btw` 浮层）、`git-diff.ts`、`row-meta.ts`、`spans.ts`。
-- **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先；扩展命令在中枢运行）、`rewind.ts`（`/rewind`：选一条消息，按中枢的 checkpoint 恢复代码，或经 `runs.navigate` 回到那条消息之前，或两者）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`（中枢送来的渲染结果与组件 → 终端行）、`format.ts`、`ink-env.ts`。
+- **其余**：`commands.ts`（内置命令表，扩展命令并入、内置优先；扩展命令在中枢运行）、`rewind.ts`（`/rewind`：选一条消息，按中枢的 checkpoint 恢复代码，或经 `runs.navigate` 回到那条消息之前，或两者）、`session-tree.ts`（pi tree-selector 的移植）、`startup.ts`（启动时的信任对话框）、`terminal-status.ts`（标题转圈、标签进度、OSC 7501、桌面通知）、`transcript.ts`（选区与取字）、`export-html.ts`、`clipboard.ts`/`clipboard-read.ts`、`console-capture.ts`（运行期间 console 与 stderr 写 `~/.tau/logs/tui-<日期>.log`）、`extensions.ts`（中枢送来的渲染结果与组件 → 终端行）、`format.ts`、`ink-env.ts`、`terminal.ts`（Ink 画在上面的终端的尺寸与颜色，P62）。
 - **交互面**：`›` 用户、markdown 回复、`● 工具(参数)` 加 `⎿` 结果（缺省折叠）、审批面板、活动行、状态栏、提示行；对话框占输入框的位置。命令表见 `/help`，键位见 `/hotkeys`。
 - **宿主契约**（在中枢一侧）：先挂宿主动作再发 `session_start`（启动与 `/reload`）；一次一件事，轮排在任务之后；run 结束时排队文本回填编辑器（`thread/clearQueue`）。
 - **测试**：`packages/cli/test/tui-*.test.ts` 用 ink-testing-library 驱动真实 Agent，TUI 经进程内中枢连上（`tui-harness.ts`；`join` 再接一个 TUI 到同一会话，`p57-tui-multi.test.ts`）；`npm run smoke:tui` 在 tmux 里跑全部场景，缺省全屏，`SMOKE_TUI_MODE=inline` 再跑一遍（CI 两遍都跑，本机在 WSL 里跑 `scripts/smoke-tui-wsl.sh`）。
+
+## 网页客户端（packages/web/src/）
+
+`@yophon/tau-web`（P59）：常驻服务开了远程访问时，同一个端口上的静态页面（Preact，esbuild 构建，`npm run build:web`），手机经 WebSocket 做 tau/1 的轻客户端（只要会话状态，不要原样数据）。`main.tsx` 入口；`app.tsx` 配对（`#pair=` 带的码）、会话列表（服务持有的在前）与会话页（对话、审批与对话框卡片、运行中插话、模型与权限模式、压缩）；`connection.ts` 连接（令牌存 `localStorage`，`initialize` 带上，断了按 1、2、4…30 秒退避重连，`thread/resume afterSeq` 接上）；`conversation.ts` 把推送折叠成条目；`views.tsx` 画条目与卡片；`markdown.ts` 把 Markdown 解析成数据再画成元素，从不当 HTML（链接只放行 `http(s):` 与 `mailto:`）；`images.ts` 发送前在手机上缩小照片。
 
 ## 已归档
 
@@ -271,7 +278,7 @@ P57 起 TUI 是会话中枢的客户端（D59），P58 起中枢可以是常驻�
 
 ## 发布工程
 
-- 十九个包以 `@yophon/tau-*` 锁步版本发布到 npm（D17）：开发期零构建跑 src；发布物是 tsc 产物，pack/publish 时 `withPublishManifest` 临时把 manifest 改成 dist 形态。`@yophon/tau-cli` 带 `bin: tau` 与 npm-shrinkwrap.json。
+- 二十一个包以 `@yophon/tau-*` 锁步版本发布到 npm（D17）：开发期零构建跑 src；发布物是 tsc 产物，pack/publish 时 `withPublishManifest` 临时把 manifest 改成 dist 形态。`@yophon/tau-cli` 带 `bin: tau` 与 npm-shrinkwrap.json。
 - 供应链门禁（`npm run check` 与 CI）：`check:pinned-deps`（全仓精确版本，内部依赖锁步）、`check:shrinkwrap`（与根 lockfile 同步、拒绝带 install script 的依赖）；`smoke:pack`（内核 tarball 装进裸消费者项目运行加严格类型检查，CLI 的 TUI 安装布局）。
 
 ## 术语表

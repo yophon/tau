@@ -26,8 +26,9 @@ tau audit --json                           # 原始记录，每行一条 JSON
 | `mode` | 当前档位直接放行，没问 |
 | `user_once` / `user_session` / `user_reject` | 终端里批了一次 / 本会话都允许 / 拒绝 |
 | `chat_owner` / `chat_reject`、`timeout`、`non_owner` | 旧记录：网关里主人批准 / 拒绝、没人回超时拒绝、别人的对话直接拒绝 |
-| `policy_deny` | 规则或档位直接拒绝 |
-| `hook` | 扩展拦下（包括读凭据文件被拦） |
+| `rule_allow` / `rule_deny` | 权限规则放行 / 拒绝（带上命中的规则和它所在的文件，见 [permissions.md](permissions.md)） |
+| `policy_deny` | 档位或内置保护直接拒绝 |
+| `hook` / `hook_allow` | 扩展或钩子拦下（包括读凭据文件被拦）/ 钩子批准（PreToolUse 的 `allow`、PermissionRequest 的允许） |
 | `no_approver` | 需要批准，但没有能批的地方（比如 `-p` 在非终端里跑） |
 
 **不记内容**：账本只记元数据，完整的对话和工具输出在会话文件里，每轮记录都带着去哪看。参数摘要缺省开着（一句话，最多 160 字，密钥打码）；在 `~/.tau/settings.json` 里写 `{ "audit": { "details": "none" } }` 就只记工具名。

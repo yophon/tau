@@ -9,7 +9,7 @@
 - `npm run check` — biome lint/format + 全包 tsc + **内核纯度门禁** + **结构门禁**（`check:structure`，见硬规则 11）+ 依赖钉死 + shrinkwrap 校验。改完代码必跑，全绿才算完
 - `npm test` — node:test 全套（内核假 Platform 测试 + host-node 真实 fs/shell 测试 + CLI e2e）
 - `npm run tau` — 跑 CLI（需 TAU_BASE_URL / TAU_API_KEY / TAU_MODEL 环境变量或对应 flag）
-- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁：载体真实性 + 无 polyfill 预期失败 + 有 polyfill 全绿，polyfill 单源 `test-fixtures/quickjs/polyfills.ts`）· `smoke:tui`（tmux 交互）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（内核加 host-weapp 打包，无 Node 泄漏）· `smoke:pack`（内核 tarball 在裸消费者项目安装/运行/类型检查）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）
+- smoke 全家桶：`smoke:quickjs`（裸引擎门禁）· `smoke:quickjs:legacy`（flutter_js 同代老 QuickJS 门禁：载体真实性 + 无 polyfill 预期失败 + 有 polyfill 全绿，polyfill 单源 `test-fixtures/quickjs/polyfills.ts`）· `smoke:quickjs:mcp`（裸引擎经桥接 fetch 调真实 MCP server）· `smoke:tui`（tmux 交互）· `smoke:web`（网页客户端在 headless Chromium 里配对、接上终端的会话、审批、服务重启后回来）· `smoke:browser`（bundle）· `smoke:browser:runtime`（headless Chromium，可用 `BROWSER_BIN` 指定）· `smoke:weapp`（内核加 host-weapp 打包，无 Node 泄漏）· `smoke:pack`（内核 tarball 在裸消费者项目安装/运行/类型检查）· `demo:browser`（本地 demo 服务器 + CORS 转发 proxy）
 - `node scripts/bench-long-session.mjs [--sizes 2000,10000,30000]` — 长会话基准（P42，不进 CI，要几分钟）：每轮内核开销与一致性检查、冷加载、`/resume` 列表、全屏渲染与搜索、`/tree`。改了会话、投影、全屏渲染、搜索或会话树之后跑一次，与 P42 规格书「实施记录」里的数字比；机器忙时波动大，可疑的项把旧版文件放进同一进程交替对比
 - `node scripts/baseline.mjs` — 基线（P62a，不进 CI）：启动、`-p` 一轮、常驻服务（起服务、接入、一轮、内存）、长会话、全量测试耗时，各跑几次取中位数，记进 [baseline.md](baseline.md)；TUI 首屏要 tmux（WSL 里量，见下）
 - `npm run smoke:dialects` — 真实端点方言冒烟（P17，on-demand，不进必跑 gate）：`TAU_DIALECT_DEEPSEEK_KEY`/`TAU_DIALECT_OPENROUTER_KEY`/`TAU_DIALECT_OLLAMA_BASE_URL`/`TAU_DIALECT_OPENAI_COMPAT_BASE_URL`+`_KEY`+`_MODEL` 有哪个跑哪个，缺凭据明示 SKIP，任一 FAIL 退出非零；CI 有 secrets 驱动的可选 job（continue-on-error）
@@ -36,7 +36,7 @@
 8. **适配器信号桥接义务**（P10，原技术债 #7）：内核造的 `TauAbortSignal` 是结构子集，原生传输层普遍拒收（undici/expo fetch 要真 `AbortSignal`；wx 要 `RequestTask.abort()`）。写新 `Platform` 适配器必须按需双向桥接，且 abort 后 pending read 必须 reject（abort 才能传回内核转成 aborted 消息）。参照实现：kernel `platform.ts` 的 `bridgeSignal`、`host-rn`（正向）、`host-weapp`（反向）。
 9. **扩展工具默认并发执行**（P18/D22）：多工具批次默认 parallel，工具 `execute` 可能与同批其他工具并发跑——execute 内部的共享状态与主动 `ctx.ui` 调用由工具作者自负并发安全；需要独占执行的工具声明 `executionMode: "sequential"`（整批降级）。preflight（tool_call 钩子/审批）恒串行，无需担心审批并发；P24c 起这条覆盖工具经 `ctx.executeTool()` 发起的嵌套调用与子 agent：一棵 Agent 树共用一把 preflight 锁（`PreflightLock`，`runSubagent` 传给子 Agent），宿主若让多个 Agent 共用一个审批 UI，也应共用一把锁（`AgentOptions.preflightLock`）。
 10. **扩展作者规则**（P21）：扩展工厂可以是 async，宿主逐个 await；工厂里只注册，不启动进程、socket、timer——连接与资源放进 `session_start`，在 `session_shutdown` 里关闭（含在途连接）。工具必须声明 `parameters` JSON Schema 对象，否则注册即抛 `invalid_tool`。`input`、`before_agent_start` 期间不要调 `sendUserMessage`（抛 `busy`），改用 `sendMessage({ deliverAs })`。通知类处理器抛错时，宿主装了 error sink 就只报告不中断（CLI 打到 stderr），没装则照常抛出
-11. **文件大小与依赖方向**（P51，D54）：`scripts/check-structure.mjs` 让每个源文件不超过 1000 行，已经超过的文件各有上限（P50 拆过的三个用 P50 的目标）；CLI 根目录与 `modes/` 的模块静态 import 走下去不得到达 `tui/controller.ts`；TUI（`tui/`）与 ACP 适配层（`modes/acp.ts`、`modes/acp-updates.ts`）不 import 中枢（`server/`）与内核的 `Agent`、`ExtensionRegistry`，`tui-hub.ts` 与 `acp-hub.ts` 不读中枢一侧的对象（P57、P58、P60）。到线时先想能不能拆；确实要调高，在脚本里写上原因。TUI 的各部分与命令表只收自己的 host 类型（`Pick`），新用到控制器的成员就加进对应的 `Pick`。
+11. **文件大小与依赖方向**（P51，D54）：`scripts/check-structure.mjs` 让每个源文件不超过 1000 行，已经超过的文件各有上限（拆过的按拆后的行数加 200、取整到 50，P62）；CLI 根目录与 `modes/` 的模块静态 import 走下去不得到达 `tui/controller.ts`；TUI（`tui/`）与 ACP 适配层（`modes/acp.ts`、`modes/acp-updates.ts`）不 import 中枢（`server/`）与内核的 `Agent`、`ExtensionRegistry`，`tui-hub.ts` 与 `acp-hub.ts` 不读中枢一侧的对象（P57、P58、P60）。到线时先想能不能拆；确实要调高，在脚本里写上原因。TUI 的各部分与命令表只收自己的 host 类型（`Pick`），新用到控制器的成员就加进对应的 `Pick`。
 
 ## 阶段执行流程（每个 Phase 依此走完）
 
@@ -67,7 +67,7 @@
 
 ## 测试模式
 
-- **内核测试**：注入假 `Platform`（scripted SSE responses），全程不碰宿主 API——这既是测试也是运行时无关的持续证明。共用工具在 `packages/kernel/test/helpers.ts`（若尚未抽出，见技术债登记）。
+- **内核测试**：注入假 `Platform`（scripted SSE responses），全程不碰宿主 API——这既是测试也是运行时无关的持续证明。共用工具在 `packages/kernel/test/helpers.ts`（假 Platform、SSE 响应、各种轮的脚本）。
 - **e2e 验证**：本地 mock OpenAI 服务器（node:http 返回 SSE）+ 真 CLI 全链路。mock 脚本放 scratchpad/临时目录，不入库；固定复用的场景应沉淀为入库的 test fixture。交互路径用 tmux 驱动（`tmux new-session -d` → `send-keys` → `capture-pane`）。
 - **host-node 测试**：真实 tmpdir 上跑 fs/shell。
 - 新功能 = 内核单测 + 至少一条 e2e 路径；bug 修复 = 先写复现测试。
