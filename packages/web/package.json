@@ -20,7 +20,7 @@
 	},
 	"devDependencies": {
 		"@yophon/tau-protocol": "^0.2.0",
-		"preact": "10.29.8"
+		"preact": "11.0.1"
 	},
 	"publishConfig": {
 		"access": "public"

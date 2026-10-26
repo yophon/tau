@@ -376,14 +376,19 @@ function FormCard({
 								</option>
 							))}
 						</select>
+					) : field.type === "string" ? (
+						<input
+							id={`field-${field.name}`}
+							type="text"
+							value={String(values[field.name] ?? "")}
+							onInput={(event) => set(field.name, event.currentTarget.value)}
+						/>
 					) : (
 						<input
 							id={`field-${field.name}`}
-							type={field.type === "string" ? "text" : "number"}
+							type="number"
 							value={String(values[field.name] ?? "")}
-							onInput={(event) =>
-								set(field.name, field.type === "string" ? event.currentTarget.value : Number(event.currentTarget.value))
-							}
+							onInput={(event) => set(field.name, Number(event.currentTarget.value))}
 						/>
 					)}
 					{field.description ? <small class="muted">{field.description}</small> : null}
