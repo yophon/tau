@@ -1,11 +1,11 @@
 // `tau credentials …` and `tau mcp …` (P32b): commands that manage configuration and need
 // neither a model nor the agent.
-import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { auditCredentials, CredentialStore, credentialsPath, credentialUsage } from "./credentials.ts";
 import type { LoadedMcpServer } from "./mcp-config.ts";
+import { openUrl } from "./open-url.ts";
 import { maskSecrets } from "./secrets.ts";
 import { readSettings } from "./settings.ts";
 
@@ -18,7 +18,7 @@ Usage:
   tau credentials audit                        Find secrets written out in config files, and unresolved references
 
 Stored in ~/.tau/credentials.json (0600). Use them in ~/.tau/models.json (apiKey, headers),
-~/.tau/mcp.json (command, args, env, url, headers) and ~/.tau/gateway/config.json (channels).`;
+and ~/.tau/mcp.json (command, args, env, url, headers).`;
 
 /** Read a secret: hidden typing on a terminal, else all of stdin (trailing newline trimmed). */
 async function readSecret(prompt: string): Promise<string> {
@@ -185,23 +185,6 @@ async function checkServer(server: LoadedMcpServer): Promise<string> {
 	}
 }
 
-/** Open a URL in the default browser, best effort (nothing happens on a machine without one). */
-function openBrowser(url: string): void {
-	const [command, args] =
-		process.platform === "win32"
-			? ["cmd", ["/c", "start", "", url]]
-			: process.platform === "darwin"
-				? ["open", [url]]
-				: ["xdg-open", [url]];
-	try {
-		spawn(command, args, { stdio: "ignore", detached: true, windowsHide: true })
-			.on("error", () => {})
-			.unref();
-	} catch {
-		// No browser: the printed URL and the paste prompt remain.
-	}
-}
-
 /** `tau mcp login|logout <server>`: OAuth sign-in for a server with "auth": "oauth" in ~/.tau/mcp.json. */
 async function mcpSignIn(
 	command: "login" | "logout",
@@ -237,7 +220,7 @@ async function mcpSignIn(
 			prompt: {
 				showAuthorizationUrl: (url) => {
 					console.log(`Open this link to sign in to ${server.name}:\n\n  ${url.href}\n`);
-					openBrowser(url.href);
+					openUrl(url.href);
 				},
 				promptForRedirectUrl: (signal) =>
 					new Promise((resolve) => {

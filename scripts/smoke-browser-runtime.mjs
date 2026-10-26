@@ -154,6 +154,9 @@ void main();
 		resolveResult = resolve;
 	});
 	const bundledScript = await readFile(bundle, "utf8");
+	/** When Chrome asked for the page (debt #36: a CI timeout said nothing about how far it got). */
+	let pageRequestedAt;
+	const startedAt = Date.now();
 	server = createServer((req, res) => {
 		if (req.url === "/result") {
 			let body = "";
@@ -168,6 +171,7 @@ void main();
 			});
 			return;
 		}
+		pageRequestedAt ??= Date.now() - startedAt;
 		res.writeHead(200, { "content-type": "text/html" });
 		res.end(`<!doctype html><meta charset="utf-8"><body>loading</body><script>${bundledScript}</script>`);
 	});
@@ -187,10 +191,15 @@ void main();
 			url,
 		]);
 		let stderr = "";
+		// 40 s: a cold Chrome on a CI runner once needed more than 20 (debt #36).
 		const timeout = setTimeout(() => {
 			child.kill("SIGKILL");
-			reject(new Error(`Browser smoke timed out. stderr:\\n${stderr}`));
-		}, 20_000);
+			const page =
+				pageRequestedAt === undefined
+					? "Chrome never asked for the page"
+					: `Chrome asked for the page after ${pageRequestedAt} ms; the script did not report`;
+			reject(new Error(`Browser smoke timed out after 40 s (${page}). stderr:\n${stderr}`));
+		}, 40_000);
 		child.stderr.setEncoding("utf8");
 		child.stderr.on("data", (chunk) => {
 			stderr += chunk;
@@ -202,7 +211,7 @@ void main();
 		child.on("close", (code) => {
 			if (code !== 0 && code !== null) {
 				clearTimeout(timeout);
-				reject(new Error(`Browser exited before reporting with ${code}. stderr:\\n${stderr}`));
+				reject(new Error(`Browser exited before reporting with ${code}. stderr:\n${stderr}`));
 			}
 		});
 		resultPromise.then((text) => {
@@ -216,7 +225,7 @@ void main();
 		});
 	});
 	if (!String(result).startsWith("PASS tau browser runtime OPFS")) {
-		throw new Error(`Browser runtime smoke failed:\\n${result}`);
+		throw new Error(`Browser runtime smoke failed:\n${result}`);
 	}
 	console.log("browser runtime smoke ok");
 } finally {
