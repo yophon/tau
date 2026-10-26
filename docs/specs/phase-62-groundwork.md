@@ -224,3 +224,10 @@
 - **smoke**：`smoke:weapp` 改为 `scripts/smoke-weapp.mjs`（内联入口，内核加 host-weapp 加一个静态扩展，检查不漏 Node API）；`smoke:quickjs:mcp` 改连 `test-fixtures/mcp-http-server.mjs`（无 SDK 的最小 Streamable HTTP 服务器），删掉 P19 认证锁定那段（测的是归档服务器自己的功能）；pack smoke 删掉网关加载飞书插件那段。三个都本地跑过。
 - **依赖**：少了 120 个包（飞书 SDK、axios、follow-redirects、MCP SDK 等）。`npm audit`：原来 4 个高危消失；新出 undici 8.10.2 一个高危（三条 10 月的公告，8.12.2 起修复），62h 处理，技术债 #24 改写。
 - **测试**：1430 个（1426 通过、4 跳过）；原 1536 个里随归档移走 110 个，新增 cron 4 个。第一遍全量有一个失败：子进程里 Node 自带的类型剥离（amaro）编译 WebAssembly 出错（`CompileError: … f32.copysign`），与改动无关，单独重跑与第二遍全量都通过。
+
+### 62c CI
+
+- gate 改成三路矩阵：Ubuntu + Node 22、Ubuntu + Node 24、Windows + Node 22（4071798）。第一次跑 Ubuntu Node 22 绿，另两路红，原因与处理：
+  - **8.3 短路径**（Windows 5 个 worktree 测试、TUI 扩展界面测试）：CI 的临时目录是 `C:\Users\RUNNER~1\…`，git 与 `realpathSync.native` 给出长路径 `runneradmin`；测试拿 `realpathSync`（不展开短名）的结果比。测试改用 `realpathSync.native`，TUI 测试台的工作目录也取真实路径（短名下的目录不显示成 `~`，状态栏被挤掉一项）。代码里几份路径比较的实现不一致（`git-paths` 的 `canonical` 用不展开短名的 `realpathSync`，ACP 的 `samePath` 只 `resolve`），合并时统一（62e）。
+  - **CI 的 Windows 以管理员运行**：tau 按设计在管理员下不用常驻服务（照 Codex），P58 的四个「用哪个中枢」测试与 P60 的「编辑器接终端的会话」测试在管理员下改为跳过并写明原因（`tui-link.ts` 的 `elevatedOnWindows` 导出给测试用）。
+  - **P56 的补发断言是竞态**（Windows 与 Node 24 都出现）：取「看到的最后一条」之后，会话收尾还可能再发一条，补发因此多一条。断言改成：看到的都补发了、补发到的不早于看到的。

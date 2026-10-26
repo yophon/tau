@@ -98,7 +98,10 @@ describe("P56 tau serve over stdio", () => {
 			await client.unsubscribe(thread.id);
 			const replay = await client.resumeThread(thread.id, afterTool);
 			assert.equal(replay.events[0]?.params.seq, afterTool + 1);
-			assert.equal(replay.events.at(-1)?.params.seq, seen);
+			// Everything this client saw is replayed; a notification sent after the last one it had
+			// (the session settling) may come too (P62: seen on Windows and Node 24 in CI).
+			assert.ok(replay.events.some((event) => event.params.seq === seen));
+			assert.ok((replay.events.at(-1)?.params.seq as number) >= seen);
 			const listed = await client.listThreads();
 			assert.ok(listed.threads.some((info) => info.id === thread.id));
 

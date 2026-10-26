@@ -46,7 +46,7 @@ after(() => {
 });
 
 function repository(): string {
-	const repo = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46wt-")));
+	const repo = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46wt-")));
 	made.push(repo);
 	git(repo, "init", "-q", "-b", "main");
 	writeFileSync(join(repo, "a.txt"), "one\n");
@@ -286,7 +286,7 @@ function runCli(args: string[], cwd: string, home: string, baseUrl: string): Pro
 describe("P46c through the CLI", () => {
 	it("enter_worktree moves files and commands into the worktree; exit_worktree keep comes back", async () => {
 		const repo = repository();
-		const home = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+		const home = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46home-")));
 		made.push(home);
 		const script: MockTurnResponse[] = [
 			mockToolCallTurn("enter_worktree", { name: "cli" }),
@@ -326,7 +326,7 @@ describe("P46c through the CLI", () => {
 
 	it("an isolated subagent edits in its own worktree: kept when it changed something, removed otherwise", async () => {
 		const repo = repository();
-		const home = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+		const home = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46home-")));
 		made.push(home);
 		const results: string[] = [];
 		const mock = await startMockOpenAI([
@@ -371,7 +371,7 @@ describe("P46c through the CLI", () => {
 
 	it("send_message to an isolated subagent continues in the worktree its first run kept", async () => {
 		const repo = repository();
-		const home = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+		const home = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46home-")));
 		made.push(home);
 		const systems: string[] = [];
 		const mock = await startMockOpenAI([
@@ -411,7 +411,7 @@ describe("P46c through the CLI", () => {
 		{ skip: process.platform !== "win32" && "PowerShell is on by default only on Windows" },
 		async () => {
 			const repo = repository();
-			const home = realpathSync(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+			const home = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46home-")));
 			made.push(home);
 			const results: string[] = [];
 			let childTools: string[] = [];

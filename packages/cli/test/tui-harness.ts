@@ -3,7 +3,7 @@
 // terminal. P57: the TUI is a client of an in-process session hub, as in tau itself; the
 // harness's workspace stands in for the CLI's.
 import { randomUUID } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -157,7 +157,9 @@ export async function harness(options: HarnessOptions): Promise<Harness> {
 	const requests: Harness["requests"] = [];
 	const platform = fakePlatform(options.responses, requests);
 	const permissionMode = options.permissionMode ?? "autonomous";
-	const cwd = mkdtempSync(join(tmpdir(), "tau-tui-"));
+	// The real path: on Windows a temp directory under an 8.3 short name (C:UsersRUNNER~1) is not
+	// shown under ~, and the long spelling crowds the status line.
+	const cwd = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-tui-")));
 	const { model, modelChoices, resolveModelSwitch, autoTitle, checkpoints, background, consumeReload, ...terminal } =
 		options.tui ?? {};
 

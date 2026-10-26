@@ -48,7 +48,7 @@ function hasGit(): boolean {
 
 /** A repository with a commit, AGENTS.md, an ignored .env and node_modules, and .worktreeinclude. */
 function repository(): string {
-	const repo = realpathSync(mkdtempSync(join(tmpdir(), "tau-wt-")));
+	const repo = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-wt-")));
 	git(repo, "init", "-q", "-b", "main");
 	writeFileSync(join(repo, "AGENTS.md"), "main rules\n");
 	writeFileSync(join(repo, ".gitignore"), ".env\nnode_modules/\n");
@@ -96,7 +96,7 @@ describe("P37d worktrees", { skip: !hasGit() }, () => {
 		assert.equal(git(repo, "status", "--porcelain"), "", "the worktree is excluded from the main checkout");
 		assert.match(readFileSync(join(repo, ".git", "info", "exclude"), "utf8"), /\/\.tau\/worktrees\//);
 		// What follows the main checkout.
-		assert.equal(realpathSync(mainCheckoutOf(session.path) ?? ""), repo);
+		assert.equal(realpathSync.native(mainCheckoutOf(session.path) ?? ""), repo);
 		assert.equal(mainCheckoutOf(repo), undefined);
 		assert.equal(readGitBranch(session.path), session.branch);
 		assert.equal(shadowedContextFile(session.path), join(repo, "AGENTS.md"));
@@ -146,7 +146,7 @@ describe("P37d worktrees", { skip: !hasGit() }, () => {
 	});
 
 	it("reopens an existing name; fresh starts from origin's default branch and moves a clean, idle worktree forward", () => {
-		const origin = realpathSync(mkdtempSync(join(tmpdir(), "tau-wt-origin-")));
+		const origin = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-wt-origin-")));
 		git(origin, "init", "-q", "--bare", "-b", "main");
 		const repo = repository();
 		git(repo, "remote", "add", "origin", origin);
@@ -159,7 +159,7 @@ describe("P37d worktrees", { skip: !hasGit() }, () => {
 		const first = openWorktree({ cwd: repo, name: "fresh" });
 		assert.ok(!existsSync(join(first.path, "local.txt")), "fresh = origin/main, not the local HEAD");
 		// Someone pushes; the clean, commit-less worktree moves to it when reopened.
-		const other = realpathSync(mkdtempSync(join(tmpdir(), "tau-wt-other-")));
+		const other = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-wt-other-")));
 		git(other, "clone", "-q", origin, ".");
 		writeFileSync(join(other, "pushed.txt"), "from origin\n");
 		git(other, "add", "pushed.txt");
@@ -227,7 +227,7 @@ describe("P37d review fixes", { skip: !hasGit() }, () => {
 		writeFileSync(join(session.path, "linked"), "stand-in for a symlink git lists as untracked\n");
 		assert.equal(worktreeState({ ...session, links: [join(session.path, "linked")] }).changedFiles, 0);
 		assert.equal(worktreeState(session).changedFiles, 1);
-		const outer = realpathSync(mkdtempSync(join(tmpdir(), "tau-wt-sep-")));
+		const outer = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-wt-sep-")));
 		mkdirSync(join(outer, "store"));
 		git(outer, "init", "-q", "--separate-git-dir", join(outer, "store", "proj.git"), "work");
 		const work = join(outer, "work");

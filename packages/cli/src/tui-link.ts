@@ -84,7 +84,7 @@ export function daemonExclusion(options: CliOptions): string | undefined {
 }
 
 /** Windows: a terminal running as administrator (high integrity) does not share the server (Codex). */
-function elevatedOnWindows(): boolean {
+export function elevatedOnWindows(): boolean {
 	if (process.platform !== "win32") return false;
 	const groups = spawnSync("whoami", ["/groups"], { encoding: "utf8", windowsHide: true });
 	return groups.status === 0 && groups.stdout.includes("S-1-16-12288");
