@@ -1,7 +1,7 @@
 // Long-term memory (P26c, reshaped in P32a after Claude Code's auto memory and
 // Hermes Agent). Three layers, all under the user's home so nothing is committed
 // with a repository and no project trust is needed:
-//   - about the person: ~/.tau/memory/USER.md (a gateway guest has their own);
+//   - about the person: ~/.tau/memory/USER.md;
 //   - the project: ~/.tau/projects/<project>/MEMORY.md, an index kept in the
 //     prompt, plus topic files in memory/<topic>.md read on demand.
 // Writes have no size limit (P39a, Claude Code's auto memory): the prompt takes
@@ -22,9 +22,9 @@ export const MEMORY_LOAD_LIMITS = { lines: 200, bytes: 25 * 1024 };
 export interface MemoryScope {
 	/** About the person. */
 	userFile: string;
-	/** The project index and its topic directory; absent for a gateway guest. */
+	/** The project index and its topic directory; absent = only the person's layer. */
 	project?: { file: string; topicsDir: string };
-	/** Session directories this person may search; ownerOnly keeps only the owner's gateway chats. */
+	/** Session directories this person may search. */
 	sessions: SessionRoot[];
 }
 

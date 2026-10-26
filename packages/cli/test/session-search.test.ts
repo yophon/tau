@@ -27,24 +27,10 @@ function session(path: string, lines: string[], mtime?: Date): void {
 	if (mtime) utimesSync(path, mtime, mtime);
 }
 
-function gatewayChat(path: string, role: "owner" | "allowed", lines: string[]): void {
-	session(path, [
-		JSON.stringify({
-			type: "custom",
-			id: `c${++seq}`,
-			parentId: null,
-			timestamp: "2026-10-10T00:00:00Z",
-			customType: "tau.gateway.conversation",
-			data: { channel: "weixin", account: "a", peer: "p", role },
-		}),
-		...lines,
-	]);
-}
-
 function fixture() {
 	const home = mkdtempSync(join(tmpdir(), "tau-search-"));
 	const cli = join(home, "sessions");
-	const gateway = join(home, "gateway", "sessions");
+	const elsewhere = join(home, "elsewhere");
 	session(
 		join(cli, "proj", "old.jsonl"),
 		[
@@ -59,15 +45,12 @@ function fixture() {
 		[entry("user", "Deploy plan v2: blue/green", "2026-10-15T02:00:00Z")],
 		new Date("2026-10-15T03:00:00Z"),
 	);
-	gatewayChat(join(gateway, "weixin", "a", "boss", "chat.jsonl"), "owner", [
-		entry("user", "老板说部署方案周五上线", "2026-10-12T02:00:00Z"),
-	]);
-	gatewayChat(join(gateway, "weixin", "a", "bob", "chat.jsonl"), "allowed", [
-		entry("user", "bob 的部署方案秘密", "2026-10-12T03:00:00Z"),
-	]);
-	const owner: SessionRoot[] = [{ dir: cli }, { dir: gateway, ownerOnly: true }];
-	const bob: SessionRoot[] = [{ dir: join(gateway, "weixin", "a", "bob") }];
-	return { home, cli, gateway, owner, bob };
+	session(join(cli, "other", "mid.jsonl"), [entry("user", "老板说部署方案周五上线", "2026-10-12T02:00:00Z")]);
+	// Not among the roots searched: never read.
+	session(join(elsewhere, "chat.jsonl"), [entry("user", "bob 的部署方案秘密", "2026-10-12T03:00:00Z")]);
+	const owner: SessionRoot[] = [{ dir: cli }];
+	const bob: SessionRoot[] = [{ dir: elsewhere }];
+	return { home, cli, elsewhere, owner, bob };
 }
 
 describe("session search", () => {
@@ -79,7 +62,7 @@ describe("session search", () => {
 		assert.ok(snippets.some((text) => text.includes("老板说部署方案周五上线")));
 		assert.ok(snippets.some((text) => text.includes("rsync + systemd")));
 		assert.ok(!snippets.some((text) => text.includes("tool output")), "tool results are not searched");
-		assert.ok(!snippets.some((text) => text.includes("bob")), "someone else's gateway chat is not the owner's");
+		assert.ok(!snippets.some((text) => text.includes("bob")), "a directory outside the roots is not searched");
 		assert.match(result.text, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2} · (user|assistant) · .*\.jsonl · entry e\d+\n {2}/);
 		assert.match(result.text, /Read more around a hit with session_read\.$/);
 		const both = searchSessions(owner, "部署方案 rsync");
@@ -100,7 +83,7 @@ describe("session search", () => {
 		assert.throws(() => parseSince("soon"), /not like 7d/);
 	});
 
-	it("keeps a guest to their own conversation", () => {
+	it("searches only its own roots", () => {
 		const { bob } = fixture();
 		const hits = searchSessions(bob, "部署方案").hits;
 		assert.deepEqual(
@@ -117,16 +100,13 @@ describe("session search", () => {
 	});
 
 	it("reads around a hit, only in files the person may search", () => {
-		const { owner, bob, gateway, cli } = fixture();
+		const { owner, bob, elsewhere, cli } = fixture();
 		const hit = searchSessions(owner, "rsync 推到").hits[0];
 		assert.ok(hit);
 		const around = readSessionAround(owner, hit.file, hit.entry, { before: 0, after: 1 });
 		assert.match(around, /^▶ \d{4}-\d{2}-\d{2} \d{2}:\d{2} user: 我们讨论一下部署方案/);
 		assert.match(around, /assistant: 好的，部署方案定为/);
-		assert.throws(
-			() => readSessionAround(owner, join(gateway, "weixin", "a", "bob", "chat.jsonl"), "e1"),
-			/not one of the sessions/,
-		);
+		assert.throws(() => readSessionAround(owner, join(elsewhere, "chat.jsonl"), "e1"), /not one of the sessions/);
 		assert.throws(() => readSessionAround(bob, join(cli, "proj", "old.jsonl"), hit.entry), /not one of the sessions/);
 		assert.throws(() => readSessionAround(owner, hit.file, "nope"), /is not a message/);
 	});

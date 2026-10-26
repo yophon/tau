@@ -1,7 +1,5 @@
 // Command-line arguments (P50: split out of main.ts, like pi's cli/args.ts): the usage text,
-// the options, `tau gateway`, and the number, pricing and mode values flags and environment
-// variables take.
-import { resolve } from "node:path";
+// the options, and the number, pricing and mode values flags and environment variables take.
 import type { ModelPricing, PermissionMode, ToolExecutionMode } from "@yophon/tau-kernel";
 import { splitRuleList } from "./permissions.ts";
 import { isWorktreeName } from "./worktree.ts";
@@ -10,7 +8,6 @@ export const USAGE = `tau - minimal OpenAI-compatible coding agent
 
 Usage: tau [options] [@files...] [messages...]
        tau [options] -p "prompt" [@files...]
-       tau gateway <run|status|login|channels|allow|revoke> ...   (see tau gateway help)
        tau serve [--listen stdio|unix://[PATH]] [options]   Serve sessions to clients over tau's
                                          protocol (docs/protocol.md)
        tau serve start|stop|restart|status [options]   The resident server the TUI connects to
@@ -85,7 +82,7 @@ Options:
                          worktree-<name> (a name is generated when none is given; an
                          existing one is opened again). On exit a clean worktree with a
                          generated name is removed, otherwise you choose. Not with
-                         --mode rpc/acp or the gateway. settings: worktree.baseRef
+                         --mode rpc/acp. settings: worktree.baseRef
                          ("fresh" = origin's default branch, "head"), worktree.symlinkDirectories
   -c, --continue         Resume the most recent session for this directory
   -r, --resume           Pick a session to resume (the TUI opens /resume's picker)
@@ -184,8 +181,6 @@ export interface CliOptions {
 	listModels?: boolean;
 	/** P29: json | rpc | acp. */
 	mode?: "json" | "rpc" | "acp";
-	/** P30: `tau gateway <command>`. */
-	gateway?: GatewayCommand;
 	/** P56: `tau serve`, the session hub for clients (stdio now; a local socket and WebSocket later). */
 	serve?: {
 		listen: string;
@@ -207,40 +202,6 @@ export interface CliOptions {
 	worktree?: { name?: string };
 	allowedTools?: string[];
 	disallowedTools?: string[];
-}
-
-/** `tau gateway <command> [args]` (P30). run also takes the usual tau options (model, flags). */
-export interface GatewayCommand {
-	command: string;
-	args: string[];
-	workspace?: string;
-	owner?: boolean;
-	mode?: string;
-}
-
-export function parseGatewayArgs(argv: string[]): CliOptions {
-	const command = argv[0] ?? "help";
-	const gateway: GatewayCommand = { command, args: [] };
-	const rest: string[] = [];
-	for (let i = 1; i < argv.length; i++) {
-		const arg = argv[i] ?? "";
-		const value = (): string => {
-			const next = argv[++i];
-			if (next === undefined || next.startsWith("--")) {
-				console.error(`Missing value for ${arg}`);
-				process.exit(1);
-			}
-			return next;
-		};
-		if (arg === "--workspace") gateway.workspace = resolve(value());
-		else if (arg === "--owner") gateway.owner = true;
-		else if (arg === "--mode" && command === "allow") gateway.mode = value();
-		else if (command === "run") rest.push(arg);
-		else gateway.args.push(arg);
-	}
-	const options = parseArgs(rest);
-	options.gateway = gateway;
-	return options;
 }
 
 /** `tau serve [--listen <url>] [tau options]` (P56); P58: `tau serve start|stop|restart|status [tau options]`. */
@@ -288,7 +249,11 @@ function parseServeArgs(argv: string[]): CliOptions {
 }
 
 export function parseArgs(argv: string[]): CliOptions {
-	if (argv[0] === "gateway") return parseGatewayArgs(argv.slice(1));
+	if (argv[0] === "gateway") {
+		// P62: the gateway and its chat channels were archived; say so instead of sending "gateway" as a prompt.
+		console.error("tau gateway was removed in P62: the gateway and its WeChat and Feishu channels are archived.");
+		process.exit(1);
+	}
 	if (argv[0] === "serve") return parseServeArgs(argv.slice(1));
 	const options: CliOptions = {
 		help: false,

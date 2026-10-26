@@ -9,7 +9,6 @@ import type { McpServerSpec } from "@yophon/tau-protocol";
 import { builtinExtensions, configureBuiltins, toolLine } from "./builtins.ts";
 import { createHooksExtension, type HookRunner, loadHookConfig } from "./hooks.ts";
 import type { LspHost } from "./lsp.ts";
-import type { MemoryScope } from "./memory.ts";
 import { isProjectTrusted, presentGatedResources } from "./project-trust.ts";
 import { stdioServer } from "./secrets.ts";
 import { readSettings } from "./settings.ts";
@@ -127,32 +126,29 @@ export async function loadExtensionRegistry(
 	cwd: string,
 	ui: UiCapability | undefined,
 	hostExtensions: readonly Extension[] = [],
-	memory?: MemoryScope,
 	mcp = true,
 	audit?: Extension,
 	hooks?: HookRunner,
-	/** P40: false leaves out the settings keys P40 added (the gateway). */
-	extendedSettings = true,
 	/** P45: offer catalog language servers (the TUI, as Claude Code offers them in the terminal). */
 	recommendLsp = false,
 	/** P60: a client's MCP servers for the session (an editor's); they win over configured ones of the same name. */
 	extraMcp: readonly ClientMcpServer[] = [],
 ): Promise<LoadedExtensions> {
-	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's (the gateway's
-	// schedule tools, P31), then the user's extensions.
-	configureBuiltins({ cwd, projectTrusted: false, home: userHome(), extendedSettings });
+	// Built-ins first (tool prompt, tool_search, codemode, P24e), then the host's, then the user's extensions.
+	configureBuiltins({ cwd, projectTrusted: false, home: userHome() });
 	// P41b (pi): -ne keeps out the discovered and configured extensions; -e paths load either way.
-	const discovered = !(extendedSettings && extensionFlags.none);
-	const userSettingsExtensions =
-		extendedSettings && discovered ? (readSettings(join(userHome(), ".tau", "settings.json")).extensions ?? []) : [];
+	const discovered = !extensionFlags.none;
+	const userSettingsExtensions = discovered
+		? (readSettings(join(userHome(), ".tau", "settings.json")).extensions ?? [])
+		: [];
 	const registry = await ExtensionRegistry.load([
 		// P32c: the audit first, so it sees every call, including ones the guard blocks.
 		...(audit ? [audit] : []),
-		...builtinExtensions(memory !== undefined ? { memory } : {}),
+		...builtinExtensions(),
 		...hostExtensions,
 		...(discovered ? await loadExtensionsFromDir(join(userHome(), ".tau", "extensions")) : []),
 		...(await loadSettingsExtensions(userSettingsExtensions)),
-		...(extendedSettings ? await loadSettingsExtensions(extensionFlags.paths) : []),
+		...(await loadSettingsExtensions(extensionFlags.paths)),
 	]);
 	// A failing notification handler (an unreachable MCP server in session_start, a
 	// buggy turn_end) is reported and skipped instead of taking the CLI down (HF-12).
@@ -174,8 +170,7 @@ export async function loadExtensionRegistry(
 		if (projectTrusted) {
 			if (projectFiles.length > 0) await registry.add(await importExtensionFiles(projectFiles));
 			// P40c: the project's settings.json extensions, resolved against its .tau directory.
-			const listed =
-				extendedSettings && discovered ? (readSettings(join(cwd, ".tau", "settings.json")).extensions ?? []) : [];
+			const listed = discovered ? (readSettings(join(cwd, ".tau", "settings.json")).extensions ?? []) : [];
 			if (listed.length > 0) await registry.add(await loadSettingsExtensions(listed));
 		} else {
 			if (projectFiles.length > 0) {
@@ -186,7 +181,7 @@ export async function loadExtensionRegistry(
 		}
 	}
 	// Project codemode settings count only for a trusted directory.
-	configureBuiltins({ cwd, projectTrusted, home: userHome(), extendedSettings });
+	configureBuiltins({ cwd, projectTrusted, home: userHome() });
 	// Connectors (P32b): MCP servers from ~/.tau/mcp.json and, when trusted, the project's.
 	if (mcp) {
 		const { loadMcpConfig, mcpProtocolNegotiation, withOAuth } = await import("./mcp-config.ts");
@@ -213,38 +208,26 @@ export async function loadExtensionRegistry(
 					servers,
 					// P43 (pi): the working directory as the root, resource tools, images to the model;
 					// P44 (Claude Code): elicitation, prompt commands, `@` resources; P47 (Claude Code):
-					// servers are asked for MCP 2026-07-28 first. The gateway is parked and keeps what it
-					// had (the handshake only).
-					...(extendedSettings
-						? {
-								cwd,
-								elicit: createElicitHandler(hooks, openUrl),
-								protocolNegotiation: mcpProtocolNegotiation(process.env, (message) =>
-									console.error(dim(`mcp: ${message}`)),
-								),
-							}
-						: { resourceTools: false, images: false, promptCommands: false, resourceMentions: false, waitTool: false }),
+					// servers are asked for MCP 2026-07-28 first.
+					cwd,
+					elicit: createElicitHandler(hooks, openUrl),
+					protocolNegotiation: mcpProtocolNegotiation(process.env, (message) => console.error(dim(`mcp: ${message}`))),
 				}),
 			]);
 		}
 	}
 	// Language servers (P45, Claude Code): ~/.tau/lsp.json and, when trusted, the project's.
-	// The gateway is parked and gets none.
-	let lspHost: LspHost | undefined;
-	if (extendedSettings) {
-		const { createLspHost } = await import("./lsp.ts");
-		const lsp = createLspHost({
-			home: userHome(),
-			cwd,
-			projectTrusted,
-			clientVersion: CLI_VERSION,
-			envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
-			recommend: recommendLsp,
-		});
-		for (const error of lsp.errors) console.log(dim(`lsp: ${error}`));
-		await registry.add([lsp.extension]);
-		lspHost = lsp;
-	}
+	const { createLspHost } = await import("./lsp.ts");
+	const lsp = createLspHost({
+		home: userHome(),
+		cwd,
+		projectTrusted,
+		clientVersion: CLI_VERSION,
+		envAllow: readSettings(join(userHome(), ".tau", "settings.json")).shellEnvAllow ?? [],
+		recommend: recommendLsp,
+	});
+	for (const error of lsp.errors) console.log(dim(`lsp: ${error}`));
+	await registry.add([lsp.extension]);
 	// User hooks (P35): ~/.tau/settings.json and, when trusted, the project's.
 	if (hooks) {
 		hooks.configure(loadHookConfig({ home: userHome(), cwd, projectTrusted }));
@@ -252,7 +235,7 @@ export async function loadExtensionRegistry(
 		await registry.add([createHooksExtension(hooks)]);
 	}
 	reportExtensionLoad(registry);
-	return { registry, projectTrusted, ...(lspHost ? { lsp: lspHost } : {}) };
+	return { registry, projectTrusted, lsp };
 }
 
 /**

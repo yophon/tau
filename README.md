@@ -53,15 +53,15 @@ inject a small adapter instead of polyfilling globals.
 - **Extensions** — pi-mirrored API (lifecycle events, tools, commands, flags,
   renderers, widgets, shortcuts); skills and prompt templates built in.
 - **Hosts** — terminal (full-screen or inline TUI, REPL, one-shot `-p`, JSON,
-  RPC, ACP), browser (OPFS), WeChat mini-program, React Native (Expo), a phone
-  (Flutter, kernel in QuickJS), and a bare QuickJS engine — each verified
-  end-to-end, most in CI.
+  RPC, ACP), browser (OPFS) and a bare QuickJS engine, verified end-to-end in CI;
+  `Platform` adapters for WeChat mini-programs and React Native (their demo apps
+  and the Flutter phone demo are archived, see [archive/README.md](archive/README.md)).
 
 The kernel's only host dependency is the four-method `Platform` seam, so the
 agent loop runs anywhere with a JS engine and an HTTP path to an
 OpenAI-compatible endpoint. Whether that loop is also a *useful* coding agent
 depends on the capabilities the host gives it — no shell means no `bash` tool,
-unless a remote one is wired in over MCP (the Flutter demo's story). See
+unless a remote one is wired in over MCP (what the archived Flutter demo did). See
 [docs/architecture.md](docs/architecture.md#示例宿主与可移植性) for the reach and
 its boundaries.
 
@@ -89,22 +89,10 @@ its boundaries.
 | `@yophon/tau-ext-lsp` | Language servers (Claude Code's `.lsp.json`): diagnostics after edits and the `lsp` tool | Yes — child processes (Node entry) |
 | `@yophon/tau-ext-codemode` | `codemode`: the model writes JavaScript that calls tools, in pi's QuickJS sandbox | Yes — worker threads (Node entry) |
 | `@yophon/tau-ext-resources` | pi-compatible skills and prompt templates | No direct runtime API |
-| `@yophon/tau-ext-feishu` | Feishu/Lark bridge: media, reactions, progress cards, outbound tools | Yes — Feishu SDK |
-| `@yophon/tau-gateway` | Resident gateway core: one conversation per chat, approvals in chat, channel plugins | Yes — Node filesystem |
-| `@yophon/tau-channel-weixin` | WeChat channel, built into `tau gateway` | Yes — network, filesystem |
-| `@yophon/tau-channel-feishu` | Feishu/Lark channel plugin for the gateway | Yes — Feishu SDK |
 
-The Feishu bridge (a port of [pi-feishu](https://github.com/surenkid/pi-feishu))
-loads through a wrapper in `.tau/extensions/feishu.ts` or `~/.tau/extensions/`:
-
-```ts
-import createFeishuExtension from "@yophon/tau-ext-feishu";
-
-export default createFeishuExtension();
-```
-
-It reads `FEISHU_APP_ID` / `FEISHU_APP_SECRET` (or `--feishu-*` flags, or
-`feishu` in pi/tau settings). Chats share the one tau conversation, one at a time.
+The resident gateway for chat apps (`tau gateway`, with its WeChat and Feishu channels) and the
+Feishu bridge extension were archived in P62, with the mini-program, React Native and Flutter demo
+apps: [archive/README.md](archive/README.md) says what they were and how to get them back.
 
 ## Design rules
 
@@ -221,16 +209,11 @@ set `webSearch` in settings or export `BRAVE_API_KEY`, `TAVILY_API_KEY` or
 npm run smoke:quickjs             # full agent loop on a bare QuickJS engine (no WinterTC globals)
 npm run smoke:quickjs:mcp         # bare-engine kernel calling a real MCP server over a bridged fetch
 npm run smoke:browser             # bundle the browser host demo
-npm run smoke:weapp               # bundle the WeChat mini-program demo (no Node leakage)
+npm run smoke:weapp               # bundle the kernel with the mini-program adapter (no Node leakage)
 npm run demo:browser              # serve the browser demo locally (CORS proxy included)
-npm run demo:weapp                # build examples/weapp/miniprogram/lib/tau.js for WeChat devtools
 ```
 
 - `examples/browser/` — static page, OPFS filesystem, BYOK in the browser
-- `examples/weapp/` — WeChat mini-program chat demo ([README](examples/weapp/README.md))
-- `examples/rn/` — React Native (Expo) chat demo ([README](examples/rn/README.md))
-- `examples/flutter/` — a phone agent (kernel in `flutter_js`) plus a zero-tau
-  computer-side MCP server it drives over the LAN ([app](examples/flutter/app/README.md) · [mcp-server](examples/flutter/mcp-server/README.md))
 
 ## Scripts and editors
 
@@ -300,20 +283,6 @@ encrypt it, use a tunnel such as Tailscale: `tailscale serve --bg 7700` gives th
 address on your tailnet (bind tau to `127.0.0.1` with `tau serve remote on --listen
 ws://127.0.0.1:7700` so only the tunnel reaches it).
 
-## Resident gateway
-
-```bash
-tau gateway login weixin     # scan the QR code with WeChat; the scanner owns the account
-tau gateway run              # stays up; each chat gets its own session
-tau gateway stop
-```
-
-The gateway runs tau for chat apps: one session per conversation, approvals by
-replying in chat, pairing codes for other people, and reminders, recurring
-tasks and goals in the owner's chat. WeChat is built in; Feishu is a plugin.
-The gateway is parked: it works as described in [docs/gateway.md](docs/gateway.md),
-and features added since then are off there.
-
 ## Embedding the kernel
 
 ```ts
@@ -372,11 +341,10 @@ Living docs under [docs/](docs/) — start here when picking up development:
 - [docs/architecture.md](docs/architecture.md) — current architecture by package and module, code maps, glossary
 - [docs/roadmap.md](docs/roadmap.md) — completed phases, current work, backlog, tech-debt register
 - [docs/specs/](docs/specs/) — per-phase specifications (written and confirmed before coding each phase)
-- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D55)
+- [docs/decisions.md](docs/decisions.md) — design decision records (D1–D63)
 - [docs/settings.md](docs/settings.md) — every settings.json key, its default, and whether a project may set it
 - [docs/rpc.md](docs/rpc.md) — the JSON, RPC and ACP modes
 - [docs/protocol.md](docs/protocol.md) — `tau serve`, the resident server, remote devices and tau's client protocol (several clients on one session)
-- [docs/gateway.md](docs/gateway.md) — the resident gateway and channel plugins
 - [docs/memory.md](docs/memory.md) — long-term memory and session search
 - [docs/connectors.md](docs/connectors.md) — MCP connectors, language servers, credentials, OAuth, keeping secrets from the model
 - [docs/audit.md](docs/audit.md) — the audit ledger: what tau did, who approved it, what it cost (`tau audit`)

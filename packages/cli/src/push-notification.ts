@@ -3,7 +3,7 @@
 // sent while you are at the terminal (focused, or a key pressed in the last minute; tau's
 // number, Claude Code does not give one) unless TAU_DISABLE_NOTIFICATION_PRESENCE_CHECK=1,
 // nor when tui.notify is "off". tau has no phone push (Claude Code's goes through Remote
-// Control). The TUI and the REPL feed `presence`; the gateway has neither.
+// Control). The TUI and the REPL feed `presence`.
 import process from "node:process";
 import { type Extension, textResult } from "@yophon/tau-kernel";
 import { notifyDesktop } from "./tui/terminal-status.ts";

@@ -1,5 +1,5 @@
-// One session the hub holds (P56): a workspace and a HeadlessSession, as the gateway's conversations
-// (gateway.ts openConversation), plus what makes it shareable: every notification numbered and kept,
+// One session the hub holds (P56): a workspace and a HeadlessSession (as the gateway's conversations
+// were, P30), plus what makes it shareable: every notification numbered and kept,
 // any number of subscribed clients, and approvals and dialogs sent to all of them — the first answer
 // counts and the others are told (Codex's serverRequest/resolved). P57 adds what the TUI needs: one
 // job at a time (a turn, a compaction, a `!` command, …), the native data for full clients, the

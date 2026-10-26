@@ -12,7 +12,7 @@ tau --worktree fix-login -p "跑一遍测试"
 - 位置 `<仓库>/.tau/worktrees/<名字>`，分支 `worktree-<名字>`。在某个 worktree 里再开，新的也建在主仓库下面。
 - 紧跟在 `--worktree` 后面、像名字的那个词（字母或数字开头，只有字母、数字、`.`、`_`、`-`）当作名字；要发消息就写在名字后面。
 - 名字已经存在就重新打开它。
-- 不能和 `--mode rpc`、`--mode acp`、`tau gateway` 一起用。
+- 不能和 `--mode rpc`、`--mode acp` 一起用。
 
 ## 从哪里开始
 
@@ -74,7 +74,7 @@ tau 会往仓库的 `info/exclude` 加一行 `/.tau/worktrees/`，主仓库的 `
 - **`exit_worktree {action: "keep" | "remove", discard_changes?}`**：回到进入前的目录。`keep` 留下 worktree 和分支；`remove` 一起删掉。有改动或新提交时，`remove` 必须带 `discard_changes: true`，否则报错并写明几个文件、几个提交；带了也要你确认（bypass 不问，没有界面时拒绝）。`--worktree` 启动的会话也能用。
 - **恢复**：会话文件留在原来的目录，里面记着当前所在的 worktree。`--continue`、`--session` 或 TUI 的 `/resume` 恢复时回到那里；它已经被删掉，就留在启动目录并说明。
 - 退出 TUI 或 REPL 时还在 worktree 里，按「退出时」的规则处理。
-- 只读模式和网关里没有这两个工具，子 agent 也没有。子 agent 自己的 worktree 见 [subagents.md](subagents.md) 的「在自己的 worktree 里跑」。
+- 只读模式里没有这两个工具，子 agent 也没有。子 agent 自己的 worktree 见 [subagents.md](subagents.md) 的「在自己的 worktree 里跑」。
 
 ## 不做
 

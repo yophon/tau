@@ -49,11 +49,7 @@ const state: {
 	home: string;
 	/** settings.json shell.envAllow (P32b). */
 	envAllow: string[];
-	/** P41a: the skills and prompt templates package is built in (not in the gateway, which stays as it was). */
-	resources: boolean;
-	/** P46: features after P40 are on (everywhere but the gateway, which stays as it was). */
-	extended: boolean;
-	/** P46: a worktree for an isolated subagent, set by the workspace (none in the gateway). */
+	/** P46: a worktree for an isolated subagent, set by the workspace. */
 	isolate: SubagentsOptions["isolate"];
 	/** P41a (pi): the conventional skill and prompt directories, in the order they are searched. */
 	defaultSkillPaths: string[];
@@ -79,8 +75,6 @@ const state: {
 	webSearch: undefined,
 	home: homedir(),
 	envAllow: [],
-	resources: false,
-	extended: true,
 	isolate: undefined,
 	defaultSkillPaths: [],
 	defaultPromptPaths: [],
@@ -189,21 +183,14 @@ function readCodemodeSettings(path: string): CodemodeSettings {
 	}
 }
 
-/**
- * The memory of someone at their own terminal or an owner in chat (P32a): their
- * USER.md, the project's index and topics, and their sessions (the terminal's, and
- * the gateway conversations recorded as an owner's).
- */
+/** The memory of the person at the terminal (P32a): their USER.md, the project's index and topics, and their sessions. */
 export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
 	// P37d: every worktree of a repository shares the main checkout's project memory (Claude Code).
 	const project = join(home, ".tau", "projects", sessionDirSlug(mainCheckoutOf(cwd) ?? cwd));
 	return {
 		userFile: join(home, ".tau", "memory", "USER.md"),
 		project: { file: join(project, "MEMORY.md"), topicsDir: join(project, "memory") },
-		sessions: [
-			{ dir: join(home, ".tau", "sessions") },
-			{ dir: join(home, ".tau", "gateway", "sessions"), ownerOnly: true },
-		],
+		sessions: [{ dir: join(home, ".tau", "sessions") }],
 	};
 }
 
@@ -211,25 +198,14 @@ export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
  * Read the codemode settings: ~/.tau/settings.json, then the project's
  * .tau/settings.json when the directory is trusted (P23c trust gate).
  */
-export function configureBuiltins(options: {
-	cwd: string;
-	projectTrusted: boolean;
-	home?: string;
-	/** P40c: false leaves out the settings keys P40 added (the gateway). */
-	extendedSettings?: boolean;
-}): void {
+export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	state.memory = defaultMemoryScope(home, options.cwd);
-	const layered =
-		options.extendedSettings === false
-			? {}
-			: loadSettings({ home, cwd: options.cwd, projectTrusted: options.projectTrusted });
+	const layered = loadSettings({ home, cwd: options.cwd, projectTrusted: options.projectTrusted });
 	state.skillPaths = layered.skills ?? [];
 	state.promptPaths = layered.prompts ?? [];
 	state.skillCommands = layered.enableSkillCommands !== false;
 	// P41a (pi): the user's directories, then a trusted project's.
-	state.resources = options.extendedSettings !== false;
-	state.extended = options.extendedSettings !== false;
 	state.defaultSkillPaths = [
 		join(home, ".tau", "skills"),
 		join(home, ".agents", "skills"),
@@ -248,7 +224,7 @@ export function configureBuiltins(options: {
 	state.blockImages = layered.images?.blockImages === true;
 	state.loopDetection = layered.loopDetection === true;
 	state.checkpoints = layered.checkpoints !== false;
-	if (state.extended) cleanupCheckpoints(home);
+	cleanupCheckpoints(home);
 	// P40c: sessions kept in settings' sessionDir are searched too.
 	if (layered.sessionDir !== undefined) {
 		state.memory.sessions = [...state.memory.sessions, { dir: resolve(options.cwd, layered.sessionDir) }];
@@ -365,42 +341,35 @@ const settingsResources: Extension = (api) => {
 	});
 };
 
-/**
- * The built-ins for one workspace. `memory` overrides its memory scope (P32a: a
- * gateway guest gets only their own, never the owner's).
- */
-/** P46: how an isolated subagent gets its worktree (the workspace sets it; the gateway does not). */
+/** P46: how an isolated subagent gets its worktree (the workspace sets it). */
 export function setSubagentIsolation(isolate: SubagentsOptions["isolate"]): void {
 	state.isolate = isolate;
 }
 
-export function builtinExtensions(options: { memory?: MemoryScope } = {}): Extension[] {
+/** The built-ins for one workspace. */
+export function builtinExtensions(): Extension[] {
 	return [
 		// P32b: first, so a blocked read never reaches another extension and results are masked early.
 		createSecretGuard({ home: state.home, envAllow: state.envAllow }),
 		toolPrompt,
 		settingsResources,
 		// P41a (pi): skills and prompt templates, built in; the directories and flags come from here.
-		...(state.resources
-			? [
-					createResourcesExtension({
-						defaultSkillPaths: () => state.defaultSkillPaths,
-						defaultPromptPaths: () => state.defaultPromptPaths,
-						configuredSkillPaths: () => state.skillPaths,
-						configuredPromptPaths: () => state.promptPaths,
-						skillPaths: () => state.cli.skillPaths,
-						promptPaths: () => state.cli.promptPaths,
-						noSkills: () => state.cli.noSkills,
-						noPrompts: () => state.cli.noPrompts,
-						skillCommands: () => state.skillCommands,
-					}),
-				]
-			: []),
+		createResourcesExtension({
+			defaultSkillPaths: () => state.defaultSkillPaths,
+			defaultPromptPaths: () => state.defaultPromptPaths,
+			configuredSkillPaths: () => state.skillPaths,
+			configuredPromptPaths: () => state.promptPaths,
+			skillPaths: () => state.cli.skillPaths,
+			promptPaths: () => state.cli.promptPaths,
+			noSkills: () => state.cli.noSkills,
+			noPrompts: () => state.cli.noPrompts,
+			skillCommands: () => state.skillCommands,
+		}),
 		createToolSearchExtension(),
-		// P55b: loop detection, off unless settings turn it on (not in the gateway, which stays as it was).
-		...(state.extended ? [createLoopDetectionExtension({ disabled: !state.loopDetection })] : []),
-		// P55c: checkpoints for /rewind (not in the gateway).
-		...(state.extended ? [createCheckpointExtension({ backendFor: checkpointBackend })] : []),
+		// P55b: loop detection, off unless settings turn it on.
+		createLoopDetectionExtension({ disabled: !state.loopDetection }),
+		// P55c: checkpoints for /rewind.
+		createCheckpointExtension({ backendFor: checkpointBackend }),
 		createNodeCodemodeExtension({
 			getMode: () => state.codemode.mode,
 			getInlineBudget: () => state.codemode.inlineBudget,
@@ -420,9 +389,7 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 				"enter_worktree",
 				"exit_worktree",
 			],
-			// P46 (Claude Code's SendMessage): continue or steer subagents; the gateway keeps what it had.
-			sendMessage: state.extended,
-			persist: state.extended,
+			// P46 (Claude Code's SendMessage): continue or steer subagents (send_message), transcripts kept.
 			// P46 (Claude Code's isolation: worktree): read when a subagent starts, so the workspace can set it later.
 			isolate: (agentId, kept) =>
 				state.isolate
@@ -431,7 +398,7 @@ export function builtinExtensions(options: { memory?: MemoryScope } = {}): Exten
 		}),
 		// P26c: the todo list and long-term memory.
 		todoExtension,
-		createMemoryExtension(() => options.memory ?? state.memory),
+		createMemoryExtension(() => state.memory),
 		// P28: web_fetch always, web_search when a provider is configured.
 		createWebExtension({
 			...(state.webSearch ? { search: state.webSearch } : {}),

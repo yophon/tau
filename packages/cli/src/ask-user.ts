@@ -144,8 +144,6 @@ export interface AskUserHost {
 	wait(): boolean;
 	/** The host has free text input (ACP does not: no "write my own answer" item). */
 	freeAnswer: boolean;
-	/** Why nobody can answer right now (a scheduled run in the gateway); undefined = ask. */
-	unavailable?(): string | undefined;
 	/** A question is about to be shown (Notification hooks). */
 	onAsk?(): void;
 }
@@ -272,16 +270,10 @@ export function createAskUserExtension(host: AskUserHost): Extension {
 							isError: true,
 						};
 					}
-					const unavailable = host.unavailable?.();
 					const ui = ctx?.ui;
-					if (unavailable !== undefined || !ui) {
+					if (!ui) {
 						return {
-							content: [
-								{
-									type: "text",
-									text: `${unavailable ?? "No one can answer here."} Decide yourself and say what you assumed.`,
-								},
-							],
+							content: [{ type: "text", text: "No one can answer here. Decide yourself and say what you assumed." }],
 						};
 					}
 					if (host.wait()) {

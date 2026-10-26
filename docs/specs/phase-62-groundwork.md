@@ -206,3 +206,21 @@
 - **拆主循环**：重试、溢出恢复、换模型那段状态多（`retryAttempt`、`overflowRecoveryAttempted`、`hasMoreToolCalls`、`state.turnIndex`）。拆成返回决定的函数，循环自己决定 `continue`/`return`；现有测试（P40d、P54c、自动重试）覆盖这几条路，再加真 DeepSeek 的降级一次。
 - **Ink 8**：内部接口可能已经变了，全屏绘制要跟着改，这是本阶段最可能拖时间的一项。
 - **Windows CI**：第一次跑可能红一片，要留出修的时间。
+
+## 实施记录（进行中）
+
+### 62a 基线（0ddc8d4）
+
+- `scripts/baseline.mjs` 与 `docs/baseline.md`（阶段前一列）。各项见 baseline.md；Windows 上 `tau --version` 406 ms、`-p` 一轮 693 ms、常驻服务空闲 105 MB、全量测试 165 秒。
+- **量的时候发现的**：WSL 里的仓库副本（smoke-tui 在那里跑，P48）`tau --version` 要 2.3 秒、TUI 首屏 4.9 秒。原因是 npm 的工作区链接在 Windows 上是 junction，经 rsync 进 WSL 变成指向 `/mnt/d/…` 的绝对链接，按包名的导入仍走 9P。新脚本 `scripts/wsl-copy.sh` 同步后把链接改指副本内部（0.29 秒、0.76 秒），`smoke-tui-wsl.sh` 改用它。smoke-tui 偶发的首屏空白可能与此有关，留给 62f 看。
+
+### 62b 归档
+
+- **移进 `archive/2026-10-25/`**：`packages/gateway`、`channel-weixin`、`channel-feishu`、`ext-feishu`，`examples/flutter`、`rn`、`weapp`，CLI 的 `gateway.ts` 与 `gateway.test.ts`、`gateway-content.test.ts`；`docs/gateway.md` 进 `docs/archive/2026-10-25/`。`archive/README.md` 记下归档前最后一个提交 `0ddc8d4` 与找回的做法。
+- **CLI 删掉的网关专用部分**：`WorkspaceSpec` 的 `sessionDir`、`promptNote`、`extensions`、`memory`、`askUser`、`permissionRules`、`backgroundOnTimeout`、`extendedSettings`、`audit` 九个选项（逐个核对过：TUI、`-p`、REPL、rpc、ACP、常驻服务都不设）及其分支；`loadExtensionRegistry` 的 `memory`、`extendedSettings` 参数；内置扩展的 `resources`/`extended` 开关与访客记忆；钩子的 legacy 模式；`withoutP40Keys`；会话搜索的 `ownerOnly`（不再搜 `~/.tau/gateway/sessions`）；`ask_user` 的 `unavailable`；`auditedApproval` 的聊天审批参数；`main.ts`、`args.ts` 里的 `tau gateway`（现在报一句已归档，不再把 "gateway" 当提示词）。
+- **留下的**：secret-guard 与凭据审计对 `~/.tau/gateway/` 的保护；审计类型里网关的取值（读旧记录）；各库自己的选项（host-node 的 `moveOnTimeout`、ext-mcp-http 的 `resourceTools` 等、ext-subagents 的 `sendMessage`/`persist`、`ask_user` 的 `freeAnswer`），它们是库的公开选项、有各自的测试，CLI 只是不再传。`backgroundTasksText`（/tasks 的文字版）原先给网关的聊天命令用，现在只有测试用它校验渲染，留给 62e 判断。
+- **搬进 CLI**：`cli/src/cron.ts`（网关 `time.ts` 里会话内定时用到的部分）与 `cron.test.ts`（网关的四个 cron 用例）。
+- **随归档删掉的测试用例**（都是只测网关的）：审计的聊天审批、`ask_user` 的定时任务无人可答、P44 与 P49 的 legacy 钩子、P40 前的设置键、P53 的一条「网关看不到 continueOnMaxTokens」断言；P46 的「send_message 不在网关里」改成只测正面（内置工具里有它）。会话搜索的测试原先用网关的主人与访客会话当夹具：主人那条换成普通会话，「访客看不到别人的」换成「搜索范围外的目录读不到」，断言的意思不变。
+- **smoke**：`smoke:weapp` 改为 `scripts/smoke-weapp.mjs`（内联入口，内核加 host-weapp 加一个静态扩展，检查不漏 Node API）；`smoke:quickjs:mcp` 改连 `test-fixtures/mcp-http-server.mjs`（无 SDK 的最小 Streamable HTTP 服务器），删掉 P19 认证锁定那段（测的是归档服务器自己的功能）；pack smoke 删掉网关加载飞书插件那段。三个都本地跑过。
+- **依赖**：少了 120 个包（飞书 SDK、axios、follow-redirects、MCP SDK 等）。`npm audit`：原来 4 个高危消失；新出 undici 8.10.2 一个高危（三条 10 月的公告，8.12.2 起修复），62h 处理，技术债 #24 改写。
+- **测试**：1430 个（1426 通过、4 跳过）；原 1536 个里随归档移走 110 个，新增 cron 4 个。第一遍全量有一个失败：子进程里 Node 自带的类型剥离（amaro）编译 WebAssembly 出错（`CompileError: … f32.copysign`），与改动无关，单独重跑与第二遍全量都通过。

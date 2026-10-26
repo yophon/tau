@@ -1,8 +1,7 @@
 // A workspace (P29; P50: split out of main.ts): everything rooted at one working directory —
 // the extensions and the project trust decision, settings, the file system and shells,
 // permissions, hooks, the audit, project context, the session repo, and building agents.
-// The CLI opens one for its working directory; ACP opens one per session/new; the gateway
-// one per conversation.
+// The CLI opens one for its working directory; the session hub one per session.
 import { existsSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { SUBAGENT_STOP_CHANNEL, type SubagentStopRequest } from "@yophon/tau-ext-subagents";
@@ -20,7 +19,6 @@ import {
 	type ApprovalRequest,
 	createCodingTools,
 	createDefaultPolicy,
-	type Extension,
 	type ExtensionRegistry,
 	type FileSystem,
 	JsonlSessionRepo,
@@ -60,13 +58,12 @@ import {
 } from "./extension-loading.ts";
 import { shadowedContextFile } from "./git-paths.ts";
 import { HookRunner, postToolBatch, withHookApprovals } from "./hooks.ts";
-import type { MemoryScope } from "./memory.ts";
 import { createPermissionsExtension } from "./permission-commands.ts";
 import { openAlwaysOptions, powershellAllowedBy, WorkspacePermissions } from "./permissions.ts";
 import { saveProjectTrust } from "./project-trust.ts";
 import { createPushNotificationExtension } from "./push-notification.ts";
 import { registerEnvSecrets, scrubEnv } from "./secrets.ts";
-import { agentOptionsFromSettings, loadSettings, readSettings, type TauSettings, withoutP40Keys } from "./settings.ts";
+import { agentOptionsFromSettings, loadSettings, readSettings, type TauSettings } from "./settings.ts";
 import { createStatusLineExtension } from "./statusline.ts";
 import { dim, firstLine, userHome } from "./util.ts";
 import { followMainTrust, openWorktree, removeWorktree, type WorktreeSession, worktreeState } from "./worktree.ts";
@@ -110,42 +107,16 @@ export type WorkspaceSpec = {
 	ui: UiCapability | undefined;
 	onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
 	fs?: FileSystem;
-	/** P30: the gateway keeps each conversation's sessions in its own directory. */
-	sessionDir?: string;
-	/** P30: a mode for this workspace's agents instead of the host's. */
+	/** A mode for this workspace's agents instead of the host's (a hub session's own, P56). */
 	permissionMode?: PermissionMode;
-	/** P30: appended to the system prompt (who the agent is talking to, and where). */
-	promptNote?: string;
-	/** P31: extensions the host adds after the built-ins (the gateway's schedule tools); kept across /reload. */
-	extensions?: Extension[];
-	/** P32a: this workspace's memory scope instead of the project's (a gateway guest's own). */
-	memory?: MemoryScope;
-	/** P32b: load ~/.tau/mcp.json servers (default true; off for a gateway guest, and ACP merges its own). */
+	/** P32b: load ~/.tau/mcp.json servers (default true; the hub's catalog workspace does not). */
 	mcp?: boolean;
 	/** P60: MCP servers a client brought for this workspace's session (an editor's); a name wins over the configured one. */
 	extraMcpServers?: ClientMcpServer[];
 	/** P61: the model this workspace's session uses now (the hub's sessions switch models on their own). */
 	sessionModel?: () => string | undefined;
-	/**
-	 * P35: ask_user for this workspace. Offered whenever there is a UI; `freeAnswer: false` when the
-	 * UI has no text input (ACP), `unavailable` says when nobody can answer (a gateway schedule), false = none.
-	 */
-	askUser?: false | { freeAnswer?: boolean; unavailable?: () => string | undefined };
-	/** P35: ask the trust question through `ui` (default true; the gateway's chat UI does not). */
+	/** P35: ask the trust question through `ui` (default true; false when no client opened the session, P56). */
 	trustPrompt?: boolean;
-	/** P37a: permission rules and additional working directories (default true; off in the gateway, which stays as it was). */
-	permissionRules?: boolean;
-	/** P39d: false keeps a bash command that reaches its timeout stopped instead of moved to the background (the gateway). */
-	backgroundOnTimeout?: boolean;
-	/** P40: false keeps settings.json to its pre-P40 keys and leaves out the PowerShell tool (the gateway). */
-	extendedSettings?: boolean;
-	/** P32c: the audit's host, trigger and approval kind for this workspace (the gateway's chats). */
-	audit?: {
-		host?: AuditHost;
-		approvals?: "terminal" | "chat";
-		decidedBy?: (toolCallId: string) => string | undefined;
-		current?: () => { runId?: string; trigger: AuditTrigger };
-	};
 };
 
 /**
@@ -181,25 +152,23 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 	let workspaceSettings: TauSettings = settings;
 	const auditExtension = createAuditExtension({
 		ledger: AuditLedger.at(userHome()),
-		host: spec.audit?.host ?? auditHost,
+		host: auditHost,
 		workspace: cwd,
 		approvals,
 		details: settings.auditDetails ?? "summary",
-		current: spec.audit?.current ?? (() => ({ trigger: defaultTrigger })),
+		current: () => ({ trigger: defaultTrigger }),
 	});
-	const workspaceHost = spec.audit?.host ?? auditHost;
+	const workspaceHost = auditHost;
 	const hookRunner = new HookRunner({
 		cwd,
 		permissionMode: () => workspaceMode ?? run.permissionMode ?? "supervised",
 		log: (level, text) => process.stderr.write(`${level === "warning" ? "warning: " : ""}${text}\n`),
-		// The gateway tells its owners in chat; Notification hooks are for a person at this machine.
-		notifications: spec.ui !== undefined && (spec.audit?.approvals ?? "terminal") !== "chat",
+		// Notification hooks are for a person at this machine.
+		notifications: spec.ui !== undefined,
 		idleNotification: workspaceHost === "tui" || workspaceHost === "repl",
 		onHookApproval: (toolCallId) => approvals.record(toolCallId, { source: "hook_allow" }),
 		// P44 (Claude Code): SessionEnd's reason on exit; Stop and SubagentStop see the background work.
 		exitReason: workspaceHost === "tui" || workspaceHost === "repl" ? "prompt_input_exit" : "other",
-		// The parked gateway keeps its hooks as they were before P44.
-		...(spec.extendedSettings === false ? { legacy: true } : {}),
 		backgroundTasks: () =>
 			background.list().map((task) => ({
 				id: task.id,
@@ -217,29 +186,22 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 	});
 	// ask_user (P35) leads the host's extensions: wherever there is someone to ask.
 	const askUser =
-		spec.ui !== undefined && spec.askUser !== false
+		spec.ui !== undefined
 			? createAskUserExtension({
 					wait: () => workspaceSettings.askUserWait === true,
-					freeAnswer: spec.askUser?.freeAnswer ?? true,
-					...(spec.askUser?.unavailable ? { unavailable: spec.askUser.unavailable } : {}),
+					freeAnswer: true,
 					onAsk: () => hookRunner.notify("Tau has a question for you", "elicitation_dialog"),
 				})
 			: undefined;
-	// P43 (pi): the shell tools' commands see their session (TAU_SESSION_*); the gateway is parked.
+	// P43 (pi): the shell tools' commands see their session (TAU_SESSION_*).
 	let sessionAgent: Agent | undefined;
-	const commandEnv = spec.extendedSettings !== false ? () => sessionEnvironment(sessionAgent) : undefined;
-	// P36a: background commands, one list per workspace (a gateway conversation has its own).
-	const background = new NodeBackgroundShell(cwd, {
-		env: modelEnvironment(),
-		...(commandEnv ? { commandEnv } : {}),
-		...(spec.backgroundOnTimeout === false ? { moveOnTimeout: false } : {}),
-	});
+	const commandEnv = () => sessionEnvironment(sessionAgent);
+	// P36a: background commands, one list per workspace.
+	const background = new NodeBackgroundShell(cwd, { env: modelEnvironment(), commandEnv });
 	// P44 (Claude Code): /loop and the cron tools in the TUI and the REPL (-p ends before a task
-	// could fire); TAU_DISABLE_CRON=1 turns them off. Monitor everywhere but the gateway, 10 min
-	// at most in -p. The gateway is parked and gets neither.
-	const extended = spec.extendedSettings !== false;
+	// could fire); TAU_DISABLE_CRON=1 turns them off. Monitor 10 min at most in -p.
 	const scheduling =
-		extended && (workspaceHost === "tui" || workspaceHost === "repl") && process.env.TAU_DISABLE_CRON !== "1"
+		(workspaceHost === "tui" || workspaceHost === "repl") && process.env.TAU_DISABLE_CRON !== "1"
 			? (await import("./loop.ts")).createSchedulerExtension({
 					home: userHome(),
 					cwd,
@@ -267,7 +229,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		createBackgroundExtension(background, {
 			...(scheduling ? { scheduler: scheduling.scheduler } : {}),
 			// Like bash, which read-only mode leaves out (createCodingTools).
-			...(extended && (workspaceMode ?? run.permissionMode) !== "read-only"
+			...((workspaceMode ?? run.permissionMode) !== "read-only"
 				? {
 						monitor: {
 							maxTimeoutMs:
@@ -278,26 +240,22 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		}),
 		...(scheduling ? [scheduling.extension] : []),
 		// P46 (Claude Code's EnterWorktree / ExitWorktree).
-		...(extended &&
-		spec.fs === undefined &&
+		...(spec.fs === undefined &&
 		(workspaceHost === "tui" || workspaceHost === "repl" || workspaceHost === "print" || workspaceHost === "json") &&
 		(workspaceMode ?? run.permissionMode) !== "read-only"
 			? [createWorktreeToolsExtension(worktreeHost)]
 			: []),
 		// P46 (Claude Code's PushNotification): where a terminal can show it.
-		...(extended && (workspaceHost === "tui" || workspaceHost === "repl") ? [createPushNotificationExtension()] : []),
-		...(spec.extensions ?? []),
+		...(workspaceHost === "tui" || workspaceHost === "repl" ? [createPushNotificationExtension()] : []),
 	];
 	const trustUi = spec.trustPrompt === false ? undefined : spec.ui;
 	const loaded = await loadExtensionRegistry(
 		cwd,
 		trustUi,
 		hostExtensions,
-		spec.memory,
 		(spec.mcp ?? true) && options.noMcp !== true,
 		auditExtension,
 		hookRunner,
-		spec.extendedSettings !== false,
 		workspaceHost === "tui",
 		spec.extraMcpServers ?? [],
 	);
@@ -307,61 +265,48 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 	// The trust decision for project resources (ctx.isProjectTrusted, project paths); /reload re-decides.
 	let projectTrusted = loaded.projectTrusted;
 	// P40c (pi): settings.json in layers, the user's then a trusted project's; /reload reads them again.
-	// The gateway, parked, keeps the keys it had before P40.
-	const readWorkspaceSettings = (): TauSettings =>
-		spec.extendedSettings === false
-			? withoutP40Keys(readSettings(join(userHome(), ".tau", "settings.json")))
-			: loadSettings({ home: userHome(), cwd, projectTrusted });
+	const readWorkspaceSettings = (): TauSettings => loadSettings({ home: userHome(), cwd, projectTrusted });
 	workspaceSettings = readWorkspaceSettings();
-	// P41b (pi): what replaces and extends the system prompt; the gateway keeps -s only, as before.
+	// P41b (pi): what replaces and extends the system prompt.
 	const readPromptSources = (): { system?: string; append: string[] } =>
-		spec.extendedSettings === false
-			? { ...(options.system !== undefined ? { system: options.system } : {}), append: [] }
-			: systemPromptSources(cwd, userHome(), projectTrusted, {
-					...(options.system !== undefined ? { system: options.system } : {}),
-					...(options.appendSystemPrompt ? { append: options.appendSystemPrompt } : {}),
-				});
+		systemPromptSources(cwd, userHome(), projectTrusted, {
+			...(options.system !== undefined ? { system: options.system } : {}),
+			...(options.appendSystemPrompt ? { append: options.appendSystemPrompt } : {}),
+		});
 	let promptSources = readPromptSources();
 	// Permission rules (P37a): settings files, flags, /permissions; "always allow" saves rules.
 	let currentAgent: Agent | undefined;
-	const permissions =
-		spec.permissionRules === false
-			? undefined
-			: new WorkspacePermissions({
-					home: userHome(),
-					cwd,
-					// P37d: in a tau worktree, local rules live in the main checkout (Claude Code).
-					...(run.worktreeSession && cwd === resolve(run.worktreeSession.path)
-						? { localRoot: run.worktreeSession.mainRoot }
-						: {}),
-					projectTrusted: () => projectTrusted,
-					allowedTools: options.allowedTools ?? [],
-					disallowedTools: options.disallowedTools ?? [],
-					addDirs: options.addDirs ?? [],
-					// This session only: other sessions and later ones keep their own mode (Claude Code).
-					acceptEdits: () => currentAgent?.setPermissionMode("accept-edits"),
-					mode: () => currentAgent?.getPermissionMode() ?? workspaceMode ?? run.permissionMode ?? "supervised",
-					onProjectFileWritten: () => {
-						if (projectTrusted) void saveProjectTrust(cwd, true);
-					},
-				});
-	for (const diagnostic of permissions?.diagnostics() ?? []) console.error(dim(`permissions: ${diagnostic}`));
-	if (permissions) {
-		await extensions.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
-	}
-	const policy: ToolPolicy | undefined = permissions
-		? auditedPolicy(
-				createDefaultPolicy({
-					rules: () => permissions.rules(),
-					workingDirectories: () => permissions.workingDirectories(),
-					home: userHome(),
-				}),
-				approvals,
-			)
-		: undefined;
+	const permissions = new WorkspacePermissions({
+		home: userHome(),
+		cwd,
+		// P37d: in a tau worktree, local rules live in the main checkout (Claude Code).
+		...(run.worktreeSession && cwd === resolve(run.worktreeSession.path)
+			? { localRoot: run.worktreeSession.mainRoot }
+			: {}),
+		projectTrusted: () => projectTrusted,
+		allowedTools: options.allowedTools ?? [],
+		disallowedTools: options.disallowedTools ?? [],
+		addDirs: options.addDirs ?? [],
+		// This session only: other sessions and later ones keep their own mode (Claude Code).
+		acceptEdits: () => currentAgent?.setPermissionMode("accept-edits"),
+		mode: () => currentAgent?.getPermissionMode() ?? workspaceMode ?? run.permissionMode ?? "supervised",
+		onProjectFileWritten: () => {
+			if (projectTrusted) void saveProjectTrust(cwd, true);
+		},
+	});
+	for (const diagnostic of permissions.diagnostics()) console.error(dim(`permissions: ${diagnostic}`));
+	await extensions.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
+	const policy: ToolPolicy = auditedPolicy(
+		createDefaultPolicy({
+			rules: () => permissions.rules(),
+			workingDirectories: () => permissions.workingDirectories(),
+			home: userHome(),
+		}),
+		approvals,
+	);
 	// The host's prompt learns what "always allow" would save for each open approval.
 	const withAlwaysOption = (handler: ((request: ApprovalRequest) => Promise<boolean>) | undefined): typeof handler =>
-		handler && permissions
+		handler
 			? async (request) => {
 					const option = permissions.alwaysOption(request);
 					if (option) openAlwaysOptions.set(request.toolCallId, option);
@@ -376,8 +321,6 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 	const onWorkspaceApproval = auditedApproval(
 		withHookApprovals(withAlwaysOption(spec.onApproval), hookRunner),
 		approvals,
-		spec.audit?.approvals ?? "terminal",
-		spec.audit?.decidedBy,
 	);
 	extensions.setFlagValues(resolveExtensionFlags(extensions, options.extras).values);
 	const reloadExtensions = async (reloadUi: UiCapability | undefined): Promise<ExtensionRegistry> => {
@@ -387,11 +330,9 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 			cwd,
 			spec.trustPrompt === false ? undefined : reloadUi,
 			hostExtensions,
-			spec.memory,
 			(spec.mcp ?? true) && options.noMcp !== true,
 			auditExtension,
 			hookRunner,
-			spec.extendedSettings !== false,
 			workspaceHost === "tui",
 			spec.extraMcpServers ?? [],
 		);
@@ -400,9 +341,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		workspaceSettings = readWorkspaceSettings();
 		promptSources = readPromptSources();
 		applyShellSettings();
-		if (permissions) {
-			await next.registry.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
-		}
+		await next.registry.add([createPermissionsExtension(permissions), createStatusLineExtension(userHome())]);
 		next.registry.setFlagValues(resolveExtensionFlags(next.registry, options.extras).values);
 		return next.registry;
 	};
@@ -415,73 +354,58 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 	// The user's own `!` commands get the full environment; the tools the model calls get it
 	// without secret-looking variables (P32b). Secrets are registered first so their values go too.
 	const shell = new NodeShell(cwd);
-	const toolShell = new NodeShell(cwd, { env: modelEnvironment(), ...(commandEnv ? { commandEnv } : {}) });
+	const toolShell = new NodeShell(cwd, { env: modelEnvironment(), commandEnv });
 	// P40b: pi's powershell tool on Windows when PowerShell is installed (Claude Code: on by default).
 	const powershellShell =
-		spec.extendedSettings !== false && findPowerShell() !== undefined
-			? new NodeShell(cwd, {
-					env: modelEnvironment(),
-					interpreter: "powershell",
-					...(commandEnv ? { commandEnv } : {}),
-				})
+		findPowerShell() !== undefined
+			? new NodeShell(cwd, { env: modelEnvironment(), interpreter: "powershell", commandEnv })
 			: undefined;
 	const powershellBackground = powershellShell ? background.forPowerShell() : undefined;
 	// P46 (Claude Code's isolation: worktree): a subagent's own worktree, with file, bash and PowerShell
 	// tools bound there (no background commands, so no monitor); removed when it changed nothing. A
-	// resumed subagent reopens the worktree its last run kept. Not in the parked gateway.
-	setSubagentIsolation(
-		spec.extendedSettings === false
-			? undefined
-			: async (agentId, kept) => {
-					const settings = userSettings.worktree ?? {};
-					// Ids restart in every session, so an earlier session's kept agent-sub-1 is never reopened by a new sub-1.
-					const session =
-						kept !== undefined && existsSync(kept)
-							? openWorktree({ cwd, name: basename(kept), settings })
-							: openWorktree({ cwd, name: `agent-${agentId}`, unique: true, settings });
-					const childFs = new NodeFileSystem(session.path);
-					const childShell = new NodeShell(session.path, {
-						env: modelEnvironment(),
-						...(commandEnv ? { commandEnv } : {}),
-					});
-					childShell.options = toolShell.options;
-					const childPowershell =
-						powershellShell && powershellAllowed()
-							? new NodeShell(session.path, {
-									env: modelEnvironment(),
-									interpreter: "powershell",
-									...(commandEnv ? { commandEnv } : {}),
-								})
-							: undefined;
-					const tools = createCodingTools(
-						{
-							fs: childFs,
-							shell: childShell,
-							images: imageProcessor,
-							...(childPowershell ? { powershell: { shell: childPowershell } } : {}),
-						},
-						{ mode: workspaceMode ?? run.permissionMode ?? "supervised", supportsImages },
-					);
-					return {
-						cwd: session.path,
-						tools,
-						capabilities: {
-							fs: childFs,
-							shell: childShell,
-							paths: { cwd: session.path, userTauDir: join(userHome(), ".tau") },
-						},
-						unavailable: ["monitor"],
-						finish: async () => {
-							const state = worktreeState(session);
-							if (state.unknown === undefined && state.changedFiles === 0 && state.newCommits === 0) {
-								removeWorktree(session);
-								return { kept: false, path: session.path, branch: session.branch };
-							}
-							return { kept: true, path: session.path, branch: session.branch };
-						},
-					};
-				},
-	);
+	// resumed subagent reopens the worktree its last run kept.
+	setSubagentIsolation(async (agentId, kept) => {
+		const settings = userSettings.worktree ?? {};
+		// Ids restart in every session, so an earlier session's kept agent-sub-1 is never reopened by a new sub-1.
+		const session =
+			kept !== undefined && existsSync(kept)
+				? openWorktree({ cwd, name: basename(kept), settings })
+				: openWorktree({ cwd, name: `agent-${agentId}`, unique: true, settings });
+		const childFs = new NodeFileSystem(session.path);
+		const childShell = new NodeShell(session.path, { env: modelEnvironment(), commandEnv });
+		childShell.options = toolShell.options;
+		const childPowershell =
+			powershellShell && powershellAllowed()
+				? new NodeShell(session.path, { env: modelEnvironment(), interpreter: "powershell", commandEnv })
+				: undefined;
+		const tools = createCodingTools(
+			{
+				fs: childFs,
+				shell: childShell,
+				images: imageProcessor,
+				...(childPowershell ? { powershell: { shell: childPowershell } } : {}),
+			},
+			{ mode: workspaceMode ?? run.permissionMode ?? "supervised", supportsImages },
+		);
+		return {
+			cwd: session.path,
+			tools,
+			capabilities: {
+				fs: childFs,
+				shell: childShell,
+				paths: { cwd: session.path, userTauDir: join(userHome(), ".tau") },
+			},
+			unavailable: ["monitor"],
+			finish: async () => {
+				const state = worktreeState(session);
+				if (state.unknown === undefined && state.changedFiles === 0 && state.newCommits === 0) {
+					removeWorktree(session);
+					return { kept: false, path: session.path, branch: session.branch };
+				}
+				return { kept: true, path: session.path, branch: session.branch };
+			},
+		};
+	});
 	/** P46: a move asked for a reload (settings, AGENTS.md, extensions), which the TUI does when the turn ends. */
 	let reloadPending = false;
 	/**
@@ -529,8 +453,8 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 			// P37d (pi): a nested worktree's own AGENTS.md shadows the main checkout's.
 			skip: [shadowedContextFile(cwd)].filter((path): path is string => path !== undefined),
 		});
-		// P44 (Claude Code): InstructionsLoaded for each file, for the record only; not in the parked gateway.
-		for (const file of spec.extendedSettings === false ? [] : files) {
+		// P44 (Claude Code): InstructionsLoaded for each file, for the record only.
+		for (const file of files) {
 			hookRunner.fire(
 				"InstructionsLoaded",
 				{
@@ -549,8 +473,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		new NodeFileSystem("/"),
 		platform,
 		// P40c (pi): --session-dir, then settings' sessionDir (relative to the working directory).
-		spec.sessionDir ??
-			options.sessionDir ??
+		options.sessionDir ??
 			(workspaceSettings.sessionDir !== undefined
 				? resolve(cwd, workspaceSettings.sessionDir)
 				: join(userHome(), ".tau", "sessions", sessionDirSlug(cwd))),
@@ -580,28 +503,24 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 			{ mode, supportsImages },
 		);
 		// P46 (Claude Code's TaskStop): task_stop also stops a background subagent by ID or name.
-		if (extended) {
-			const taskStop = codingTools.find((tool) => tool.name === "task_stop");
-			if (taskStop) {
-				const stopCommand = taskStop.execute.bind(taskStop);
-				taskStop.description = `${taskStop.description} Also stops a background subagent by its agent ID (sub-N) or name; send_message can resume it later.`;
-				taskStop.execute = async (args, signal, onUpdate, ctx) => {
-					const request: SubagentStopRequest = { id: String(args.task_id ?? ""), by: "model", reply: {} };
-					agentExtensions.events.emit(SUBAGENT_STOP_CHANNEL, request);
-					if (request.reply.result) return textResult(await request.reply.result);
-					return stopCommand(args, signal, onUpdate, ctx);
-				};
-			}
+		const taskStop = codingTools.find((tool) => tool.name === "task_stop");
+		if (taskStop) {
+			const stopCommand = taskStop.execute.bind(taskStop);
+			taskStop.description = `${taskStop.description} Also stops a background subagent by its agent ID (sub-N) or name; send_message can resume it later.`;
+			taskStop.execute = async (args, signal, onUpdate, ctx) => {
+				const request: SubagentStopRequest = { id: String(args.task_id ?? ""), by: "model", reply: {} };
+				agentExtensions.events.emit(SUBAGENT_STOP_CHANNEL, request);
+				if (request.reply.result) return textResult(await request.reply.result);
+				return stopCommand(args, signal, onUpdate, ctx);
+			};
 		}
 		// P43 (pi bash/powershell guidelines): the commands see TAU_SESSION_*.
-		if (commandEnv) {
-			for (const tool of codingTools) {
-				if (tool.name !== "bash" && tool.name !== "powershell") continue;
-				tool.promptGuidelines = [
-					...(tool.promptGuidelines ?? []),
-					"You can inspect TAU_SESSION_* environment variables for current model and session details.",
-				];
-			}
+		for (const tool of codingTools) {
+			if (tool.name !== "bash" && tool.name !== "powershell") continue;
+			tool.promptGuidelines = [
+				...(tool.promptGuidelines ?? []),
+				"You can inspect TAU_SESSION_* environment variables for current model and session details.",
+			];
 		}
 		const built = new Agent({
 			config: endpoint.config,
@@ -617,7 +536,6 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 				// pi: what is appended goes before the project context.
 				...promptSources.append,
 				projectContext,
-				spec.promptNote ?? "",
 			]
 				.filter((part) => part !== "")
 				.join("\n\n"),
@@ -637,41 +555,36 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 				},
 			},
 			isProjectTrusted: () => projectTrusted,
-			// P43 (pi): images tools return (MCP, extensions) are converted and shrunk before they
-			// are logged; the gateway is parked and keeps what it had.
-			...(spec.extendedSettings !== false ? { imageProcessor } : {}),
+			// P43 (pi): images tools return (MCP, extensions) are converted and shrunk before they are logged.
+			imageProcessor,
 			initialMessages: messages,
 			session,
 			// P40c (pi): settings' retry, compaction, branch summary, queue modes and turn cap; the env wins for retries.
 			...agentOptionsFromSettings(workspaceSettings, retry),
-			// P53c (yo-agent): continue a cut-off reply; summaries on another model. The gateway is parked.
-			...(extended ? { continueAfterLength: workspaceSettings.continueOnMaxTokens === false ? 0 : 3 } : {}),
-			...(extended ? summaryModelOption(context, workspaceSettings.compaction?.model) : {}),
-			...(extended ? fallbackOption(context, workspaceSettings) : {}),
+			// P53c (yo-agent): continue a cut-off reply; summaries on another model.
+			continueAfterLength: workspaceSettings.continueOnMaxTokens === false ? 0 : 3,
+			...summaryModelOption(context, workspaceSettings.compaction?.model),
+			...fallbackOption(context, workspaceSettings),
 			pricing,
 			thinkingLevel: run.thinkingLevel,
 			permissionMode: mode,
 			toolExecution,
 			onApproval: onWorkspaceApproval,
-			...(policy ? { policy } : {}),
-			// P44 (Claude Code): PostToolBatch after each batch of tool calls; the gateway is parked.
-			...(spec.extendedSettings !== false
-				? {
-						finishTurn: async (turn, signal) => {
-							const batch = await postToolBatch(hookRunner, turn, signal);
-							const send = agentExtensions.hostAction("sendMessage");
-							if (batch.context !== undefined) {
-								send?.({ customType: "hook_context", content: batch.context, display: false }, { triggerTurn: false });
-							}
-							if (batch.stop === undefined) return undefined;
-							send?.(
-								{ customType: "hook_stop", content: `PostToolBatch hook: ${batch.stop}`, display: true },
-								{ triggerTurn: false },
-							);
-							return { action: "end" as const };
-						},
-					}
-				: {}),
+			policy,
+			// P44 (Claude Code): PostToolBatch after each batch of tool calls.
+			finishTurn: async (turn, signal) => {
+				const batch = await postToolBatch(hookRunner, turn, signal);
+				const send = agentExtensions.hostAction("sendMessage");
+				if (batch.context !== undefined) {
+					send?.({ customType: "hook_context", content: batch.context, display: false }, { triggerTurn: false });
+				}
+				if (batch.stop === undefined) return undefined;
+				send?.(
+					{ customType: "hook_stop", content: `PostToolBatch hook: ${batch.stop}`, display: true },
+					{ triggerTurn: false },
+				);
+				return { action: "end" as const };
+			},
 		});
 		// --tools / --no-tools narrow the active set; a permission mode's missing tools stay missing (D20).
 		const active = selectActiveTools(
@@ -714,10 +627,10 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		settings: (): TauSettings => workspaceSettings,
 		/** P36d: images for `@file` arguments, as read converts them. */
 		images: imageProcessor,
-		/** P37a: this workspace's permission rules (undefined in the gateway). */
+		/** P37a: this workspace's permission rules. */
 		permissions,
 		/** P37a: settings' permissions.defaultMode, unless --permission-mode or the env chose (ACP applies it per session). */
-		defaultMode: (): PermissionMode | undefined => (explicitMode ? undefined : permissions?.defaultMode().mode),
+		defaultMode: (): PermissionMode | undefined => (explicitMode ? undefined : permissions.defaultMode().mode),
 		isProjectTrusted: () => projectTrusted,
 		/** Agents built later (session switches) use this mode; only for a workspace opened with one. */
 		setPermissionMode: (next: PermissionMode) => {

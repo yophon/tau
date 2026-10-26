@@ -197,7 +197,7 @@ export interface LspHost {
 	errors: readonly string[];
 }
 
-/** The language-server extension the CLI loads (everywhere but the gateway). */
+/** The language-server extension the CLI loads. */
 export function createLspHost(options: LspHostOptions): LspHost {
 	const config = loadLspConfig(options);
 	const findProgram = options.findProgram ?? ((command: string) => findExecutable(command, process.env, options.cwd));

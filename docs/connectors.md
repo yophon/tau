@@ -17,9 +17,8 @@ tau credentials audit                           # 找配置文件里直接写着
 |---|---|
 | `~/.tau/models.json` | `apiKey`、`headers` 的值 |
 | `~/.tau/mcp.json` | `command`、`args`、`env`、`url`、`headers`、`oauth.clientId`/`clientSecret` |
-| `~/.tau/gateway/config.json` | `channels.*` 的字符串值（比如飞书的 `appSecret`） |
 
-引用在用的时候才取值；取不到时报出名字，那个服务器或渠道不启动，不会悄悄换成空串。
+引用在用的时候才取值；取不到时报出名字，那个服务器不启动，不会悄悄换成空串。
 
 `tau credentials audit` 发现明文（`PLAINTEXT_FOUND`）时，把值存进凭据库、配置里换成 `${cred:…}`。
 
@@ -52,7 +51,7 @@ tau credentials audit                           # 找配置文件里直接写着
 - `toolRisk`：按工具名（可用 `*`）声明风险。标成 `low` 的在 supervised 档下不用审批；没声明的按 medium 处理。服务器自己的标注永远不会把风险调低。
 - `enabled: false` 关掉一个服务器；`description`、`timeoutMs` 可选。
 
-在所有模式里生效：TUI、`-p`、json、rpc、网关（只在主人的对话里，因为凭据是主人的）。ACP 模式下和编辑器给的服务器合并，同名时编辑器的优先。
+在所有模式里生效：TUI、`-p`、json、rpc、ACP、常驻服务。编辑器经 ACP 带来的服务器和这些合并，同名时编辑器的优先。
 
 ```bash
 tau mcp list            # 服务器、来自哪个文件、用了哪些凭据
@@ -85,7 +84,6 @@ tau mcp list --check    # 顺便连一次，报告协议版本和工具数，有
   - **网页**：显示完整网址并标出域名，域名用 punycode（`xn--`）时警告；你同意了才用浏览器打开，tau 不预先访问它。网址太长时只能拒绝。
   - 钩子 `Elicitation`、`ElicitationResult` 可以替你回答、改你的回答或拦下（见 [hooks.md](hooks.md)）。没有界面（`-p` 且没有钩子回答）时回「取消」。
 - **进度与取消**：服务器报告进度时，进度显示在工具那一行（`Progress 3/10 · …`）。按 Esc 中止调用时，服务器会收到取消通知。
-- 网关照旧：不向服务器声明能要信息，不注册提示命令，没有 `@` 引用。
 
 ### 协议版本：2026-07-28 与旧握手（P47，照 Claude Code）
 
@@ -96,7 +94,6 @@ MCP 2026-07-28 是无状态的新版本：没有握手，每个请求自带版�
 - **关掉探测**：`TAU_MCP_PROTOCOL_NEGOTIATION=legacy` 让所有服务器照旧握手（对应 Claude Code 的 `MCP_PROTOCOL_NEGOTIATION`）。
 - **新协议下照常可用**：工具、资源、提示命令、`@` 引用、进度、取消；服务器要你补充信息时（表单或网页）同样弹对话框，钩子照样能代答，答完 tau 自动带着答案重发请求，最多 10 轮。工具和提示列表变了，服务器经一条常开的订阅流告诉 tau，tau 重新列出；流断了自动重开。
 - **工具参数镜像成请求头**：HTTP 服务器在工具参数上标了 `x-mcp-header` 的，tau 把参数值放进 `Mcp-Param-…` 请求头；标注不合法的工具不注册，并提示是哪个工具、为什么。
-- 网关照旧：只用旧握手。
 
 ### 项目里的 `.tau/mcp.json`
 
@@ -155,7 +152,6 @@ MCP 2026-07-28 是无状态的新版本：没有握手，每个请求自带版�
 
   每个会话最多问一次。30 秒不选自动关闭，算忽略一次，忽略 5 次后不再推荐。状态记在 `~/.tau/lsp-recommendations.json`。
 - `/lsp` 列出每个服务器的状态（未启动、运行中、崩溃、已停止、找不到程序）、最近的错误和输出、配置错误、扩展名冲突，以及已经装了但还没配置的官方服务器。
-- 网关里没有语言服务器。
 
 官方 12 个语言插件的程序和安装方式：
 
@@ -185,7 +181,7 @@ tau mcp login linear     # 打印并打开授权链接；浏览器回到本机�
 tau mcp logout linear
 ```
 
-- 运行网关的机器没有浏览器时，在自己电脑上打开链接、登录，把浏览器最后停在的地址（`http://127.0.0.1:…/callback?code=…`，打不开也没关系）粘贴回终端即可。
+- 运行 tau 的机器没有浏览器时（比如在服务器上），在自己电脑上打开链接、登录，把浏览器最后停在的地址（`http://127.0.0.1:…/callback?code=…`，打不开也没关系）粘贴回终端即可。
 - 支持动态客户端注册；服务器不支持时，在 `oauth` 里写预先注册的客户端：`{ "clientId": "…", "clientSecret": "${cred:linear-secret}", "scopes": ["read"], "callbackPort": 8765 }`。
 - token 存在 `~/.tau/mcp-auth.json`（0600）。连接时带上 token，快过期或收到 401 时用 refresh token 刷新；刷新不了就提示重新 `tau mcp login`，连接时永远不会自己弹浏览器。
 - 登录前先发一个不带 token 的请求，把服务器 401 里给的资源元数据地址和作用域交给授权流程（P48），资源元数据不在标准位置的服务器也能登录。
@@ -198,7 +194,7 @@ tau mcp logout linear
 tau 做了三件事，**都是减少事故，不是安全边界**：
 
 1. **模型跑的命令拿不到密钥类环境变量**：bash 工具和 MCP stdio 服务器的环境里，去掉名字带 KEY、SECRET、TOKEN、PASSWORD、AUTH、CREDENTIAL 的变量，以及值等于任何已知密钥的变量。`SSH_AUTH_SOCK` 等不是密钥的保留。需要保留别的，写进 `~/.tau/settings.json`：`{ "shell": { "envAllow": ["GH_TOKEN"] } }`。命令用到了被去掉的变量时，工具结果里会附一句提示。你自己在 TUI 里敲的 `!` 命令不受影响。
-2. **读不到 tau 的凭据文件**：`credentials.json`、`models.json`、`mcp.json`、`mcp-auth.json`、网关的 `config.json` 和渠道数据目录（微信 token 在里面）。read、grep、write、edit 等工具和 bash 命令碰到这些路径会被拦下，模型看到原因。
+2. **读不到 tau 的凭据文件**：`credentials.json`、`models.json`、`mcp.json`、`mcp-auth.json`，以及已归档的网关留下的 `gateway/config.json` 和渠道数据目录（机器上可能还留着微信 token）。read、grep、write、edit 等工具和 bash 命令碰到这些路径会被拦下，模型看到原因。
 3. **输出打码**：已知的密钥值（凭据库里的、解析出来的模型密钥、密钥类环境变量的值，至少 8 个字符）出现在工具输出里时，换成 `[已隐藏:cred:名字]` 再交给模型、写进会话日志。
 
 模型仍然可以绕过（base64 编码、拼接路径、`python -c` 等）。真正的隔离要让 agent 跑在沙箱里、凭据留在沙箱外，在出口处才填进请求（Anthropic Managed Agents 的 vault 就是这样），这在 Backlog 的「bash 沙箱」一项里。

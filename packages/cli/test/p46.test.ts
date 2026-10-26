@@ -1,5 +1,5 @@
-// P46 in the CLI: task_stop reaches background subagents, send_message stays out of the
-// gateway, the send_message tool row, push_notification and the REPL's presence.
+// P46 in the CLI: task_stop reaches background subagents, send_message is built in, the
+// send_message tool row, push_notification and the REPL's presence.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
@@ -99,16 +99,12 @@ test("task_stop stops a background subagent by its agent ID (Claude Code's TaskS
 	}
 });
 
-test("send_message is everywhere but the gateway", async () => {
-	const names = async (extendedSettings: boolean) => {
-		configureBuiltins({ cwd: tmpdir(), projectTrusted: false, extendedSettings });
-		const registry = await ExtensionRegistry.load(builtinExtensions());
-		return [...registry.tools.keys()];
-	};
-	assert.ok((await names(true)).includes("send_message"));
-	assert.ok(!(await names(false)).includes("send_message"));
-	assert.ok((await names(false)).includes("subagent"));
+test("send_message is a built-in tool", async () => {
 	configureBuiltins({ cwd: tmpdir(), projectTrusted: false });
+	const registry = await ExtensionRegistry.load(builtinExtensions());
+	const names = [...registry.tools.keys()];
+	assert.ok(names.includes("send_message"));
+	assert.ok(names.includes("subagent"));
 });
 
 test("the send_message row: the recipient, then the summary or the message's first line", () => {

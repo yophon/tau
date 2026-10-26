@@ -296,37 +296,6 @@ function compactionOptions(
 	return rest;
 }
 
-const P40_KEYS = [
-	"shellPath",
-	"shellCommandPrefix",
-	"defaultTools",
-	"compaction",
-	"branchSummary",
-	"retry",
-	"steeringMode",
-	"followUpMode",
-	"treeFilterMode",
-	"externalEditor",
-	"sessionDir",
-	"extensions",
-	"skills",
-	"prompts",
-	"enableSkillCommands",
-	"images",
-	"continueOnMaxTokens",
-	"fallbackModels",
-	"fallback",
-	"loopDetection",
-	"checkpoints",
-] as const;
-
-/** The settings without the keys P40 added (the gateway, parked, stays as it was). */
-export function withoutP40Keys(settings: TauSettings): TauSettings {
-	const copy: TauSettings = { ...settings };
-	for (const key of P40_KEYS) delete copy[key];
-	return copy;
-}
-
 const THINKING: readonly string[] = ["none", "off", "minimal", "low", "medium", "high", "xhigh", "max"];
 const SEARCH_PROVIDERS: readonly string[] = ["brave", "tavily", "exa", "searxng"];
 

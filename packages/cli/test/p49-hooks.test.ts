@@ -290,19 +290,4 @@ describe("P49c HTTP hooks", () => {
 		const refused = await preToolUse({ type: "http", command: hooksServer.url, onFailure: "block" }, dir);
 		assert.equal(refused.ran, false);
 	});
-
-	it("the gateway's legacy hooks leave out HTTP hooks and the new command fields", () => {
-		const dir = tempDir();
-		const { hooks } = runner(
-			{
-				PreToolUse: [
-					group({ type: "http", command: "http://h" }),
-					group({ command: "node", args: ["x"], shell: "powershell", onFailure: "block", timeout: 5 }),
-				],
-			},
-			dir,
-			{ legacy: true },
-		);
-		assert.deepEqual(hooks.handlers("PreToolUse", "bash"), [{ command: "node", timeout: 5 }]);
-	});
 });

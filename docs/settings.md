@@ -80,6 +80,3 @@ tau 读两份设置文件，键名尽量照 pi：
 }
 ```
 
-## 网关
-
-网关（搁置中）只认 P40 之前就有的键：它不装代理 dispatcher，没有 PowerShell 工具，也不读 `defaultTools`、`shellPath` 这些新键。

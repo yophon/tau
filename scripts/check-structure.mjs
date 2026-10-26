@@ -32,11 +32,8 @@ const LIMITS = {
 	// P58: the session commands moved to tui/session-commands.ts (technical debt #32).
 	"packages/cli/src/tui/commands.ts": 1200,
 	"packages/ext-mcp-http/src/client.ts": 1250,
-	"packages/ext-feishu/src/index.ts": 1200,
 	"packages/cli/src/hooks.ts": 1200,
 	"packages/ext-mcp-http/src/servers.ts": 1150,
-	"packages/ext-feishu/src/feishu-client.ts": 1100,
-	"packages/gateway/src/gateway.ts": 1050,
 	"packages/kernel/src/permission-rules.ts": 1050,
 	"packages/cli/src/tui/model.ts": 1050,
 };

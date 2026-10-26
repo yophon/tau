@@ -164,15 +164,11 @@ describe("approval sources", () => {
 	it("records terminal decisions, including a session-wide allow", async () => {
 		const log = new ApprovalLog();
 		const answers = [true, false, true];
-		const handler = auditedApproval(
-			async (req) => {
-				const answer = answers.shift() ?? false;
-				if (req.toolCallId === "t3") noteApprovalSource("t3", "user_session");
-				return answer;
-			},
-			log,
-			"terminal",
-		);
+		const handler = auditedApproval(async (req) => {
+			const answer = answers.shift() ?? false;
+			if (req.toolCallId === "t3") noteApprovalSource("t3", "user_session");
+			return answer;
+		}, log);
 		assert.equal(await handler?.(request("t1")), true);
 		assert.equal(await handler?.(request("t2")), false);
 		await handler?.(request("t3"));
@@ -180,34 +176,6 @@ describe("approval sources", () => {
 		assert.deepEqual(log.take("t2"), { source: "user_reject", risk: "medium" });
 		assert.equal(log.take("t3")?.source, "user_session");
 		assert.equal(log.take("t1"), undefined, "read once");
-		assert.equal(auditedApproval(undefined, log, "terminal"), undefined);
-	});
-
-	it("records chat decisions with the owner who answered, timeouts and other people's conversations", async () => {
-		const log = new ApprovalLog();
-		const outcomes: Array<boolean | Error> = [
-			true,
-			false,
-			new Error("主人没有在 5 分钟内批准"),
-			new Error("需要主人批准，这个对话不能执行这项操作"),
-		];
-		const handler = auditedApproval(
-			async () => {
-				const outcome = outcomes.shift();
-				if (outcome instanceof Error) throw outcome;
-				return outcome ?? false;
-			},
-			log,
-			"chat",
-			(id) => (id === "c1" ? "boss" : undefined),
-		);
-		await handler?.(request("c1"));
-		await handler?.(request("c2"));
-		await assert.rejects(handler?.(request("c3")) ?? Promise.resolve(), /5 分钟/);
-		await assert.rejects(handler?.(request("c4")) ?? Promise.resolve(), /需要主人批准/);
-		assert.deepEqual(log.take("c1"), { source: "chat_owner", risk: "medium", by: "boss" });
-		assert.equal(log.take("c2")?.source, "chat_reject");
-		assert.equal(log.take("c3")?.source, "timeout");
-		assert.equal(log.take("c4")?.source, "non_owner");
+		assert.equal(auditedApproval(undefined, log), undefined);
 	});
 });

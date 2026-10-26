@@ -37,7 +37,7 @@ export interface ConfiguredModel {
 	apiKey?: string;
 	headers: Record<string, string>;
 	reasoning: boolean;
-	/** pi `input`: what the model accepts; omitted = text only (P30: images in gateway chats). */
+	/** pi `input`: what the model accepts; omitted = text only. */
 	input?: ("text" | "image")[];
 	contextWindow?: number;
 	maxTokens?: number;

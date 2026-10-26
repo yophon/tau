@@ -1,10 +1,10 @@
 // The audit ledger (P32c, after OpenClaw's audit ledger and Claude Code's tool
 // decision events): ~/.tau/audit/YYYY-MM-DD.jsonl, one line per run start/end,
-// tool call and gateway message. Metadata only — who triggered the run, which
-// tools ran, who approved them, tokens and cost — plus the session file and
-// entry to read the content from. Kept 30 days. The CLI and the gateway both
-// append; the kernel is unchanged: a built-in extension watches the run and the
-// host's approval wrapper says who decided.
+// tool call. Metadata only — who triggered the run, which tools ran, who
+// approved them, tokens and cost — plus the session file and entry to read the
+// content from. Kept 30 days. The kernel is unchanged: a built-in extension
+// watches the run and the host's approval wrapper says who decided. Records the
+// archived gateway wrote (host gateway, chat and schedule triggers) still read.
 import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -230,7 +230,7 @@ export interface AuditContext {
 	workspace: string;
 	approvals: ApprovalLog;
 	details: "summary" | "none";
-	/** The current run's id and trigger (the gateway sets them per message; the CLI's are fixed). */
+	/** The current run's id and trigger (fixed per host). */
 	current(): { runId?: string; trigger: AuditTrigger };
 }
 
@@ -529,41 +529,24 @@ export function noteApprovalSource(toolCallId: string, source: DecisionSource): 
 }
 
 /**
- * Wrap an approval handler so the ledger knows who decided. Terminal hosts decide as the user;
- * the gateway's chat approvals as the owner, with refusals the gateway explains by error.
+ * Wrap an approval handler so the ledger knows who decided: the user at a client (a handler that
+ * throws counts as a refusal). The gateway's chat sources (chat_owner, timeout, …) stay readable in
+ * old ledgers; nothing writes them since the gateway was archived (P62).
  */
 export function auditedApproval(
 	handler: ((request: import("@yophon/tau-kernel").ApprovalRequest) => Promise<boolean>) | undefined,
 	log: ApprovalLog,
-	kind: "terminal" | "chat",
-	decidedBy?: (toolCallId: string) => string | undefined,
 ): typeof handler {
 	if (!handler) return undefined;
 	return async (request) => {
 		try {
 			const approved = await handler(request);
-			const by = decidedBy?.(request.toolCallId);
 			const hint = sourceHints.get(request.toolCallId);
 			sourceHints.delete(request.toolCallId);
-			log.record(request.toolCallId, {
-				source:
-					hint ??
-					(kind === "chat" ? (approved ? "chat_owner" : "chat_reject") : approved ? "user_once" : "user_reject"),
-				risk: request.risk,
-				...(by ? { by } : {}),
-			});
+			log.record(request.toolCallId, { source: hint ?? (approved ? "user_once" : "user_reject"), risk: request.risk });
 			return approved;
 		} catch (error) {
-			const message = error instanceof Error ? error.message : String(error);
-			const source: DecisionSource =
-				kind === "terminal"
-					? "user_reject"
-					: message.includes("需要主人批准")
-						? "non_owner"
-						: message.includes("分钟内批准")
-							? "timeout"
-							: "chat_reject";
-			log.record(request.toolCallId, { source, risk: request.risk });
+			log.record(request.toolCallId, { source: "user_reject", risk: request.risk });
 			throw error;
 		}
 	};

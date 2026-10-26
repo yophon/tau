@@ -4,6 +4,23 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Removed (P62: the parked parts are archived)
+- `tau gateway` and the packages `@yophon/tau-gateway`, `@yophon/tau-channel-weixin`,
+  `@yophon/tau-channel-feishu` and `@yophon/tau-ext-feishu`, with the mini-program, React Native and
+  Flutter demo apps, moved to `archive/2026-10-25/` (archive/README.md says how to get them back).
+  `tau gateway` now says it was archived. `host-weapp` and `host-rn` stay; `smoke:weapp` bundles
+  the kernel with host-weapp directly and `smoke:quickjs:mcp` uses a small MCP server in
+  `test-fixtures/`. The secret guard still protects the files a gateway left under `~/.tau/gateway/`,
+  and `tau audit` still reads the records it wrote.
+- `session_search` no longer reads the gateway's sessions (`~/.tau/gateway/sessions`).
+- The CLI's gateway-only switches (hooks as before P44, settings as before P40, chat approvals in the
+  audit, a guest's memory) are gone; the terminal, editor and phone hosts behave as before.
+
+### Changed (P62)
+- `scripts/baseline.mjs` times startup, a `-p` turn, the resident server, long sessions and the test
+  suite (docs/baseline.md); `scripts/wsl-copy.sh` keeps the WSL copy smoke-tui runs in from importing
+  packages over `/mnt` (2.3 s → 0.3 s for `tau --version` there).
+
 ### Fixed (P61: three debts of daily use)
 - On the resident server, whether `read` may send an image follows the session's own model (its
   models.json `input`) after a model switch, not the model the server started with.

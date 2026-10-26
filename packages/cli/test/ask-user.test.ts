@@ -174,15 +174,4 @@ describe("ask_user in a run", () => {
 		assert.deepEqual(sent, ["[Answer q1]\nScope: user skipped this question"]);
 		assert.equal(await widget?.handler(ctx), undefined);
 	});
-
-	it("nobody to ask (a scheduled run): the model is told to decide itself", async () => {
-		const { agent } = await agentWith(
-			{ wait: () => false, freeAnswer: true, unavailable: () => "This run is a scheduled task." },
-			scriptedUi([]),
-		);
-		assert.equal(
-			toolText(await drain(agent, "go")),
-			"This run is a scheduled task. Decide yourself and say what you assumed.",
-		);
-	});
 });

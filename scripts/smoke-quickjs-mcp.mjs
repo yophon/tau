@@ -1,7 +1,7 @@
 // 裸引擎 MCP 工具回路 e2e（P13）：QuickJS（无任何 WinterTC 全局）里的内核 +
 // ext-mcp-http 扩展，经 http-bridge 的真 HTTP fetch 桥，连宿主侧两个真实服务——
-// examples/flutter/mcp-server（MCP 工具端）与 mock OpenAI SSE server（触发工具
-// 调用）。断言远程工具执行与结果回传全链路。宿主侧只泵微任务 + 转发网络事件，
+// test-fixtures/mcp-http-server.mjs（MCP 工具端；P62 前用 Flutter 示例的服务器，已归档）
+// 与 mock OpenAI SSE server（触发工具调用）。断言远程工具执行与结果回传全链路。宿主侧只泵微任务 + 转发网络事件，
 // 与 flutter_js 的运行模型一致。
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -22,13 +22,13 @@ function fail(message) {
 	process.exit(1);
 }
 
-// ---- 真实 MCP server（examples/flutter/mcp-server，--port 0 随机端口）----
+// ---- 真实 MCP server（test-fixtures/mcp-http-server.mjs，--port 0 随机端口）----
 const workDir = mkdtempSync(join(tmpdir(), "tau-quickjs-mcp-"));
 writeFileSync(join(workDir, "hello.txt"), FILE_CONTENT);
 const mcpServer = spawn(
 	process.execPath,
 	[
-		join(root, "examples/flutter/mcp-server/server.mjs"),
+		join(root, "test-fixtures/mcp-http-server.mjs"),
 		...["--dir", workDir, "--port", "0", "--host", "127.0.0.1", "--token", "smoke-token"],
 	],
 	{ stdio: ["ignore", "pipe", "inherit"] },
@@ -135,57 +135,19 @@ while (raw === "(pending)") {
 context.dispose();
 runtime.dispose();
 
-// ---- P19 认证硬化断言（放在主链路后，锁定不影响上面的 e2e）----
-// 错 token 401 ×5 → 触发锁定 → 第 6 次 429（含 retry-after）→ 冷却期内正确
-// token 也 429（锁定是真锁定）→ 冷却过后正确 token 恢复通行。
-const initBody = JSON.stringify({
-	jsonrpc: "2.0",
-	id: 1,
-	method: "initialize",
-	params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "auth-probe", version: "0" } },
-});
-async function mcpPost(bearer) {
-	return fetch(mcpUrl, {
-		method: "POST",
-		headers: {
-			authorization: `Bearer ${bearer}`,
-			"content-type": "application/json",
-			accept: "application/json, text/event-stream",
-		},
-		body: initBody,
-	});
-}
-for (let i = 0; i < 5; i++) {
-	const res = await mcpPost("wrong-token");
-	if (res.status !== 401 && res.status !== 429) fail(`auth probe ${i}: expected 401/429, got ${res.status}`);
-}
-const locked = await mcpPost("wrong-token");
-if (locked.status !== 429) fail(`expected 429 during lockout, got ${locked.status}`);
-if (!locked.headers.get("retry-after")) fail("lockout response must carry retry-after");
-const lockedCorrect = await mcpPost("smoke-token");
-if (lockedCorrect.status !== 429) fail(`lockout must also refuse the correct token, got ${lockedCorrect.status}`);
-await new Promise((resolve) => setTimeout(resolve, 4_200)); // 连续失败后锁定最长 2^2s，等它过期
-const recovered = await mcpPost("smoke-token");
-if (recovered.status !== 200) fail(`correct token must recover after cooldown, got ${recovered.status}`);
-
 mcpServer.kill();
 llmServer.close();
 
 if (typeof raw !== "string" || raw.startsWith("ERROR")) fail(String(raw));
 const result = JSON.parse(raw);
-const expectedTools = [
-	"mcp__computer__read_file",
-	"mcp__computer__write_file",
-	"mcp__computer__list_dir",
-	"mcp__computer__run_command",
-];
+const expectedTools = ["mcp__computer__read_file", "mcp__computer__list_dir"];
 const secondRequest = JSON.stringify(llmRequests[1] ?? {});
 const expectations = [
 	[
 		JSON.stringify(result.statuses.map((s) => s.state)) === JSON.stringify(["connecting", "connected"]),
 		`statuses: ${JSON.stringify(result.statuses)}`,
 	],
-	[result.statuses[1]?.toolCount === 4, `toolCount: ${result.statuses[1]?.toolCount}`],
+	[result.statuses[1]?.toolCount === 2, `toolCount: ${result.statuses[1]?.toolCount}`],
 	[expectedTools.every((name) => result.toolNames.includes(name)), `toolNames: ${result.toolNames.join(",")}`],
 	[
 		result.toolResults.length === 1 && result.toolResults[0].includes(FILE_CONTENT.trim()),

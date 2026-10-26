@@ -38,13 +38,13 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 - **扩展**——镜像 pi 的 API（生命周期事件、工具、命令、flag、渲染器、widget、快捷键）；
   skills 与 prompt templates 内置。
 - **宿主**——终端（全屏或 inline 的 TUI、REPL、单次 `-p`、JSON、RPC、ACP）、浏览器
-  （OPFS）、微信小程序、React Native（Expo）、手机（Flutter，内核跑在 QuickJS）、
-  裸 QuickJS 引擎——每个都端到端验证过，多数进了 CI。
+  （OPFS）、裸 QuickJS 引擎，都在 CI 里端到端验证；另有微信小程序与 React Native 的
+  `Platform` 适配器（它们的示例应用和 Flutter 手机示例已归档，见 [archive/README.md](archive/README.md)）。
 
 内核对宿主的唯一依赖就是四个方法的 `Platform` 缝隙，所以只要有 JS 引擎、能发 HTTP
 到 OpenAI 兼容端点，agent 循环就能跑。它是不是一个*有用的* coding agent，取决于宿主
-给了哪些能力——没有 shell 就没有 `bash`，除非经 MCP 接一个远程的（Flutter demo 就是
-这样）。覆盖面与边界见 [docs/architecture.md](docs/architecture.md#示例宿主与可移植性)。
+给了哪些能力——没有 shell 就没有 `bash`，除非经 MCP 接一个远程的（已归档的 Flutter
+示例就是这样）。覆盖面与边界见 [docs/architecture.md](docs/architecture.md#示例宿主与可移植性)。
 
 ## 包一览
 
@@ -65,22 +65,9 @@ React Native 这类宿主只需注入一个小适配器，而不必 polyfill 全
 | `@yophon/tau-ext-lsp` | 语言服务器（Claude Code 的 `.lsp.json`）：改完报诊断与 `lsp` 工具 | 可——子进程（Node 入口） |
 | `@yophon/tau-ext-codemode` | `codemode`：模型写 JavaScript 调工具，跑在 pi 的 QuickJS 沙箱里 | 可——worker 线程（Node 入口） |
 | `@yophon/tau-ext-resources` | 兼容 pi 的 skills 与 prompt templates | 不直接碰运行时 API |
-| `@yophon/tau-ext-feishu` | 飞书/Lark 桥接：媒体、表情回应、进度卡片、主动发送工具 | 可——飞书 SDK |
-| `@yophon/tau-gateway` | 常驻网关核心：每个聊天一个会话、聊天里审批、渠道插件 | 可——Node 文件系统 |
-| `@yophon/tau-channel-weixin` | 微信渠道，内置在 `tau gateway` 里 | 可——网络、文件系统 |
-| `@yophon/tau-channel-feishu` | 网关的飞书/Lark 渠道插件 | 可——飞书 SDK |
 
-飞书桥接（移植自 [pi-feishu](https://github.com/surenkid/pi-feishu)）经
-`.tau/extensions/feishu.ts` 或 `~/.tau/extensions/` 里的包装入口加载：
-
-```ts
-import createFeishuExtension from "@yophon/tau-ext-feishu";
-
-export default createFeishuExtension();
-```
-
-凭证读 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（或 `--feishu-*` 参数，或 pi/tau 设置里的
-`feishu`）。各个聊天共享 tau 的同一个会话，按顺序处理。
+常驻网关（`tau gateway`，带微信与飞书渠道）和飞书桥接扩展已在 P62 归档，小程序、React Native、
+Flutter 三个示例应用一起：是什么、怎么找回，见 [archive/README.md](archive/README.md)。
 
 ## 设计规则
 
@@ -164,16 +151,11 @@ CLI 与 TUI 缺省 `--permission-mode supervised`：bash 命令与文件写入�
 npm run smoke:quickjs             # 裸 QuickJS 引擎（无 WinterTC 全局）跑完整 agent 循环
 npm run smoke:quickjs:mcp         # 裸引擎内核经桥接 fetch 调真实 MCP server
 npm run smoke:browser             # 打包浏览器宿主 demo
-npm run smoke:weapp               # 打包微信小程序 demo（验证无 Node 泄漏）
+npm run smoke:weapp               # 打包内核与小程序适配器（验证无 Node 泄漏）
 npm run demo:browser              # 本地起浏览器 demo（含 CORS 转发 proxy）
-npm run demo:weapp                # 生成 examples/weapp/miniprogram/lib/tau.js 供微信开发者工具使用
 ```
 
 - `examples/browser/`——静态页面，OPFS 文件系统，浏览器内 BYOK
-- `examples/weapp/`——微信小程序对话 demo（[README](examples/weapp/README.md)）
-- `examples/rn/`——React Native（Expo）对话 demo（[README](examples/rn/README.md)）
-- `examples/flutter/`——手机上的 agent（内核跑在 `flutter_js`）+ 它经局域网驱动的
-  零 tau 依赖电脑侧 MCP server（[app](examples/flutter/app/README.md) · [mcp-server](examples/flutter/mcp-server/README.md)）
 
 ## 在脚本和编辑器里用 tau
 
@@ -186,18 +168,6 @@ tau --mode acp                      # Agent Client Protocol：在 Zed 等编辑�
 Zed 里配置 `{ "agent_servers": { "tau": { "command": "tau", "args": ["--mode", "acp"] } } }`。
 审批变成编辑器的权限对话框，读写走编辑器缓冲区，权限档位就是会话模式。见
 [docs/rpc.md](docs/rpc.md)。
-
-## 常驻网关
-
-```bash
-tau gateway login weixin     # 用微信扫码登录，扫码的人就是这个账号的主人
-tau gateway run              # 常驻；每个对话一个独立会话
-tau gateway stop
-```
-
-网关让聊天软件里也能用 tau：每个对话一个会话，主人在聊天里回复就能批准，别人用配对码
-进入名单，主人的对话里还能布置提醒、周期任务和目标。微信内置，飞书是插件。网关目前搁置：
-按 [docs/gateway.md](docs/gateway.md) 写的那样能用，之后加的功能在网关里不开。
 
 ## 嵌入内核
 
@@ -253,10 +223,9 @@ export default guard;
 - [docs/architecture.md](docs/architecture.md)——按包和模块写的当前架构、代码地图、术语表
 - [docs/roadmap.md](docs/roadmap.md)——已完成阶段、当前工作、Backlog、技术债登记
 - [docs/specs/](docs/specs/)——各阶段规格书（动码前撰写并经确认）
-- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D55）
+- [docs/decisions.md](docs/decisions.md)——设计决策记录（D1–D63）
 - [docs/settings.md](docs/settings.md)——settings.json 的每个键、缺省值、项目能否设置
 - [docs/rpc.md](docs/rpc.md)——JSON、RPC、ACP 三种模式
-- [docs/gateway.md](docs/gateway.md)——常驻网关与渠道插件
 - [docs/memory.md](docs/memory.md)——长期记忆与会话检索
 - [docs/connectors.md](docs/connectors.md)——MCP 连接器、语言服务器、凭据、OAuth、不给模型看密钥
 - [docs/audit.md](docs/audit.md)——审计账本：做了什么、谁批的、花了多少（`tau audit`）

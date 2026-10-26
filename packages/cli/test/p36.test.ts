@@ -93,7 +93,7 @@ describe("P36a: background commands in the CLI", () => {
 		assert.deepEqual(sent, []);
 		const widget = registry.widgets.get("background");
 		assert.equal(await widget?.handler(ctx), undefined);
-		// The gateway's chat /tasks: the same list as text, straight from the shell.
+		// /tasks as text: the same list, straight from the shell.
 		assert.match(await backgroundTasksText(background, ""), /^■ b1 killed · \d+s · dev server$/);
 		assert.match(await backgroundTasksText(background, "b1"), /^b1 killed .*\n.*b1\.output\n\nserving on 5173/);
 		assert.equal(await backgroundTasksText(background, "b4"), "No background task b4.");

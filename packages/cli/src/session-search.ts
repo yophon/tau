@@ -1,16 +1,12 @@
 // session_search / session_read (P32a, after Hermes Agent's session_search):
 // keyword search over a person's own session files, returning the stored text
 // itself — no index, no embeddings, no model call. Only user and assistant text
-// is searched (not tool results). A gateway's session tree mixes everyone's
-// chats, so a root marked ownerOnly keeps only conversations recorded as the
-// owner's (the `tau.gateway.conversation` entry each one starts with).
+// is searched (not tool results).
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 export interface SessionRoot {
 	dir: string;
-	/** Keep only gateway conversations whose first entry records the owner. */
-	ownerOnly?: boolean;
 }
 
 interface Hit {
@@ -45,30 +41,6 @@ function walk(dir: string, out: string[]): void {
 	}
 }
 
-const ownerCache = new Map<string, boolean>();
-
-/** Whether a gateway session file belongs to an owner's conversation. */
-function ownersConversation(file: string, content?: string): boolean {
-	const cached = ownerCache.get(file);
-	if (cached !== undefined) return cached;
-	let owner = false;
-	try {
-		const text = content ?? readFileSync(file, "utf8");
-		for (const line of text.split("\n", 50)) {
-			if (!line.includes("tau.gateway.conversation")) continue;
-			const entry = JSON.parse(line) as { customType?: string; data?: { role?: string } };
-			if (entry.customType === "tau.gateway.conversation") {
-				owner = entry.data?.role === "owner";
-				break;
-			}
-		}
-	} catch {
-		owner = false;
-	}
-	ownerCache.set(file, owner);
-	return owner;
-}
-
 /** The session files this person may read, newest first. */
 export function sessionFiles(roots: readonly SessionRoot[]): string[] {
 	const files: Array<{ path: string; mtime: number }> = [];
@@ -76,7 +48,6 @@ export function sessionFiles(roots: readonly SessionRoot[]): string[] {
 		const found: string[] = [];
 		walk(root.dir, found);
 		for (const path of found) {
-			if (root.ownerOnly && !ownersConversation(path)) continue;
 			try {
 				files.push({ path: resolve(path), mtime: statSync(path).mtimeMs });
 			} catch {
@@ -244,9 +215,7 @@ export function readSessionAround(
 	const target = resolve(file);
 	const allowed = roots.some((root) => {
 		const rel = relative(resolve(root.dir), target);
-		return (
-			rel !== "" && !rel.startsWith("..") && !/^[a-zA-Z]:/.test(rel) && (!root.ownerOnly || ownersConversation(target))
-		);
+		return rel !== "" && !rel.startsWith("..") && !/^[a-zA-Z]:/.test(rel);
 	});
 	if (!allowed || !target.endsWith(".jsonl"))
 		throw new Error(`${file} is not one of the sessions session_search can read`);

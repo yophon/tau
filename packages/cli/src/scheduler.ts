@@ -1,10 +1,10 @@
 // Session-scoped scheduled tasks (P44, Claude Code's CronCreate / CronList / CronDelete,
-// /loop and ScheduleWakeup): 5-field cron in local time (the gateway's P31 parser,
-// Vixie rules), at most 50 tasks, one-shot tasks deleted after they fire, recurring
-// ones firing a last time 7 days after creation. The host fires due tasks between
+// /loop and ScheduleWakeup): 5-field cron in local time (cron.ts, Vixie rules), at most
+// 50 tasks, one-shot tasks deleted after they fire, recurring ones firing a last time
+// 7 days after creation. The host fires due tasks between
 // turns; missed fires collapse into one. No jitter (D47: it spreads Anthropic's load).
 import { randomBytes } from "node:crypto";
-import { type CronSpec, localTimeZone, nextCronTime, parseCron } from "@yophon/tau-gateway";
+import { type CronSpec, localTimeZone, nextCronTime, parseCron } from "./cron.ts";
 
 export { formatRunTime } from "./run-time.ts";
 

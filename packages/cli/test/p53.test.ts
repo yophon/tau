@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type MockOpenAI, mockTextTurn, startMockOpenAI } from "../../../test-fixtures/mock-openai.ts";
 import { parseArgs } from "../src/args.ts";
 import { subagentText } from "../src/background.ts";
-import { agentOptionsFromSettings, readSettings, withoutP40Keys } from "../src/settings.ts";
+import { agentOptionsFromSettings, readSettings } from "../src/settings.ts";
 import { ESC, harness } from "./tui-harness.ts";
 
 const CLI_PATH = fileURLToPath(new URL("../src/main.ts", import.meta.url));
@@ -151,7 +151,6 @@ describe("P53c small items in the CLI", () => {
 		assert.equal(settings.continueOnMaxTokens, false);
 		assert.deepEqual(settings.compaction, { reserveTokens: 1000, model: "deepseek/cheap" });
 		assert.deepEqual(agentOptionsFromSettings(settings).compaction, { reserveTokens: 1000 });
-		assert.equal(withoutP40Keys(settings).continueOnMaxTokens, undefined, "the parked gateway does not see it");
 	});
 
 	it("takes --permission-mode ci", () => {

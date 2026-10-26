@@ -404,8 +404,7 @@ async function stopTask(shell: NodeBackgroundShell, id: string): Promise<string>
 }
 
 /**
- * /tasks as text, for background commands only (P36a: the gateway's chat command,
- * which answers at once, also while a run is going): list, `<id>` shows the output, `stop <id>`.
+ * /tasks as text, for background commands only (P36a): list, `<id>` shows the output, `stop <id>`.
  */
 export async function backgroundTasksText(shell: NodeBackgroundShell, args: string): Promise<string> {
 	const words = args.trim().split(/\s+/).filter(Boolean);

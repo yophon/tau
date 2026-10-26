@@ -93,20 +93,18 @@ function lastModelChange(path: readonly SessionEntry[]): { provider: string; mod
 }
 
 async function main(): Promise<void> {
+	// P43 (pi setupCli: AI_AGENT=pi, PI_CODING_AGENT=true): child processes can tell they run
+	// inside tau — commands, hooks, the status line, stdio MCP servers.
+	process.env.AI_AGENT = "tau";
+	process.env.TAU_CODING_AGENT = "true";
 	// P40a (pi): HTTP_PROXY / HTTPS_PROXY / NO_PROXY and settings.json httpProxy apply to every
-	// request, subcommands included. The gateway is parked and stays as it was.
-	if (process.argv[2] !== "gateway") {
-		// P43 (pi setupCli: AI_AGENT=pi, PI_CODING_AGENT=true): child processes can tell they run
-		// inside tau — commands, hooks, the status line, stdio MCP servers.
-		process.env.AI_AGENT = "tau";
-		process.env.TAU_CODING_AGENT = "true";
-		const { applyHttpProxySettings, configureHttpDispatcher, DEFAULT_HTTP_IDLE_TIMEOUT_MS } = await import(
-			"./http-dispatcher.ts"
-		);
-		const network = readSettings(join(userHome(), ".tau", "settings.json"));
-		applyHttpProxySettings(network.httpProxy);
-		configureHttpDispatcher(network.httpIdleTimeoutMs ?? DEFAULT_HTTP_IDLE_TIMEOUT_MS);
-	}
+	// request, subcommands included.
+	const { applyHttpProxySettings, configureHttpDispatcher, DEFAULT_HTTP_IDLE_TIMEOUT_MS } = await import(
+		"./http-dispatcher.ts"
+	);
+	const network = readSettings(join(userHome(), ".tau", "settings.json"));
+	applyHttpProxySettings(network.httpProxy);
+	configureHttpDispatcher(network.httpIdleTimeoutMs ?? DEFAULT_HTTP_IDLE_TIMEOUT_MS);
 	// `tau credentials …`, `tau mcp …` (P32b) and `tau audit …` (P32c) need neither a model nor the usual options.
 	const subcommand = process.argv[2];
 	if (subcommand === "credentials" || subcommand === "mcp" || subcommand === "audit") {
@@ -120,7 +118,7 @@ async function main(): Promise<void> {
 	const options = parseArgs(process.argv.slice(2));
 	// The JSON, RPC and ACP modes own stdout: everything else goes to stderr (pi json.md).
 	if (options.mode || options.serve) console.log = (...args: unknown[]) => console.error(...args);
-	if (options.help && !options.gateway) {
+	if (options.help) {
 		console.log(USAGE);
 		return;
 	}
@@ -138,13 +136,6 @@ async function main(): Promise<void> {
 		});
 		return;
 	}
-	// `tau gateway status/allow/login/…` need no model (P30); `run` sets the agent up first.
-	if (options.gateway && options.gateway.command !== "run") {
-		const { runGatewayCommand } = await import("./gateway.ts");
-		process.exitCode = await runGatewayCommand(options.gateway, { home: userHome(), cwd: resolve(process.cwd()) });
-		return;
-	}
-
 	// The model table (P28): ~/.tau/models.json and the settings defaults. Explicit
 	// endpoint flags keep the ad-hoc path; env vars only apply without a usable table.
 	const home = userHome();
@@ -152,10 +143,8 @@ async function main(): Promise<void> {
 	for (const diagnostic of modelsConfig.diagnostics) console.error(`Warning: ${diagnostic}`);
 	const userSettingsPath = join(home, ".tau", "settings.json");
 	// P37a: the old "always allow" store becomes permission rules, once.
-	if (!options.gateway) {
-		const moved = migrateLegacyPermissions(home);
-		if (moved) console.error(dim(moved));
-	}
+	const moved = migrateLegacyPermissions(home);
+	if (moved) console.error(dim(moved));
 	// Relative paths on the command line mean the directory tau was started in, even when
 	// --worktree moves into the worktree below.
 	options.addDirs = (options.addDirs ?? []).map((dir) =>
@@ -261,7 +250,7 @@ async function main(): Promise<void> {
 	/** The session reached its first prompt (from here on an exit keeps the worktree, as -p does). */
 	let worktreeStarted = false;
 	if (options.worktree) {
-		if (options.mode === "rpc" || options.mode === "acp" || options.gateway || options.serve) {
+		if (options.mode === "rpc" || options.mode === "acp" || options.serve) {
 			console.error("--worktree works with the TUI, the REPL, -p and --mode json.");
 			process.exit(1);
 		}
@@ -304,7 +293,6 @@ async function main(): Promise<void> {
 	// On a terminal the TUI is the interactive default (P25); --repl keeps the line-based REPL.
 	const useTui =
 		options.mode === undefined &&
-		options.gateway === undefined &&
 		options.serve === undefined &&
 		options.print === undefined &&
 		!options.repl &&
@@ -327,16 +315,13 @@ async function main(): Promise<void> {
 			process.exit(1);
 		}
 	}
-	// The audit's host and default trigger (P32c); the gateway sets its own per conversation.
-	const auditHost: AuditHost =
-		options.gateway !== undefined
-			? "gateway"
-			: (options.mode ?? (options.print !== undefined ? "print" : useTui ? "tui" : "repl"));
+	// The audit's host and default trigger (P32c).
+	const auditHost: AuditHost = options.mode ?? (options.print !== undefined ? "print" : useTui ? "tui" : "repl");
 	const defaultTrigger: AuditTrigger =
 		options.mode === "rpc" ? { type: "rpc" } : options.mode === "acp" ? { type: "acp" } : { type: "user" };
 	// The JSON, RPC and ACP modes read stdin themselves (or not at all).
 	const readline =
-		useTui || options.mode !== undefined || options.gateway !== undefined || options.serve !== undefined
+		useTui || options.mode !== undefined || options.serve !== undefined
 			? undefined
 			: createInterface({ input: process.stdin, output: process.stdout });
 	// P46: push_notification is not sent while you are typing at the REPL (any key or pasted
@@ -483,7 +468,7 @@ async function main(): Promise<void> {
 		applyDefaultMode: !explicitMode,
 	};
 	if (options.serve) {
-		// P56: the session hub; one workspace per session, as the gateway's conversations.
+		// P56: the session hub; one workspace per session.
 		const { runServe } = await import("./server/serve.ts");
 		await runServe({
 			listen: options.serve.listen,
@@ -498,21 +483,6 @@ async function main(): Promise<void> {
 		});
 		// A stopped resident server exits, whatever is left open (a stopped request's connection).
 		if (options.serve.listen !== "stdio" && options.serve.listen !== "stdio://") process.exit(0);
-		return;
-	}
-	if (options.gateway) {
-		// One workspace per chat conversation (P30). Loaded on demand with the channels.
-		const { runGateway } = await import("./gateway.ts");
-		await runGateway(options.gateway, {
-			home,
-			cwd,
-			env: process.env,
-			openWorkspace,
-			modelDisplay,
-			modelChoices,
-			...(configuredModels.length > 0 ? { resolveModelSwitch } : {}),
-			supportsImages: () => endpoint.activeModel?.input?.includes("image") === true,
-		});
 		return;
 	}
 	if (options.mode === "acp") {

@@ -67,7 +67,7 @@ Markdown 文件，frontmatter 写 `name`、`description`，可选 `tools`（逗�
 - 它的文件工具、bash、PowerShell 都在 worktree 里；没有后台命令，也就没有 `monitor`。
 - 结束时没有改动、也没有新提交：worktree 和分支一起删掉，结果末尾写 `[worktree removed: no changes]`。
 - 有改动：留着，结果末尾写 `[worktree kept: <路径> on branch <分支>]`，由主会话决定怎么合并。用 `send_message` 续接时回到这个 worktree 接着干（恢复会话后也是）；它已经被删掉的话就新建一个。
-- 需要 git 仓库；网关里没有。
+- 需要 git 仓库。
 
 ## 不做
 

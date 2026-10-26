@@ -1,6 +1,6 @@
 // 裸引擎 MCP e2e fixture（P13）：QuickJS 内的内核 + ext-mcp-http 扩展，经
-// http-bridge 注入的真 HTTP fetch 调宿主侧真实 MCP server（examples/flutter/
-// mcp-server），mock LLM（同样真 HTTP）触发远程工具调用。宿主经全局注入
+// http-bridge 注入的真 HTTP fetch 调宿主侧真实 MCP server（test-fixtures/
+// mcp-http-server.mjs），mock LLM（同样真 HTTP）触发远程工具调用。宿主经全局注入
 // __MCP_URL / __MCP_TOKEN / __LLM_URL 三个字符串。
 import { createHttpMcpExtension, type HttpMcpStatus } from "../../packages/ext-mcp-http/src/index.ts";
 import {

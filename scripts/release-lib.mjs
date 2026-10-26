@@ -25,10 +25,6 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-provider-openai-responses",
 	"ext-provider-google",
 	"ext-resources",
-	"ext-feishu",
-	"gateway",
-	"channel-weixin",
-	"channel-feishu",
 	"web",
 	"cli",
 ];

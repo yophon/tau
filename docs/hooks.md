@@ -141,7 +141,6 @@
 - 几个 `Elicitation` 钩子同时回答时，拒绝优先于接受和取消；`Elicitation` 钩子回答了的，不再跑 `ElicitationResult`。
 - 后台钩子（`async: true`）：不等它结束，不能拦、不能改参数，输出丢弃，只在失败时警告；没有超时，也不限个数。
 - 子代理的工具调用同样经过 `PreToolUse`、`PostToolUse`。
-- 网关里钩子同样生效，只是 `Notification` 不触发（网关有自己的聊天通知）。网关搁置中，保持 P44 之前的行为：没有 P44 新加的事件，matcher 只对工具事件生效，`PostToolUse` 也在失败时触发，`SessionStart`、`SessionEnd` 带原来的取值。
 - 钩子批准或拦下的调用，审计里的决定来源分别记为 `hook_allow`、`hook`。
 
 ## 钩子坏了（`onFailure`，P49）
@@ -178,7 +177,6 @@ Windows 上没有 Git Bash 时，没写 `shell`、`args`、`onFailure` 的 `PreT
 - 钩子的 JSON 输入作为请求体 POST 给 `url`，`Content-Type: application/json`；走 P40a 的代理设置。
 - `headers` 里可以写 `$名字` 或 `${名字}`，只有 `allowedEnvVars` 列出的变量会换成值，其余换成空字符串。
 - 2xx 的空响应等于什么都不做；2xx 的 JSON 对象和命令钩子 exit 0 时的 JSON 输出一样处理；其他情况算失败（按 `onFailure`）。
-- 网关（搁置中）不支持 HTTP 钩子，也不认 `args`、`shell`、`onFailure`，保持 P49 之前的行为。
 
 ## 例子
 

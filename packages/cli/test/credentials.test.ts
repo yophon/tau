@@ -4,7 +4,6 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { resolveEnvValue } from "@yophon/tau-gateway";
 import {
 	auditCredentials,
 	CredentialStore,
@@ -53,7 +52,7 @@ describe("credential store", () => {
 		assert.throws(() => store.set("ok", ""), /empty/);
 	});
 
-	it("resolves ${cred:…} in models.json values and gateway channel sections", () => {
+	it("resolves ${cred:…} in models.json values", () => {
 		const dir = home();
 		new CredentialStore(credentialsPath(dir)).set("deepseek", "sk-deepseek-1234567890");
 		assert.equal(
@@ -62,10 +61,6 @@ describe("credential store", () => {
 		);
 		assert.equal(resolveConfigValue("${cred:nope}", { env: { HOME: dir, USERPROFILE: dir } }), undefined);
 		assert.equal(knownSecrets().get("sk-deepseek-1234567890"), "cred:deepseek");
-		const lookup = (name: string) => new CredentialStore(credentialsPath(dir)).get(name);
-		assert.equal(resolveEnvValue("${cred:deepseek}", {}, lookup), "sk-deepseek-1234567890");
-		assert.equal(resolveEnvValue("${cred:deepseek}", {}), "", "without a lookup the gateway resolves nothing");
-		assert.equal(resolveEnvValue("$APP", { APP: "cli_x" }, lookup), "cli_x");
 	});
 
 	it("expands references inside strings; a project file gets no credentials and no secret-looking variables", () => {

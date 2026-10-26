@@ -1,5 +1,5 @@
 // When a scheduled task runs, for people (P44). Apart from scheduler.ts, which loads the
-// gateway's cron code: /tasks formats times without loading it.
+// cron code: /tasks formats times without loading it.
 
 /** A time for people: HH:MM today, else the date too (local time). */
 export function formatRunTime(at: number | undefined, now = Date.now()): string {

@@ -27,7 +27,7 @@ import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../ker
 import { summarizeToolArgs } from "../src/audit.ts";
 import { powershellAllowedBy, suggestRules } from "../src/permissions.ts";
 import { createSecretGuard } from "../src/secret-guard.ts";
-import { agentOptionsFromSettings, loadSettings, mergeSettings, withoutP40Keys } from "../src/settings.ts";
+import { agentOptionsFromSettings, loadSettings, mergeSettings } from "../src/settings.ts";
 import { editInExternalEditor } from "../src/tui/controller.ts";
 import { toolView } from "../src/tui/render/tool-views.ts";
 import { harness } from "./tui-harness.ts";
@@ -470,16 +470,6 @@ describe("P40c: settings in layers (pi)", () => {
 			maxTurnsPerPrompt: 9,
 		});
 		assert.deepEqual(agentOptionsFromSettings({}), { retry: {} });
-	});
-
-	it("the gateway keeps the keys it had before P40", () => {
-		const kept = withoutP40Keys({
-			defaultModel: "m",
-			shellPath: "/b",
-			defaultTools: ["read"],
-			images: { blockImages: true },
-		});
-		assert.deepEqual(kept, { defaultModel: "m" });
 	});
 
 	it("defaultTools picks the tools at start; --tools changes it; a trusted project's +/- list changes it too", async () => {

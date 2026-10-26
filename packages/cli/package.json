@@ -26,7 +26,6 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@yophon/tau-channel-weixin": "^0.2.0",
 		"@yophon/tau-ext-checkpoint": "^0.2.0",
 		"@yophon/tau-ext-codemode": "^0.2.0",
 		"@yophon/tau-ext-loop-detection": "^0.2.0",
@@ -39,7 +38,6 @@
 		"@yophon/tau-ext-subagents": "^0.2.0",
 		"@yophon/tau-ext-tool-search": "^0.2.0",
 		"@yophon/tau-ext-web": "^0.2.0",
-		"@yophon/tau-gateway": "^0.2.0",
 		"@yophon/tau-host-node": "^0.2.0",
 		"@yophon/tau-kernel": "^0.2.0",
 		"@yophon/tau-protocol": "^0.2.0",

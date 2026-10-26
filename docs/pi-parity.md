@@ -182,23 +182,16 @@
 | 子代理（pi 为示例扩展 `examples/extensions/subagent`） | ✅ P26b | 照抄工具形状（单个、并行、串联）与 agent 定义格式，内置 pi 的四个示例 agent。偏离：进程内运行（`ctx.runSubagent`）而非独立 pi 进程；加 yo-agent 的后台模式、只收紧、禁止递归、`/tasks`；agent 定义多一个可选 `mode`（D32） |
 | 待办（pi 为示例扩展 `todo.ts`） | ✅ P26c | 采用 yo-agent / Claude Code 的 `todo_write` 整表替换，不用 pi 示例的增删勾（D32） |
 | 长期记忆 | ✅ P26c | pi 无对应物；照 yo-agent 的 memory_write 与 `#remember`，存用户目录（D32） |
-| 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18） |
+| 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18）。小程序、React Native、Flutter 的示例应用 P62 归档，两个适配包留下 |
 | 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。P43：协议 2025-11-25 与 pi 的版本集、SSE 用 `Last-Event-ID` 续流、`roots`。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；GET 通知流在 ext-mcp-http 为可选；progress/cancelled 未做 |
 
-## pi-feishu 扩展移植（P20）
+## 已归档：pi-feishu 移植（P20）与常驻网关（P30、P31）
 
-`@yophon/tau-ext-feishu` 是独立的 Node-only 扩展包，按
-[surenkid/pi-feishu](https://github.com/surenkid/pi-feishu)（MIT，上游自 1.1.5 起无新提交）的公开行为移植到
-tau 的 `ExtensionAPI`：官方 SDK WebSocket/REST、入站消息与媒体解析、去重和
-过期过滤、Typing/CrossMark Reaction、工具进度卡片、Markdown 分块、
-`/new`/`/stop`/`/queue`/`/compact`/`/status`/`/help` 与 `/feishu` 管理命令，以及
-三个主动发送工具。tau 当前只有一个 Agent，多个 Feishu chat
-共享同一会话并由扩展 FIFO 串行化。偏离上游两处：项目级 settings 不能提供凭据（P21-HF-1）；
-入站图片只按文件签名内联 PNG/JPEG/GIF/WebP 且 base64 不超过 5 MiB（P21-HF-15）。
+`@yophon/tau-ext-feishu`（照 [surenkid/pi-feishu](https://github.com/surenkid/pi-feishu) 的公开行为移植的飞书桥接扩展）与 tau 原创的常驻网关（每个对话一个会话、渠道插件、聊天里审批，D34；定时任务与目标，D35）都在 P62 归档，见 [archive/README.md](../archive/README.md)。两者都没有新增扩展面。
 
-## tau 原创面：常驻网关（P30）与定时任务（P31）
+## tau 原创面：记忆、凭据与审计（P32）
 
-pi 没有常驻宿主、渠道或聊天审批（D34）。`@yophon/tau-gateway` 是 tau 原创：每个对话一个 P29 的 `HeadlessSession`，渠道经 `ChannelPlugin` 接入（微信内置，飞书外装）。它不新增扩展面——对话里的扩展照常加载，网关只用内核既有的 `onApproval`、`setPermissionMode` 与会话 API。ext-feishu 保持 pi-feishu 镜像不变，网关的飞书渠道复用它的 `FeishuClient`。P31 的定时任务与目标（D35）同样是网关里的原创面：六个工具经 `ConversationHooks.extensions` 作为普通扩展装进主人的对话，不新增扩展 API。P32（D36）的分层记忆、凭据库、密钥守卫与审计账本也是原创面，都以 CLI 内置扩展或宿主代码实现，不新增扩展 API；连接器配置照抄 pi 1.2 的 `mcp.json` 格式（P21 附录 A 的 `mcp-builtin-support`），MCP OAuth 移植自 pi-mcp 1.2（D24），`registerMcpServer` 一族仍按 D21 排除。
+P32（D36）的分层记忆、凭据库、密钥守卫与审计账本是 pi 没有的原创面，都以 CLI 内置扩展或宿主代码实现，不新增扩展 API；连接器配置照抄 pi 1.2 的 `mcp.json` 格式（P21 附录 A 的 `mcp-builtin-support`），MCP OAuth 移植自 pi-mcp 1.2（D24），`registerMcpServer` 一族仍按 D21 排除。
 
 ## 设计参考
 

@@ -43,7 +43,7 @@
 | [P27](specs/phase-27-slash-commands.md) | 斜杠命令补全 | 2026-10-17 | |
 | [P28](specs/phase-28-models-web.md) | 模型配置与联网工具 | 2026-10-17 | D33 |
 | [P29](specs/phase-29-embedding.md) | 嵌入接口：JSON、RPC、ACP | 2026-10-17 | |
-| [P30](specs/phase-30-gateway.md) | 常驻网关与聊天渠道（现搁置） | 2026-10-18 | D34 |
+| [P30](specs/phase-30-gateway.md) | 常驻网关与聊天渠道（P62 归档） | 2026-10-18 | D34 |
 | [P31](specs/phase-31-goals-schedules.md) | 目标与调度（网关） | 2026-10-19 | D35 |
 | [P32](specs/phase-32-memory-credentials-audit.md) | 跨对话记忆、凭据与审计 | 2026-10-19 | D36 |
 | [P33](specs/phase-33-fullscreen-tui.md) | 全屏 TUI | 2026-10-19 | D37 |
@@ -86,7 +86,7 @@
 
 ## 产品层后续 ⬜ 待定
 
-主动模式、bash 沙箱、微信群聊、运行预算见 Backlog D。
+主动模式、bash 沙箱、运行预算见 Backlog D。
 
 ## 未排期（Backlog）
 
@@ -104,18 +104,15 @@
 ### C. 已裁决推迟
 
 - 0.4.0 发版（P22–P33）：2026-10-19 用户裁决推迟，现在没有外部用户；技术债 #13 的首发随之推迟
-- 网关（P30、P31）：2026-10-19 用户裁决先放着，以后重新考虑（包括主人、名单、访客这套多人设计）；之后的阶段不为网关做改动，共用代码的新功能在网关里关掉，保持现状
+- 网关（P30、P31）：2026-10-19 用户裁决先放着，以后重新考虑（包括主人、名单、访客这套多人设计）；P62 归档（用户：「三那个都archive」），连同两个渠道、飞书扩展（P20）和小程序、React Native、Flutter 三个示例应用（P10、P13、P19），见 [archive/README.md](../archive/README.md)。Flutter 示例的后续（iOS 模拟器手工 e2e、语音、iOS 后台执行、Flutter CI）随之不再排期
 - P39a 余下三项：命令拿完整环境变量、删掉 secret-guard、信任照 pi 每个目录记一次（D42 已定，做法见 P39 规格书 39a）。2026-10-20 改代码时被 Claude Code 自动模式判为「削弱安全」拦下；用户：「被拦下的先记着，后续再说」。重做前需要用户本人放行
 
-- P13 iOS 模拟器手工 e2e（JSC 路径；用户裁决 2026-07-16 推迟）
-- P13 后续：语音（STT/TTS）、iOS 后台执行缓解（前台服务/推送恢复）、Flutter CI
 
 ### D. 产品层候选（2026-10-19 用户：「先不着急，记下来」）
 
-- **bash 沙箱**：让 bash 在受限环境里跑（只能写工作目录、网络受控），沙箱内的调用可以不要审批。P31 验收时，周期任务用 bash 每次都要主人批一次，这是真实痛点。Linux 有 bubblewrap、macOS 有 Seatbelt，Windows 没有好用的方案。等网关常驻在哪台机器上定了再议。
+- **bash 沙箱**：让 bash 在受限环境里跑（只能写工作目录、网络受控），沙箱内的调用可以不要审批。P31 验收时，周期任务用 bash 每次都要主人批一次，这是真实痛点。Linux 有 bubblewrap、macOS 有 Seatbelt，Windows 没有好用的方案。等 tau 常驻在哪台机器上定了再议。
 - **主动模式**：没人布置任务、模型自己定期醒来看看有没有该说的（P31 移出，D35）。业界做法是只读工具、限频、限预算，结果只进收件箱不外发。等定时任务用一段时间、看清实际用法后再定边界。
-- **微信群聊**：P30 跳过（每个群只记一次日志）。待定的是群里的触发方式（@ 才回？）和群级权限。
-- **运行预算**：每天的 token 上限、每个任务每天最多跑几次，超了暂停定时任务并通知主人。运行记录部分并入 P32 的审计考虑。
+- **运行预算**：每天的 token 上限、每个定时任务每天最多跑几次，超了暂停定时任务并通知。运行记录部分并入 P32 的审计考虑。
 
 ### E. 扩展与 TUI 候选（2026-10-19 整理，用户：「其他的想法可以先记着，后续考虑」）
 
@@ -158,11 +155,9 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 |---|---|---|---|
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
-| 13 | 10 个包从没发过 npm：ext-codemode、ext-lsp、ext-tool-search、ext-web、ext-feishu、gateway、channel-weixin、channel-feishu、ext-provider-openai-responses、ext-provider-google（P54 新增后两个）；已发的 11 个停在 0.2.0（2026-07-21）（P52 复盘更正，原先只登记了 4 个） | 只能在仓库里用；npm 上的 `tau` 是三个月前的版本；飞书插件装不进网关目录 | 随 0.4.0 首发，或决定不对外发布（复盘候选 C） |
+| 13 | 6 个包从没发过 npm：ext-codemode、ext-lsp、ext-tool-search、ext-web、ext-provider-openai-responses、ext-provider-google；已发的停在 0.2.0（2026-07-21）（P52 复盘更正；P62 归档了另外 4 个从没发过的） | 只能在仓库里用；npm 上的 `tau` 是三个月前的版本 | 随 0.4.0 首发，或决定不对外发布（复盘候选 C） |
 | 18 | pi 会话夹具的期望值为人工推导（P22） | 与 pi 实现的细微差异可能漏检 | 下次重锚或本机装上 pi 依赖时，用 pi 的 buildSessionContext 生成期望值替换 |
-| 19 | 网关每个对话各加载一份扩展（P30） | MCP 服务器按对话各起一套 stdio 进程，对话多时进程数随之增长 | 现由驻留上限（缺省 16）与空闲卸载控制；出现实测瓶颈再做共享连接池 |
-| 20 | 一次真实运行中 status.json 的 10 秒心跳没有刷新，原因未查明（P30） | `tau gateway status` 可能显示过时的对话列表 | 已改为变化驱动刷新并把写入失败记进日志；观察网关日志里的 `status.json not written`，复现后再修 |
-| 24 | `npm audit` 4 个高危（P52）：`@larksuiteoapi/node-sdk` 经 axios、follow-redirects（NO_PROXY 绕过致 SSRF、原型污染、跨域不清凭据头）；`@modelcontextprotocol/sdk` 只是根目录开发依赖 | ext-feishu、channel-feishu 的使用者会装上有漏洞的 axios；MCP SDK 不进发布物 | 绑定发布阶段（复盘候选 C）：发布前升级飞书 SDK 或锁定修复版 axios；不发布时随 ext-feishu 的去留处理 |
+| 24 | `npm audit` 高危：P52 的 4 个（飞书 SDK 带的 axios、follow-redirects，开发依赖 MCP SDK）随 P62 归档消失；P62 时新出 undici 8.10.2 一个（EventSource 解析无界内存、SRI 绕过、过多 content-encoding 未处理，8.12.2 起修复） | CLI 经 undici 发所有请求（P40a 的代理 dispatcher） | P62 的 62h 升级 undici |
 | 25 | 依赖落后大版本（P52）：Ink 5.2 → 8.0、React 18 → 19、string-width 7 → 8、wrap-ansi 9 → 10（highlight.js 10 与 TypeScript 5.9 属有意） | 越晚升越难；`render/wrap.ts` 是 wrap-ansi 9 的移植 | 复盘候选 E，单独一个阶段，跑全部 smoke 与真机 |
 | 27 | 同包内的重复实现（P52）：内核两份 `globToRegExp`、CLI 四份 `git()` 包装、`readGitBranch` 在 controller.ts 与 git-paths.ts 各一份等，全表见复盘 52b | 修一处漏一处 | 复盘候选 F |
 | 28 | 真机验收欠 16 个阶段（P34–P49）：P35、P37 的验收清单各 14、20 条手工场景，P34、P36、P38 各 1 条，P39–P49 规格书写着待用户执行（P52 登记） | 真实终端、输入法、剪贴板、通知、MCP 网页登录等自动化测不到的交互没人试过；真端点验收曾多次查出潜伏的 bug | 复盘候选 A：合并成一份清单，一次走完 |
@@ -170,4 +165,4 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 | 32 | `cli/src/tui/controller.ts` 1495 行，结构门禁上限 1500（P55、P57；P58 把会话类命令移出了 `commands.ts`，它降到 1135 行、上限改为 1200） | 再加几个控制器方法就撞线 | 下一个动它的阶段先把指针与键盘处理移出去；不调高上限 |
 | 36 | `smoke:browser:runtime`（浏览器里跑内核与 OPFS）在 CI 上超时过一次（20 秒内 Chrome 没报结果，stderr 只有 dbus 的报错），重跑通过（P59 文档提交的 CI，run 40064221954） | CI 偶尔红一次 | 再出现时把超时放宽到 40 秒并打出页面状态；查是否 Chrome 启动慢 |
 
-（#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
+（#19、#20 已于 P62 随网关归档销案。#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
