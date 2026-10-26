@@ -39,6 +39,12 @@ const INTERNAL = new Set([
 	"nested-calls.ts:NestedToolCallRunner",
 	// Rule matching's helper; callers match with matchPermissionRules / powerShellPatternMatches (P40b).
 	"powershell-command.ts:canonicalPowerShellPattern",
+	// Each event's handlers, kept by the registry (P62: with the events in extension-events.ts).
+	"extension-events.ts:HandlerLists",
+	// The shell tokenizer behind the permission rules (P62 split); callers use matchPermissionRules.
+	"shell-tokens.ts:Word",
+	"shell-tokens.ts:Token",
+	"shell-tokens.ts:tokenize",
 	// The kernel's abort check (P62); hosts pass signals.
 	"abort.ts:throwIfAborted",
 	// Pieces of the agent loop (P62 split); hosts call agent.prompt / agent.compact.
