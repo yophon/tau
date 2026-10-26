@@ -82,7 +82,7 @@ export function formatAnswers(questions: readonly AskQuestion[], answers: readon
 }
 
 /** The picker title: "[1/3] Scope · Which packages?" */
-export function questionTitle(question: AskQuestion, index: number, total: number): string {
+function questionTitle(question: AskQuestion, index: number, total: number): string {
 	return `${total > 1 ? `[${index + 1}/${total}] ` : ""}${question.header ? `${question.header} · ` : ""}${question.question}`;
 }
 
@@ -156,7 +156,7 @@ interface Pending {
 	generation: number;
 }
 
-export const ANSWER_PREFIX = "[Answer ";
+const ANSWER_PREFIX = "[Answer ";
 
 export function createAskUserExtension(host: AskUserHost): Extension {
 	return (api) => {

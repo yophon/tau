@@ -106,7 +106,9 @@ export function createWebSocketTransport(
 		close: () => {
 			try {
 				socket.close();
-			} catch {}
+			} catch {
+				// Closing or closed already: ending the transport is what matters.
+			}
 			end();
 		},
 	};

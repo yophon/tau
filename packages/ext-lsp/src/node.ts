@@ -28,7 +28,9 @@ function installExitHook(): void {
 			try {
 				if (WINDOWS) spawnSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
 				else process.kill(-pid, "SIGKILL");
-			} catch {}
+			} catch {
+				// Exiting anyway: a server that is already gone needs nothing.
+			}
 		}
 	});
 }
@@ -43,10 +45,14 @@ function killTree(child: ChildProcess): void {
 	try {
 		process.kill(-pid, "SIGKILL");
 		return;
-	} catch {}
+	} catch {
+		// No process group (or gone already): kill the process itself.
+	}
 	try {
 		child.kill("SIGKILL");
-	} catch {}
+	} catch {
+		// Already exited.
+	}
 }
 
 function isRunnable(path: string): boolean {
@@ -171,7 +177,9 @@ export function nodeLspSpawn(options: NodeLspSpawnOptions = {}): LspSpawn {
 					});
 					try {
 						child.stdin?.end();
-					} catch {}
+					} catch {
+						// The pipe is closed already; the exit wait above still runs.
+					}
 				});
 			},
 		};

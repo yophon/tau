@@ -21,8 +21,6 @@ import { type RemoteAdmin, SessionHub, type SessionHubOptions } from "./hub.ts";
 import { type RemoteListener, startRemote } from "./remote.ts";
 import type { HubHost } from "./thread.ts";
 
-export const LISTEN_VALUES = ["stdio", "unix://", "unix://PATH"] as const;
-
 export async function runServe(options: {
 	listen: string;
 	host: HubHost;

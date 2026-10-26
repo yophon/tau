@@ -14,6 +14,7 @@ import type {
 	ThreadInfo,
 	ThreadState,
 } from "@yophon/tau-protocol";
+import { fromWireEntries, fromWireMessages, fromWireUsage } from "../wire.ts";
 
 type ThreadMethod = {
 	[M in keyof ClientRequests]: ClientRequests[M]["params"] extends { threadId: string } ? M : never;
@@ -53,7 +54,7 @@ const EMPTY_STATE: ThreadState = {
 const MARKDOWN_CACHE_LIMIT = 2000;
 
 /** P59: how long the TUI tries to get back to the resident server (`tau serve restart`'s window). */
-export const RECONNECT_FOR_MS = 60_000;
+const RECONNECT_FOR_MS = 60_000;
 
 /** A notification of the session, or (P59) this client's own word that it got back after a drop. */
 export type SessionNotification =
@@ -87,7 +88,7 @@ export type MarkdownKind = "user" | "assistant" | "assistant-thinking";
 
 /** The session's usage (kernel Usage) in a state the hub sent; zero before the first answer. */
 export function usageOf(state: ThreadState): Usage {
-	const usage = state.sessionUsage as unknown as Usage;
+	const usage = fromWireUsage(state.sessionUsage);
 	return typeof usage?.input === "number"
 		? usage
 		: {
@@ -278,7 +279,7 @@ export class TuiSession {
 		this.joining = undefined;
 		this.id = result.thread.id;
 		this.info = result.thread;
-		this.messages = (result.messages ?? []) as unknown as AgentMessage[];
+		this.messages = fromWireMessages(result.messages ?? []);
 		if (result.state) this.state = result.state;
 		this.stateSeq = result.seq ?? 0;
 		this.lastSeq = 0;
@@ -348,7 +349,7 @@ export class TuiSession {
 
 	async entries(): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
 		const result = await this.request("thread/entries", {});
-		return { entries: result.entries as unknown as SessionEntry[], leafId: result.leafId };
+		return { entries: fromWireEntries(result.entries), leafId: result.leafId };
 	}
 
 	// --- Markdown transformers (P40d): the hub runs them; drawing reads what came back ----------
@@ -472,11 +473,11 @@ export class TuiSession {
 		switch (notification.method) {
 			case "thread/messages/appended": {
 				const { start, messages } = notification.params;
-				this.messages = [...this.messages.slice(0, start), ...(messages as unknown as AgentMessage[])];
+				this.messages = [...this.messages.slice(0, start), ...fromWireMessages(messages)];
 				return;
 			}
 			case "thread/messages/reset":
-				this.messages = [...(notification.params.messages as unknown as AgentMessage[])];
+				this.messages = fromWireMessages(notification.params.messages);
 				return;
 			case "thread/state/changed":
 				if (notification.params.seq > this.stateSeq) {

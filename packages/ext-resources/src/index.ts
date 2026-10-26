@@ -58,6 +58,7 @@ const readList = (list: PathList | undefined): string[] => (typeof list === "fun
  */
 const SERVED_KEY = Symbol.for("tau.ext-resources.served");
 function servedRegistries(): WeakSet<object> {
+	// A process-wide registry keyed by a Symbol.for key, so two copies of this package share it.
 	const holder = globalThis as unknown as Record<symbol, WeakSet<object> | undefined>;
 	holder[SERVED_KEY] ??= new WeakSet<object>();
 	return holder[SERVED_KEY];

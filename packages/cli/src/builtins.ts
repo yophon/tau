@@ -118,7 +118,7 @@ function gitRoot(start: string): string | undefined {
  * in the working directory and each parent up to the repository root (or the filesystem root),
  * nearest first, leaving out ~/.agents/skills (the user's own).
  */
-export function projectAgentsSkillDirs(cwd: string, home: string): string[] {
+function projectAgentsSkillDirs(cwd: string, home: string): string[] {
 	// $HOME's, and the system's home when HOME points elsewhere.
 	const userDirs = new Set([resolve(home, ".agents", "skills"), resolve(homedir(), ".agents", "skills")]);
 	const root = gitRoot(cwd);
@@ -184,7 +184,7 @@ function readCodemodeSettings(path: string): CodemodeSettings {
 }
 
 /** The memory of the person at the terminal (P32a): their USER.md, the project's index and topics, and their sessions. */
-export function defaultMemoryScope(home: string, cwd: string): MemoryScope {
+function defaultMemoryScope(home: string, cwd: string): MemoryScope {
 	// P37d: every worktree of a repository shares the main checkout's project memory (Claude Code).
 	const project = join(home, ".tau", "projects", sessionDirSlug(mainCheckoutOf(cwd) ?? cwd));
 	return {

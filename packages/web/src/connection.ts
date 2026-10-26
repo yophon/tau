@@ -15,11 +15,13 @@ export function savedToken(): string | undefined {
 	}
 }
 
-export function saveToken(token: string | undefined): void {
+function saveToken(token: string | undefined): void {
 	try {
 		if (token === undefined) localStorage.removeItem(TOKEN_KEY);
 		else localStorage.setItem(TOKEN_KEY, token);
-	} catch {}
+	} catch {
+		// No storage (a private window, blocked site data): the device pairs again next time.
+	}
 }
 
 /** Trade a pairing code (`tau serve pair`) for a device token. */
@@ -94,6 +96,7 @@ export class Connection {
 			this.later();
 			return;
 		}
+		// The browser's WebSocket, typed down to what the transport uses.
 		const client = new TauClient(createWebSocketTransport(socket as unknown as WebSocketLike), {
 			name: "tau-web",
 			version: "1",

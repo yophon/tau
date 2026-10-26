@@ -20,7 +20,7 @@ const MODEL_SWITCH_TIMEOUT_SECONDS = 30;
 const HOOK_CONTEXT = "hook_context";
 
 /** The text part of a tool result, for PostToolUse's tool_response. */
-function resultText(content: readonly (TextContent | ImageContent)[]): string {
+function joinedText(content: readonly (TextContent | ImageContent)[]): string {
 	return content
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
@@ -47,7 +47,7 @@ export async function postToolBatch(
 				tool_name: result.toolName,
 				tool_input: calls.find((call) => call.id === result.toolCallId)?.arguments ?? {},
 				tool_use_id: result.toolCallId,
-				tool_response: resultText(result.content),
+				tool_response: joinedText(result.content),
 			})),
 		},
 		{ ...(signal ? { signal } : {}) },
@@ -145,7 +145,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 							tool_name: event.toolName,
 							tool_input: event.input,
 							tool_use_id: event.toolCallId,
-							error: resultText(event.content),
+							error: joinedText(event.content),
 							is_interrupt: ctx.signal?.aborted === true,
 							...(started !== undefined ? { duration_ms: Date.now() - started } : {}),
 						}
@@ -153,7 +153,7 @@ export function createHooksExtension(runner: HookRunner): (api: ExtensionAPI) =>
 							tool_name: event.toolName,
 							tool_input: event.input,
 							tool_use_id: event.toolCallId,
-							tool_response: { content: resultText(event.content), is_error: event.isError },
+							tool_response: { content: joinedText(event.content), is_error: event.isError },
 						},
 				{ match: event.toolName, ctx },
 			);

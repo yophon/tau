@@ -174,6 +174,7 @@ export function createLspTool(context: LspToolContext): Tool {
 	return {
 		name: "lsp",
 		description: LSP_TOOL_DESCRIPTION,
+		// A const JSON Schema literal; its readonly literal type is narrower than the tool's schema type.
 		parameters: LSP_TOOL_PARAMETERS as unknown as Tool["parameters"],
 		risk: "low",
 		promptSnippet: "Code intelligence from language servers: definitions, references, hover, symbols, call hierarchy",

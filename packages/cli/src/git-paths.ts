@@ -4,6 +4,7 @@
  * worktree `.git` is a file pointing at the worktree's git dir, whose `commondir`
  * leads to the main repository's.
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
@@ -16,7 +17,7 @@ export interface GitPaths {
 	commonGitDir: string;
 }
 
-export function findGitPaths(cwd: string): GitPaths | undefined {
+function findGitPaths(cwd: string): GitPaths | undefined {
 	let dir = resolve(cwd);
 	for (;;) {
 		const dotGit = join(dir, ".git");
@@ -57,7 +58,7 @@ export function mainCheckoutOf(cwd: string): string | undefined {
 	const paths = findGitPaths(cwd);
 	if (!paths || basename(paths.commonGitDir) !== ".git") return undefined;
 	const main = dirname(paths.commonGitDir);
-	return canonical(main) === canonical(paths.repoDir) ? undefined : main;
+	return comparablePath(main) === comparablePath(paths.repoDir) ? undefined : main;
 }
 
 const CONTEXT_FILE_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"];
@@ -70,20 +71,42 @@ const CONTEXT_FILE_NAMES = ["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLA
 export function shadowedContextFile(cwd: string): string | undefined {
 	const paths = findGitPaths(cwd);
 	if (!paths) return undefined;
-	const commonGitDir = canonical(paths.commonGitDir);
-	const worktreeRoot = canonical(paths.repoDir);
+	const commonGitDir = comparablePath(paths.commonGitDir);
+	const worktreeRoot = comparablePath(paths.repoDir);
 	const mainRoot = dirname(commonGitDir);
 	// An ordinary repository (the two are one) or a sibling worktree: nothing nested.
 	if (!worktreeRoot.startsWith(`${mainRoot}${sep}`)) return undefined;
-	if (canonical(join(mainRoot, ".git")) !== commonGitDir) return undefined;
+	if (comparablePath(join(mainRoot, ".git")) !== commonGitDir) return undefined;
 	const own = CONTEXT_FILE_NAMES.find((name) => existsSync(join(paths.repoDir, name)));
 	return own ? join(dirname(paths.commonGitDir), own) : undefined;
 }
 
-function canonical(path: string): string {
+/**
+ * One spelling for comparing paths (P62: three modules kept their own): the real path — symlinks
+ * resolved, and on Windows 8.3 short names (C:\Users\RUNNER~1) expanded, which realpathSync's JS
+ * walk does not do — case-folded on Windows. A path that does not exist compares as written.
+ */
+export function comparablePath(path: string): string {
+	let real = resolve(path);
 	try {
-		return realpathSync(path);
+		real = realpathSync.native(path);
 	} catch {
-		return resolve(path);
+		// Compared as written.
+	}
+	return process.platform === "win32" ? real.toLowerCase() : real;
+}
+
+/** git's trimmed output, or undefined when git is missing or the command fails (quietly). */
+export function gitQuiet(cwd: string, args: string[], timeout = 30_000): string | undefined {
+	try {
+		return execFileSync("git", args, {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout,
+			windowsHide: true,
+		}).trim();
+	} catch {
+		return undefined;
 	}
 }

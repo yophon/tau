@@ -17,7 +17,7 @@ import {
 } from "@yophon/tau-kernel";
 import { maskSecrets } from "./secrets.ts";
 
-export const AUDIT_KEEP_DAYS = 30;
+const AUDIT_KEEP_DAYS = 30;
 const MAX_LINE = 4096;
 
 export type AuditHost = "tui" | "repl" | "print" | "json" | "rpc" | "acp" | "gateway";
@@ -418,7 +418,7 @@ export function filterRuns(runs: readonly RunSummary[], filter: AuditFilter): Ru
 
 const compact = (value: number) => (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value));
 
-export function tokensOf(run: RunSummary): number {
+function tokensOf(run: RunSummary): number {
 	const usage = run.end?.usage;
 	return usage ? usage.input + usage.output + usage.cacheRead + usage.cacheWrite : 0;
 }
@@ -466,37 +466,6 @@ export function formatRuns(runs: readonly RunSummary[]): string {
 		if (session) lines.push(`    session ${session.file}${session.entry ? ` #${session.entry}` : ""}`);
 	}
 	return lines.join("\n");
-}
-
-/** Totals for a set of runs (status lines, /schedules). */
-export function totals(runs: readonly RunSummary[]): {
-	runs: number;
-	toolCalls: number;
-	tokens: number;
-	cost: number | null;
-} {
-	let cost: number | null = 0;
-	let tokens = 0;
-	let toolCalls = 0;
-	for (const run of runs) {
-		tokens += tokensOf(run);
-		toolCalls += run.tools.length;
-		const runCost = run.end?.cost;
-		if (runCost === null) cost = null;
-		else if (cost !== null && runCost !== undefined) cost += runCost;
-	}
-	return { runs: runs.length, toolCalls, tokens, cost };
-}
-
-export function totalsText(summary: ReturnType<typeof totals>): string {
-	const spend = summary.cost !== null && summary.cost > 0 ? costText(summary.cost) : `${compact(summary.tokens)} tok`;
-	return `${summary.runs} 轮，${summary.toolCalls} 次工具调用，${spend}`;
-}
-
-export function startOfToday(now = Date.now()): number {
-	const date = new Date(now);
-	date.setHours(0, 0, 0, 0);
-	return date.getTime();
 }
 
 /**

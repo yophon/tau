@@ -199,6 +199,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 				// Like a task started in the background, it must not keep tau running.
 				child.unref();
 				for (const stream of [child.stdin, child.stdout, child.stderr]) {
+					// A child's pipes are sockets at run time (unref exists); the types say plain streams.
 					(stream as unknown as { unref?: () => void } | null)?.unref?.();
 				}
 				settle({ ok: true, value: { kind: "backgrounded", reason, task: { ...task }, output } });
@@ -342,6 +343,7 @@ export class NodeBackgroundShell implements BackgroundShell {
 		child.unref();
 		if (onStdout && child.stdout) {
 			const stdout = child.stdout;
+			// A child's pipes are sockets at run time (unref exists); the types say plain streams.
 			(stdout as unknown as { unref?: () => void }).unref?.();
 			stdout.setEncoding("utf8");
 			stdout.on("data", (chunk: string) => {

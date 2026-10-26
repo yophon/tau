@@ -681,6 +681,7 @@ export async function executeCodemode(
 					{ type: "text", text: `Script failed\nWall time ${waited} seconds\nOutput:\n` },
 					{ type: "text", text: `Script error:\n${error}\n\nThe script did not start.` },
 				],
+				// Plain JSON (an empty call list); the interface type is not declared as a JsonValue.
 				details: { calls: [] } as unknown as JsonValue,
 				isError: true,
 			};
@@ -731,6 +732,7 @@ export async function executeCodemode(
 	if (truncated.fullOutputPath) details.fullOutputPath = truncated.fullOutputPath;
 	return {
 		content: [{ type: "text", text: header }, ...joinAdjacentText(truncated.items)],
+		// The script's call records are plain JSON (strings, numbers, nested objects).
 		details: details as unknown as JsonValue,
 		...(result.ok ? {} : { isError: true }),
 	};

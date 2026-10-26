@@ -10,19 +10,18 @@
 import { writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
-	type AgentEvent,
 	type ApprovalRequest,
 	askFormStepByStep,
 	type ImageContent,
 	messageText,
 	type PermissionMode,
 	type UiCapability,
-	type UiForm,
 	type UserContent,
 } from "@yophon/tau-kernel";
 import { type ClientRequests, ERROR_CODES, type JsonRpcError, type ServerRequests } from "@yophon/tau-protocol";
 import { sessionHtml } from "../tui/export-html.ts";
 import { type TuiSession, usageOf } from "../tui/session-client.ts";
+import { fromWireEvent, fromWireForm, toWireObject } from "../wire.ts";
 import { agentEventRecord } from "./events.ts";
 import { THINKING_LEVELS } from "./headless.ts";
 import { type RecordWriter, readRecords } from "./jsonl.ts";
@@ -235,8 +234,11 @@ export async function answerWithBridge(
 		case "editor":
 			return value(await bridge.ui.editor?.(params.title, params.prefill));
 		case "form": {
-			const result = await askFormStepByStep(bridge.ui, params.form as unknown as UiForm);
-			return result === undefined ? { cancelled: true } : { form: result as unknown as Record<string, unknown> };
+			const result = await askFormStepByStep(
+				bridge.ui,
+				fromWireForm(params.form ?? { title: params.title, fields: [] }),
+			);
+			return result === undefined ? { cancelled: true } : { form: toWireObject(result) };
 		}
 		default:
 			return { cancelled: true };
@@ -279,7 +281,7 @@ export async function runRpcMode(options: RpcModeOptions): Promise<void> {
 				return;
 			case "thread/event": {
 				// The AgentEvents that have no extension hook (compaction, retries).
-				const record = agentEventRecord(notification.params.event as unknown as AgentEvent);
+				const record = agentEventRecord(fromWireEvent(notification.params.event));
 				if (record) out.write(record);
 				return;
 			}

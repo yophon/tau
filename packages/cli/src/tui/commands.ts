@@ -666,10 +666,6 @@ async function pickScreen(tui: CommandHost): Promise<void> {
 	tui.notice("dim", `Saved tui.mode = ${picked} in settings.json; tau uses it from the next start.`);
 }
 
-export function builtinCommands(): readonly BuiltinCommand[] {
-	return BUILTINS;
-}
-
 function findBuiltin(name: string): BuiltinCommand | undefined {
 	return BUILTINS.find((command) => command.name === name || command.aliases?.includes(name));
 }
@@ -744,7 +740,7 @@ function usageTotal(usage: Usage): number {
 }
 
 /** /usage: one row per user turn on the current branch, then the session total (every branch, D19). */
-export function usageLines(messages: readonly AgentMessage[], session: Usage): StyledLine[] {
+function usageLines(messages: readonly AgentMessage[], session: Usage): StyledLine[] {
 	interface Turn {
 		label: string;
 		input: number;
@@ -862,7 +858,7 @@ function contextLines(tui: CommandHost): StyledLine[] {
 	return lines;
 }
 
-export function parseCommandLine(text: string): { name: string; args: string } | undefined {
+function parseCommandLine(text: string): { name: string; args: string } | undefined {
 	const match = text.match(/^\/([\w:-]+)(?:\s+([\s\S]*))?$/);
 	if (!match) return undefined;
 	return { name: match[1] ?? "", args: (match[2] ?? "").trim() };

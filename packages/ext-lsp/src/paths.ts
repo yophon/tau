@@ -15,7 +15,7 @@ export function isAbsolutePath(path: string): boolean {
 }
 
 /** Collapse `.`, `..` and repeated separators; Windows paths get backslashes and an upper-case drive. */
-export function normalizePath(path: string): string {
+function normalizePath(path: string): string {
 	const windows = isWindowsPath(path);
 	const unc = windows && path.startsWith("\\\\");
 	let rest = path.replace(/\\/g, "/");

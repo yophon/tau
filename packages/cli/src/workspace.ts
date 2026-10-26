@@ -20,7 +20,6 @@ import {
 	createCodingTools,
 	createDefaultPolicy,
 	type ExtensionRegistry,
-	type FileSystem,
 	JsonlSessionRepo,
 	loadProjectContextFiles,
 	type ModelPricing,
@@ -107,7 +106,6 @@ export type WorkspaceSpec = {
 	cwd: string;
 	ui: UiCapability | undefined;
 	onApproval: ((request: ApprovalRequest) => Promise<boolean>) | undefined;
-	fs?: FileSystem;
 	/** A mode for this workspace's agents instead of the host's (a hub session's own, P56). */
 	permissionMode?: PermissionMode;
 	/** P32b: load ~/.tau/mcp.json servers (default true; the hub's catalog workspace does not). */
@@ -241,8 +239,10 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		}),
 		...(scheduling ? [scheduling.extension] : []),
 		// P46 (Claude Code's EnterWorktree / ExitWorktree).
-		...(spec.fs === undefined &&
-		(workspaceHost === "tui" || workspaceHost === "repl" || workspaceHost === "print" || workspaceHost === "json") &&
+		...((workspaceHost === "tui" ||
+			workspaceHost === "repl" ||
+			workspaceHost === "print" ||
+			workspaceHost === "json") &&
 		(workspaceMode ?? run.permissionMode) !== "read-only"
 			? [createWorktreeToolsExtension(worktreeHost)]
 			: []),
@@ -347,7 +347,7 @@ export async function openWorkspaceIn(context: WorkspaceContext, spec: Workspace
 		return next.registry;
 	};
 
-	const fs: FileSystem = spec.fs ?? new NodeFileSystem(cwd);
+	const fs = new NodeFileSystem(cwd);
 	/** P36d: converts and shrinks images for read and `@file` (pi); P40c: settings' images.autoResize. */
 	const imageProcessor = new NodeImageProcessor({
 		autoResize: () => workspaceSettings.images?.autoResize !== false,
@@ -647,7 +647,7 @@ export type Workspace = Awaited<ReturnType<typeof openWorkspaceIn>>;
  * The tool list from settings' defaultTools and --tools (P40c, pi): a --tools list of only
  * +name/-name changes the settings' list; one with a plain name replaces it.
  */
-export function toolSelection(
+function toolSelection(
 	settings: readonly string[] | undefined,
 	flag: readonly string[] | undefined,
 ): string[] | undefined {
@@ -663,7 +663,7 @@ export function toolSelection(
  * Choosing built-ins never drops active extension tools implicitly — only "-name"
  * or --no-tools does. Inactive ones (tool_search, codemode) need "+name" (P24e).
  */
-export function selectActiveTools(
+function selectActiveTools(
 	all: readonly { name: string; source: "builtin" | "extension" }[],
 	active: readonly string[],
 	spec: readonly string[] | undefined,
@@ -695,7 +695,7 @@ export function selectActiveTools(
  * TAU_MODEL already configure tau. Worked out when each command starts; an unset value
  * removes an inherited one (pi), as for a session that is not saved (no file).
  */
-export function sessionEnvironment(agent: Agent | undefined): Record<string, string | undefined> {
+function sessionEnvironment(agent: Agent | undefined): Record<string, string | undefined> {
 	const session = agent?.extensionContext().sessionManager;
 	const level = agent?.thinkingLevel;
 	return {
@@ -712,7 +712,7 @@ export function sessionEnvironment(agent: Agent | undefined): Record<string, str
  * The environment for processes the model drives (P32b): secrets registered for masking
  * (secret-looking variables, the credential store), then scrubbed out.
  */
-export function modelEnvironment(): Record<string, string> {
+function modelEnvironment(): Record<string, string> {
 	registerEnvSecrets(process.env);
 	try {
 		new CredentialStore(credentialsPath(userHome())).registerAll();
@@ -762,7 +762,7 @@ function fallbackOption(context: WorkspaceContext, settings: TauSettings): { fal
 			...(settings.fallback?.on ? { on: settings.fallback.on } : {}),
 			onSwitch: (event) =>
 				console.error(
-					dim(`Model fallback: ${event.from} → ${event.to} (${event.reason}): ${firstLine(event.message)}`),
+					dim(`Model fallback: ${event.from} → ${event.to} (${event.reason}): ${firstLine(event.message, 120)}`),
 				),
 		},
 	};

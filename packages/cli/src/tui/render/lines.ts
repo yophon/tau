@@ -139,7 +139,7 @@ function concat(parts: readonly Out[]): Out {
 	return { rows: parts.flatMap((part) => part.rows), meta: parts.flatMap((part) => part.meta) };
 }
 
-export const TAB_WIDTH = 4;
+const TAB_WIDTH = 4;
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: SGR codes are what this skips
 const SGR_RUN = /\x1b\[[0-9;]*m/y;

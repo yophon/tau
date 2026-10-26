@@ -20,7 +20,7 @@ export interface KeybindingDefinition {
  * Every action with its default keys, in the order the template file lists them. Ctrl+Z
  * undoes on Windows and suspends elsewhere (pi).
  */
-export function keybindingDefinitions(platform: string = process.platform): Record<string, KeybindingDefinition> {
+function keybindingDefinitions(platform: string = process.platform): Record<string, KeybindingDefinition> {
 	const win32 = platform === "win32";
 	return {
 		// Editor (pi tui.editor.*)
@@ -136,7 +136,7 @@ export function keybindingDefinitions(platform: string = process.platform): Reco
 }
 
 /** The actions and their defaults on this platform. */
-export const KEYBINDINGS = keybindingDefinitions();
+const KEYBINDINGS = keybindingDefinitions();
 
 const MODIFIER_ORDER = ["ctrl", "alt", "shift", "super"] as const;
 const MODIFIER_ALIASES: Record<string, (typeof MODIFIER_ORDER)[number]> = {

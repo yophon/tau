@@ -23,7 +23,7 @@ interface Run {
 }
 
 /** Codex runs each command with a 30-second timeout and no output cap. */
-function git(cwd: string, args: string[]): Promise<Run> {
+function gitExit(cwd: string, args: string[]): Promise<Run> {
 	return new Promise((resolve, reject) => {
 		execFile(
 			"git",
@@ -46,17 +46,17 @@ function diffOutput(run: Run, what: string): string {
 }
 
 export async function gitDiff(cwd: string): Promise<GitDiff> {
-	const inside = await git(cwd, ["rev-parse", "--is-inside-work-tree"]).catch(() => undefined);
+	const inside = await gitExit(cwd, ["rev-parse", "--is-inside-work-tree"]).catch(() => undefined);
 	if (!inside || inside.code !== 0 || inside.stdout.trim() !== "true") return { repo: false, text: "", untracked: 0 };
-	const head = await git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+	const head = await gitExit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]);
 	const [tracked, others] = await Promise.all([
-		git(cwd, head.code === 0 ? ["diff", "HEAD"] : ["diff"]),
-		git(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]),
+		gitExit(cwd, head.code === 0 ? ["diff", "HEAD"] : ["diff"]),
+		gitExit(cwd, ["ls-files", "--others", "--exclude-standard", "-z"]),
 	]);
 	const parts = [diffOutput(tracked, "git diff")];
 	const untracked = others.code === 0 ? others.stdout.split("\0").filter((path) => path !== "") : [];
 	for (const path of untracked) {
-		parts.push(diffOutput(await git(cwd, ["diff", "--no-index", "--", "/dev/null", path]), `git diff ${path}`));
+		parts.push(diffOutput(await gitExit(cwd, ["diff", "--no-index", "--", "/dev/null", path]), `git diff ${path}`));
 	}
 	return {
 		repo: true,

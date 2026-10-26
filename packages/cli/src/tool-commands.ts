@@ -29,6 +29,7 @@ async function readSecret(prompt: string): Promise<string> {
 	}
 	return await new Promise((resolve) => {
 		const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+		// readline's undocumented echo hook: overriding it hides a secret as it is typed (the common Node idiom).
 		const output = rl as unknown as { _writeToOutput?: (text: string) => void };
 		let prompted = false;
 		output._writeToOutput = (text: string) => {

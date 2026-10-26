@@ -461,6 +461,7 @@ export class ExtensionRegistry {
 						}
 					: value;
 		}
+		// A Proxy over the API: same members, each wrapped by the guard.
 		return guarded as unknown as ExtensionAPI;
 	}
 

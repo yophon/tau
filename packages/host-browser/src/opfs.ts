@@ -34,6 +34,7 @@ export interface BrowserStorageLike {
 }
 
 function browserStorage(): BrowserStorageLike | undefined {
+	// The DOM's StorageManager, typed down to the methods OPFS needs.
 	return globalThis.navigator?.storage as unknown as BrowserStorageLike | undefined;
 }
 

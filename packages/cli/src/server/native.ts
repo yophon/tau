@@ -2,7 +2,8 @@
 // conversation as kernel messages, kept in step by appended/reset notifications, and the session's
 // state (model, modes, usage, tools, extension counts).
 import type { Agent, AgentMessage, ExtensionRegistry } from "@yophon/tau-kernel";
-import type { ExtensionCounts, NativeMessage, TaskKind, ThreadState } from "@yophon/tau-protocol";
+import type { ExtensionCounts, TaskKind, ThreadState } from "@yophon/tau-protocol";
+import { toWireMessages, toWireObject } from "../wire.ts";
 import type { PendingNotification } from "./items.ts";
 
 /** AgentEvents that never change the conversation: no comparison after them. */
@@ -44,9 +45,9 @@ export class MessageMirror {
 		return prefix
 			? {
 					method: "thread/messages/appended",
-					params: { start: sent.length, messages: current.slice(sent.length) as unknown as NativeMessage[] },
+					params: { start: sent.length, messages: toWireMessages(current.slice(sent.length)) },
 				}
-			: { method: "thread/messages/reset", params: { messages: [...current] as unknown as NativeMessage[] } };
+			: { method: "thread/messages/reset", params: { messages: toWireMessages(current) } };
 	}
 }
 
@@ -97,8 +98,8 @@ export function threadState(facts: StateFacts): ThreadState {
 		modelChoices: [...facts.modelChoices],
 		...(agent.thinkingLevel !== undefined ? { thinkingLevel: agent.thinkingLevel } : {}),
 		permissionMode: agent.getPermissionMode(),
-		sessionUsage: agent.getSessionUsage() as unknown as Record<string, unknown>,
-		contextUsage: agent.getContextUsage() as unknown as Record<string, unknown>,
+		sessionUsage: toWireObject(agent.getSessionUsage()),
+		contextUsage: toWireObject(agent.getContextUsage()),
 		tools: {
 			all: agent.getAllTools().map((tool) => ({
 				name: tool.name,

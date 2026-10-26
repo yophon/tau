@@ -29,7 +29,7 @@ const LIST_TIMEOUT_MS = 1000;
 const POWERSHELL_TIMEOUT_MS = 5000;
 const READ_TIMEOUT_MS = 3000;
 
-export const runClipboardCommand: ClipboardCommand = (command, args, options = {}) =>
+const runClipboardCommand: ClipboardCommand = (command, args, options = {}) =>
 	new Promise((resolve) => {
 		let child: ReturnType<typeof spawn>;
 		try {

@@ -140,7 +140,7 @@ export function acceptCompletion(
 }
 
 /** Files listed at most; typing narrows the matches shown (FILE_MATCH_LIMIT). */
-export const FILE_LIST_LIMIT = 50_000;
+const FILE_LIST_LIMIT = 50_000;
 
 const SKIP_DIRS = new Set(["node_modules", "dist", "build", ".next"]);
 

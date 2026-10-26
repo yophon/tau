@@ -16,7 +16,6 @@ import {
 	type SessionEntry,
 	type UiCapability,
 	type UiForm,
-	type UiFormResult,
 } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
@@ -29,6 +28,8 @@ import {
 	type ServerRequests,
 	type ShortcutInfo,
 } from "@yophon/tau-protocol";
+import { errorText } from "../util.ts";
+import { fromWireFormResult, toWireObject } from "../wire.ts";
 import { extensionCounts } from "./native.ts";
 import type { HubThread, Subscriber } from "./thread.ts";
 
@@ -90,10 +91,10 @@ export function threadUi(route: UiRoute): UiCapability & { expectSignIn(): void 
 		form: async (form: UiForm, options) => {
 			const result = await askUi(
 				route,
-				{ kind: "form", title: form.title, form: form as unknown as Record<string, unknown> },
+				{ kind: "form", title: form.title, form: toWireObject(form) },
 				options?.signal ? { signal: options.signal as AbortSignal } : {},
 			);
-			return result.cancelled || !result.form ? undefined : (result.form as unknown as UiFormResult);
+			return result.cancelled || !result.form ? undefined : fromWireFormResult(result.form);
 		},
 		notify: (message, level) => route.thread?.notice(level ?? "info", message),
 		addAutocompleteProvider: (factory: AutocompleteProviderFactory) => route.thread?.addAutocompleteProvider(factory),
@@ -111,14 +112,12 @@ function isRenderComponent(value: unknown): value is ExtensionRenderComponent {
 }
 
 /** A render result as data: components draw at `width`, here. */
-export function toRendered(result: RenderResult, width: number): Rendered | undefined {
+function toRendered(result: RenderResult, width: number): Rendered | undefined {
 	if (result === undefined || result === null) return undefined;
 	if (typeof result === "string") return { kind: "text", text: result };
 	if (isRenderComponent(result)) return { kind: "lines", lines: result.render(width) };
 	return result.format === "markdown" ? { kind: "markdown", text: result.text } : { kind: "text", text: result.text };
 }
-
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 function messageRendererMatches(renderer: RegisteredMessageRenderer, message: AgentMessage): boolean {
 	if (renderer.roles && !renderer.roles.includes(message.role)) return false;

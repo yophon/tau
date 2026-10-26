@@ -65,7 +65,7 @@ function encodeCandidate(buffer: Uint8Array, mimeType: string): EncodedCandidate
  * 3. If still too large, try JPEG with decreasing quality
  * 4. If still too large, progressively reduce dimensions until 1x1
  */
-export async function resizeImageInProcess(
+async function resizeImageInProcess(
 	inputBytes: Uint8Array,
 	mimeType: string,
 	options?: ImageResizeOptions,
@@ -176,7 +176,7 @@ export async function convertToPngInProcess(bytes: Uint8Array): Promise<Uint8Arr
 }
 
 /** pi formatDimensionNote: how to map coordinates back to the original. */
-export function formatDimensionNote(result: ResizedImage): string | undefined {
+function formatDimensionNote(result: ResizedImage): string | undefined {
 	if (!result.wasResized) return undefined;
 	const scale = result.originalWidth / result.width;
 	return `[Image: original ${result.originalWidth}x${result.originalHeight}, displayed at ${result.width}x${result.height}. Multiply coordinates by ${scale.toFixed(2)} to map to original image.]`;

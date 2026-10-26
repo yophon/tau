@@ -69,18 +69,18 @@ export function createUi(readline: Readline): UiCapability {
 }
 
 /** Abort controller of the currently running turn, if any (consulted by the REPL's SIGINT handling). */
-export const turnState: { controller: AbortController | null; lastAborted: boolean } = {
+const turnState: { controller: AbortController | null; lastAborted: boolean } = {
 	controller: null,
 	lastAborted: false,
 };
 
 /** P49: the REPL's status for the terminal (OSC 7501); set only in an interactive REPL with tui.title on. */
-export let replStatus: ProgramStatus | undefined;
+let replStatus: ProgramStatus | undefined;
 
 /** A REPL command holding the agent outside a turn (P23e): extension prompts are refused meanwhile. */
-export let hostTask: "compact" | "tree" | undefined;
+let hostTask: "compact" | "tree" | undefined;
 
-export let hostTaskController: AbortController | undefined;
+let hostTaskController: AbortController | undefined;
 
 /** Approval prompts say when the call came from another tool (a codemode script, P24c). */
 export function nestedNote(request: ApprovalRequest): string {
@@ -89,12 +89,12 @@ export function nestedNote(request: ApprovalRequest): string {
 }
 
 /** Resolver for the single readline line currently awaited by an approval gate. */
-export let pendingApproval: { resolve: (choice: ApprovalChoice) => void } | undefined;
+let pendingApproval: { resolve: (choice: ApprovalChoice) => void } | undefined;
 
 /** Marks the current readline event when an approval answer was consumed. */
-export let approvalLineConsumed = false;
+let approvalLineConsumed = false;
 
-export function consumeApprovalLine(line: string): boolean {
+function consumeApprovalLine(line: string): boolean {
 	const pending = pendingApproval;
 	if (!pending) return false;
 	pendingApproval = undefined;
@@ -111,7 +111,7 @@ export function consumeApprovalLine(line: string): boolean {
 	return true;
 }
 
-export function cancelPendingApproval(): void {
+function cancelPendingApproval(): void {
 	const pending = pendingApproval;
 	if (!pending) return;
 	pendingApproval = undefined;
@@ -217,11 +217,11 @@ export async function runTurn(agent: Agent, input: UserContent | null, readline:
 					}
 					break;
 				case "user_message":
-					process.stdout.write(dim(`↳ steered: ${firstLine(messageText(event.message))}\n`));
+					process.stdout.write(dim(`↳ steered: ${firstLine(messageText(event.message), 120)}\n`));
 					break;
 				case "tool_start":
 					process.stdout.write(
-						`${cyan(`⚙ ${event.toolCall.name}`)} ${dim(firstLine(JSON.stringify(event.toolCall.arguments)))}\n`,
+						`${cyan(`⚙ ${event.toolCall.name}`)} ${dim(firstLine(JSON.stringify(event.toolCall.arguments), 120))}\n`,
 					);
 					break;
 				case "tool_update":
@@ -234,25 +234,25 @@ export async function runTurn(agent: Agent, input: UserContent | null, readline:
 						dim(
 							event.aborted
 								? `[${event.reason} compaction aborted]\n`
-								: `[${event.reason} compaction failed${event.reason === "overflow" ? "" : ", continuing"}: ${firstLine(event.errorMessage ?? "")}]\n`,
+								: `[${event.reason} compaction failed${event.reason === "overflow" ? "" : ", continuing"}: ${firstLine(event.errorMessage ?? "", 120)}]\n`,
 						),
 					);
 					break;
 				case "auto_retry_start":
 					process.stdout.write(
 						dim(
-							`[retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${firstLine(event.errorMessage)}]\n`,
+							`[retry ${event.attempt}/${event.maxAttempts} in ${Math.round(event.delayMs / 1000)}s: ${firstLine(event.errorMessage, 120)}]\n`,
 						),
 					);
 					break;
 				case "auto_retry_end":
 					if (!event.success && event.finalError !== undefined) {
-						process.stdout.write(dim(`[retry gave up after ${event.attempt}: ${firstLine(event.finalError)}]\n`));
+						process.stdout.write(dim(`[retry gave up after ${event.attempt}: ${firstLine(event.finalError, 120)}]\n`));
 					}
 					break;
 				case "tool_result": {
 					const marker = event.result.isError ? red("✗") : dim("✓");
-					process.stdout.write(`${marker} ${dim(firstLine(toolResultText(event.result)))}\n`);
+					process.stdout.write(`${marker} ${dim(firstLine(toolResultText(event.result), 120))}\n`);
 					break;
 				}
 				case "agent_end": {
@@ -285,7 +285,7 @@ export async function runTurn(agent: Agent, input: UserContent | null, readline:
 		const { steering, followUp } = agent.clearQueue();
 		for (const message of [...steering, ...followUp]) {
 			const text = message.role === "user" ? userContentText(message.content) : `[${message.customType}]`;
-			process.stdout.write(dim(`[dropped queued message: ${firstLine(text)}]\n`));
+			process.stdout.write(dim(`[dropped queued message: ${firstLine(text, 120)}]\n`));
 		}
 	}
 	return !threw && lastStop !== "error" && lastStop !== "aborted" && lastStop !== "length";

@@ -10,10 +10,8 @@ import { execFileSync } from "node:child_process";
 import {
 	copyFileSync,
 	existsSync,
-	lstatSync,
 	mkdirSync,
 	readFileSync,
-	realpathSync,
 	rmSync,
 	statSync,
 	symlinkSync,
@@ -22,9 +20,10 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { comparablePath } from "./git-paths.ts";
 import { excludeFromGit } from "./permissions.ts";
 import { readTrustStore, saveProjectTrust } from "./project-trust.ts";
-import { ask, dim } from "./util.ts";
+import { ask, dim, isSymlink } from "./util.ts";
 
 export interface WorktreeSettings {
 	baseRef?: "fresh" | "head";
@@ -106,7 +105,7 @@ export function generateWorktreeName(taken: (name: string) => boolean, random: (
 	return `worktree-${Date.now().toString(36)}`;
 }
 
-function git(cwd: string, args: string[], timeout = 30_000): string {
+function gitOrThrow(cwd: string, args: string[], timeout = 30_000): string {
 	return execFileSync("git", args, {
 		cwd,
 		encoding: "utf8",
@@ -119,17 +118,9 @@ function git(cwd: string, args: string[], timeout = 30_000): string {
 
 function tryGit(cwd: string, args: string[], timeout?: number): string | undefined {
 	try {
-		return git(cwd, args, timeout);
+		return gitOrThrow(cwd, args, timeout);
 	} catch {
 		return undefined;
-	}
-}
-
-function isSymlink(path: string): boolean {
-	try {
-		return lstatSync(path).isSymbolicLink();
-	} catch {
-		return false;
 	}
 }
 
@@ -145,7 +136,7 @@ function resolveBase(mainRoot: string, baseRef: "fresh" | "head"): string {
 	const remoteHead = tryGit(mainRoot, ["rev-parse", "--abbrev-ref", "origin/HEAD"]);
 	if (!remoteHead || remoteHead === "origin/HEAD") return head;
 	// Fetch the default branch when the repository has not fetched in 24 hours (at most 5 s).
-	const fetchHead = join(git(mainRoot, ["rev-parse", "--git-common-dir"]), "FETCH_HEAD");
+	const fetchHead = join(gitOrThrow(mainRoot, ["rev-parse", "--git-common-dir"]), "FETCH_HEAD");
 	const fetchFile = resolve(mainRoot, fetchHead);
 	const stale = !existsSync(fetchFile) || Date.now() - statSync(fetchFile).mtimeMs > 24 * 3600 * 1000;
 	if (stale) tryGit(mainRoot, ["fetch", "--quiet", "origin", remoteHead.replace(/^origin\//, "")], 5000);
@@ -196,7 +187,10 @@ export function openWorktree(options: {
 	excludeFromGit(mainRoot, "/.tau/worktrees/", worktreesDir);
 	const base = resolveBase(mainRoot, baseRef);
 	const branchExists = tryGit(mainRoot, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]) !== undefined;
-	git(mainRoot, branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, base]);
+	gitOrThrow(
+		mainRoot,
+		branchExists ? ["worktree", "add", path, branch] : ["worktree", "add", "-b", branch, path, base],
+	);
 	copyIncluded(mainRoot, path);
 	const links = linkDirectories(mainRoot, path, options.settings?.symlinkDirectories ?? []);
 	const session: WorktreeSession = {
@@ -375,7 +369,7 @@ export function removeWorktree(session: WorktreeSession): void {
 			// Already gone.
 		}
 	}
-	git(session.mainRoot, ["worktree", "remove", "--force", session.path]);
+	gitOrThrow(session.mainRoot, ["worktree", "remove", "--force", session.path]);
 	tryGit(session.mainRoot, ["branch", "-D", session.branch]);
 	rmSync(metaPath(session.mainRoot, session.name), { force: true });
 }
@@ -419,29 +413,18 @@ export async function finishWorktreeSession(
 	return "kept";
 }
 
-/** One spelling for comparing paths: the real path, case-folded on Windows. */
-export function samePath(path: string): string {
-	let real = resolve(path);
-	try {
-		real = realpathSync.native(path);
-	} catch {
-		// A path that no longer exists compares as written.
-	}
-	return process.platform === "win32" ? real.toLowerCase() : real;
-}
-
 /** Trust follows the main checkout into its worktrees (Claude Code; P37d, P46). */
 export async function followMainTrust(worktreePath: string, mainRoot: string): Promise<void> {
 	const store = readTrustStore();
-	const mainKey = samePath(mainRoot);
-	const main = Object.entries(store.trusted).find(([key]) => samePath(key) === mainKey)?.[1];
+	const mainKey = comparablePath(mainRoot);
+	const main = Object.entries(store.trusted).find(([key]) => comparablePath(key) === mainKey)?.[1];
 	const mainTrusted = main === true || (typeof main === "object" && main !== null && main.trusted);
 	const path = resolve(worktreePath);
 	if (mainTrusted && store.trusted[path] === undefined) await saveProjectTrust(path, true);
 }
 
 /** A question on the terminal after the TUI or REPL ended. */
-export async function askLine(question: string): Promise<string> {
+async function askLine(question: string): Promise<string> {
 	// Ink unrefs stdin when the TUI unmounts; without this Node exits before the answer.
 	if (process.stdin.isTTY) process.stdin.setRawMode(false);
 	process.stdin.ref();

@@ -328,7 +328,7 @@ export function routeKey(ch: string, key: KeyLike, ctx: KeyContext): KeyCommand 
 }
 
 /** The session tree's actions (P39f, pi app.tree.*), checked before the list keys while it is open. */
-export const TREE_ACTIONS = [
+const TREE_ACTIONS = [
 	"app.tree.foldOrUp",
 	"app.tree.unfoldOrDown",
 	"app.tree.editLabel",

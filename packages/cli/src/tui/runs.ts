@@ -13,7 +13,8 @@ import type {
 	UserContent,
 } from "@yophon/tau-kernel";
 import { userContentText } from "@yophon/tau-kernel";
-import type { CommandOutcome, TaskKind as HubTaskKind, NativeMessage, Rendered } from "@yophon/tau-protocol";
+import type { CommandOutcome, TaskKind as HubTaskKind, Rendered } from "@yophon/tau-protocol";
+import { fromWireEvent, toWireMessage, toWireToolRender } from "../wire.ts";
 import type { CommandHost } from "./commands.ts";
 import { runCommand, whenCommandRuns } from "./commands.ts";
 import type { TuiController } from "./controller.ts";
@@ -360,7 +361,7 @@ export class TuiRuns {
 				await this.turnStarted(notification.params.turnId, notification.params.input as UserContent | undefined);
 				return;
 			case "thread/event":
-				await this.handleEvent(notification.params.event as unknown as AgentEvent);
+				await this.handleEvent(fromWireEvent(notification.params.event));
 				return;
 			case "turn/completed":
 				await this.turnCompleted(notification.params);
@@ -637,7 +638,7 @@ export class TuiRuns {
 		const width = this.host.columns() - 2;
 		try {
 			const result = await this.host.session.request("render/message", {
-				message: message as unknown as NativeMessage,
+				message: toWireMessage(message),
 				width,
 			});
 			if (result.failed) {
@@ -679,7 +680,7 @@ export class TuiRuns {
 		const width = this.host.columns() - 4;
 		try {
 			const result = await this.host.session.request("render/tool", {
-				event: renderEvent as unknown as { phase: "start" | "update" | "result" } & Record<string, unknown>,
+				event: toWireToolRender(renderEvent),
 				width,
 			});
 			if (result.failed) {
@@ -819,7 +820,7 @@ function contextTokens(usage: Record<string, unknown>): number {
 	return typeof usage.tokens === "number" ? usage.tokens : 0;
 }
 
-export function customKey(message: CustomMessage): string {
+function customKey(message: CustomMessage): string {
 	return `${message.customType}\u0000${message.timestamp}\u0000${userContentText(message.content)}`;
 }
 
@@ -828,20 +829,4 @@ export function parseUserBash(input: string): { command: string; record: boolean
 	if (input.startsWith("!!")) return { command: input.slice(2).trim(), record: false };
 	if (input.startsWith("!")) return { command: input.slice(1).trim(), record: true };
 	return undefined;
-}
-
-export function formatShellOutput(result: { stdout: string; stderr: string; exitCode: number }): string {
-	const parts: string[] = [];
-	if (result.stdout !== "") parts.push(result.stdout.trimEnd());
-	if (result.stderr !== "") parts.push(result.stderr.trimEnd());
-	let output = parts.filter((part) => part !== "").join("\n");
-	if (output === "") output = "(no output)";
-	if (result.exitCode !== 0) output += `\nExit code ${result.exitCode}`;
-	return output;
-}
-
-export function isAbortError(error: unknown): boolean {
-	if (!(error instanceof Error)) return false;
-	if (error.name === "AbortError") return true;
-	return "code" in error && error.code === "aborted";
 }

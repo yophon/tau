@@ -200,6 +200,7 @@ export function parseOAuthTokens(value: unknown): OAuthTokens {
 export function parseClientInformation(value: unknown): OAuthClientInformationFull {
 	const input = object(value, "OAuth client registration response");
 	return compact({
+		// The registration response echoes the metadata (RFC 7591); the fields that matter are checked below.
 		...(input as unknown as OAuthClientMetadata),
 		client_id: requiredString(input.client_id, "client_id"),
 		client_secret: optionalString(input.client_secret, "client_secret"),

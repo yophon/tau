@@ -5,8 +5,8 @@
  * and expands back when the input is submitted. The marker moves and deletes as
  * one unit (pi's atomic paste markers).
  */
-export const FOLD_LINES = 10;
-export const FOLD_CHARS = 1000;
+const FOLD_LINES = 10;
+const FOLD_CHARS = 1000;
 
 export interface PasteStore {
 	readonly entries: Map<string, string>;

@@ -27,7 +27,7 @@ export const toUserInput = (content: UserContent): UserInput =>
 					: { type: "image" as const, data: block.data, mimeType: block.mimeType },
 			);
 
-const resultText = (content: ToolResult["content"] | ToolResultMessage["content"]): string =>
+const textAndImageMarks = (content: ToolResult["content"] | ToolResultMessage["content"]): string =>
 	content
 		.flatMap((block) => (block.type === "text" ? [block.text] : block.type === "image" ? ["[image]"] : []))
 		.join("\n");
@@ -62,7 +62,7 @@ export function itemsFromMessages(messages: readonly AgentMessage[], nextId: () 
 			const item = tools.get(message.toolCallId);
 			if (item) {
 				item.status = message.isError ? "failed" : "completed";
-				item.result = resultText(message.content);
+				item.result = textAndImageMarks(message.content);
 			}
 		} else if (message.role === "compactionSummary") {
 			items.push({ type: "compaction", id: nextId(), summary: message.summary });
@@ -150,7 +150,11 @@ export class ItemTracker {
 			case "tool_result": {
 				const tool = this.tools.get(event.toolCall.id) ?? { id: this.nextId(), call: event.toolCall, output: "" };
 				this.tools.delete(event.toolCall.id);
-				const item = toolItem(tool, event.result.isError ? "failed" : "completed", resultText(event.result.content));
+				const item = toolItem(
+					tool,
+					event.result.isError ? "failed" : "completed",
+					textAndImageMarks(event.result.content),
+				);
 				return [{ method: "item/completed", params: { item } }];
 			}
 			case "compaction": {

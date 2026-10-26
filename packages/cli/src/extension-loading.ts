@@ -106,7 +106,7 @@ export function systemPromptSources(
 }
 
 /** settings.json extensions (P40c, pi): extension files and directories; a missing one is reported and skipped. */
-export async function loadSettingsExtensions(paths: readonly string[]): Promise<InlineExtension[]> {
+async function loadSettingsExtensions(paths: readonly string[]): Promise<InlineExtension[]> {
 	const loaded: InlineExtension[] = [];
 	for (const path of paths) {
 		if (!existsSync(path)) {
@@ -243,7 +243,7 @@ export async function loadExtensionRegistry(
  * Extensions that failed to load were rolled back and skipped (pi); say which and
  * why, and name same-name registrations that lost to an earlier one (P23c).
  */
-export function reportExtensionLoad(registry: ExtensionRegistry): void {
+function reportExtensionLoad(registry: ExtensionRegistry): void {
 	for (const { extension, error } of registry.loadErrors) {
 		process.stderr.write(`[extension failed to load, skipped] ${extension}: ${error.message}\n`);
 	}

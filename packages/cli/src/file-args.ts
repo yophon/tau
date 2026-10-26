@@ -4,7 +4,6 @@
 // TAU_DISABLE_FILE_MENTIONS=1 only the paths go in, for the model to read itself (Claude
 // Code's CLAUDE_CODE_DISABLE_FILE_MENTIONS).
 import { readFileSync, statSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve } from "node:path";
 import {
 	cleanReadPath,
@@ -13,6 +12,7 @@ import {
 	imageMimeType,
 	type UserContent,
 } from "@yophon/tau-kernel";
+import { expandHome } from "./util.ts";
 
 export interface ProcessedFiles {
 	text: string;
@@ -20,12 +20,6 @@ export interface ProcessedFiles {
 }
 
 /** `~` and `~/x` are the home directory (pi expandPath). */
-function expandHome(path: string): string {
-	if (path === "~") return homedir();
-	if (path.startsWith("~/") || path.startsWith("~\\")) return resolve(homedir(), path.slice(2));
-	return path;
-}
-
 /** Read every `@file` argument; throws with a message naming the first file that is missing or unreadable. */
 export async function processFileArguments(
 	paths: readonly string[],

@@ -13,7 +13,7 @@ export interface HistoryEntry {
 	text: string;
 }
 
-export const HISTORY_LIMIT = 1000;
+const HISTORY_LIMIT = 1000;
 
 export class PersistentHistory {
 	private readonly items: string[];

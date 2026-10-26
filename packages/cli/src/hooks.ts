@@ -12,7 +12,7 @@ import { bashAvailable, NodeShell } from "@yophon/tau-host-node";
 import type { ExtensionContext, TauAbortSignal } from "@yophon/tau-kernel";
 import { readSettingsKey } from "./settings.ts";
 
-export const HOOK_EVENTS = [
+const HOOK_EVENTS = [
 	"PreToolUse",
 	"PermissionRequest",
 	"PostToolUse",
@@ -119,7 +119,7 @@ export interface HookOutcome {
 const ON_FAILURE_IGNORED: ReadonlySet<HookEventName> = new Set(["Stop", "SubagentStop"]);
 
 /** How a hook is named in messages: the command and its arguments as written, or the URL. */
-export function hookLabel(handler: HookHandler): string {
+function hookLabel(handler: HookHandler): string {
 	return handler.args ? [handler.command, ...handler.args].join(" ") : handler.command;
 }
 

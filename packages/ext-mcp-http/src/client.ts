@@ -351,6 +351,7 @@ function validateReadResourceResult(value: unknown): McpReadResourceResult {
 			throw invalid("Invalid contents in MCP resources/read result");
 		}
 	}
+	// Validated above.
 	return value as unknown as McpReadResourceResult;
 }
 
@@ -362,6 +363,7 @@ function validateCallToolResult(value: unknown): CallToolResult {
 	if (!isObject(value) || (value.content !== undefined && !Array.isArray(value.content))) {
 		throw invalid("Invalid MCP tools/call result");
 	}
+	// Validated above.
 	return (value.content === undefined ? { ...value, content: [] } : value) as unknown as CallToolResult;
 }
 
@@ -380,6 +382,7 @@ function validateGetPromptResult(value: unknown): McpGetPromptResult {
 			throw invalid("Invalid message in MCP prompts/get result");
 		}
 	}
+	// Validated above.
 	return value as unknown as McpGetPromptResult;
 }
 
@@ -818,6 +821,7 @@ export class McpClient {
 				if (!isObject(item) || typeof item.name !== "string") throw invalid("Invalid entry in MCP tools/list result");
 				// Servers that omit inputSchema get the empty object schema tools require.
 				tools.push({
+					// isTool checked the item.
 					...(item as unknown as McpToolInfo),
 					inputSchema: isObject(item.inputSchema) ? item.inputSchema : { type: "object", properties: {} },
 				});
@@ -874,6 +878,7 @@ export class McpClient {
 
 	/** Every prompt, following `nextCursor` through all pages (P44). */
 	async listPrompts(options: McpRequestOptions = {}): Promise<McpPrompt[]> {
+		// isPrompt checked every item.
 		return (await this.listAll("prompts/list", "prompts", isPrompt, options)) as unknown as McpPrompt[];
 	}
 
@@ -1159,6 +1164,7 @@ export class McpClient {
 		if (id === undefined || !entry) return;
 		this.armTimeout(id, entry);
 		try {
+			// notifications/progress params as the server sent them (progressToken matched above).
 			entry.onProgress?.(params as unknown as McpProgress);
 		} catch (error) {
 			this.emitError(error);

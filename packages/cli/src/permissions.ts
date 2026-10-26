@@ -11,8 +11,7 @@
  * is trusted. The local file is the user's own unless git tracks it or `.tau` is a
  * symlink, in which case it counts as a project file.
  */
-import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
 	type ApprovalRequest,
@@ -26,7 +25,9 @@ import {
 	parsePowerShellCommand,
 	parseShellCommand,
 } from "@yophon/tau-kernel";
+import { gitQuiet } from "./git-paths.ts";
 import { readSettingsKey, settingsParseError, writeSettings } from "./settings.ts";
+import { isSymlink } from "./util.ts";
 
 export type RuleSource = "user" | "project" | "local" | "flag";
 export type RuleDestination = "local" | "project" | "user";
@@ -64,7 +65,7 @@ export const openAlwaysOptions = new Map<string, AlwaysOption>();
 const KINDS: readonly PermissionRuleKind[] = ["allow", "ask", "deny"];
 const EDIT_TOOLS = new Set(["write", "edit", "apply_patch"]);
 const RUNNERS = new Set(["npm", "pnpm", "yarn", "bun"]);
-export const LOCAL_SETTINGS = join(".tau", "settings.local.json");
+const LOCAL_SETTINGS = join(".tau", "settings.local.json");
 const LOCAL_EXCLUDE = "**/.tau/settings.local.json";
 
 /** Claude Code's permission mode names, accepted in defaultMode next to tau's. */
@@ -431,24 +432,8 @@ export function localSettingsIsRepoFile(root: string): boolean {
 	return isSymlink(join(root, ".tau")) || gitTracks(root, LOCAL_SETTINGS);
 }
 
-function isSymlink(path: string): boolean {
-	try {
-		return lstatSync(path).isSymbolicLink();
-	} catch {
-		return false;
-	}
-}
-
-function git(cwd: string, args: string[]): string | undefined {
-	try {
-		return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000 });
-	} catch {
-		return undefined;
-	}
-}
-
 function gitTracks(cwd: string, relative: string): boolean {
-	return git(cwd, ["ls-files", "--error-unmatch", "--", relative.replaceAll("\\", "/")]) !== undefined;
+	return gitQuiet(cwd, ["ls-files", "--error-unmatch", "--", relative.replaceAll("\\", "/")], 5000) !== undefined;
 }
 
 /**
@@ -456,9 +441,9 @@ function gitTracks(cwd: string, relative: string): boolean {
  * info/exclude (works in linked worktrees too), unless git already ignores the file.
  */
 export function excludeFromGit(root: string, pattern: string, file: string): void {
-	const excludePath = git(root, ["rev-parse", "--git-path", "info/exclude"])?.trim();
+	const excludePath = gitQuiet(root, ["rev-parse", "--git-path", "info/exclude"], 5000)?.trim();
 	if (!excludePath) return;
-	if (git(root, ["check-ignore", "-q", "--", file]) !== undefined) return;
+	if (gitQuiet(root, ["check-ignore", "-q", "--", file], 5000) !== undefined) return;
 	const target = isAbsolute(excludePath) ? excludePath : join(root, excludePath);
 	try {
 		// A repository made without templates has no info/ directory yet.

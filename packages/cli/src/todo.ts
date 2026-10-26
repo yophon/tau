@@ -11,7 +11,7 @@ export interface TodoItem {
 	status: TodoStatus;
 }
 
-export const MAX_TODOS = 50;
+const MAX_TODOS = 50;
 const STATUSES: readonly TodoStatus[] = ["pending", "in_progress", "completed"];
 
 /** Validate the tool arguments; throws a message the model can act on. */
@@ -34,7 +34,7 @@ export function parseTodos(value: unknown): TodoItem[] {
 	return todos;
 }
 
-export function formatTodos(todos: readonly TodoItem[]): string {
+function formatTodos(todos: readonly TodoItem[]): string {
 	return todos
 		.map((todo) => `${todo.status === "completed" ? "☑" : todo.status === "in_progress" ? "◐" : "☐"} ${todo.content}`)
 		.join("\n");

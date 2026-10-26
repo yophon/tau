@@ -136,6 +136,7 @@ export function parseLspConfig(value: unknown, source: string): ParsedLspConfig 
 		if (problem !== undefined) {
 			return { servers: {}, error: `Invalid LSP server config for "${source}": server "${name}" ${problem}` };
 		}
+		// Every field was checked just above.
 		servers[name] = config as unknown as LspServerConfig;
 	}
 	return { servers };

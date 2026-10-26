@@ -191,7 +191,7 @@ export { type StatusLineFacts, statusLineInput } from "./statusline-input.ts";
 const DEFAULT_WANT = "the model, how full the context is (percentage), and the git branch";
 
 /** The prompt /statusline sends (Claude Code's /statusline has an agent write the script). */
-export function statusLinePrompt(want: string, home: string): string {
+function statusLinePrompt(want: string, home: string): string {
 	const settings = join(home, ".tau", "settings.json").replaceAll("\\", "/");
 	return [
 		"Set up a custom status line for tau (the same format as Claude Code's statusLine).",

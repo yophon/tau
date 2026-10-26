@@ -10,11 +10,10 @@
  * permissions, hooks and language servers at once; settings, AGENTS.md and extensions when
  * the turn ends, in the TUI).
  */
-import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
 import type { Extension, PermissionMode, SessionEntry } from "@yophon/tau-kernel";
-import { mainCheckoutOf } from "./git-paths.ts";
+import { comparablePath, gitQuiet, mainCheckoutOf } from "./git-paths.ts";
 import {
 	openWorktree,
 	removeWorktree,
@@ -53,52 +52,29 @@ export interface WorktreeHost {
 	permissionMode(): PermissionMode;
 }
 
-function git(cwd: string, args: string[]): string | undefined {
-	try {
-		return execFileSync("git", args, {
-			cwd,
-			encoding: "utf8",
-			stdio: ["ignore", "pipe", "ignore"],
-			windowsHide: true,
-		}).trim();
-	} catch {
-		return undefined;
-	}
-}
-
-function canonical(path: string): string {
-	let real = resolve(path);
-	try {
-		real = realpathSync.native(path);
-	} catch {
-		// Compared as written when it does not exist.
-	}
-	return process.platform === "win32" ? real.toLowerCase() : real;
-}
-
-const samePath = (a: string, b: string) => canonical(a) === canonical(b);
+const samePath = (a: string, b: string) => comparablePath(a) === comparablePath(b);
 
 function isUnder(path: string, dir: string): boolean {
-	const rel = relative(canonical(dir), canonical(path));
+	const rel = relative(comparablePath(dir), comparablePath(path));
 	return rel !== "" && !rel.startsWith("..") && !rel.startsWith("/") && !/^[A-Za-z]:/.test(rel);
 }
 
-export const worktreesDirectory = (mainRoot: string) => join(mainRoot, ".tau", "worktrees");
+const worktreesDirectory = (mainRoot: string) => join(mainRoot, ".tau", "worktrees");
 
 /** The repository's main checkout, from it or from one of its worktrees. */
 function mainRootOf(cwd: string): string | undefined {
-	const top = git(cwd, ["rev-parse", "--show-toplevel"]);
+	const top = gitQuiet(cwd, ["rev-parse", "--show-toplevel"]);
 	return mainCheckoutOf(cwd) ?? (top ? resolve(top) : undefined);
 }
 
 /** The worktrees git lists for the repository at `mainRoot` (the main checkout first). */
 function listedWorktrees(mainRoot: string): string[] {
-	const list = git(mainRoot, ["worktree", "list", "--porcelain"]) ?? "";
+	const list = gitQuiet(mainRoot, ["worktree", "list", "--porcelain"]) ?? "";
 	return [...list.matchAll(/^worktree (.+)$/gm)].map((match) => resolve(match[1] as string));
 }
 
 /** A binding as recorded in the session. */
-export function bindingOf(worktree: CurrentWorktree | undefined): WorktreeBinding {
+function bindingOf(worktree: CurrentWorktree | undefined): WorktreeBinding {
 	if (!worktree) return { path: null };
 	const { session, original } = worktree;
 	return {
@@ -113,7 +89,7 @@ export function bindingOf(worktree: CurrentWorktree | undefined): WorktreeBindin
 }
 
 /** The last worktree binding on a session's branch, if it has one. */
-export function lastBinding(entries: readonly SessionEntry[]): WorktreeBinding | undefined {
+function lastBinding(entries: readonly SessionEntry[]): WorktreeBinding | undefined {
 	for (let index = entries.length - 1; index >= 0; index--) {
 		const entry = entries[index] as SessionEntry & { customType?: string; data?: unknown };
 		if (entry.type === "custom" && entry.customType === WORKTREE_ENTRY) return entry.data as WorktreeBinding;
@@ -125,7 +101,7 @@ export function lastBinding(entries: readonly SessionEntry[]): WorktreeBinding |
  * The worktree a binding names, when it is still a worktree of its repository; else why not
  * (Claude Code resumes in the launch directory then and says the worktree is gone).
  */
-export function reopenBinding(binding: WorktreeBinding): CurrentWorktree | string {
+function reopenBinding(binding: WorktreeBinding): CurrentWorktree | string {
 	if (!binding.path || !binding.mainRoot) return "no worktree";
 	if (!existsSync(binding.path)) return `the worktree ${binding.path} no longer exists`;
 	if (!listedWorktrees(binding.mainRoot).some((path) => samePath(path, binding.path as string))) {
@@ -135,9 +111,9 @@ export function reopenBinding(binding: WorktreeBinding): CurrentWorktree | strin
 		session: {
 			name: binding.name ?? basename(binding.path),
 			path: binding.path,
-			branch: binding.branch ?? git(binding.path, ["rev-parse", "--abbrev-ref", "HEAD"]) ?? "HEAD",
+			branch: binding.branch ?? gitQuiet(binding.path, ["rev-parse", "--abbrev-ref", "HEAD"]) ?? "HEAD",
 			mainRoot: binding.mainRoot,
-			base: binding.base ?? git(binding.path, ["rev-parse", "HEAD"]) ?? "",
+			base: binding.base ?? gitQuiet(binding.path, ["rev-parse", "HEAD"]) ?? "",
 			named: true,
 			links: [],
 			created: binding.created ?? false,

@@ -16,7 +16,7 @@ export interface LspProcess {
 }
 
 export const METHOD_NOT_FOUND = -32601;
-export const REQUEST_CANCELLED = -32800;
+const REQUEST_CANCELLED = -32800;
 
 export class LspResponseError extends Error {
 	override readonly name = "LspResponseError";
@@ -31,7 +31,7 @@ export class LspTimeoutError extends Error {
 	override readonly name = "LspTimeoutError";
 }
 
-export class LspClosedError extends Error {
+class LspClosedError extends Error {
 	override readonly name = "LspClosedError";
 }
 

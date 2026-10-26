@@ -238,7 +238,9 @@ async function tokenRequest(
 	let value: unknown;
 	try {
 		value = JSON.parse(text);
-	} catch {}
+	} catch {
+		// Not JSON: the status decides below, with the text in the error.
+	}
 	// Servers may report OAuth errors with any status, so check the body before the status.
 	if (isObject(value) && typeof value.error === "string") {
 		throw new OAuthError(

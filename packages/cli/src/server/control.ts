@@ -14,11 +14,11 @@ import { type ClientRequests, ERROR_CODES, JsonRpcError, type NativeEvent } from
 import { isPermissionMode } from "../args.ts";
 import { generateHandoffPrompt } from "../handoff.ts";
 import { THINKING_LEVELS } from "../modes/headless.ts";
+import { errorText, formatShellOutput } from "../util.ts";
+import { toWireEntries } from "../wire.ts";
 import type { HubThread } from "./thread.ts";
 
 type Result<M extends keyof ClientRequests> = ClientRequests[M]["result"];
-
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 function isAbort(error: unknown): boolean {
 	if (!(error instanceof Error)) return false;
@@ -100,7 +100,7 @@ export async function entries(thread: HubThread): Promise<Result<"thread/entries
 	const store = thread.session.store;
 	if (!store) return { entries: [], leafId: null };
 	return {
-		entries: (await store.getEntries()) as unknown as Result<"thread/entries">["entries"],
+		entries: toWireEntries(await store.getEntries()),
 		leafId: await store.getLeafId(),
 	};
 }
@@ -247,16 +247,6 @@ export async function bash(
 			throw new JsonRpcError(ERROR_CODES.internalError, `Command failed: ${errorText(error)}`);
 		}
 	});
-}
-
-export function formatShellOutput(result: { stdout: string; stderr: string; exitCode: number }): string {
-	const parts: string[] = [];
-	if (result.stdout !== "") parts.push(result.stdout.trimEnd());
-	if (result.stderr !== "") parts.push(result.stderr.trimEnd());
-	let output = parts.filter((part) => part !== "").join("\n");
-	if (output === "") output = "(no output)";
-	if (result.exitCode !== 0) output += `\nExit code ${result.exitCode}`;
-	return output;
 }
 
 /** Take queued steering and follow-ups back (pi restoreQueuedMessagesToEditor). */

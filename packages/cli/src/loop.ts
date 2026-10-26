@@ -13,9 +13,9 @@ export const CRON_ENTRY = "tau.cron";
 /** Claude Code: a self-paced iteration that neither reschedules nor stops gets one wakeup about 20 minutes later. */
 export const FALLBACK_WAKEUP_MS = 20 * 60 * 1000;
 /** loop.md beyond this is cut (Claude Code). */
-export const LOOP_MD_LIMIT = 25_000;
+const LOOP_MD_LIMIT = 25_000;
 /** The channel the TUI announces Esc on while idle with an empty input (it stops a self-paced loop). */
-export const IDLE_ESCAPE_CHANNEL = "tau:idle-escape";
+const IDLE_ESCAPE_CHANNEL = "tau:idle-escape";
 
 /** Claude Code's built-in maintenance prompt, from its documentation. */
 export const MAINTENANCE_PROMPT = [
@@ -27,7 +27,7 @@ export const MAINTENANCE_PROMPT = [
 ].join("\n");
 
 /** What a self-paced iteration is told about pacing (Claude Code's ScheduleWakeup contract). */
-export function selfPacedPrompt(prompt: string): string {
+function selfPacedPrompt(prompt: string): string {
 	return [
 		prompt,
 		"",
@@ -153,7 +153,7 @@ export function createSchedulerExtension(options: SchedulerExtensionOptions): Sc
 		if (job) fire(job);
 	};
 	const timer = setInterval(tick, options.tickMs ?? 1000);
-	(timer as unknown as { unref?: () => void }).unref?.();
+	timer.unref();
 
 	const extension: Extension = (extensionApi: ExtensionAPI) => {
 		api = extensionApi;

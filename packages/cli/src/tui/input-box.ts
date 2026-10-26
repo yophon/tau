@@ -637,10 +637,10 @@ export class TuiInputBox {
 }
 
 /** Image types models take as they are (P36b); others are converted to PNG before saving. */
-export const PASTEABLE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const PASTEABLE_IMAGES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 
 /** A pasted image as `tau-clipboard-<uuid>.<ext>` in the system temp directory (pi); returns the path. */
-export function saveClipboardImage(bytes: Uint8Array, extension: string): string {
+function saveClipboardImage(bytes: Uint8Array, extension: string): string {
 	const path = join(tmpdir(), `tau-clipboard-${randomUUID()}.${extension}`);
 	writeFileSync(path, bytes);
 	return path;
@@ -690,7 +690,7 @@ export function completePathAt(
 }
 
 /** Kills that go to the kill ring, and which way they delete (pi). */
-export const KILLS: Partial<Record<KeyCommand["type"], "back" | "forward">> = {
+const KILLS: Partial<Record<KeyCommand["type"], "back" | "forward">> = {
 	"kill-line-start": "back",
 	"delete-word-back": "back",
 	"kill-line-end": "forward",

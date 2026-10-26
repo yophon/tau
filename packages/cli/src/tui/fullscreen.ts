@@ -34,7 +34,7 @@ export const ENTER_FULLSCREEN = "\x1b[?1049h\x1b[?7l\x1b[?1000h\x1b[?1002h\x1b[?
 export const LEAVE_FULLSCREEN = "\x1b[?1006l\x1b[?1002l\x1b[?1000l\x1b[?7h\x1b[?1049l";
 
 /** A node's row on screen: the Yoga tops of it and its parents (the frame starts at row 0). */
-export function screenTop(node: DOMElement | null | undefined): number | undefined {
+function screenTop(node: DOMElement | null | undefined): number | undefined {
 	if (!node) return undefined;
 	let top = 0;
 	for (let current: DOMElement | undefined = node; current; current = current.parentNode) {
@@ -58,7 +58,7 @@ export function viewSlice(
 }
 
 /** Two transcripts one after the other (the committed part, then the live blocks). */
-export function joinTranscripts(first: TranscriptRows, second: TranscriptRows): TranscriptRows {
+function joinTranscripts(first: TranscriptRows, second: TranscriptRows): TranscriptRows {
 	if (second.blocks.length === 0) return first;
 	const offset = first.rows.length;
 	return {

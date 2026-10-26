@@ -11,6 +11,7 @@
 
 import { patchTargets } from "./apply-patch.ts";
 import { canonicalPowerShellPattern, parsePowerShellCommand } from "./powershell-command.ts";
+import { escapeRegExp } from "./search-tools.ts";
 import { tokenize, type Word } from "./shell-tokens.ts";
 
 export type PermissionRuleKind = "allow" | "ask" | "deny";
@@ -183,7 +184,7 @@ function coversTool(rule: PermissionRule, toolName: string): boolean {
 	) {
 		return true;
 	}
-	return rule.tools.some((tool) => (tool.includes("*") ? globToRegExp(tool, false).test(name) : tool === name));
+	return rule.tools.some((tool) => (tool.includes("*") ? ruleGlobToRegExp(tool, false).test(name) : tool === name));
 }
 
 /** Whether a whole-tool deny rule takes this tool off the model's list (Claude Code). */
@@ -268,7 +269,7 @@ function ruleMatches(rule: PermissionRule, call: PermissionRuleCall, parsed: Par
 	if (param) {
 		const value = call.args[param.key];
 		if (value === undefined || value === null || typeof value === "object") return false;
-		return globToRegExp(param.value, true).test(String(value));
+		return ruleGlobToRegExp(param.value, true).test(String(value));
 	}
 	if (spec.startsWith("domain:")) {
 		const url = typeof call.args.url === "string" ? call.args.url : undefined;
@@ -568,7 +569,7 @@ function pathRuleMatches(rule: PermissionRule, target: string, call: PermissionR
 	const windows = isWindowsPath(call.cwd) || isWindowsPath(call.home);
 	const canonical = canonicalPath(target, call.cwd, call.home);
 	const pattern = patternToAbsoluteGlob(spec, rule, call, windows);
-	const regex = globToRegExp(pattern, false, windows);
+	const regex = ruleGlobToRegExp(pattern, false, windows);
 	// The path itself or any directory above it.
 	let candidate = canonical;
 	for (;;) {
@@ -610,7 +611,7 @@ function joinGlob(base: string, rest: string): string {
 }
 
 /** `**` crosses path segments, `*` and `?` stay inside one (path mode); in text mode `*` is anything. */
-function globToRegExp(glob: string, text: boolean, caseInsensitive = false): RegExp {
+function ruleGlobToRegExp(glob: string, text: boolean, caseInsensitive = false): RegExp {
 	if (text) return new RegExp(`^${glob.split("*").map(escapeRegExp).join("[\\s\\S]*")}$`, caseInsensitive ? "i" : "");
 	let out = "";
 	for (let i = 0; i < glob.length; i++) {
@@ -635,10 +636,6 @@ function globToRegExp(glob: string, text: boolean, caseInsensitive = false): Reg
 		}
 	}
 	return new RegExp(`^${out}$`, caseInsensitive ? "i" : "");
-}
-
-function escapeRegExp(text: string): string {
-	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 // --- Domains -----------------------------------------------------------------------

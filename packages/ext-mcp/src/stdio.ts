@@ -43,7 +43,9 @@ function killProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
 	}
 	try {
 		child.kill(signal);
-	} catch {}
+	} catch {
+		// Already exited.
+	}
 }
 
 function installExitHook(): void {
@@ -53,7 +55,9 @@ function installExitHook(): void {
 		for (const pid of liveProcessGroups) {
 			try {
 				process.kill(-pid, "SIGTERM");
-			} catch {}
+			} catch {
+				// The group is gone already.
+			}
 		}
 	});
 }

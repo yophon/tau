@@ -72,7 +72,7 @@ export interface ActiveEndpoint {
 }
 
 /** The --provider kind of a models.json api. */
-export function providerKindOf(api: ModelApi): ProviderKind {
+function providerKindOf(api: ModelApi): ProviderKind {
 	return api === "anthropic-messages"
 		? "anthropic"
 		: api === "openai-responses"
@@ -115,7 +115,7 @@ export interface StartupEndpoint {
 	defaults: EndpointDefaults;
 }
 
-export function uniqueStrings(values: string[]): string[] {
+function uniqueStrings(values: string[]): string[] {
 	return [...new Set(values)];
 }
 

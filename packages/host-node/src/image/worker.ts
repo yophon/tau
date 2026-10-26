@@ -3,7 +3,7 @@
 import { parentPort } from "node:worker_threads";
 import { processImageInProcess } from "./resize.ts";
 
-export const IMAGE_WORKER_RESPONSE_TYPE = "tau:image-process-response";
+const IMAGE_WORKER_RESPONSE_TYPE = "tau:image-process-response";
 
 const port = parentPort;
 if (!port) throw new Error("image worker requires parentPort");

@@ -17,8 +17,6 @@ import {
 	groupRuns,
 	noteApprovalSource,
 	summarizeToolArgs,
-	totals,
-	totalsText,
 } from "../src/audit.ts";
 import { registerSecret, resetSecrets } from "../src/secrets.ts";
 
@@ -135,10 +133,6 @@ describe("audit ledger", () => {
 		assert.match(text, /schedule #k3f9 weixin\/boss/);
 		assert.match(text, /✓ mcp__gh__list_issues {2}mode {2}external/);
 		assert.match(text, /cost \?/);
-		const all = totals(runs);
-		assert.deepEqual(all, { runs: 2, toolCalls: 2, tokens: 4750, cost: null });
-		assert.equal(totalsText(all), "2 轮，2 次工具调用，4.8k tok");
-		assert.equal(totalsText(totals([runs[1] as (typeof runs)[number]])), "1 轮，1 次工具调用，$0.0042");
 		assert.equal(costText(1.5), "$1.50");
 	});
 

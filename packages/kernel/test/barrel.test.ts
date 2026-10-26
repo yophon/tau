@@ -45,6 +45,8 @@ const INTERNAL = new Set([
 	"shell-tokens.ts:Word",
 	"shell-tokens.ts:Token",
 	"shell-tokens.ts:tokenize",
+	// A regexp helper the permission rules share with search-tools (P62).
+	"search-tools.ts:escapeRegExp",
 	// The kernel's abort check (P62); hosts pass signals.
 	"abort.ts:throwIfAborted",
 	// Pieces of the agent loop (P62 split); hosts call agent.prompt / agent.compact.

@@ -3,15 +3,16 @@
 // settings as Session Config Options (and the older session modes), and tau's dialogs as
 // elicitation forms. Pure functions: modes/acp.ts holds the connections.
 import { isAbsolute, resolve } from "node:path";
-import type { AgentMessage, ToolCall, ToolResult, UiForm, UiFormField } from "@yophon/tau-kernel";
+import type { AgentMessage, ToolCall, ToolResult, UiFormField } from "@yophon/tau-kernel";
 import type { InputBlock, McpServerSpec, ServerRequests, ThreadState, UserInput } from "@yophon/tau-protocol";
 import { editPairs } from "../tui/render/tool-views.ts";
+import { fromWireForm } from "../wire.ts";
 import { THINKING_LEVELS } from "./headless.ts";
 
 export type Json = Record<string, unknown>;
 
 /** ACP tool kinds (read, edit, delete, move, search, execute, think, fetch, other). */
-export function toolKind(name: string): string {
+function toolKind(name: string): string {
 	if (name === "read" || name === "ls") return "read";
 	if (name === "grep" || name === "find" || name === "tool_search") return "search";
 	if (name === "edit" || name === "write") return "edit";
@@ -21,7 +22,7 @@ export function toolKind(name: string): string {
 	return "other";
 }
 
-export function toolTitle(name: string, args: Record<string, unknown>): string {
+function toolTitle(name: string, args: Record<string, unknown>): string {
 	const str = (key: string): string => (typeof args[key] === "string" ? (args[key] as string) : "");
 	switch (name) {
 		case "read":
@@ -128,12 +129,12 @@ export function toolCallUpdate(call: ToolCall, status: string, cwd: string, anno
 	};
 }
 
-function resultText(result: Pick<ToolResult, "content">): string {
+function textWithPlaceholders(result: Pick<ToolResult, "content">): string {
 	return result.content.map((block) => (block.type === "text" ? block.text : `[${block.type}]`)).join("\n");
 }
 
 /** The finished call: diffs for edit/write, the text output otherwise. */
-export function toolResultUpdate(call: ToolCall, result: Pick<ToolResult, "content" | "isError">, cwd: string): Json {
+function toolResultUpdate(call: ToolCall, result: Pick<ToolResult, "content" | "isError">, cwd: string): Json {
 	const args = call.arguments ?? {};
 	const path =
 		typeof args.path === "string" ? (isAbsolute(args.path) ? args.path : resolve(cwd, args.path)) : undefined;
@@ -143,7 +144,7 @@ export function toolResultUpdate(call: ToolCall, result: Pick<ToolResult, "conte
 	} else if (result.isError !== true && path && call.name === "write") {
 		content = [{ type: "diff", path, oldText: null, newText: typeof args.content === "string" ? args.content : "" }];
 	} else {
-		const text = resultText(result);
+		const text = textWithPlaceholders(result);
 		content = [
 			{ type: "content", content: { type: "text", text: text.length > 8000 ? `${text.slice(0, 8000)}\n…` : text } },
 		];
@@ -376,7 +377,7 @@ export function elicitationForm(params: UiParams): { message: string; requestedS
 				}),
 			};
 		default: {
-			const form = (params.form ?? { title: params.title, fields: [] }) as unknown as UiForm;
+			const form = fromWireForm(params.form ?? { title: params.title, fields: [] });
 			return {
 				message: form.message ? `${form.title}\n\n${form.message}` : form.title,
 				requestedSchema: {

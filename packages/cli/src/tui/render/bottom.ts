@@ -29,7 +29,7 @@ import type { StyledLine } from "./spans.ts";
 const h = React.createElement;
 
 /** Input rows shown at most; taller input scrolls around the cursor. */
-export const INPUT_MAX_ROWS = 10;
+const INPUT_MAX_ROWS = 10;
 
 function ActivityLine(props: {
 	activity: string;

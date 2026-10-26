@@ -8,7 +8,7 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { dirname, join } from "node:path";
 import { registerSecret, SECRET_NAME_RE } from "./secrets.ts";
 
-export const CREDENTIAL_NAME_RE = /^[a-z0-9_-]{1,64}$/;
+const CREDENTIAL_NAME_RE = /^[a-z0-9_-]{1,64}$/;
 
 export interface CredentialEntry {
 	value: string;

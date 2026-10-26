@@ -14,7 +14,7 @@ import { formatReadLineRange } from "./format.ts";
 
 export type FilterMode = "default" | "no-tools" | "user-only" | "labeled-only" | "all";
 
-export const FILTER_MODES: readonly FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
+const FILTER_MODES: readonly FilterMode[] = ["default", "no-tools", "user-only", "labeled-only", "all"];
 
 export interface TreeNode {
 	entry: SessionEntry;
@@ -79,7 +79,7 @@ export function buildTree(entries: readonly SessionEntry[]): TreeNode[] {
 	return roots;
 }
 
-function contentText(content: unknown): string {
+function plainText(content: unknown): string {
 	if (typeof content === "string") return content;
 	if (!Array.isArray(content)) return "";
 	let text = "";
@@ -92,7 +92,7 @@ function contentText(content: unknown): string {
 }
 
 function hasText(content: unknown): boolean {
-	return contentText(content).trim() !== "";
+	return plainText(content).trim() !== "";
 }
 
 const normalize = (text: string): string => text.replace(/[\n\t]/g, " ").trim();
@@ -457,11 +457,11 @@ export class SessionTreeView {
 			case "message": {
 				const message = entry.message;
 				parts.push(message.role);
-				if ("content" in message) parts.push(contentText(message.content));
+				if ("content" in message) parts.push(plainText(message.content));
 				break;
 			}
 			case "custom_message":
-				parts.push(entry.customType, contentText(entry.content));
+				parts.push(entry.customType, plainText(entry.content));
 				break;
 			case "compaction":
 				parts.push("compaction");
@@ -509,9 +509,9 @@ export class SessionTreeView {
 		switch (entry.type) {
 			case "message": {
 				const message = entry.message;
-				if (message.role === "user") return `user: ${normalize(contentText(message.content).slice(0, 200))}`;
+				if (message.role === "user") return `user: ${normalize(plainText(message.content).slice(0, 200))}`;
 				if (message.role === "assistant") {
-					const text = normalize(contentText(message.content).slice(0, 200));
+					const text = normalize(plainText(message.content).slice(0, 200));
 					if (text) return `assistant: ${text}`;
 					if (message.stopReason === "aborted") return "assistant: (aborted)";
 					if (message.errorMessage) return `assistant: ${normalize(message.errorMessage).slice(0, 80)}`;
@@ -522,12 +522,12 @@ export class SessionTreeView {
 					return call ? formatToolCall(call.name, call.arguments) : `[${message.toolName ?? "tool"}]`;
 				}
 				if (message.role === "custom") {
-					return `[${message.customType}]: ${normalize(contentText(message.content).slice(0, 200))}`;
+					return `[${message.customType}]: ${normalize(plainText(message.content).slice(0, 200))}`;
 				}
 				return `[${message.role}]`;
 			}
 			case "custom_message":
-				return `[${entry.customType}]: ${normalize(contentText(entry.content).slice(0, 200))}`;
+				return `[${entry.customType}]: ${normalize(plainText(entry.content).slice(0, 200))}`;
 			case "compaction":
 				return `[compaction: ${Math.round(entry.tokensBefore / 1000)}k tokens]`;
 			case "branch_summary":
@@ -698,9 +698,9 @@ export class SessionTreeView {
 		let text: string | undefined;
 		if (entry.type === "message") {
 			const message = entry.message;
-			if ("content" in message) text = contentText(message.content);
+			if ("content" in message) text = plainText(message.content);
 			if (!text && message.role === "assistant") text = message.errorMessage;
-		} else if (entry.type === "custom_message") text = contentText(entry.content);
+		} else if (entry.type === "custom_message") text = plainText(entry.content);
 		else if (entry.type === "compaction" || entry.type === "branch_summary") text = entry.summary;
 		return text?.trim() ? text : undefined;
 	}

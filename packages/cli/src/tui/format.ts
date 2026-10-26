@@ -5,6 +5,8 @@
 import { homedir } from "node:os";
 import type { RiskLevel } from "@yophon/tau-kernel";
 
+export { errorText, firstLine } from "../util.ts";
+
 export type Tone = "info" | "warn" | "error" | "dim" | "success";
 
 /** Compact integer: 1234 → 1.2k, 1_200_000 → 1.2M. */
@@ -43,14 +45,6 @@ export function riskColor(risk: RiskLevel): string {
 }
 
 /** First line of a text, cut to `max` characters with an ellipsis. */
-export function firstLine(text: string, max = 60): string {
-	const line = text.split("\n")[0] ?? "";
-	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
-}
-
-export function errorText(error: unknown): string {
-	return error instanceof Error ? error.message : String(error);
-}
 
 export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 

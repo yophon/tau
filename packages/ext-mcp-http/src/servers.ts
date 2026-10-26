@@ -699,6 +699,7 @@ export function createMcpServers(options: McpServersOptions): McpServersHandle {
 				const { _meta: _ignored, ...scriptResult } = result as CallToolResult & { _meta?: unknown };
 				return {
 					content,
+					// The server's structuredContent is plain JSON.
 					structuredContent: scriptResult as unknown as JsonValue,
 					isError: result.isError === true,
 				};

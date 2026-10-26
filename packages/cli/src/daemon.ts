@@ -177,7 +177,7 @@ function alive(pid: number): boolean {
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How this tau runs (the node binary, its flags and the CLI's entry), to start another of itself. */
-export function cliCommand(): { execPath: string; args: string[] } {
+function cliCommand(): { execPath: string; args: string[] } {
 	const script = process.argv[1];
 	if (!script) throw new Error("Cannot tell how tau was started");
 	return { execPath: process.execPath, args: [...process.execArgv, script] };
@@ -266,7 +266,7 @@ export interface StopResult {
 }
 
 /** `tau serve stop`: server/shutdown (running turns may finish within `graceSeconds`), then a kill if it stays. */
-export async function stopDaemon(home: string, graceSeconds: number): Promise<StopResult> {
+async function stopDaemon(home: string, graceSeconds: number): Promise<StopResult> {
 	const address = defaultAddress(home);
 	const info = readDaemonInfo(home);
 	const probe = await probeDaemon(address, { name: "tau-serve-stop" });
@@ -312,7 +312,7 @@ export interface StatusResult {
 	error?: string;
 }
 
-export async function daemonStatus(home: string): Promise<StatusResult> {
+async function daemonStatus(home: string): Promise<StatusResult> {
 	const address = defaultAddress(home);
 	const info = readDaemonInfo(home);
 	const probe = await probeDaemon(address, { name: "tau-serve-status" });

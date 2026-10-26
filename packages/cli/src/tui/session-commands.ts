@@ -5,8 +5,9 @@
 import { copyFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { messageText, type SessionEntry, type SessionMetadata } from "@yophon/tau-kernel";
-import type { NativeEntry, ThreadInfo } from "@yophon/tau-protocol";
+import type { ThreadInfo } from "@yophon/tau-protocol";
 import { findSession, relativeTime, sessionLabel } from "../session-title.ts";
+import { toWireEntry } from "../wire.ts";
 import { type BuiltinCommand, type CommandHost, startingWith } from "./commands.ts";
 import { sessionHtml } from "./export-html.ts";
 import { conversationLength, firstLine } from "./format.ts";
@@ -272,7 +273,7 @@ async function presentEntry(
 	if (tui.session.state.extensions.entryRenderers === 0) return fallback;
 	try {
 		const { rendered, failed } = await tui.session.request("render/entry", {
-			entry: entry as unknown as NativeEntry,
+			entry: toWireEntry(entry),
 			width: 80,
 		});
 		if (failed) {

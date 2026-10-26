@@ -130,7 +130,7 @@ export function toError(value: unknown): Error {
 	return value instanceof Error ? value : new Error(String(value));
 }
 
-export function isJsonRpcId(value: unknown): value is JsonRpcId {
+function isJsonRpcId(value: unknown): value is JsonRpcId {
 	return typeof value === "string" || (typeof value === "number" && Number.isFinite(value));
 }
 

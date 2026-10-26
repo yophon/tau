@@ -411,7 +411,7 @@ export function applyHeaderChanges(
 	return result;
 }
 
-function hostOf(baseUrl: string): string {
+function authorityOf(baseUrl: string): string {
 	const match = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]+)/i.exec(baseUrl);
 	return match ? match[1] : "";
 }
@@ -485,7 +485,7 @@ export async function* streamChatCompletion(
 	const api = config.api ?? OPENAI_COMPLETIONS_API;
 	const provider = config.provider ?? "openai-compat";
 	const replayEmptyReasoning =
-		config.replayEmptyReasoning ?? /(^|[./])deepseek\.com(?=[:/]|$)/i.test(hostOf(config.baseUrl));
+		config.replayEmptyReasoning ?? /(^|[./])deepseek\.com(?=[:/]|$)/i.test(authorityOf(config.baseUrl));
 	const transcript = resolveTranscript(messages, config.midConversationSystemMessages);
 	const body: Record<string, unknown> = {
 		model,

@@ -230,7 +230,7 @@ class EntryTree {
 		} else if (entry.type === "message") {
 			this.messageCount++;
 			if (this.firstMessage === undefined && entry.message.role === "user") {
-				const text = messageText(entry.message.content);
+				const text = contentLine(entry.message.content);
 				if (text !== "") this.firstMessage = text.slice(0, 500);
 			}
 		}
@@ -389,6 +389,7 @@ function parseHeaderLine(line: string, filePath: string): SessionHeader {
 	if (typeof header.id !== "string" || typeof header.timestamp !== "string" || typeof header.cwd !== "string") {
 		throw new SessionError("invalid_session", `Invalid session file ${filePath}: header missing id/timestamp/cwd`);
 	}
+	// Validated above.
 	return parsed as unknown as SessionHeader;
 }
 
@@ -428,7 +429,7 @@ async function readSessionMetadata(fs: FileSystem, filePath: string): Promise<Se
 		if (type === "message") {
 			messageCount++;
 			if (firstMessage === undefined && entry?.type === "message" && entry.message.role === "user") {
-				const text = messageText(entry.message.content);
+				const text = contentLine(entry.message.content);
 				if (text !== "") firstMessage = text.slice(0, 500);
 			}
 		}
@@ -492,6 +493,7 @@ function parseEntryLine(line: string, filePath: string, lineNumber: number): Ses
 			`Invalid session file ${filePath}: line ${lineNumber} is missing id/timestamp`,
 		);
 	}
+	// Validated above.
 	return parsed as unknown as SessionEntry;
 }
 
@@ -505,7 +507,7 @@ function lastSessionName(entries: readonly SessionEntry[]): string | undefined {
 }
 
 /** A user message's text for the session list: its text parts joined, trimmed. */
-function messageText(content: string | readonly { type: string; text?: string }[]): string {
+function contentLine(content: string | readonly { type: string; text?: string }[]): string {
 	return (
 		typeof content === "string"
 			? content

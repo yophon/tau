@@ -13,6 +13,7 @@ import type { NodeBackgroundShell } from "@yophon/tau-host-node";
 import type { BackgroundTaskInfo, Extension, ExtensionAPI, ExtensionContext } from "@yophon/tau-kernel";
 import { formatRunTime } from "./run-time.ts";
 import type { Scheduler } from "./scheduler.ts";
+import { firstLine } from "./util.ts";
 
 /** Lines of output the end-of-task message carries. */
 const NOTICE_LINES = 20;
@@ -67,11 +68,11 @@ export function taskEndMessage(task: BackgroundTaskInfo, tail: string): string {
 const MARK: Record<BackgroundTaskInfo["status"], string> = { running: "◐", completed: "●", failed: "✗", killed: "■" };
 
 /** Monitor (P44, Claude Code): the default deadline, the longest, and the longest in -p. */
-export const MONITOR_DEFAULT_MS = 5 * 60 * 1000;
+const MONITOR_DEFAULT_MS = 5 * 60 * 1000;
 export const MONITOR_MAX_MS = 30 * 60 * 1000;
 export const MONITOR_PRINT_MAX_MS = 10 * 60 * 1000;
 /** Lines within this window go out as one notification (Claude Code). */
-export const MONITOR_BATCH_MS = 200;
+const MONITOR_BATCH_MS = 200;
 /** More notifications than this in a minute stop the monitor (tau's number; Claude Code gives none). */
 export const MONITOR_MAX_PER_MINUTE = 60;
 
@@ -322,7 +323,7 @@ export function createBackgroundExtension(
 								state.stopReason = `expired after ${minutes(timeoutMs)} min (re-arm it if you still need the watch)`;
 								void shell.stop(id).catch(() => undefined);
 							}, timeoutMs);
-							(state.deadline as unknown as { unref?: () => void }).unref?.();
+							state.deadline.unref();
 							return {
 								content: [
 									{
@@ -415,11 +416,6 @@ export async function backgroundTasksText(shell: NodeBackgroundShell, args: stri
 		return task ? view(task) : `No background task ${words[0]}.`;
 	}
 	return commands.length === 0 ? "No background commands." : commands.map(commandRow).join("\n");
-}
-
-function firstLine(text: string, max = 60): string {
-	const line = text.split("\n")[0] ?? "";
-	return line.length > max ? `${line.slice(0, max - 1)}…` : line;
 }
 
 /** A subagent in /tasks: while it runs, its latest activity (P53b, yo-agent's task detail); then its answer. */

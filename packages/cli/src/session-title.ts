@@ -6,7 +6,7 @@
  */
 import type { Agent, AgentMessage, SessionMetadata, SessionRecorder, TauAbortSignal } from "@yophon/tau-kernel";
 
-export const TITLE_SYSTEM_PROMPT =
+const TITLE_SYSTEM_PROMPT =
 	"You name conversations. Reply with only a title for the conversation you are shown: in the language the user writes in, at most 12 characters for Chinese, Japanese or Korean, otherwise at most 6 words. No quotes, no trailing punctuation, nothing else.";
 
 /** settings session.autoTitle, overridden by TAU_AUTO_TITLE=0/1 (scripts and tests that count requests). */
@@ -20,7 +20,7 @@ export function autoTitleOn(
 }
 
 /** Characters a title keeps at most. */
-export const TITLE_MAX = 40;
+const TITLE_MAX = 40;
 
 /** The model's reply as a title: its first non-empty line, unquoted, without end punctuation; undefined if nothing is left. */
 export function titleFromReply(text: string): string | undefined {
@@ -76,7 +76,7 @@ function textOf(message: AgentMessage): string {
 }
 
 /** What the title request shows the model: the first message and the start of the first answer. */
-export function titlePrompt(messages: readonly AgentMessage[]): string | undefined {
+function titlePrompt(messages: readonly AgentMessage[]): string | undefined {
 	const user = messages.find((message) => message.role === "user" && textOf(message).trim() !== "");
 	const answer = messages.find((message) => message.role === "assistant" && textOf(message).trim() !== "");
 	if (!user || !answer) return undefined;

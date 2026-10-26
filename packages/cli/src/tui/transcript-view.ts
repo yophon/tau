@@ -293,7 +293,7 @@ export class TuiTranscriptView {
 }
 
 /** Clicks this close together on the same row count as a double or triple click (pi). */
-export const MULTI_CLICK_MS = 500;
+const MULTI_CLICK_MS = 500;
 
 /** While a drag is past the view's edge, the view scrolls a row this often. */
-export const AUTO_SCROLL_MS = 50;
+const AUTO_SCROLL_MS = 50;

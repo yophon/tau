@@ -11,6 +11,7 @@ import {
 	type RetrySettings,
 	type ThinkingLevel,
 } from "@yophon/tau-kernel";
+import { expandHome } from "./util.ts";
 
 export interface WebSearchSettings {
 	provider: "brave" | "tavily" | "exa" | "searxng";
@@ -108,12 +109,6 @@ const TREE_FILTERS: readonly string[] = ["default", "no-tools", "user-only", "la
 function defaultHome(): string {
 	const home = process.env.HOME?.trim();
 	return home ? home : homedir();
-}
-
-function expandHome(path: string, home: string): string {
-	if (path === "~") return home;
-	if (path.startsWith("~/") || path.startsWith("~\\")) return join(home, path.slice(2));
-	return path;
 }
 
 const isObject = (value: unknown): value is Record<string, unknown> =>

@@ -75,7 +75,7 @@ function head(lines: string[], n: number): StyledLine[] {
 const FULL = 2000;
 
 /** Rows a collapsed edit or write shows before "… N more lines" (Ctrl+O or a click shows all). */
-export const FILE_PREVIEW_ROWS = { edit: 16, write: 10, apply_patch: 24 };
+const FILE_PREVIEW_ROWS = { edit: 16, write: 10, apply_patch: 24 };
 
 /** How many files a patch names (its Add, Delete and Update headers). */
 function patchFileCount(patch: string): number {

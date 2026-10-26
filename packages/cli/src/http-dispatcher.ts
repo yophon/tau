@@ -13,7 +13,7 @@ const originalGlobalFetch = globalThis.fetch;
 let installedGlobalFetch: typeof globalThis.fetch | undefined;
 
 /** A non-negative whole number of milliseconds ("disabled" = 0), or undefined. */
-export function parseHttpIdleTimeoutMs(value: unknown): number | undefined {
+function parseHttpIdleTimeoutMs(value: unknown): number | undefined {
 	if (typeof value === "string") {
 		const trimmed = value.trim();
 		if (trimmed.toLowerCase() === "disabled") return 0;

@@ -16,6 +16,7 @@ import {
 	type UiFormValue,
 } from "@yophon/tau-kernel";
 import type { ServerRequests } from "@yophon/tau-protocol";
+import { fromWireForm, toWireObject } from "../wire.ts";
 import type { TuiController } from "./controller.ts";
 import { errorText } from "./format.ts";
 import { fuzzyScore } from "./input/completion.ts";
@@ -144,9 +145,9 @@ export class TuiDialogs {
 				case "editor":
 					return value(await this.host.ui.editor?.(params.title, params.prefill));
 				case "form": {
-					const form = params.form as unknown as UiForm;
+					const form = fromWireForm(params.form ?? { title: params.title, fields: [] });
 					const result = await this.blocked(form.title, this.form(form, signal));
-					return result === undefined ? { cancelled: true } : { form: result as unknown as Record<string, unknown> };
+					return result === undefined ? { cancelled: true } : { form: toWireObject(result) };
 				}
 				default:
 					return { cancelled: true };
@@ -735,7 +736,7 @@ export class TuiDialogs {
 }
 
 /** A picker filters as you type unless an item is picked by its key (y/n). */
-export function filterable(items: PickerItem[]): { all?: PickerItem[]; query?: string } {
+function filterable(items: PickerItem[]): { all?: PickerItem[]; query?: string } {
 	return items.some((item) => item.key !== undefined) ? {} : { all: items, query: "" };
 }
 

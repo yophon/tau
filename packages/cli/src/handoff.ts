@@ -42,7 +42,7 @@ export function handoffMaxTokens(contextWindow: number | undefined): number {
  * pi's request: the conversation (already compaction-aware: the latest summary plus
  * what it kept) and the goal.
  */
-export function handoffRequest(messages: readonly AgentMessage[], goal: string): string {
+function handoffRequest(messages: readonly AgentMessage[], goal: string): string {
 	return `## Conversation History\n\n${serializeConversation(messages)}\n\n## User's Goal for New Thread\n\n${goal}`;
 }
 

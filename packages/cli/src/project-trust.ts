@@ -25,7 +25,7 @@ export interface TrustStore {
 	trusted: Record<string, TrustEntry>;
 }
 
-export function trustStorePath(): string {
+function trustStorePath(): string {
 	return join(userHome(), ".tau", "trust.json");
 }
 
@@ -39,7 +39,7 @@ export function readTrustStore(): TrustStore {
 	}
 }
 
-export function writeTrustStore(store: TrustStore): void {
+function writeTrustStore(store: TrustStore): void {
 	const path = trustStorePath();
 	mkdirSync(dirname(path), { recursive: true });
 	writeFileSync(path, `${JSON.stringify(store, null, "\t")}\n`, "utf8");
@@ -50,7 +50,7 @@ export function writeTrustStore(store: TrustStore): void {
  * settings that pick endpoints or credentials, and skills/prompts that reach the
  * system prompt.
  */
-export const GATED_PROJECT_RESOURCES = [
+const GATED_PROJECT_RESOURCES = [
 	".tau/extensions",
 	".tau/settings.json",
 	// P37a: the project's MCP servers were read only when trusted but never asked about.
@@ -90,7 +90,7 @@ export function presentGatedResources(cwd: string): string[] {
  * with only .tau/extensions keeps the pre-P23 digest of that directory, so
  * existing trust records stay valid.
  */
-export async function digestProjectResources(cwd: string, present: readonly string[]): Promise<string | undefined> {
+async function digestProjectResources(cwd: string, present: readonly string[]): Promise<string | undefined> {
 	if (present.length === 1 && present[0] === ".tau/extensions") return digestDirectory(join(cwd, ".tau/extensions"));
 	const hash = createHash("sha256");
 	for (const relative of present) {

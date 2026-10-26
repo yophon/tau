@@ -249,6 +249,7 @@ export function createMcpResourceTools(options: McpResourceToolsOptions): Tool[]
 
 	const jsonResult = (payload: Record<string, unknown>): ToolResult => ({
 		content: limitMcpContent([{ type: "text", text: JSON.stringify(payload) }], options.where),
+		// The listing is plain JSON.
 		structuredContent: payload as unknown as JsonValue,
 	});
 
@@ -340,6 +341,7 @@ export function createMcpResourceTools(options: McpResourceToolsOptions): Tool[]
 					converted.length > 0 ? converted : [{ type: "text", text: `Resource ${uri} is empty.` }],
 					options.where,
 				),
+				// The resource contents are plain JSON as the server sent them.
 				structuredContent: { server: server.name, uri, contents } as unknown as JsonValue,
 			};
 		}),

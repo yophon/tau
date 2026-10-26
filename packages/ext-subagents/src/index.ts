@@ -583,6 +583,7 @@ export function createSubagentsExtension(options: SubagentsOptions = {}): Extens
 		const runInBackground = (record: SubagentRecord, prompt: string, ctx: ExtensionContext, resumed: boolean): void => {
 			const controller = new AbortController();
 			record.controller = controller;
+			// A host AbortSignal satisfies the kernel's structural TauAbortSignal.
 			const run = runRecord(record, prompt, ctx, controller.signal as unknown as TauAbortSignal, undefined, "")
 				.catch(() => undefined)
 				.finally(() => {

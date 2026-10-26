@@ -251,3 +251,16 @@
   - `model.ts` 移出的是实时块的小函数，不是 `reduceEvent`：`reduceEvent` 用到十几个这类小函数，单独移走会让两个模块互相运行时导入。
 - **门禁上限**按确认的规则改：拆完仍超 1000 行的 `agent.ts` 2450、`extensions.ts` 1300；其余六个降到 1000 以下，从 `LIMITS` 删掉。`main.ts` 原来的 1000 与缺省相同，一并删去。`commands.ts`、`ext-mcp-http/src/client.ts` 不在这次拆的范围，上限照旧。
 - 内核新模块的导出列进 barrel 测试的 INTERNAL；没有行为变化，测试只改了导入路径。
+
+### 62e 代码卫生
+
+- **重复实现**：
+  - 合并：CLI 的 `errorText`（四份）、`formatShellOutput`（两份）、`isSymlink`（两份）、`expandHome`（两份，等价）进 `util.ts`；`firstLine` 三份里两份相同、`util.ts` 那份截断后多一个字符，合成「不超过 max 个字符」的一份（`tui/format.ts` 转出 `util.ts` 的，REPL 与 workspace 照旧传 120）；内核的 `escapeRegExp` 两份合一（`search-tools.ts` 导出，权限规则导入）；控制器转调 `git-paths` 的 `readGitBranch` 去掉。
+  - 路径比较统一成 `git-paths.ts` 的 `comparablePath`（`realpathSync.native` 加 Windows 下折叠大小写）：`worktree.ts` 的 `samePath`、`worktree-tools.ts` 的 `canonical`、ACP 的 `samePath`（原来只 `resolve`）、`git-paths` 自己的 `canonical`（原来用不展开 8.3 短名的 `realpathSync`、不折叠大小写）都改用它。后两处是**修正**：Windows 上短名、大小写不同的同一路径原来比不上。
+  - `permissions.ts` 与 `worktree-tools.ts` 两份「安静的 git」合成 `git-paths.ts` 的 `gitQuiet`（权限那三处照旧 5 秒超时）；另两份行为不同，改名说明：`worktree.ts` 的 `gitOrThrow`（失败带出 stderr）、`git-diff.ts` 的 `gitExit`（异步、退出码 1 也算结果）。
+  - 改名不合并（有意的差别）：权限规则的 `ruleGlobToRegExp`（没有 `{}`、`[]`，`**/` 可匹配零层）与 `search-tools` 的 gitignore 式 `globToRegExp`；`search-tools` 的 `joinRelative` 与 `context-files` 的 `joinWithSeparator`；`openai.ts` 的 `authorityOf`（原样的主机加端口）与权限规则的 `hostOf`（小写主机名）；`session.ts` 的 `contentLine` 与 `messages.ts` 的 `messageText`；`hooks-extension` 的 `joinedText`、ACP 的 `textWithPlaceholders`、`server/items` 的 `textAndImageMarks`；导出 HTML 的 `textWithPlaceholders` 与会话树的 `plainText`。
+  - 跨包的不合：`installExitHook`、`killProcessTree` 是 Node 进程工具，合到 host-node 要让 ext-mcp、ext-lsp 新依赖它；`parseFrontmatter` 两份返回形状不同，合进内核会多一个为扩展服务的公开接口。
+- **死代码与多余导出**：删掉 `LISTEN_VALUES`、`builtinCommands`、`isAbortError`；工作区的 `fs` 选项（P29 经编辑器读写，P60 起没人设）；`tui/runs.ts` 里没人用的 `formatShellOutput` 导出；网关的「今天几轮」统计 `totals`、`totalsText`、`startOfToday`（只剩测试在用，随归档删掉对应断言）。112 个只在本文件里用的函数、常量、类去掉 `export`（都不在包的导出入口里）；类型的 `export` 不动。`backgroundTasksText` 留下：它是 /tasks 的文字版，测试靠它校验渲染。
+- **空 `catch`**：9 个文件 12 处都是该吞的（退出时清理已结束的进程、坏 JSON 或坏 URL 走缺省、关已断开的 socket、浏览器存储不可用、列目录时文件被删），各加一句注释。
+- **类型断言**：61 处 → 41 处。协议线上的 JSON 与内核类型之间的 28 处收进新文件 `cli/src/wire.ts`（16 个转换函数，在那里说明一次：tau/1 原样携带内核的值，P57）；Node 计时器的 `unref` 两处本来不需要断言，去掉。其余 25 处（校验过的解析结果、WebSocket 与 readline 的运行时对象、结构上是 JSON 的值、Proxy）各加一句注释。**顺带查出**：RPC 与 TUI 把可能缺失的 `params.form` 直接断言成 `UiForm`，缺失时会在读 `title` 时崩；照 ACP 已有的做法补上缺省表单。
+- 没改：scripts 里几处 Windows 上用 `shell: true` 跑 `npm.cmd` 并传参数数组，Node 24 报 DEP0190 弃用警告，登记为技术债。

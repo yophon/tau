@@ -12,7 +12,7 @@ import { blockLines } from "./lines.ts";
 const h = React.createElement;
 
 /** The answer as rows of the panel's inner width (ANSI styled, wrapped like an assistant reply). */
-export function asideAnswerRows(exchange: AsideExchange, width: number): string[] {
+function asideAnswerRows(exchange: AsideExchange, width: number): string[] {
 	const inner = Math.max(10, width);
 	if (exchange.error !== undefined) {
 		return blockLines(
@@ -44,7 +44,7 @@ export function asideAnswerRows(exchange: AsideExchange, width: number): string[
 }
 
 /** Inner width of the panel: the border and padding take four columns. */
-export function asideWidth(columns: number): number {
+function asideWidth(columns: number): number {
 	return Math.max(10, columns - 5);
 }
 

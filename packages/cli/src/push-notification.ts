@@ -11,7 +11,7 @@ import { notifyDesktop } from "./tui/terminal-status.ts";
 /** A key pressed within this long means you are at the terminal. */
 export const PRESENT_KEY_MS = 60_000;
 /** Mobile systems cut longer text (Claude Code keeps the message under 200 characters). */
-export const PUSH_MESSAGE_MAX = 200;
+const PUSH_MESSAGE_MAX = 200;
 
 export const presence = {
 	/** The terminal's focus as it last reported it; undefined when it never did. */
@@ -29,7 +29,7 @@ export function markActivity(now = Date.now()): void {
 	presence.keyAt = now;
 }
 
-export function userPresent(now = Date.now()): boolean {
+function userPresent(now = Date.now()): boolean {
 	return presence.focused === true || now - presence.keyAt < PRESENT_KEY_MS;
 }
 

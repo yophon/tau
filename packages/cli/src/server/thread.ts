@@ -42,6 +42,8 @@ import {
 import { sessionEventStream } from "../modes/events.ts";
 import { HeadlessSession, type ModelSwitch, type RunOutcome } from "../modes/headless.ts";
 import { autoTitle } from "../session-title.ts";
+import { errorText } from "../util.ts";
+import { toWireEvent, toWireMessages } from "../wire.ts";
 import type { Workspace, WorkspaceSpec } from "../workspace.ts";
 import { ThreadCompletion } from "./completion.ts";
 import { reload, setModel } from "./control.ts";
@@ -96,7 +98,7 @@ export interface Subscriber {
 const streamedRegistries = new WeakSet<ExtensionRegistry>();
 
 /** The notifications a thread keeps for clients that join later (Codex keeps the rollout; tau a window). */
-export const LOG_LIMIT = 20_000;
+const LOG_LIMIT = 20_000;
 
 interface Turn {
 	id: string;
@@ -109,8 +111,6 @@ interface Turn {
 }
 
 type Metadata = Pick<SessionMetadata, "id" | "name" | "filePath" | "parentSession">;
-
-const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 export class HubThread {
 	readonly id: string;
@@ -405,7 +405,7 @@ export class HubThread {
 			return {
 				thread: this.info(),
 				seq: this.seq,
-				messages: [...before] as unknown as JoinResult["messages"],
+				messages: toWireMessages(before),
 				state: this.state(),
 				events: current(() => true),
 			};
@@ -839,7 +839,7 @@ export class HubThread {
 
 /** An AgentEvent as native clients get it: agent_end without its messages (they have them). */
 function nativeEvent(event: AgentEvent): NativeEvent {
-	return (event.type === "agent_end" ? { type: "agent_end" } : event) as unknown as NativeEvent;
+	return toWireEvent(event.type === "agent_end" ? { type: "agent_end" } : event);
 }
 
 export function unique(values: string[]): string[] {

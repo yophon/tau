@@ -4,14 +4,8 @@
 // P57: everything the TUI does with a session, so the TUI can be a client too (docs/protocol.md).
 
 import { resolve } from "node:path";
-import type {
-	PermissionMode,
-	RegisteredToolRenderEvent,
-	SessionEntry,
-	SessionStore,
-	ThinkingLevel,
-} from "@yophon/tau-kernel";
-import { type AgentMessage, messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
+import type { PermissionMode, SessionStore, ThinkingLevel } from "@yophon/tau-kernel";
+import { messageText, restoreSession, SessionRecorder } from "@yophon/tau-kernel";
 import {
 	type ClientRequests,
 	type DeviceInfo,
@@ -25,6 +19,7 @@ import {
 	type ThreadInfo,
 } from "@yophon/tau-protocol";
 import { isPermissionMode } from "../args.ts";
+import { fromWireEntry, fromWireMessage, fromWireToolRender } from "../wire.ts";
 import type { Workspace } from "../workspace.ts";
 import * as control from "./control.ts";
 import { itemsFromMessages } from "./items.ts";
@@ -72,7 +67,7 @@ const STARTS_WORK: ReadonlySet<string> = new Set([
 ]);
 
 /** One connected client. */
-export class HubConnection implements Subscriber {
+class HubConnection implements Subscriber {
 	readonly peer: JsonRpcPeer;
 	initialized = false;
 	/** P57: asked for the native data. */
@@ -460,13 +455,13 @@ export class SessionHub {
 			thread(params.threadId).applyCompletion(params.lines, params.line, params.col, params.item, params.prefix),
 		);
 		handle("render/tool", (params) =>
-			ui.renderTool(thread(params.threadId), params.event as unknown as RegisteredToolRenderEvent, width(params.width)),
+			ui.renderTool(thread(params.threadId), fromWireToolRender(params.event), width(params.width)),
 		);
 		handle("render/message", (params) =>
-			ui.renderMessage(thread(params.threadId), params.message as unknown as AgentMessage, width(params.width)),
+			ui.renderMessage(thread(params.threadId), fromWireMessage(params.message), width(params.width)),
 		);
 		handle("render/entry", (params) =>
-			ui.renderEntry(thread(params.threadId), params.entry as unknown as SessionEntry, width(params.width)),
+			ui.renderEntry(thread(params.threadId), fromWireEntry(params.entry), width(params.width)),
 		);
 		handle("markdown/transform", (params) => ({ texts: ui.transformMarkdown(thread(params.threadId), params.items) }));
 		handle("surfaces/read", (params) => ui.readSurfaces(thread(params.threadId), width(params.width), params.parts));

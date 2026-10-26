@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { PermissionMode, ThinkingLevel, UiCapability } from "@yophon/tau-kernel";
 import { dirtyRepoQuestion, type SwitchAction, uncommittedFiles } from "../dirty-repo.ts";
-import { readGitBranch as readBranchFromGit } from "../git-paths.ts";
+import { readGitBranch } from "../git-paths.ts";
 import { openUrl } from "../open-url.ts";
 import { presence } from "../push-notification.ts";
 
@@ -910,12 +910,6 @@ export class TuiController {
 						: "tau · failed";
 		(this.deps.notify ?? notifyDesktop)(heading, body || heading);
 	}
-}
-
-/** The git branch, best effort: the ref name in .git/HEAD, a short sha when detached. */
-/** The branch at `cwd`: in linked worktrees and repository subdirectories too (P37d, pi). */
-export function readGitBranch(cwd: string): string | undefined {
-	return readBranchFromGit(cwd);
 }
 
 export { openUrl };

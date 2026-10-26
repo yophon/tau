@@ -10,8 +10,7 @@
  * (`$/cancel_request`). Tools read and write the disk where the session runs (Codex's and Claude's
  * adapters do the same); edits still reach the editor as diffs. This module speaks only the protocol.
  */
-import { resolve } from "node:path";
-import type { AgentMessage, ToolCall } from "@yophon/tau-kernel";
+import type { ToolCall } from "@yophon/tau-kernel";
 import type {
 	ClientRequests,
 	JoinResult,
@@ -23,6 +22,8 @@ import type {
 	ThreadState,
 	UserInput,
 } from "@yophon/tau-protocol";
+import { comparablePath } from "../git-paths.ts";
+import { fromWireMessages } from "../wire.ts";
 import {
 	configOptionsOf,
 	elicitationAnswer,
@@ -41,7 +42,7 @@ import {
 import { THINKING_LEVELS } from "./headless.ts";
 import { type RecordWriter, readRecords } from "./jsonl.ts";
 
-export const ACP_PROTOCOL_VERSION = 1;
+const ACP_PROTOCOL_VERSION = 1;
 
 /** An error answered to the editor (JSON-RPC code and message). */
 class AcpError extends Error {
@@ -53,7 +54,7 @@ class AcpError extends Error {
 }
 
 /** JSON-RPC over the record stream: requests both ways, notifications, responses. */
-export class AcpConnection {
+class AcpConnection {
 	private nextId = 1;
 	private readonly waiting = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 	private readonly out: RecordWriter;
@@ -175,11 +176,7 @@ const BUILTIN_COMMANDS: Json[] = [
 const delay = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 function samePath(a: string, b: string): boolean {
-	const norm = (path: string) => {
-		const full = resolve(path);
-		return process.platform === "win32" ? full.toLowerCase() : full;
-	};
-	return norm(a) === norm(b);
+	return comparablePath(a) === comparablePath(b);
 }
 
 function titleOf(thread: ThreadInfo): string | undefined {
@@ -779,7 +776,7 @@ export async function runAcpMode(options: AcpModeOptions): Promise<void> {
 					try {
 						// session/load: the conversation so far, before the answer (the current turn follows live).
 						if (method === "session/load") {
-							const messages = (result.messages ?? []) as unknown as AgentMessage[];
+							const messages = fromWireMessages(result.messages ?? []);
 							for (const value of replayUpdates(messages, session.cwd)) update(session.id, value);
 						}
 						acp.respond(id, {

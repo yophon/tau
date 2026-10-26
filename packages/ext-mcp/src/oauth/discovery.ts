@@ -47,7 +47,9 @@ export function parseWwwAuthenticate(header: string | null): OAuthChallenge {
 	if (resourceMetadata) {
 		try {
 			resourceMetadataUrl = new URL(resourceMetadata);
-		} catch {}
+		} catch {
+			// Not a URL: discovery falls back to the well-known locations.
+		}
 	}
 	return {
 		resourceMetadataUrl,

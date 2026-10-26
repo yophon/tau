@@ -16,7 +16,7 @@ import type { Extension } from "@yophon/tau-kernel";
 import { readSessionAround, type SessionRoot, searchSessions } from "./session-search.ts";
 
 /** What the prompt loads of USER.md and MEMORY.md, whichever comes first (Claude Code: 200 lines or 25KB). */
-export const MEMORY_LOAD_LIMITS = { lines: 200, bytes: 25 * 1024 };
+const MEMORY_LOAD_LIMITS = { lines: 200, bytes: 25 * 1024 };
 
 /** Where one workspace's memory lives and which sessions session_search may read. */
 export interface MemoryScope {
@@ -37,7 +37,7 @@ const normalize = (text: string): string =>
 		.trim()
 		.toLowerCase();
 
-export function readMemory(file: string): string {
+function readMemory(file: string): string {
 	try {
 		return existsSync(file) ? readFileSync(file, "utf8") : "";
 	} catch {
@@ -54,13 +54,13 @@ function memoryLines(content: string): string[] {
 }
 
 /** Lines and UTF-8 bytes of a memory file, as the load limits count them. */
-export function memorySize(content: string): { lines: number; bytes: number } {
+function memorySize(content: string): { lines: number; bytes: number } {
 	const lines = memoryLines(content);
 	return { lines: lines.length, bytes: lines.reduce((sum, line) => sum + Buffer.byteLength(line, "utf8") + 1, 0) };
 }
 
 /** "12 lines, 1.4 KB" (or "1 line, 19 B") for memory_read and /memory. */
-export function describeSize(content: string): string {
+function describeSize(content: string): string {
 	const { lines, bytes } = memorySize(content);
 	const size = bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 	return `${lines} line${lines === 1 ? "" : "s"}, ${size}`;
@@ -119,13 +119,13 @@ export function editMemory(file: string, old: string, replacement: string): stri
 }
 
 /** Replace the whole file (the /memory editor and /memory clear). */
-export function replaceMemory(file: string, content: string): void {
+function replaceMemory(file: string, content: string): void {
 	mkdirSync(dirname(file), { recursive: true });
 	const text = content.replace(/\r\n/g, "\n").trimEnd();
 	writeFileSync(file, text === "" ? "" : `${text}\n`, "utf8");
 }
 
-export function listTopics(dir: string): string[] {
+function listTopics(dir: string): string[] {
 	try {
 		return readdirSync(dir)
 			.filter((name) => name.endsWith(".md") && TOPIC_RE.test(name.slice(0, -3)))
@@ -196,7 +196,8 @@ const text = (value: string, isError = false) => ({
 	content: [{ type: "text" as const, text: value }],
 	...(isError ? { isError: true } : {}),
 });
-const errorText = (error: unknown) => text(error instanceof Error ? error.message : String(error), true);
+/** An error as a tool result line (memory's own text formatting). */
+const failureText = (error: unknown) => text(error instanceof Error ? error.message : String(error), true);
 const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 
 export function createMemoryExtension(getScope: () => MemoryScope | undefined): Extension {
@@ -248,7 +249,7 @@ export function createMemoryExtension(getScope: () => MemoryScope | undefined): 
 								(reminder ? `\n${reminder}` : ""),
 						);
 					} catch (error) {
-						return errorText(error);
+						return failureText(error);
 					}
 				},
 			},
@@ -281,7 +282,7 @@ export function createMemoryExtension(getScope: () => MemoryScope | undefined): 
 							(str(args.new) ? `Updated ${file}.` : `Removed from ${file}.`) + (reminder ? `\n${reminder}` : ""),
 						);
 					} catch (error) {
-						return errorText(error);
+						return failureText(error);
 					}
 				},
 			},
@@ -314,7 +315,7 @@ export function createMemoryExtension(getScope: () => MemoryScope | undefined): 
 						}
 						return text(lines.join("\n"));
 					} catch (error) {
-						return errorText(error);
+						return failureText(error);
 					}
 				},
 			},
@@ -353,7 +354,7 @@ export function createMemoryExtension(getScope: () => MemoryScope | undefined): 
 						});
 						return text(result.text);
 					} catch (error) {
-						return errorText(error);
+						return failureText(error);
 					}
 				},
 			},
@@ -385,7 +386,7 @@ export function createMemoryExtension(getScope: () => MemoryScope | undefined): 
 							}),
 						);
 					} catch (error) {
-						return errorText(error);
+						return failureText(error);
 					}
 				},
 			},

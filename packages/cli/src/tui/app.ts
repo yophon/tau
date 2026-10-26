@@ -85,7 +85,7 @@ type ResizeStream = {
 };
 
 /** How long after the last resize event the whole screen is rewritten at the final width. */
-export const RESIZE_SETTLE_MS = 200;
+const RESIZE_SETTLE_MS = 200;
 
 /**
  * Take over Ink's resize handling. Ink 5 answers a resize by erasing as many lines as it

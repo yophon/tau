@@ -479,7 +479,7 @@ export function parseArgs(argv: string[]): CliOptions {
 	return options;
 }
 
-export const PRICING_KEYS: Record<string, keyof ModelPricing> = {
+const PRICING_KEYS: Record<string, keyof ModelPricing> = {
 	in: "inputPerMTok",
 	out: "outputPerMTok",
 	cacheRead: "cacheReadPerMTok",
@@ -488,7 +488,7 @@ export const PRICING_KEYS: Record<string, keyof ModelPricing> = {
 
 /** Parse "in=0.5,out=2,cacheRead=0.05,cacheWrite=0.625" (cache keys optional). */
 /** A whole number written as digits only ("128k", "1e5", "12.5" are rejected), or undefined. */
-export function parseNonNegativeInt(text: string): number | undefined {
+function parseNonNegativeInt(text: string): number | undefined {
 	if (!/^\d+$/.test(text.trim())) return undefined;
 	const value = Number(text.trim());
 	return Number.isSafeInteger(value) ? value : undefined;

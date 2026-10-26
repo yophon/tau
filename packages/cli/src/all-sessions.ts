@@ -28,7 +28,9 @@ export async function listAllSessions(home: string, limit: number): Promise<Sess
 		for (const name of names) {
 			try {
 				files.push({ path: join(dir, name), changed: statSync(join(dir, name)).mtimeMs });
-			} catch {}
+			} catch {
+				// Removed while listing: not a session any more.
+			}
 		}
 	}
 	const newest = files.sort((a, b) => b.changed - a.changed).slice(0, limit);

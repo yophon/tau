@@ -13,7 +13,7 @@ import { WebSocket, WebSocketServer } from "ws";
 import { DeviceStore, devicesPath, PairingCodes, reachableUrls } from "./devices.ts";
 import type { RemoteAdmin, SessionHub } from "./hub.ts";
 
-export const DEFAULT_REMOTE_PORT = 7700;
+const DEFAULT_REMOTE_PORT = 7700;
 
 const TYPES: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
@@ -42,7 +42,7 @@ export function parseRemoteListen(listen: string): { host: string; port: number 
 }
 
 /** The web client's files (`@yophon/tau-web`'s dist), when it is built. */
-export function webClientRoot(): string | undefined {
+function webClientRoot(): string | undefined {
 	try {
 		const pkg = fileURLToPath(import.meta.resolve("@yophon/tau-web/package.json"));
 		const dist = join(dirname(pkg), "dist");
@@ -106,7 +106,9 @@ export async function startRemote(options: RemoteOptions): Promise<RemoteListene
 			let asked: { code?: unknown; name?: unknown } = {};
 			try {
 				asked = JSON.parse(body ?? "{}");
-			} catch {}
+			} catch {
+				// Not JSON: no code, which the check below refuses.
+			}
 			const result = codes.consume(typeof asked.code === "string" ? asked.code : "");
 			if (!result.ok) {
 				json(response, 403, { error: result.reason });
@@ -136,6 +138,7 @@ export async function startRemote(options: RemoteOptions): Promise<RemoteListene
 			});
 			heartbeats.set(ws, alive);
 			ws.on("close", () => heartbeats.delete(ws));
+			// ws's WebSocket has the browser API the transport uses (send, close, onmessage…) under Node types.
 			options.hub().connect(createWebSocketTransport(ws as unknown as WebSocketLike), {
 				authorize: (token) => devices.verify(token),
 			});

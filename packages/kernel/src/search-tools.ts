@@ -171,7 +171,7 @@ function isIgnored(scopes: readonly IgnoreScope[], relativePath: string, isDirec
 
 // ── walking ──────────────────────────────────────────────────────────────
 
-function joinPath(base: string, name: string): string {
+function joinRelative(base: string, name: string): string {
 	if (base === "" || base === ".") return name;
 	return `${base.replace(/[\\/]+$/, "")}/${name}`;
 }
@@ -184,7 +184,7 @@ function normalizeDisplayRoot(path: string | undefined): string {
 
 async function readGitignore(fs: FileSystem, dir: string): Promise<IgnoreRule[]> {
 	try {
-		return parseGitignore(await fs.readTextFile(joinPath(dir, ".gitignore")));
+		return parseGitignore(await fs.readTextFile(joinRelative(dir, ".gitignore")));
 	} catch {
 		return [];
 	}
@@ -225,7 +225,7 @@ async function walk(
 	}
 	const visitDir = async (dirRelative: string): Promise<boolean> => {
 		if (signal?.aborted) throw new Error("Operation aborted");
-		const dirPath = joinPath(displayRoot || ".", dirRelative);
+		const dirPath = joinRelative(displayRoot || ".", dirRelative);
 		const rules = await readGitignore(fs, dirPath);
 		if (rules.length > 0) scopes.push({ base: dirRelative, prefix: "", rules });
 		let entries: FileInfo[];
@@ -240,7 +240,7 @@ async function walk(
 			const relative = dirRelative === "" ? info.name : `${dirRelative}/${info.name}`;
 			const isDirectory = info.kind === "directory";
 			if (isIgnored(scopes, relative, isDirectory)) continue;
-			const entry: WalkEntry = { relative, display: joinPath(displayRoot, relative), info };
+			const entry: WalkEntry = { relative, display: joinRelative(displayRoot, relative), info };
 			if (!(await visit(entry))) return false;
 			if (isDirectory && !(await visitDir(relative))) return false;
 		}
@@ -274,7 +274,7 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
 	return typeof value === "string" && value.trim() !== "" ? value : undefined;
 }
 
-function escapeRegExp(text: string): string {
+export function escapeRegExp(text: string): string {
 	return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
@@ -367,7 +367,7 @@ export function createGrepTool(fs: FileSystem): Tool {
 						if (entry.info.kind !== "file") return true;
 						if (globMatch && !globMatch(entry.relative)) return true;
 						if (entry.info.size > GREP_MAX_FILE_BYTES) return true;
-						return searchFile(joinPath(normalizeDisplayRoot(path) || ".", entry.relative), entry.display);
+						return searchFile(joinRelative(normalizeDisplayRoot(path) || ".", entry.relative), entry.display);
 					});
 				}
 				if (matches === 0) return textResult("No matches found");

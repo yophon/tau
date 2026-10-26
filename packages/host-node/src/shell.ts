@@ -47,7 +47,7 @@ export function isWindowsStyleCommand(command: string): boolean {
 }
 
 /** Remove a redundant nested `cmd /c` wrapper before invoking ComSpec itself. */
-export function unwrapCmdWrapper(command: string): string {
+function unwrapCmdWrapper(command: string): string {
 	const match = /^\s*cmd(?:\.exe)?(?:\s+\/[dD])?(?:\s+\/[sS])?\s+\/[cC]\s+([\s\S]*)$/i.exec(command);
 	if (!match) return command;
 	const inner = match[1].trim();
@@ -58,7 +58,7 @@ export function unwrapCmdWrapper(command: string): string {
  * Whether a shell path exists (pi 1.3 shellPathExists, #9504): access(F_OK) rather than
  * existsSync, whose extra stat rejects runnable Microsoft Store aliases on Windows.
  */
-export function shellPathExists(path: string): boolean {
+function shellPathExists(path: string): boolean {
 	try {
 		accessSync(path, fsConstants.F_OK);
 		return true;
@@ -144,7 +144,7 @@ export function findShell(command: string, shellPath?: string): ShellSpec {
 }
 
 /** pi's PowerShell arguments: no profile, no prompts, scripts allowed for this process only. */
-export const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
+const POWERSHELL_ARGS = ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"] as const;
 const UTF8_OUTPUT_PREFIX = "try { [Console]::OutputEncoding=[System.Text.Encoding]::UTF8 } catch {}\n";
 
 let powerShellPath: string | null | undefined;

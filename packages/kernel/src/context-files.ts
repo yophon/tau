@@ -24,7 +24,7 @@ function separatorOf(path: string): string {
 	return path.includes("\\") && !path.includes("/") ? "\\" : "/";
 }
 
-function joinPath(dir: string, name: string): string {
+function joinWithSeparator(dir: string, name: string): string {
 	const sep = separatorOf(dir);
 	return dir.endsWith("/") || dir.endsWith("\\") ? `${dir}${name}` : `${dir}${sep}${name}`;
 }
@@ -45,7 +45,7 @@ function parentDir(path: string): string | undefined {
 
 async function loadFromDir(fs: FileSystem, dir: string): Promise<ContextFile | undefined> {
 	for (const name of CONTEXT_FILE_NAMES) {
-		const path = joinPath(dir, name);
+		const path = joinWithSeparator(dir, name);
 		try {
 			// pi stats through symlinks; hosts may report the link itself, so only
 			// rule out what can never be read as a file.

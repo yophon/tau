@@ -17,7 +17,7 @@ function escapeHtml(text: string): string {
 	return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
-function contentText(content: string | readonly { type: string; text?: string }[]): string {
+function textWithPlaceholders(content: string | readonly { type: string; text?: string }[]): string {
 	if (typeof content === "string") return content;
 	return content.map((block) => (block.type === "text" ? (block.text ?? "") : `[${block.type}]`)).join("\n");
 }
@@ -37,9 +37,9 @@ function details(summary: string, body: string, className: string): string {
 function messageHtml(message: AgentMessage): string {
 	switch (message.role) {
 		case "system":
-			return details("System prompt", contentText(message.content), "system");
+			return details("System prompt", textWithPlaceholders(message.content), "system");
 		case "user":
-			return `<section class="msg user"><h2>User</h2><pre>${escapeHtml(contentText(message.content))}</pre></section>`;
+			return `<section class="msg user"><h2>User</h2><pre>${escapeHtml(textWithPlaceholders(message.content))}</pre></section>`;
 		case "assistant": {
 			const parts = message.content.map((block) => {
 				if (block.type === "text") return `<pre>${escapeHtml(block.text)}</pre>`;
@@ -51,12 +51,12 @@ function messageHtml(message: AgentMessage): string {
 		case "toolResult":
 			return details(
 				`${message.isError ? "✗" : "↳"} ${message.toolName} result`,
-				contentText(message.content),
+				textWithPlaceholders(message.content),
 				message.isError ? "result error" : "result",
 			);
 		case "custom":
 			if (!message.display) return "";
-			return `<section class="msg custom"><h2>${escapeHtml(message.customType)}</h2><pre>${escapeHtml(contentText(message.content))}</pre></section>`;
+			return `<section class="msg custom"><h2>${escapeHtml(message.customType)}</h2><pre>${escapeHtml(textWithPlaceholders(message.content))}</pre></section>`;
 		case "compactionSummary":
 			return details("Compacted context", message.summary, "summary");
 		case "branchSummary":
