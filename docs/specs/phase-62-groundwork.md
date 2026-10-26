@@ -1,6 +1,6 @@
 # Phase 62：全方位打底子 规格书
 
-> 状态：已完成（2026-10-26）；undici 的升级等两周规则（10-29 起，技术债 #24），WSL 里人工看缩放、滚动、选择复制列进真机清单。已确认（2026-10-25）。用户：「都按你的建议来，三那个都archive」——门禁上限降到拆后加 200；依赖升级放在本阶段、代码整理之后；搁置的网关、两个渠道、飞书扩展与 Flutter/RN/小程序示例归档；技术债 #18 在 `../pi` 装依赖后用 pi 的实现生成期望值。
+> 状态：已完成（2026-10-26）；WSL 里人工看缩放、滚动、选择复制列进真机清单。已确认（2026-10-25）。用户：「都按你的建议来，三那个都archive」——门禁上限降到拆后加 200；依赖升级放在本阶段、代码整理之后；搁置的网关、两个渠道、飞书扩展与 Flutter/RN/小程序示例归档；技术债 #18 在 `../pi` 装依赖后用 pi 的实现生成期望值。
 > 对应 roadmap 阶段：Phase 62。起因：P61 后讨论下一阶段，用户：「是得打底子了，我们最近进展太猛了」；第一版草稿只有拆文件与合并重复，用户：「感觉这些优化太少，撑不起一个阶段，我们既然要打底子，就要全方位的搞」。
 
 ## 目标
@@ -193,7 +193,7 @@
 - [x] 62e：列出的重复各自只剩一份或改名说明差别；死代码、多余导出、空 `catch`、类型断言处理完，实施记录有数字
 - [x] 62f：补的测试通过；偶发失败各有结论；全量测试墙钟时间前后对比；#18 的期望值来自 pi 的实现
 - [x] 62g：自查记录（看了哪些文件、发现什么、怎么处理）写进实施记录；修掉的问题各有测试
-- [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制（undici 等两周规则；人工看缩放、滚动、选择复制列进真机清单）
+- [ ] 62h：依赖按规则升完；`npm audit` 无高危；smoke-tui 两种模式整套、`smoke:web`、pack smoke 通过；WSL 里人工看过缩放、滚动、选择复制（人工看缩放、滚动、选择复制列进真机清单）
 - [x] 62i：所列文档逐句核过；README 标明未实测路径
 - [x] 62j：五份规格书的清单对完账；`docs/device-acceptance.md` 成稿；技术债表复核完
 - [x] 真 DeepSeek 回归：`-p` 带工具调用；从不通的端口降级到 DeepSeek（走拆出去的重试与换模型）；REPL、rpc、ACP 各一轮；WSL 里 TUI 一轮（审批、Ctrl+C、`/compact`、缩放）；常驻服务两端接同一会话；会话内定时（`/loop` 或 `cron_create`，走搬进 CLI 的 cron）（见实施记录「收尾」）
@@ -335,7 +335,7 @@
   - Ink 7 改的 Backspace 与 Escape：tau 自己解析按键；启动对话框（`startup.ts`）用 Ink 的按键，Backspace 与 Delete 本来就同样处理。
   - 测试：`tui-commands` 的 `/usage` 测试等的那句话第一张表里就有，Ink 8 的出帧时机把它暴露出来；改成等带这一轮的那张表。
 - **验证**：check、全量测试（1447 个）、WSL 里 smoke-tui 两种模式整套（各 41 个场景）、pack smoke、`smoke:web`、`build:web`、`smoke:weapp`、`smoke:quickjs`、`smoke:quickjs:mcp`、`smoke:browser`、`smoke:browser:runtime` 通过。WSL 里人工看缩放、滚动、选择复制还没做（要用户在真终端里看），列进真机验收。
-- **undici 与 `npm audit`**：`npm audit` 剩一个高危，undici 8.10.2 的三条 10 月公告，8.12.2 起修复；8.12.2 是 10-15 发的，按两周的规则 10-29 才能升（技术债 #24）。等用户定。
+- **undici 与 `npm audit`**：`npm audit` 剩一个高危，undici 8.10.2 的三条 10 月公告，8.12.2 起修复；8.12.2 是 10-15 发的，不满两周。三条里两条中危碰不到 tau（undici 的 `EventSource`、`fetch` 的 `integrity`，tau 都不用）；高危那条（GHSA-xjj6-f33q-929c）碰得到：tau 用 `undici.install()` 把全局 `fetch` 换成 undici 的，`web_fetch` 抓任意网址也走它。先写复现（`p62.test.ts`「a response with too many content-encodings fails its request and nothing else」：本地服务回 6 个编码、发一点数据就断开），8.10.2 上 `fetch` 被拒之后响应体的流报错没人接，进程退出；用户定作安全例外（「升吧」），升到 8.12.2 后通过，`npm audit` 0 个。选版本的规则连同这条例外写进 development.md。
 
 ### 62i 文档
 
@@ -364,4 +364,4 @@
 - **真 DeepSeek 回归**（deepseek-flash，官方端点；脚本在 scratchpad 的 `deepseek-p62.mjs`、`deepseek-p62-cron.mjs`、`p62-tui-deepseek*.sh`）：`-p` 读文件答出暗号；主端点指向不通的端口时 `--fallback-model` 换到 DeepSeek 答对；REPL 管道两句都跑完、退出码 0；`--mode rpc` 读文件答对；`--mode acp`（`--no-daemon`）一轮 `end_turn`；常驻服务上两个客户端接同一会话，另一端看到回复、`tau serve status` 报 2 个客户端；常驻服务上模型用 `cron_create` 定了下一分钟的一次性任务，一分钟后会话空闲时自己开了一轮。WSL 里 TUI（Ink 8）：全屏（自动起常驻服务）与 `--inline --no-daemon` 各读一次文件；全屏 supervised 一轮里批准一次 bash、Ctrl+C 中断 `sleep 40`（工具结果 aborted、■ Interrupted）、`/compact`（保留 2/7 条）、把窗口从 120×40 改成 90×30 后只有一个输入框、对话都在。第一次写的检查有三处条件写错（拿命令本身含的词、对话太短时正确的「Nothing to compact.」当失败），改正后重跑全过；`--mode rpc` 本来就没有 cron 工具（P44：只给 TUI 与 REPL，常驻服务的会话按 REPL 算），定时那一项改在常驻服务上做。
 - **冒烟**：smoke-tui 两种模式整套（各 41 个场景，WSL）在 62f 后、Ink 8 升级后各跑过，62g 后跑过全屏；pack smoke、`smoke:web`、`build:web`、`smoke:weapp`、`smoke:quickjs`、`smoke:quickjs:mcp`、`smoke:browser`、`smoke:browser:runtime` 在 62h 跑过。
 - **基线**（`docs/baseline.md` 的「P62 之后」）：启动、`-p`、常驻服务、TUI 首屏与 P62 之前持平。变的两项单独核过：全屏首次全部渲染在 2000 条时慢约 12 ms（同一进程里新旧 wrap 移植交替对比，是 wrap-ansi 10 的移植多做的事；10000 条时持平）；全量测试两次 177 s、200 s（测试少了 88 个，这天机器波动大，单独跑时报的耗时是 154–164 s）。
-- **没做完的**：undici（`npm audit` 剩它一个高危，修复版 10-15 发的，10-29 起合规则，等用户定）；WSL 里人工看缩放、滚动、选择复制（列进真机清单第一组）；62d 的 `extensions.ts` 比目标多 50 行（见 62d 的偏差）。
+- **没做完的**：WSL 里人工看缩放、滚动、选择复制（列进真机清单第一组）；62d 的 `extensions.ts` 比目标多 50 行（见 62d 的偏差）。

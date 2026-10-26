@@ -15,6 +15,7 @@
 - `npm run smoke:dialects` — 真实端点方言冒烟（P17，on-demand，不进必跑 gate）：`TAU_DIALECT_DEEPSEEK_KEY`/`TAU_DIALECT_OPENROUTER_KEY`/`TAU_DIALECT_OLLAMA_BASE_URL`/`TAU_DIALECT_OPENAI_COMPAT_BASE_URL`+`_KEY`+`_MODEL` 有哪个跑哪个，缺凭据明示 SKIP，任一 FAIL 退出非零；CI 有 secrets 驱动的可选 job（continue-on-error）
 - **发布工程（P12）**：`npm run build`（tsc 出 dist，发布前置）· `npm run version:patch|minor|major`（锁步 bump + 内部依赖同步 + shrinkwrap 重生成）· `npm run publish:dry` / `publish:npm`（幂等，pack 校验；发布时临时把 manifest 改写为 dist 形态）· `npm run release -- patch`（bump → 门禁 → CHANGELOG 滚动 → commit+tag+push；发布仍手动）。CHANGELOG.md 的 `[Unreleased]` 段随改动随手记
 - **CI（P11 起）**：push/PR 到 main 自动跑 gate（check + `git diff --exit-code` 防格式漂移 + test）与 smoke 全家桶。提交前本地跑过 check 可避免 CI 因 biome 自动修复而红。P62 起 gate 在三处跑：Ubuntu + Node 22、Ubuntu + Node 24、Windows + Node 22（smoke 只在 Ubuntu）。Windows 上跳过两个信号测试（REPL 的 SIGINT、被信号杀掉的命令）：改了信号、文件权限或 REPL，本地在 WSL 里跑一遍对应的测试文件，如 `wsl.exe -e bash -c 'cd "$(bash scripts/wsl-copy.sh)" && node --test packages/cli/test/e2e.test.ts'`
+- **依赖选版本**（P59 起，P62 写定）：升级或新加依赖时取发布满两周的最新版（刚发布的版本被投毒或带明显 bug 时多在几天内撤下或补发），写成精确版本（`check:pinned-deps`）。例外：修安全漏洞的版本不用等，取修复它的那个版本（P62 的 undici 8.12.2，用户：「升吧」）
 - **e2e 纪律（P11 事故教训）**：REPL 测试写命令前必须 `waitForIdle()`（运行中写入会变 steering）；一切等待必须有超时；spawn 的子进程必须有 `after()` 兜底击杀——无界等待都是 CI 定时炸弹
 
 ## pi 参照系

@@ -26,6 +26,9 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
   client, esbuild 0.28.2 and Biome 2.5.15.
 
 ### Fixed (P62: found reviewing the resident server and adding tests)
+- undici 8.12.2 (GHSA-xjj6-f33q-929c): a response with more than five content-encodings made tau's
+  fetch (undici's, installed globally) fail and then end the process, so a page `web_fetch` read
+  could stop tau or the resident server. Taken before its two weeks were up, as a security fix.
 - Two ways anyone who could reach the remote port could stop the resident server, before pairing:
   a WebSocket upgrade it refused (wrong path or `Origin`) whose client then reset the connection, and
   a frame that is valid JSON but not an object (`5`, `null`). Both now leave the server running; a

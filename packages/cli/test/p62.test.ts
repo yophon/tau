@@ -3,11 +3,13 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dirtyRepoQuestion, uncommittedFiles } from "../src/dirty-repo.ts";
+import { configureHttpDispatcher } from "../src/http-dispatcher.ts";
 import { openUrlCommand } from "../src/open-url.ts";
 import { qrLines } from "../src/qr.ts";
 
@@ -109,6 +111,28 @@ describe("P62f tau mcp logout", () => {
 		const login = await tau(["mcp", "login"], home);
 		assert.equal(login.code, 1);
 		assert.match(login.err, /Usage: tau mcp login <server>/);
+	});
+});
+
+describe("P62 undici (GHSA-xjj6-f33q-929c)", () => {
+	it("a response with too many content-encodings fails its request and nothing else", async () => {
+		// tau's fetch is undici's (http-dispatcher.ts); web_fetch can reach any page the model picks.
+		configureHttpDispatcher();
+		const server = createServer((_request, response) => {
+			response.writeHead(200, { "content-encoding": "gzip, gzip, gzip, gzip, gzip, gzip" });
+			response.write("x".repeat(1000));
+			setTimeout(() => response.socket?.destroy(), 50);
+		});
+		await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+		try {
+			const { port } = server.address() as { port: number };
+			await assert.rejects(fetch(`http://127.0.0.1:${port}/`));
+			// Before 8.12.2 the response's stream errored after the rejection, with nobody listening:
+			// the process exited.
+			await new Promise((resolve) => setTimeout(resolve, 300));
+		} finally {
+			server.close();
+		}
 	});
 });
 

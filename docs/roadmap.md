@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-26（P62 打底子完成，undici 的升级等两周规则，见技术债 #24；P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；当前没有进行中的阶段，桌面端在讨论中，规格书暂不写）
+> 最后更新：2026-10-26（P62 打底子完成；P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；当前没有进行中的阶段，桌面端在讨论中，规格书暂不写）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -75,7 +75,7 @@
 | [P59](specs/phase-59-remote-phone.md) | 常驻 tau 第四步：手机——常驻服务的 WebSocket 与网页客户端（新包 `@yophon/tau-web`，Preact 构建时打包），`tau serve remote on`、`pair`（一次性码与二维码）、`devices`、`revoke`，设备令牌（只存摘要）、不自带 TLS（推荐 Tailscale）；手机上看会话、答审批与对话框、发话插话中止、附图、换模型与档位；网页与 TUI 断线自动重连补齐 | 2026-10-24 | D61 |
 | [P60](specs/phase-60-editor-acp.md) | 常驻 tau 第五步：编辑器——`--mode acp` 改成协议上的适配层，连接策略同 TUI；`session/list`（终端的会话排前）、load、resume、close；别的客户端的话与设置推给编辑器；审批先答为准、别处答了以 `$/cancel_request` 撤回；会话配置项（档位、模型、推理强度）；对话框走 `elicitation/create`；工具直接读写磁盘（去掉经编辑器读写）；协议加客户端带来的 MCP server（只限本机） | 2026-10-24 | D62 |
 | [P61](specs/phase-61-debt-cleanup.md) | 日常使用相关的三条技术债：常驻服务里图片支持按会话的模型（#35）；扩展的 Markdown 变换在流式时也生效、换宽度按新宽度取（#33）；管道一次灌给 `tau --repl` 的几行一句跑完再跑下一句、跑完退出（#30，原来一句都不跑） | 2026-10-24 | |
-| [P62](specs/phase-62-groundwork.md) | 打底子：基线（`scripts/baseline.mjs`、`docs/baseline.md`）；网关、两个渠道、飞书扩展与三个示例应用归档；CI 加 Ubuntu Node 24 与 Windows 两路 gate；8 个快撞线的文件拆分；重复实现、死代码、空 catch、类型断言（协议边界收进 `wire.ts`）；补测试、偶发失败结论、#18 用 pi 自己的实现核对；常驻服务这条线自查（7 处修正，其中两处未配对就能让服务退出）；依赖升级（Ink 8 + React 19 与 wrap-ansi 10 的移植、Preact 11、Biome 2.5、esbuild；undici 等两周规则）；文档逐句对代码；账目（五份验收清单、真机清单、技术债表；查出子代理拿得到 `ask_user`） | 2026-10-26 | D63（D31、D54 补记） |
+| [P62](specs/phase-62-groundwork.md) | 打底子：基线（`scripts/baseline.mjs`、`docs/baseline.md`）；网关、两个渠道、飞书扩展与三个示例应用归档；CI 加 Ubuntu Node 24 与 Windows 两路 gate；8 个快撞线的文件拆分；重复实现、死代码、空 catch、类型断言（协议边界收进 `wire.ts`）；补测试、偶发失败结论、#18 用 pi 自己的实现核对；常驻服务这条线自查（7 处修正，其中两处未配对就能让服务退出）；依赖升级（Ink 8 + React 19 与 wrap-ansi 10 的移植、Preact 11、Biome 2.5、esbuild；undici 8.12.2 作安全例外）；文档逐句对代码；账目（五份验收清单、真机清单、技术债表；查出子代理拿得到 `ask_user`） | 2026-10-26 | D63（D31、D54 补记） |
 
 真机验收：只能在真终端、手机、编辑器里看的场景都在 [device-acceptance.md](device-acceptance.md)（P34–P60，P62 合成），用户找时间走一遍。
 
@@ -157,10 +157,9 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
 | 13 | 10 个包从没发过 npm：ext-checkpoint、ext-codemode、ext-loop-detection、ext-lsp、ext-provider-google、ext-provider-openai-responses、ext-tool-search、ext-web、protocol、web；已发的 11 个停在 0.2.0（2026-07-21）（P52 复盘更正，P62j 重数） | 只能在仓库里用；npm 上的 `tau` 是三个月前的版本 | 随 0.4.0 首发，或决定不对外发布（复盘候选 C） |
-| 24 | `npm audit` 剩一个高危：undici 8.10.2（EventSource 解析无界内存、SRI 绕过、过多 content-encoding 未处理），8.12.2 起修复；8.12.2 是 2026-10-15 发的，按「发布满两周」的规则 10-29 起能升（P52 的 4 个随 P62 归档消失） | CLI 经 undici 发所有请求（P40a 的代理 dispatcher） | 10-29 起升到满两周的最新 8.12.x，或用户定作安全例外先升 |
 | 28 | 真机验收没人走过：P34–P60 只能真机验的场景已合成一份清单 [device-acceptance.md](device-acceptance.md)（P62j，11 组），一条也还没走 | 真实终端、输入法、剪贴板、通知、MCP 网页登录、手机、编辑器等自动化测不到的交互没人试过；P62 换了 Ink 8，全屏显示一组尤其要看 | 用户找时间按清单走一遍，组内从上往下 |
 | 36 | `smoke:browser:runtime`（浏览器里跑内核与 OPFS）在 CI 上超时过一次（20 秒内 Chrome 没报结果，stderr 只有 dbus 的报错），重跑通过（P59 文档提交的 CI，run 40064221954）；之后没再出现 | CI 偶尔红一次 | P62f 已把超时放宽到 40 秒，超时报错带上页面何时发出第一个模型请求；再出现时看它卡在页面加载还是模型那边 |
 | 37 | `scripts/` 里几处在 Windows 上用 `shell: true` 跑 `npm.cmd` 并传参数数组（smoke-pack、build-packages、publish），Node 24 报 DEP0190 弃用警告（P62） | 以后的 Node 可能改成报错；发布与 pack smoke 在 Windows 上跑不了 | 动发布脚本时把命令与参数自己拼成一条带引号的命令行，或改用 `npm.cmd` 的绝对路径不经 shell |
 | 38 | `tau serve remote on`/`off` 重启常驻服务时只带默认参数，上次 `tau serve start -m …` 给的参数丢了；`restart` 用这次命令行给的（P62g 查到） | 用 `-m` 等参数起的服务，开关远程访问后换回缺省模型 | 启动参数记进 `daemon.json`，`remote on\|off` 与不带参数的 `restart` 沿用 |
 
-（P62 还清：#18（pi 会话夹具用 pi 自己的实现核过，62f）、#25（Ink 8、React 19、string-width 8、wrap-ansi 10，62h）、#27（同包内的重复实现合并或改名，62e）、#31、#32（agent.ts、controller.ts 拆分，62d）。#19、#20 已于 P62 随网关归档销案。#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）
+（P62 还清：#24（undici 升到 8.12.2，`npm audit` 清零；安全修复不等两周，用户定）、#18（pi 会话夹具用 pi 自己的实现核过，62f）、#25（Ink 8、React 19、string-width 8、wrap-ansi 10，62h）、#27（同包内的重复实现合并或改名，62e）、#31、#32（agent.ts、controller.ts 拆分，62d）。#19、#20 已于 P62 随网关归档销案。#26 已于 P53 还清：加了 `-r/--resume`，提示里说的变成真的。#22、#23 已于 P48 还清：smoke-tui 改在 WSL 自己的文件系统里跑，OAuth 补上 pi 1.2 的两处差距。#17 已于 P42 还清：写入在叶子后面追加时原地追加投影、路径与用量，每次请求的检查按对象身份比较、不再序列化日志。#21 已于 P38 还清：tau 自己拆分和解析按键（pi 的 StdinBuffer），一次读到的几个键都生效。#15 已于 P25 还清：新 TUI 在挂载后才发 session_start，启动期通知打印在 TUI 上方。#1–#4 已于 P2 还清：信任门、test/helpers.ts、test-fixtures/mock-openai.ts + 自动化 CLI e2e、SIGINT abort e2e。#7 已于 P10 还清：双向桥接落地于 host-weapp/host-rn，义务文档化进 development.md 硬规则 #8。#5/#6 已于 P12 还清：tau bin 发布物为 dist JS 天然无告警、scope 定名 @yophon/tau-*。）

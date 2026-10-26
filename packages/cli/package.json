@@ -47,7 +47,7 @@
 		"qrcode-generator": "2.0.4",
 		"react": "19.3.0",
 		"string-width": "8.3.0",
-		"undici": "8.10.2",
+		"undici": "8.12.2",
 		"ws": "8.22.0"
 	},
 	"devDependencies": {
