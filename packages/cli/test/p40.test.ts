@@ -313,45 +313,39 @@ describe("P40b: PowerShell and shell settings in the CLI", () => {
 		assert.equal(summarizeToolArgs("powershell", { command: "Get-Date  -Format o" }), "Get-Date -Format o");
 	});
 
-	it(
-		"on Windows the tool is on by default; --tools -powershell or a Bash deny rule takes it away",
-		{
-			skip: findPowerShell() === undefined,
-		},
-		async () => {
-			const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
-			try {
-				const plain = await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl });
-				assert.equal(plain.code, 0, plain.output);
-				assert.ok(declaredTools(mock.requests[0]).includes("powershell"));
-				await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl, args: ["--tools", "-powershell"] });
-				assert.ok(!declaredTools(mock.requests[1]).includes("powershell"));
-				await runPrint("hi", { home: tempHome({ permissions: { deny: ["Bash(rm *)"] } }), baseUrl: mock.baseUrl });
-				assert.ok(!declaredTools(mock.requests[2]).includes("powershell"));
-				await runPrint("hi", {
-					home: tempHome({ permissions: { deny: ["Bash(rm *)", "PowerShell(Remove-Item *)"] } }),
-					baseUrl: mock.baseUrl,
-				});
-				assert.ok(declaredTools(mock.requests[3]).includes("powershell"));
-			} finally {
-				await mock.close();
-			}
-		},
-	);
+	it("on Windows the tool is on by default; --tools -powershell or a Bash deny rule takes it away", {
+		skip: findPowerShell() === undefined,
+	}, async () => {
+		const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			const plain = await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl });
+			assert.equal(plain.code, 0, plain.output);
+			assert.ok(declaredTools(mock.requests[0]).includes("powershell"));
+			await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl, args: ["--tools", "-powershell"] });
+			assert.ok(!declaredTools(mock.requests[1]).includes("powershell"));
+			await runPrint("hi", { home: tempHome({ permissions: { deny: ["Bash(rm *)"] } }), baseUrl: mock.baseUrl });
+			assert.ok(!declaredTools(mock.requests[2]).includes("powershell"));
+			await runPrint("hi", {
+				home: tempHome({ permissions: { deny: ["Bash(rm *)", "PowerShell(Remove-Item *)"] } }),
+				baseUrl: mock.baseUrl,
+			});
+			assert.ok(declaredTools(mock.requests[3]).includes("powershell"));
+		} finally {
+			await mock.close();
+		}
+	});
 
-	it(
-		"there is no powershell tool where PowerShell is not installed",
-		{ skip: findPowerShell() !== undefined },
-		async () => {
-			const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
-			try {
-				await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl });
-				assert.ok(!declaredTools(mock.requests[0]).includes("powershell"));
-			} finally {
-				await mock.close();
-			}
-		},
-	);
+	it("there is no powershell tool where PowerShell is not installed", {
+		skip: findPowerShell() !== undefined,
+	}, async () => {
+		const mock = await startMockOpenAI([() => mockTextTurn("ok")]);
+		try {
+			await runPrint("hi", { home: tempHome(), baseUrl: mock.baseUrl });
+			assert.ok(!declaredTools(mock.requests[0]).includes("powershell"));
+		} finally {
+			await mock.close();
+		}
+	});
 
 	it("shellCommandPrefix reaches the bash tool; a missing shellPath stops tau with pi's message", async () => {
 		const mock = await startMockOpenAI([

@@ -756,7 +756,7 @@ describe("P47b subscriptions/listen", () => {
 		const transport = new ScriptedTransport(
 			modern({
 				"subscriptions/listen": (_method, params, server, id) => {
-					if ((params?.notifications as { promptsListChanged?: boolean }).promptsListChanged) {
+					if ((params?.notifications as { promptsListChanged?: boolean } | undefined)?.promptsListChanged) {
 						return { resultType: "complete" };
 					}
 					server.notify("notifications/subscriptions/acknowledged", { _meta: { [MCP_META.subscriptionId]: id } });
@@ -825,7 +825,9 @@ describe("P47b subscriptions/listen", () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.equal(listens, 2, "reopened once after the drop, not after the graceful end");
 		const listen = requests.find((request) => request.body?.method === "subscriptions/listen");
-		assert.deepEqual((listen?.body?.params as { notifications?: unknown }).notifications, { toolsListChanged: true });
+		assert.deepEqual((listen?.body?.params as { notifications?: unknown } | undefined)?.notifications, {
+			toolsListChanged: true,
+		});
 		assert.ok(registry.tools.has("mcp__live__two"), "re-listed after list_changed");
 		await handle.close();
 	});
@@ -928,7 +930,9 @@ describe("P47b elicitation in input_required", () => {
 		assert.match(JSON.stringify(result.content), /linked/);
 		assert.deepEqual(asked, [{ mode: "url", server: "svc", message: "Connect", url: "https://auth.test/x" }]);
 		const retry = transport.sent.filter((message) => message.method === "tools/call").at(-1);
-		assert.deepEqual((retry?.params as { inputResponses?: unknown }).inputResponses, { link: { action: "accept" } });
+		assert.deepEqual((retry?.params as { inputResponses?: unknown } | undefined)?.inputResponses, {
+			link: { action: "accept" },
+		});
 		await handle.close();
 	});
 });

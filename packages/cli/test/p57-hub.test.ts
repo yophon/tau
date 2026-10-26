@@ -332,7 +332,7 @@ describe("P57 session hub: control and jobs", () => {
 			bashEvents.map((event) => event.type),
 			["tool_start", "tool_update", "tool_result"],
 		);
-		assert.equal((bashEvents[0]?.toolCall as { name: string }).name, "bash");
+		assert.equal((bashEvents[0]?.toolCall as { name: string } | undefined)?.name, "bash");
 		const tasks = [...of(tui.events, "thread/task/started"), ...of(tui.events, "thread/task/ended")];
 		assert.deepEqual(
 			tasks.map((event) => event.params.kind),

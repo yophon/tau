@@ -131,21 +131,19 @@ describe("P49c command hooks", () => {
 		assert.deepEqual(JSON.parse(outcome?.stdout ?? "[]"), ["a b", `it's "quoted" $HOME \`x\``, `${dir}/f`]);
 	});
 
-	it(
-		'shell: "powershell" runs the command in PowerShell (Windows)',
-		{ skip: process.platform !== "win32" },
-		async () => {
-			const dir = tempDir();
-			const { hooks } = runner(
-				{
-					PreToolUse: [group({ command: 'Write-Output "ps:$($PSVersionTable.PSVersion.Major)"', shell: "powershell" })],
-				},
-				dir,
-			);
-			const [outcome] = await hooks.run("PreToolUse", {}, { match: "bash" });
-			assert.match(outcome?.stdout ?? "", /^ps:\d+/);
-		},
-	);
+	it('shell: "powershell" runs the command in PowerShell (Windows)', {
+		skip: process.platform !== "win32",
+	}, async () => {
+		const dir = tempDir();
+		const { hooks } = runner(
+			{
+				PreToolUse: [group({ command: 'Write-Output "ps:$($PSVersionTable.PSVersion.Major)"', shell: "powershell" })],
+			},
+			dir,
+		);
+		const [outcome] = await hooks.run("PreToolUse", {}, { match: "bash" });
+		assert.match(outcome?.stdout ?? "", /^ps:\d+/);
+	});
 
 	it('onFailure "block": a hook that cannot start, exits 1, times out or prints bad JSON blocks the call', async () => {
 		const dir = tempDir();

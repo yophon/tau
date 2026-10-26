@@ -154,29 +154,25 @@ test("MSYS / Cygwin / WSL drive paths map to Windows drives on win32 only (HF-14
 	assert.equal(normalizeWindowsShellPath("/c/Users/x", "linux"), "/c/Users/x");
 });
 
-test(
-	"a command killed by a signal is not reported as success (P23e, pi 0.86.0)",
-	{ skip: process.platform === "win32" },
-	async () => {
-		await withTempDir(async (dir) => {
-			const shell = new NodeShell(dir);
-			const killed = await shell.exec("echo before; kill -9 $$");
-			assert.equal(killed.exitCode, 128 + 9);
-			assert.match(killed.stderr, /Terminated by signal SIGKILL/);
-			assert.match(killed.stdout, /before/);
-		});
-	},
-);
+test("a command killed by a signal is not reported as success (P23e, pi 0.86.0)", {
+	skip: process.platform === "win32",
+}, async () => {
+	await withTempDir(async (dir) => {
+		const shell = new NodeShell(dir);
+		const killed = await shell.exec("echo before; kill -9 $$");
+		assert.equal(killed.exitCode, 128 + 9);
+		assert.match(killed.stderr, /Terminated by signal SIGKILL/);
+		assert.match(killed.stdout, /before/);
+	});
+});
 
-test(
-	"a cmd.exe command keeps its quotes (P35: Node's escaping broke quoted paths)",
-	{ skip: process.platform !== "win32" },
-	async () => {
-		const dir = await mkdtemp(join(tmpdir(), "tau-cmd-"));
-		const script = join(dir, "say.mjs");
-		await writeFile(script, 'process.stdout.write("said " + process.argv[2]);');
-		const result = await new NodeShell(dir).exec(`node "${script.replaceAll("\\", "/")}" "two words"`);
-		assert.equal(result.stdout, "said two words");
-		assert.equal(result.exitCode, 0);
-	},
-);
+test("a cmd.exe command keeps its quotes (P35: Node's escaping broke quoted paths)", {
+	skip: process.platform !== "win32",
+}, async () => {
+	const dir = await mkdtemp(join(tmpdir(), "tau-cmd-"));
+	const script = join(dir, "say.mjs");
+	await writeFile(script, 'process.stdout.write("said " + process.argv[2]);');
+	const result = await new NodeShell(dir).exec(`node "${script.replaceAll("\\", "/")}" "two words"`);
+	assert.equal(result.stdout, "said two words");
+	assert.equal(result.exitCode, 0);
+});

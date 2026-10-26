@@ -32,7 +32,7 @@ import { getKeybindings, Keybindings, keybindingsTemplate, normalizeKey, setKeyb
 import { builtinKeys, type KeyCommand } from "./keymap.ts";
 import { initialState } from "./model.ts";
 import { INLINE_LIST_ROWS, type ListMove, moveInList } from "./render/list.ts";
-import { useMarkdownTransforms } from "./render/markdown.ts";
+import { setMarkdownTransforms } from "./render/markdown.ts";
 import type { SearchMatch } from "./render/search.ts";
 import { type StyledLine, span } from "./render/spans.ts";
 import { messagesToBlocks } from "./replay.ts";
@@ -314,7 +314,7 @@ export class TuiController {
 			this.inputBox.commandsChanged();
 			this.checkShortcuts();
 		};
-		useMarkdownTransforms(this.runs.markdownSource);
+		setMarkdownTransforms(this.runs.markdownSource);
 		session.handle("item/tool/requestApproval", (params) => this.dialogs.answerApproval(params as never));
 		session.handle("ui/request", (params) => this.dialogs.answerRequest(params as never));
 	}

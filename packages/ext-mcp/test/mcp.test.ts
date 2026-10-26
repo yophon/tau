@@ -132,7 +132,10 @@ test("tools whose names sanitize alike both get a hash suffix (pi createMcpToolN
 		for (const name of names) assert.match(name, /^mcp__mock__a_b_[0-9a-f]{8}$/);
 		assert.notEqual(names[0], names[1]);
 		const results = await Promise.all(names.map((name) => s.registry.tools.get(name)?.execute({})));
-		assert.deepEqual(results.map((result) => (result?.content[0] as { text: string }).text).sort(), ["a-b", "a_b"]);
+		assert.deepEqual(results.map((result) => (result?.content[0] as { text: string } | undefined)?.text).sort(), [
+			"a-b",
+			"a_b",
+		]);
 	} finally {
 		await s.end();
 	}
@@ -283,23 +286,21 @@ test("shutdown while a server is still connecting closes it instead of registeri
 	assert.equal(s.final("silent")?.state, "offline");
 });
 
-test(
-	"a .cmd shim starts as a stdio server on Windows (cross-spawn)",
-	{ skip: process.platform !== "win32" },
-	async () => {
-		const dir = mkdtempSync(join(tmpdir(), "tau-mcp-cmd-"));
-		const shim = join(dir, "mock server.cmd");
-		writeFileSync(shim, ["@echo off", `"${process.execPath}" "${MOCK_SERVER}" %*`, ""].join("\r\n"));
-		const s = await session([{ name: "shim", command: shim }]);
-		try {
-			await s.settled();
-			const result = await s.registry.tools.get("mcp__shim__echo")?.execute({ text: "via cmd" });
-			assert.equal((result?.content[0] as { text: string }).text, "mcp:via cmd");
-		} finally {
-			await s.end();
-		}
-	},
-);
+test("a .cmd shim starts as a stdio server on Windows (cross-spawn)", {
+	skip: process.platform !== "win32",
+}, async () => {
+	const dir = mkdtempSync(join(tmpdir(), "tau-mcp-cmd-"));
+	const shim = join(dir, "mock server.cmd");
+	writeFileSync(shim, ["@echo off", `"${process.execPath}" "${MOCK_SERVER}" %*`, ""].join("\r\n"));
+	const s = await session([{ name: "shim", command: shim }]);
+	try {
+		await s.settled();
+		const result = await s.registry.tools.get("mcp__shim__echo")?.execute({ text: "via cmd" });
+		assert.equal((result?.content[0] as { text: string } | undefined)?.text, "mcp:via cmd");
+	} finally {
+		await s.end();
+	}
+});
 
 test("a tool that reaches a connecting server waits for it (reachesTools)", async () => {
 	let echoed: string | undefined;

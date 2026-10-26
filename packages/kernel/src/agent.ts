@@ -787,9 +787,7 @@ export class Agent {
 			getCurrentTools(this.messages),
 			// A schemaless tool that slipped past registration cannot be declared; the
 			// preflight guard still answers a call to it with a paired error result (HF-8).
-			loadout.declared
-				.filter(hasToolSchema)
-				.map(toToolDeclaration),
+			loadout.declared.filter(hasToolSchema).map(toToolDeclaration),
 		);
 		if (!sections && tools.toolsAdded.length === 0 && tools.toolsRemoved.length === 0) return;
 		const update: SystemMessage = {

@@ -171,205 +171,199 @@ const asAdministrator = elevatedOnWindows()
 	: false;
 
 describe("P60b ACP on the resident server", () => {
-	it(
-		"shares a session with the terminal: list, load, prompts both ways, a withdrawn approval, settings, the editor's MCP server; diffs, plan, cancel, resume",
-		{ skip: asAdministrator },
-		async () => {
-			const mock = await startMockOpenAI([
-				() => mockTextTurn("EDITOR_REPLY"),
-				() => mockToolCallTurn("bash", { command: "echo FROM_TERMINAL" }),
-				() => mockTextTurn("TERMINAL_DONE"),
-				() => mockToolCallTurn("mcp__ed__hello", {}),
-				() => mockTextTurn("MCP_DONE"),
-				() => mockToolCallTurn("edit", { path: "b.txt", edits: [{ oldText: "alpha", newText: "beta" }] }),
-				() => mockToolCallTurn("todo_write", { todos: [{ content: "check", status: "in_progress" }] }),
-				() => mockTextTurn("EDITED"),
-				() => ({ payloads: [{ choices: [{ delta: { content: "waiting" } }] }], hold: true }),
-			]);
-			const box = sandbox(mock.baseUrl, { daemon: { autoStart: false, shutdownGraceSeconds: 1 } });
-			homes.push(box.home);
-			try {
-				assert.equal((await tau(["serve", "start"], box)).status, "started");
-				const probe = await probeDaemon(defaultAddress(box.home), { name: "terminal", capabilities: {} });
-				assert.equal(probe.state, "running");
-				if (probe.state !== "running") return;
-				const terminal = probe.client;
-				const heard: ServerNotification[] = [];
-				terminal.on("*", (params, method) => heard.push({ method, params } as ServerNotification));
-				const { thread } = await terminal.startThread({ cwd: box.cwd });
+	it("shares a session with the terminal: list, load, prompts both ways, a withdrawn approval, settings, the editor's MCP server; diffs, plan, cancel, resume", {
+		skip: asAdministrator,
+	}, async () => {
+		const mock = await startMockOpenAI([
+			() => mockTextTurn("EDITOR_REPLY"),
+			() => mockToolCallTurn("bash", { command: "echo FROM_TERMINAL" }),
+			() => mockTextTurn("TERMINAL_DONE"),
+			() => mockToolCallTurn("mcp__ed__hello", {}),
+			() => mockTextTurn("MCP_DONE"),
+			() => mockToolCallTurn("edit", { path: "b.txt", edits: [{ oldText: "alpha", newText: "beta" }] }),
+			() => mockToolCallTurn("todo_write", { todos: [{ content: "check", status: "in_progress" }] }),
+			() => mockTextTurn("EDITED"),
+			() => ({ payloads: [{ choices: [{ delta: { content: "waiting" } }] }], hold: true }),
+		]);
+		const box = sandbox(mock.baseUrl, { daemon: { autoStart: false, shutdownGraceSeconds: 1 } });
+		homes.push(box.home);
+		try {
+			assert.equal((await tau(["serve", "start"], box)).status, "started");
+			const probe = await probeDaemon(defaultAddress(box.home), { name: "terminal", capabilities: {} });
+			assert.equal(probe.state, "running");
+			if (probe.state !== "running") return;
+			const terminal = probe.client;
+			const heard: ServerNotification[] = [];
+			terminal.on("*", (params, method) => heard.push({ method, params } as ServerNotification));
+			const { thread } = await terminal.startThread({ cwd: box.cwd });
 
-				const acp = acpClient([], box);
-				await acp.request("initialize", {
-					protocolVersion: 1,
-					clientCapabilities: { elicitation: { form: {} }, session: { notices: {} } },
-				});
-				const listed = (await acp.request("session/list", { cwd: box.cwd })).sessions as Json[];
-				assert.equal(listed[0]?.sessionId, thread.id, "the terminal's session, held now, comes first");
-				const loaded = await acp.request("session/load", { sessionId: thread.id, cwd: box.cwd, mcpServers: [] });
-				assert.equal(option(loaded.configOptions, "mode").currentValue, "supervised");
-				assert.deepEqual(
-					(option(loaded.configOptions, "model").options as Json[]).map((entry) => entry.value),
-					["mock", "mock2"],
-				);
+			const acp = acpClient([], box);
+			await acp.request("initialize", {
+				protocolVersion: 1,
+				clientCapabilities: { elicitation: { form: {} }, session: { notices: {} } },
+			});
+			const listed = (await acp.request("session/list", { cwd: box.cwd })).sessions as Json[];
+			assert.equal(listed[0]?.sessionId, thread.id, "the terminal's session, held now, comes first");
+			const loaded = await acp.request("session/load", { sessionId: thread.id, cwd: box.cwd, mcpServers: [] });
+			assert.equal(option(loaded.configOptions, "mode").currentValue, "supervised");
+			assert.deepEqual(
+				(option(loaded.configOptions, "model").options as Json[]).map((entry) => entry.value),
+				["mock", "mock2"],
+			);
 
-				// The editor's prompt: the terminal sees it and the reply.
-				assert.deepEqual(
-					await acp.request("session/prompt", {
-						sessionId: thread.id,
-						prompt: [{ type: "text", text: "from the editor" }],
-					}),
-					{ stopReason: "end_turn" },
-				);
-				assert.ok(acp.updates().some((u) => u.sessionUpdate === "agent_message_chunk" && text(u) === "EDITOR_REPLY"));
-				await until(
-					() => heard.some((n) => n.method === "turn/started" && n.params.input === "from the editor"),
-					"the terminal to see the editor's prompt",
-				);
-				assert.ok(
-					!acp.updates().some((u) => u.sessionUpdate === "user_message_chunk"),
-					"the editor's own prompt is not echoed",
-				);
-
-				// The terminal's prompt: the editor sees it; the terminal answers the approval first.
-				terminal.handle("item/tool/requestApproval", async () => {
-					await acp.waitFor((r) => r.method === "session/request_permission", "the editor's permission request");
-					return { decision: "once" };
-				});
-				await terminal.startTurn(thread.id, "from the terminal");
-				await acp.waitForUpdate(
-					(u) => u.sessionUpdate === "user_message_chunk" && text(u) === "from the terminal",
-					"the terminal's prompt",
-				);
-				const permission = await acp.waitFor(
-					(r) => r.method === "session/request_permission",
-					"the permission request",
-				);
-				assert.equal(((permission.params as Json).toolCall as Json).kind, "execute");
-				const withdrawn = await acp.waitFor((r) => r.method === "$/cancel_request", "the request withdrawn");
-				assert.deepEqual(withdrawn.params, { requestId: permission.id });
-				await acp.waitForUpdate(
-					(u) => u.sessionUpdate === "agent_message_chunk" && text(u) === "TERMINAL_DONE",
-					"the terminal's turn",
-				);
-
-				// Settings: the terminal switches the model, the editor the permission mode.
-				await terminal.call("thread/setModel", { threadId: thread.id, model: "mock2" });
-				await acp.waitForUpdate(
-					(u) =>
-						u.sessionUpdate === "config_option_update" && option(u.configOptions, "model").currentValue === "mock2",
-					"the model switched in the terminal",
-				);
-				const set = await acp.request("session/set_config_option", {
+			// The editor's prompt: the terminal sees it and the reply.
+			assert.deepEqual(
+				await acp.request("session/prompt", {
 					sessionId: thread.id,
-					configId: "mode",
-					value: "autonomous",
-				});
-				assert.equal(option(set.configOptions, "mode").currentValue, "autonomous");
-				assert.equal((await terminal.call("thread/state", { threadId: thread.id })).permissionMode, "autonomous");
+					prompt: [{ type: "text", text: "from the editor" }],
+				}),
+				{ stopReason: "end_turn" },
+			);
+			assert.ok(acp.updates().some((u) => u.sessionUpdate === "agent_message_chunk" && text(u) === "EDITOR_REPLY"));
+			await until(
+				() => heard.some((n) => n.method === "turn/started" && n.params.input === "from the editor"),
+				"the terminal to see the editor's prompt",
+			);
+			assert.ok(
+				!acp.updates().some((u) => u.sessionUpdate === "user_message_chunk"),
+				"the editor's own prompt is not echoed",
+			);
 
-				// A session of the editor's own, with its MCP server: started in the server.
-				const serverFile = join(box.home, "p60-mcp.mjs");
-				const log = join(box.home, "p60-mcp.log");
-				writeFileSync(serverFile, MCP_SERVER);
-				const created = await acp.request("session/new", {
-					cwd: box.cwd,
-					mcpServers: [
-						{ name: "ed", command: process.execPath, args: [serverFile], env: [{ name: "P60_MCP_LOG", value: log }] },
-					],
-				});
-				const editorSession = String(created.sessionId);
-				const prompted = acp.request("session/prompt", {
-					sessionId: editorSession,
-					prompt: [{ type: "text", text: "use the editor's tool" }],
-				});
-				// supervised: an MCP tool may ask first.
-				const asked = acp
-					.waitFor(
-						(r) => r.method === "session/request_permission" && (r.params as Json).sessionId === editorSession,
-						"the MCP tool's approval",
-					)
-					.then((request) => acp.answer(request, { outcome: { outcome: "selected", optionId: "allow_once" } }))
-					.catch(() => undefined);
-				assert.deepEqual(await prompted, { stopReason: "end_turn" });
-				void asked;
-				const result = acp
+			// The terminal's prompt: the editor sees it; the terminal answers the approval first.
+			terminal.handle("item/tool/requestApproval", async () => {
+				await acp.waitFor((r) => r.method === "session/request_permission", "the editor's permission request");
+				return { decision: "once" };
+			});
+			await terminal.startTurn(thread.id, "from the terminal");
+			await acp.waitForUpdate(
+				(u) => u.sessionUpdate === "user_message_chunk" && text(u) === "from the terminal",
+				"the terminal's prompt",
+			);
+			const permission = await acp.waitFor((r) => r.method === "session/request_permission", "the permission request");
+			assert.equal(((permission.params as Json).toolCall as Json).kind, "execute");
+			const withdrawn = await acp.waitFor((r) => r.method === "$/cancel_request", "the request withdrawn");
+			assert.deepEqual(withdrawn.params, { requestId: permission.id });
+			await acp.waitForUpdate(
+				(u) => u.sessionUpdate === "agent_message_chunk" && text(u) === "TERMINAL_DONE",
+				"the terminal's turn",
+			);
+
+			// Settings: the terminal switches the model, the editor the permission mode.
+			await terminal.call("thread/setModel", { threadId: thread.id, model: "mock2" });
+			await acp.waitForUpdate(
+				(u) => u.sessionUpdate === "config_option_update" && option(u.configOptions, "model").currentValue === "mock2",
+				"the model switched in the terminal",
+			);
+			const set = await acp.request("session/set_config_option", {
+				sessionId: thread.id,
+				configId: "mode",
+				value: "autonomous",
+			});
+			assert.equal(option(set.configOptions, "mode").currentValue, "autonomous");
+			assert.equal((await terminal.call("thread/state", { threadId: thread.id })).permissionMode, "autonomous");
+
+			// A session of the editor's own, with its MCP server: started in the server.
+			const serverFile = join(box.home, "p60-mcp.mjs");
+			const log = join(box.home, "p60-mcp.log");
+			writeFileSync(serverFile, MCP_SERVER);
+			const created = await acp.request("session/new", {
+				cwd: box.cwd,
+				mcpServers: [
+					{ name: "ed", command: process.execPath, args: [serverFile], env: [{ name: "P60_MCP_LOG", value: log }] },
+				],
+			});
+			const editorSession = String(created.sessionId);
+			const prompted = acp.request("session/prompt", {
+				sessionId: editorSession,
+				prompt: [{ type: "text", text: "use the editor's tool" }],
+			});
+			// supervised: an MCP tool may ask first.
+			const asked = acp
+				.waitFor(
+					(r) => r.method === "session/request_permission" && (r.params as Json).sessionId === editorSession,
+					"the MCP tool's approval",
+				)
+				.then((request) => acp.answer(request, { outcome: { outcome: "selected", optionId: "allow_once" } }))
+				.catch(() => undefined);
+			assert.deepEqual(await prompted, { stopReason: "end_turn" });
+			void asked;
+			const result = acp
+				.updates()
+				.find(
+					(u) =>
+						u.sessionUpdate === "tool_call_update" &&
+						u.status === "completed" &&
+						JSON.stringify(u.content).includes("HELLO_FROM_THE_EDITOR_SERVER"),
+				);
+			assert.ok(result, "the editor's MCP tool answered");
+			assert.equal(readFileSync(log, "utf8"), "started\n");
+			const held = (await terminal.call("thread/loaded/list", {})).threads;
+			assert.ok(
+				held.some((entry) => entry.id === editorSession),
+				"the editor's session is the server's",
+			);
+
+			// On the server too: an edit as a diff, todo_write as a plan, a cancelled turn, session/resume.
+			writeFileSync(join(box.cwd, "b.txt"), "alpha\n");
+			await acp.request("session/set_config_option", {
+				sessionId: editorSession,
+				configId: "mode",
+				value: "autonomous",
+			});
+			assert.deepEqual(
+				await acp.request("session/prompt", { sessionId: editorSession, prompt: [{ type: "text", text: "edit" }] }),
+				{ stopReason: "end_turn" },
+			);
+			const diff = acp
+				.updates()
+				.find(
+					(u) =>
+						u.sessionUpdate === "tool_call_update" &&
+						Array.isArray(u.content) &&
+						(u.content as Json[])[0]?.type === "diff",
+				) as Json;
+			assert.deepEqual((diff.content as Json[])[0], {
+				type: "diff",
+				path: join(box.cwd, "b.txt"),
+				oldText: "alpha",
+				newText: "beta",
+			});
+			assert.equal(readFileSync(join(box.cwd, "b.txt"), "utf8"), "beta\n", "written to the disk");
+			assert.ok(acp.updates().some((u) => u.sessionUpdate === "plan"));
+			const waiting = acp.request("session/prompt", {
+				sessionId: editorSession,
+				prompt: [{ type: "text", text: "wait" }],
+			});
+			await acp.waitForUpdate(
+				(u) => u.sessionUpdate === "agent_message_chunk" && text(u) === "waiting",
+				"the held stream",
+			);
+			acp.notify("session/cancel", { sessionId: editorSession });
+			assert.deepEqual(await waiting, { stopReason: "cancelled" });
+			const beforeResume = acp.updates().length;
+			const resumed = await acp.request("session/resume", { sessionId: editorSession, cwd: box.cwd });
+			assert.ok(Array.isArray(resumed.configOptions));
+			assert.ok(
+				!acp
 					.updates()
-					.find(
-						(u) =>
-							u.sessionUpdate === "tool_call_update" &&
-							u.status === "completed" &&
-							JSON.stringify(u.content).includes("HELLO_FROM_THE_EDITOR_SERVER"),
-					);
-				assert.ok(result, "the editor's MCP tool answered");
-				assert.equal(readFileSync(log, "utf8"), "started\n");
-				const held = (await terminal.call("thread/loaded/list", {})).threads;
-				assert.ok(
-					held.some((entry) => entry.id === editorSession),
-					"the editor's session is the server's",
-				);
+					.slice(beforeResume)
+					.some((u) => u.sessionUpdate === "user_message_chunk"),
+				"resume does not replay",
+			);
 
-				// On the server too: an edit as a diff, todo_write as a plan, a cancelled turn, session/resume.
-				writeFileSync(join(box.cwd, "b.txt"), "alpha\n");
-				await acp.request("session/set_config_option", {
-					sessionId: editorSession,
-					configId: "mode",
-					value: "autonomous",
-				});
-				assert.deepEqual(
-					await acp.request("session/prompt", { sessionId: editorSession, prompt: [{ type: "text", text: "edit" }] }),
-					{ stopReason: "end_turn" },
-				);
-				const diff = acp
-					.updates()
-					.find(
-						(u) =>
-							u.sessionUpdate === "tool_call_update" &&
-							Array.isArray(u.content) &&
-							(u.content as Json[])[0]?.type === "diff",
-					) as Json;
-				assert.deepEqual((diff.content as Json[])[0], {
-					type: "diff",
-					path: join(box.cwd, "b.txt"),
-					oldText: "alpha",
-					newText: "beta",
-				});
-				assert.equal(readFileSync(join(box.cwd, "b.txt"), "utf8"), "beta\n", "written to the disk");
-				assert.ok(acp.updates().some((u) => u.sessionUpdate === "plan"));
-				const waiting = acp.request("session/prompt", {
-					sessionId: editorSession,
-					prompt: [{ type: "text", text: "wait" }],
-				});
-				await acp.waitForUpdate(
-					(u) => u.sessionUpdate === "agent_message_chunk" && text(u) === "waiting",
-					"the held stream",
-				);
-				acp.notify("session/cancel", { sessionId: editorSession });
-				assert.deepEqual(await waiting, { stopReason: "cancelled" });
-				const beforeResume = acp.updates().length;
-				const resumed = await acp.request("session/resume", { sessionId: editorSession, cwd: box.cwd });
-				assert.ok(Array.isArray(resumed.configOptions));
-				assert.ok(
-					!acp
-						.updates()
-						.slice(beforeResume)
-						.some((u) => u.sessionUpdate === "user_message_chunk"),
-					"resume does not replay",
-				);
-
-				// Closing the editor's view leaves the session to the terminal.
-				await acp.request("session/close", { sessionId: thread.id });
-				const after = (await terminal.call("thread/loaded/list", {})).threads.find((entry) => entry.id === thread.id);
-				assert.equal(after?.clients, 1);
-				acp.end();
-				assert.equal(await acp.exit(), 0, acp.stderr());
-				terminal.close();
-				assert.equal((await tau(["serve", "stop"], box)).status, "stopped");
-				await until(() => readFileSync(log, "utf8").includes("ended"), "the MCP server to end with the server");
-			} finally {
-				await mock.close();
-			}
-		},
-	);
+			// Closing the editor's view leaves the session to the terminal.
+			await acp.request("session/close", { sessionId: thread.id });
+			const after = (await terminal.call("thread/loaded/list", {})).threads.find((entry) => entry.id === thread.id);
+			assert.equal(after?.clients, 1);
+			acp.end();
+			assert.equal(await acp.exit(), 0, acp.stderr());
+			terminal.close();
+			assert.equal((await tau(["serve", "stop"], box)).status, "stopped");
+			await until(() => readFileSync(log, "utf8").includes("ended"), "the MCP server to end with the server");
+		} finally {
+			await mock.close();
+		}
+	});
 });
 
 /** An extension command that asks for a name, a choice and a form, and says something. */

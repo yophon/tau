@@ -17,7 +17,7 @@ const CODE_COLOR = "cyan";
 /** Links as OSC 8 hyperlinks, without the "(url)" after them (P38b; set where the terminal shows them, pi). */
 let hyperlinks = false;
 
-export function useHyperlinks(enabled: boolean): void {
+export function setHyperlinks(enabled: boolean): void {
 	hyperlinks = enabled;
 }
 
@@ -43,7 +43,7 @@ type MarkdownSource = (
 let transformed: MarkdownSource | undefined;
 let transformersVersion = 0;
 
-export function useMarkdownTransforms(source: MarkdownSource | undefined): void {
+export function setMarkdownTransforms(source: MarkdownSource | undefined): void {
 	transformed = source;
 	transformersVersion++;
 }

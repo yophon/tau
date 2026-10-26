@@ -406,43 +406,41 @@ describe("P46c through the CLI", () => {
 		}
 	});
 
-	it(
-		"an isolated subagent's PowerShell runs in its worktree; it has no monitor",
-		{ skip: process.platform !== "win32" && "PowerShell is on by default only on Windows" },
-		async () => {
-			const repo = repository();
-			const home = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46home-")));
-			made.push(home);
-			const results: string[] = [];
-			let childTools: string[] = [];
-			const mock = await startMockOpenAI([
-				(raw) => {
-					const request = raw as {
-						messages: { role: string; content: unknown }[];
-						tools?: { function: { name: string } }[];
-					};
-					const system = JSON.stringify(request.messages[0]?.content ?? "");
-					const last = request.messages.at(-1);
-					if (system.includes("worker agent")) {
-						childTools = (request.tools ?? []).map((tool) => tool.function.name);
-						if (last?.role === "tool") {
-							results.push(String(last.content));
-							return mockTextTurn("looked");
-						}
-						return mockToolCallTurn("powershell", { command: "(Get-Location).Path" });
+	it("an isolated subagent's PowerShell runs in its worktree; it has no monitor", {
+		skip: process.platform !== "win32" && "PowerShell is on by default only on Windows",
+	}, async () => {
+		const repo = repository();
+		const home = realpathSync.native(mkdtempSync(join(tmpdir(), "tau-p46home-")));
+		made.push(home);
+		const results: string[] = [];
+		let childTools: string[] = [];
+		const mock = await startMockOpenAI([
+			(raw) => {
+				const request = raw as {
+					messages: { role: string; content: unknown }[];
+					tools?: { function: { name: string } }[];
+				};
+				const system = JSON.stringify(request.messages[0]?.content ?? "");
+				const last = request.messages.at(-1);
+				if (system.includes("worker agent")) {
+					childTools = (request.tools ?? []).map((tool) => tool.function.name);
+					if (last?.role === "tool") {
+						results.push(String(last.content));
+						return mockTextTurn("looked");
 					}
-					if (last?.role === "tool") return mockTextTurn("DONE");
-					return mockToolCallTurn("subagent", { task: "where are you", isolation: "worktree" });
-				},
-			]);
-			try {
-				const output = await runCli(["-p", "go"], repo, home, mock.baseUrl);
-				assert.match(output, /DONE/);
-				assert.ok(childTools.includes("powershell") && !childTools.includes("monitor"), childTools.join(","));
-				assert.match(results[0] ?? "", /agent-sub-1/);
-			} finally {
-				await mock.close();
-			}
-		},
-	);
+					return mockToolCallTurn("powershell", { command: "(Get-Location).Path" });
+				}
+				if (last?.role === "tool") return mockTextTurn("DONE");
+				return mockToolCallTurn("subagent", { task: "where are you", isolation: "worktree" });
+			},
+		]);
+		try {
+			const output = await runCli(["-p", "go"], repo, home, mock.baseUrl);
+			assert.match(output, /DONE/);
+			assert.ok(childTools.includes("powershell") && !childTools.includes("monitor"), childTools.join(","));
+			assert.match(results[0] ?? "", /agent-sub-1/);
+		} finally {
+			await mock.close();
+		}
+	});
 });

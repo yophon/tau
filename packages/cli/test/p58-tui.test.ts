@@ -145,120 +145,109 @@ describe("P58 TUI: which hub", () => {
 		assert.equal(parseArgs(["--no-daemon"]).noDaemon, true);
 	});
 
-	it(
-		"uses the resident server: the first session opens in this directory with -m; leaving keeps it",
-		{ skip: asAdministrator },
-		async () => {
-			const { home, cwd } = dirs();
-			const hub = new SessionHub(testHost(), { version: CLI_VERSION });
-			cleanups.push(() => hub.close());
-			await serveAt(home, hub);
-			const link = await linkTui(context(home, cwd, ["-m", "m2"]), client);
-			assert.equal(link.local, undefined);
-			assert.deepEqual(link.notices, []);
-			assert.equal(link.session.resident, true);
-			await openFirstSession(link.session, parseArgs(["-m", "m2"]), { model: "m2" });
-			assert.equal(link.session.state.model, "m2");
-			assert.equal(hub.loadedThreads[0]?.workspace.cwd, cwd, "opened where the TUI runs, not where the server started");
-			await link.close();
-			for (let waited = 0; hub.loadedThreads[0]?.subscriberCount !== 0 && waited < 3000; waited += 10) {
-				await new Promise((resolve) => setTimeout(resolve, 10));
-			}
-			assert.equal(hub.loadedThreads[0]?.subscriberCount, 0, "the client left");
-			assert.equal(hub.loadedThreads.length, 1, "the session stays in the server");
-		},
-	);
+	it("uses the resident server: the first session opens in this directory with -m; leaving keeps it", {
+		skip: asAdministrator,
+	}, async () => {
+		const { home, cwd } = dirs();
+		const hub = new SessionHub(testHost(), { version: CLI_VERSION });
+		cleanups.push(() => hub.close());
+		await serveAt(home, hub);
+		const link = await linkTui(context(home, cwd, ["-m", "m2"]), client);
+		assert.equal(link.local, undefined);
+		assert.deepEqual(link.notices, []);
+		assert.equal(link.session.resident, true);
+		await openFirstSession(link.session, parseArgs(["-m", "m2"]), { model: "m2" });
+		assert.equal(link.session.state.model, "m2");
+		assert.equal(hub.loadedThreads[0]?.workspace.cwd, cwd, "opened where the TUI runs, not where the server started");
+		await link.close();
+		for (let waited = 0; hub.loadedThreads[0]?.subscriberCount !== 0 && waited < 3000; waited += 10) {
+			await new Promise((resolve) => setTimeout(resolve, 10));
+		}
+		assert.equal(hub.loadedThreads[0]?.subscriberCount, 0, "the client left");
+		assert.equal(hub.loadedThreads.length, 1, "the session stays in the server");
+	});
 
-	it(
-		"says so for a server of another version; runs here for --no-daemon and options set at the server's start",
-		{ skip: asAdministrator },
-		async () => {
-			const { home, cwd } = dirs();
-			const hub = new SessionHub(testHost(), { version: "0.0.1-other" });
-			cleanups.push(() => hub.close());
-			await serveAt(home, hub);
-			const other = await linkTui(context(home, cwd, []), client);
-			assert.equal(other.local, undefined);
-			assert.match(
-				other.notices.join("\n"),
-				new RegExp(`Resident server v0\\.0\\.1-other ≠ tau v${CLI_VERSION.replaceAll(".", "\\.")}`),
-			);
-			await other.close();
+	it("says so for a server of another version; runs here for --no-daemon and options set at the server's start", {
+		skip: asAdministrator,
+	}, async () => {
+		const { home, cwd } = dirs();
+		const hub = new SessionHub(testHost(), { version: "0.0.1-other" });
+		cleanups.push(() => hub.close());
+		await serveAt(home, hub);
+		const other = await linkTui(context(home, cwd, []), client);
+		assert.equal(other.local, undefined);
+		assert.match(
+			other.notices.join("\n"),
+			new RegExp(`Resident server v0\\.0\\.1-other ≠ tau v${CLI_VERSION.replaceAll(".", "\\.")}`),
+		);
+		await other.close();
 
-			const excluded = await linkTui(context(home, cwd, ["--no-mcp"]), client);
-			assert.ok(excluded.local);
-			assert.match(
-				excluded.notices.join("\n"),
-				/Running without the resident server: --no-mcp is set when the server starts/,
-			);
-			await excluded.close();
+		const excluded = await linkTui(context(home, cwd, ["--no-mcp"]), client);
+		assert.ok(excluded.local);
+		assert.match(
+			excluded.notices.join("\n"),
+			/Running without the resident server: --no-mcp is set when the server starts/,
+		);
+		await excluded.close();
 
-			const chosen = await linkTui(context(home, cwd, ["--no-daemon"]), client);
-			assert.ok(chosen.local);
-			assert.deepEqual(chosen.notices, []);
-			await chosen.close();
-		},
-	);
+		const chosen = await linkTui(context(home, cwd, ["--no-daemon"]), client);
+		assert.ok(chosen.local);
+		assert.deepEqual(chosen.notices, []);
+		await chosen.close();
+	});
 
-	it(
-		"starts the server when none runs (daemon.autoStart), says why it could not, and runs here otherwise",
-		{ skip: asAdministrator },
-		async () => {
-			const { home, cwd } = dirs();
-			const off = await linkTui(context(home, cwd, []), client);
-			assert.ok(off.local);
-			assert.deepEqual(off.notices, [], "autoStart off: nothing to say");
-			await off.close();
+	it("starts the server when none runs (daemon.autoStart), says why it could not, and runs here otherwise", {
+		skip: asAdministrator,
+	}, async () => {
+		const { home, cwd } = dirs();
+		const off = await linkTui(context(home, cwd, []), client);
+		assert.ok(off.local);
+		assert.deepEqual(off.notices, [], "autoStart off: nothing to say");
+		await off.close();
 
-			const failed = await linkTui(
-				context(home, cwd, [], {
-					autoStart: true,
-					start: async () => {
-						throw new Error("tau serve did not start: no model configured");
-					},
-				}),
-				client,
-			);
-			assert.ok(failed.local);
-			assert.match(failed.notices.join("\n"), /Could not start the resident server \(tau serve did not start/);
-			await failed.close();
+		const failed = await linkTui(
+			context(home, cwd, [], {
+				autoStart: true,
+				start: async () => {
+					throw new Error("tau serve did not start: no model configured");
+				},
+			}),
+			client,
+		);
+		assert.ok(failed.local);
+		assert.match(failed.notices.join("\n"), /Could not start the resident server \(tau serve did not start/);
+		await failed.close();
 
-			const hub = new SessionHub(testHost(), { version: CLI_VERSION });
-			cleanups.push(() => hub.close());
-			const started = await linkTui(
-				context(home, cwd, [], { autoStart: true, start: () => serveAt(home, hub) }),
-				client,
-			);
-			assert.equal(started.local, undefined);
-			assert.match(
-				started.notices.join("\n"),
-				/Started the resident server in the background \(`tau serve stop` stops it/,
-			);
-			await started.close();
-		},
-	);
+		const hub = new SessionHub(testHost(), { version: CLI_VERSION });
+		cleanups.push(() => hub.close());
+		const started = await linkTui(context(home, cwd, [], { autoStart: true, start: () => serveAt(home, hub) }), client);
+		assert.equal(started.local, undefined);
+		assert.match(
+			started.notices.join("\n"),
+			/Started the resident server in the background \(`tau serve stop` stops it/,
+		);
+		await started.close();
+	});
 
-	it(
-		"runs here, saying why, when the server there does not speak this protocol",
-		{ skip: asAdministrator },
-		async () => {
-			const { home, cwd } = dirs();
-			const address = defaultAddress(home);
-			if (process.platform !== "win32") prepareUserDirectory(dirname(address));
-			const server = createServer((socket) => {
-				const peer = new JsonRpcPeer(socketTransport(socket), { idPrefix: "s" });
-				peer.onRequest("initialize", () => {
-					throw new JsonRpcError(-32600, "Unsupported protocol version tau/1; this server speaks tau/2");
-				});
+	it("runs here, saying why, when the server there does not speak this protocol", {
+		skip: asAdministrator,
+	}, async () => {
+		const { home, cwd } = dirs();
+		const address = defaultAddress(home);
+		if (process.platform !== "win32") prepareUserDirectory(dirname(address));
+		const server = createServer((socket) => {
+			const peer = new JsonRpcPeer(socketTransport(socket), { idPrefix: "s" });
+			peer.onRequest("initialize", () => {
+				throw new JsonRpcError(-32600, "Unsupported protocol version tau/1; this server speaks tau/2");
 			});
-			await new Promise<void>((resolve) => server.listen(address, resolve));
-			cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
-			const link = await linkTui(context(home, cwd, []), client);
-			assert.ok(link.local);
-			assert.match(link.notices.join("\n"), /this server speaks tau\/2\. `tau serve restart` runs this version/);
-			await link.close();
-		},
-	);
+		});
+		await new Promise<void>((resolve) => server.listen(address, resolve));
+		cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+		const link = await linkTui(context(home, cwd, []), client);
+		assert.ok(link.local);
+		assert.match(link.notices.join("\n"), /this server speaks tau\/2\. `tau serve restart` runs this version/);
+		await link.close();
+	});
 });
 
 describe("P58 TUI on a resident server", () => {

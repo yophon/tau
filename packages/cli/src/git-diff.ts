@@ -47,7 +47,7 @@ function diffOutput(run: Run, what: string): string {
 
 export async function gitDiff(cwd: string): Promise<GitDiff> {
 	const inside = await gitExit(cwd, ["rev-parse", "--is-inside-work-tree"]).catch(() => undefined);
-	if (!inside || inside.code !== 0 || inside.stdout.trim() !== "true") return { repo: false, text: "", untracked: 0 };
+	if (inside?.code !== 0 || inside.stdout.trim() !== "true") return { repo: false, text: "", untracked: 0 };
 	const head = await gitExit(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]);
 	const [tracked, others] = await Promise.all([
 		gitExit(cwd, head.code === 0 ? ["diff", "HEAD"] : ["diff"]),

@@ -488,7 +488,7 @@ function toolsToWire(tools: ToolDefinition[], cacheControl: WireCacheControl | u
 /** pi's placement: the last block of the last user message caches the conversation history. */
 function markLastUserMessage(wire: WireMessage[], cacheControl: WireCacheControl): void {
 	const last = wire[wire.length - 1];
-	if (!last || last.role !== "user") return;
+	if (last?.role !== "user") return;
 	if (typeof last.content === "string") {
 		last.content = [{ ...textBlock(last.content), cache_control: cacheControl }];
 		return;

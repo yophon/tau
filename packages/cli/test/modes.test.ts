@@ -136,7 +136,8 @@ describe("--mode json", () => {
 				assert.equal(await run.exit(), 0, run.stderr());
 				const types = run.records.map((record) => record.type);
 				assert.equal(types[0], "session");
-				assert.ok(typeof run.records[0]?.id === "string" && (run.records[0]?.id as string).length > 0);
+				const firstId = run.records[0]?.id;
+				assert.ok(typeof firstId === "string" && firstId.length > 0);
 				for (const expected of [
 					"agent_start",
 					"turn_start",

@@ -76,7 +76,7 @@ export class BrowserMemoryFileSystem implements FileSystem {
 		const parent = parentPath(path);
 		if (create) return this.ensureDirectory(parent);
 		const node = this.getNode(parent);
-		if (!node || node.kind !== "directory") {
+		if (node?.kind !== "directory") {
 			throw new FileError(codeForMissingParent(node), `Parent directory not found: ${parent}`, parent);
 		}
 		return node;

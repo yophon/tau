@@ -372,7 +372,7 @@ test("P40d: the URL, key header and provider events; onPayload replaces the body
 		requests[0]?.url,
 		"https://proxy.test/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse",
 	);
-	assert.equal((requests[0]?.init?.headers as Record<string, string>)["x-goog-api-key"], "g-key");
+	assert.equal((requests[0]?.init?.headers as Record<string, string> | undefined)?.["x-goog-api-key"], "g-key");
 	assert.deepEqual(requests[0]?.body.safetySettings, []);
 	assert.equal(seen.length, 2);
 });

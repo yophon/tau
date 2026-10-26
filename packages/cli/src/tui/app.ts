@@ -236,7 +236,7 @@ export async function runTui(options: RunTuiOptions, deps: TuiDeps = {}): Promis
 	});
 	// P34e: the title spins while a run works, the tab shows progress (Windows Terminal).
 	const { TerminalStatus, supportsHyperlinks, supportsProgress } = await import("./terminal-status.ts");
-	(await import("./render/markdown.ts")).useHyperlinks(supportsHyperlinks());
+	(await import("./render/markdown.ts")).setHyperlinks(supportsHyperlinks());
 	const status = new TerminalStatus(
 		(data) => process.stdout.write(data),
 		{ title: options.terminalTitle !== false, progress: supportsProgress() },

@@ -749,28 +749,26 @@ test("extension: no servers means no tool; an unserved edit reaches onUnservedFi
 
 // ── Windows: npm-style .cmd shims ───────────────────────────────────────
 
-test(
-	"Windows: a server behind a .cmd shim in a path with spaces starts and stops",
-	{ skip: process.platform !== "win32" },
-	async () => {
-		const cwd = await workspace();
-		const bin = join(cwd, "bin dir");
-		await mkdir(bin);
-		const shim = join(bin, "fake-lsp.cmd");
-		await writeFile(shim, `@echo off\r\n"${process.execPath}" "${FAKE}" %*\r\n`);
-		const file = join(cwd, "a.ts");
-		await writeFile(file, "ERROR: shimmed\n");
-		const lsp = manager(cwd, {
-			shim: { command: shim, args: ["--stdio"], extensionToLanguage: { ".ts": "typescript" } },
-		});
-		try {
-			await lsp.syncAfterEdit(file);
-			await lsp.waitForDiagnostics([file], { debounceMs: 50, timeoutMs: 3000 });
-			assert.equal(lsp.diagnostics.take()[0].items[0].diagnostic.message, "shimmed");
-		} finally {
-			await lsp.shutdown();
-		}
-		assert.equal(lsp.status()[0].state, "stopped");
-		await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-	},
-);
+test("Windows: a server behind a .cmd shim in a path with spaces starts and stops", {
+	skip: process.platform !== "win32",
+}, async () => {
+	const cwd = await workspace();
+	const bin = join(cwd, "bin dir");
+	await mkdir(bin);
+	const shim = join(bin, "fake-lsp.cmd");
+	await writeFile(shim, `@echo off\r\n"${process.execPath}" "${FAKE}" %*\r\n`);
+	const file = join(cwd, "a.ts");
+	await writeFile(file, "ERROR: shimmed\n");
+	const lsp = manager(cwd, {
+		shim: { command: shim, args: ["--stdio"], extensionToLanguage: { ".ts": "typescript" } },
+	});
+	try {
+		await lsp.syncAfterEdit(file);
+		await lsp.waitForDiagnostics([file], { debounceMs: 50, timeoutMs: 3000 });
+		assert.equal(lsp.diagnostics.take()[0].items[0].diagnostic.message, "shimmed");
+	} finally {
+		await lsp.shutdown();
+	}
+	assert.equal(lsp.status()[0].state, "stopped");
+	await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+});

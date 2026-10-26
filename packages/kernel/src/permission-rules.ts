@@ -421,7 +421,7 @@ function collect(command: string, result: ParsedCommand, depth: number): void {
 		}
 		if (token.type === "redirect") {
 			const next = tokens[index + 1];
-			if (!next || next.type !== "word") {
+			if (next?.type !== "word") {
 				result.ok = false;
 				return;
 			}

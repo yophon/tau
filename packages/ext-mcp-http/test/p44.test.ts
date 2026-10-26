@@ -185,7 +185,7 @@ test("a request asking for progress carries the token, re-arms its timeout and r
 			{ tools: {} },
 			{
 				"tools/call": async (_method, params, server) => {
-					const token = (params?._meta as { progressToken: number }).progressToken;
+					const token = (params?._meta as { progressToken: number } | undefined)?.progressToken;
 					server.notify("notifications/progress", { progressToken: token, progress: 1, total: 3, message: "one" });
 					server.notify("notifications/progress", { progressToken: token, progress: 2 });
 					server.notify("notifications/progress", { progressToken: 99_999, progress: 5 });
@@ -382,7 +382,10 @@ test("servers with prompts get commands; list_changed adds new ones and hides dr
 							messages: [
 								{
 									role: "user",
-									content: { type: "text", text: `Review #${(params?.arguments as { number: string }).number}` },
+									content: {
+										type: "text",
+										text: `Review #${(params?.arguments as { number: string } | undefined)?.number}`,
+									},
 								},
 								{ role: "user", content: { type: "image", data: "AAAA", mimeType: "image/png" } },
 							],
@@ -737,7 +740,7 @@ test("an invalid elicitation is answered -32602; URLElicitationRequiredError sho
 		{ elicit },
 	);
 	await registry.tools.get("mcp__gh__bad")?.execute({});
-	assert.equal((reply?.error as { code: number }).code, -32602);
+	assert.equal((reply?.error as { code: number } | undefined)?.code, -32602);
 	const result = await registry.tools.get("mcp__gh__needs")?.execute({});
 	const text = result?.content[0]?.type === "text" ? result.content[0].text : "";
 	assert.equal(result?.isError, true);
@@ -756,7 +759,7 @@ test("tool calls report progress through onUpdate", async () => {
 				{
 					"tools/list": () => ({ tools: [{ name: "slow" }] }),
 					"tools/call": async (_method, params, transport) => {
-						const token = (params?._meta as { progressToken: number }).progressToken;
+						const token = (params?._meta as { progressToken: number } | undefined)?.progressToken;
 						transport.notify("notifications/progress", {
 							progressToken: token,
 							progress: 50,

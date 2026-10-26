@@ -260,9 +260,10 @@ describe("P54a OpenAI Responses in the CLI", () => {
 			assert.equal(first?.authorization, "Bearer sk-resp");
 			assert.equal(first?.body.model, "gpt-x");
 			assert.equal(first?.body.store, false);
-			assert.equal((first?.body.input as Array<{ role?: string }>)[0]?.role, "developer");
-			assert.ok(Array.isArray(first?.body.tools) && (first?.body.tools as unknown[]).length > 0);
-			const output = (second?.body.input as Array<{ type?: string; output?: unknown }>).find(
+			assert.equal((first?.body.input as Array<{ role?: string }> | undefined)?.[0]?.role, "developer");
+			const tools = first?.body.tools;
+			assert.ok(Array.isArray(tools) && tools.length > 0);
+			const output = (second?.body.input as Array<{ type?: string; output?: unknown }> | undefined)?.find(
 				(item) => item.type === "function_call_output",
 			);
 			assert.match(String(output?.output), /RESPONSES_FILE/);
@@ -309,8 +310,10 @@ describe("P54b Gemini in the CLI", () => {
 			assert.equal(first?.key, "g-key");
 			assert.ok(first?.body.systemInstruction, "the system prompt as systemInstruction");
 			assert.ok(Array.isArray(first?.body.tools));
-			const response = (second?.body.contents as Array<{ parts: Array<{ functionResponse?: { response: unknown } }> }>)
-				.flatMap((content) => content.parts)
+			const response = (
+				second?.body.contents as Array<{ parts: Array<{ functionResponse?: { response: unknown } }> }> | undefined
+			)
+				?.flatMap((content) => content.parts)
 				.find((part) => part.functionResponse);
 			assert.match(JSON.stringify(response?.functionResponse?.response), /GEMINI_FILE/);
 
