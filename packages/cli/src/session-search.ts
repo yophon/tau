@@ -1,9 +1,11 @@
 // session_search / session_read (P32a, after Hermes Agent's session_search):
 // keyword search over a person's own session files, returning the stored text
 // itself — no index, no embeddings, no model call. Only user and assistant text
-// is searched (not tool results).
+// is searched (not tool results). Stays in the CLI (P63): it reads the terminal's
+// JSONL session files; another host searches its own conversations its own way.
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
+import type { Extension } from "@yophon/tau-kernel";
 
 export interface SessionRoot {
 	dir: string;
@@ -234,4 +236,91 @@ export function readSessionAround(
 			return `${message.id === entry ? "▶ " : ""}${localTime(message.at)} ${message.role}: ${body}`;
 		})
 		.join("\n\n");
+}
+
+const text = (value: string, isError = false) => ({
+	content: [{ type: "text" as const, text: value }],
+	...(isError ? { isError: true } : {}),
+});
+const str = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
+const failureText = (error: unknown) => text(error instanceof Error ? error.message : String(error), true);
+
+/**
+ * The two tools as a built-in extension (P63: split from the memory extension, which moved
+ * to @yophon/tau-ext-memory; loaded right after it so the tool order stays the same).
+ * `getRoots` is read on every use; undefined = not configured yet.
+ */
+export function createSessionSearchExtension(getRoots: () => readonly SessionRoot[] | undefined): Extension {
+	return (api) => {
+		api.registerTool(
+			{
+				name: "session_search",
+				description:
+					"Search this person's earlier sessions (terminal and chat) for words: every word must appear in the message. Returns date, session file, entry id and the text around the match; read more with session_read.",
+				promptSnippet: "Find things said in earlier sessions",
+				promptGuidelines: [
+					"When the user refers to something from an earlier conversation that is not in memory or this session, use session_search before saying you do not know.",
+				],
+				parameters: {
+					type: "object",
+					properties: {
+						query: { type: "string", description: "Words to find, separated by spaces (all must match)" },
+						since: {
+							type: "string",
+							description: "Only sessions from this far back: 7d, 24h, or a date like 2026-10-01",
+						},
+						limit: { type: "number", description: "Most hits to return (default 10, at most 30)" },
+					},
+					required: ["query"],
+				},
+				execute: async (args, _signal, _onUpdate, ctx) => {
+					const roots = getRoots();
+					if (!roots) return text("Session search is not available here.", true);
+					try {
+						const result = searchSessions(roots, str(args.query) ?? "", {
+							...(str(args.since) ? { since: str(args.since) } : {}),
+							limit: typeof args.limit === "number" ? args.limit : 10,
+							exclude: ctx?.sessionManager?.getSessionFile(),
+						});
+						return text(result.text);
+					} catch (error) {
+						return failureText(error);
+					}
+				},
+			},
+			{ risk: "low" },
+		);
+
+		api.registerTool(
+			{
+				name: "session_read",
+				description: "Read the messages around an entry that session_search found.",
+				parameters: {
+					type: "object",
+					properties: {
+						file: { type: "string", description: "The session file session_search returned" },
+						entry: { type: "string", description: "The entry id session_search returned" },
+						before: { type: "number", description: "Messages before it (default 3, at most 20)" },
+						after: { type: "number", description: "Messages after it (default 3, at most 20)" },
+					},
+					required: ["file", "entry"],
+				},
+				execute: async (args) => {
+					const roots = getRoots();
+					if (!roots) return text("Session search is not available here.", true);
+					try {
+						return text(
+							readSessionAround(roots, str(args.file) ?? "", str(args.entry) ?? "", {
+								before: typeof args.before === "number" ? args.before : 3,
+								after: typeof args.after === "number" ? args.after : 3,
+							}),
+						);
+					} catch (error) {
+						return failureText(error);
+					}
+				},
+			},
+			{ risk: "low" },
+		);
+	};
 }

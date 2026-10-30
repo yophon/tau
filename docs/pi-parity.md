@@ -181,7 +181,7 @@
 | OpenAI 兼容线上的工具结果图片 | ✅ P36d | 照抄 pi convertMessages：tool 消息只放文字（只有图片时 `(see attached image)`），图片放进紧跟其后的用户消息「Attached image(s) from tool result:」 |
 | 子代理（pi 为示例扩展 `examples/extensions/subagent`） | ✅ P26b | 照抄工具形状（单个、并行、串联）与 agent 定义格式，内置 pi 的四个示例 agent。偏离：进程内运行（`ctx.runSubagent`）而非独立 pi 进程；加 yo-agent 的后台模式、只收紧、禁止递归、`/tasks`；agent 定义多一个可选 `mode`（D32） |
 | 待办（pi 为示例扩展 `todo.ts`） | ✅ P26c | 采用 yo-agent / Claude Code 的 `todo_write` 整表替换，不用 pi 示例的增删勾（D32） |
-| 长期记忆 | ✅ P26c | pi 无对应物；照 yo-agent 的 memory_write 与 `#remember`，存用户目录（D32） |
+| 长期记忆 | ✅ P26c，P63 抽成 ext-memory | pi 无对应物；照 yo-agent 的 memory_write 与 `#remember`，存用户目录（D32）；P63 起是纯 ES 包 `@yophon/tau-ext-memory`，存储由宿主注入（D64） |
 | 浏览器、React Native、小程序、嵌入引擎宿主 | ✅ P9/P10/P13 | pi 无先例；引擎缺口由宿主补（D18）。小程序、React Native、Flutter 的示例应用 P62 归档，两个适配包留下 |
 | 纯 Platform MCP client | ✅ P13/P24a | ext-mcp-http 是照抄 pi-mcp 形状的纯 ES 核心（`McpClient`/`McpTransport`/Streamable HTTP），ext-mcp 在其上加移植自 pi-mcp 的 `StdioTransport`，官方 SDK 已退役；工具名 `mcp__<server>__<tool>`（pi 0.99.2）。P43：协议 2025-11-25 与 pi 的版本集、SSE 用 `Last-Event-ID` 续流、`roots`。偏离：不消费 pi-mcp 包（主入口 import node:child_process，裸引擎不可用）；GET 通知流在 ext-mcp-http 为可选；progress/cancelled 未做 |
 
@@ -191,7 +191,7 @@
 
 ## tau 原创面：记忆、凭据与审计（P32）
 
-P32（D36）的分层记忆、凭据库、密钥守卫与审计账本是 pi 没有的原创面，都以 CLI 内置扩展或宿主代码实现，不新增扩展 API；连接器配置照抄 pi 1.2 的 `mcp.json` 格式（P21 附录 A 的 `mcp-builtin-support`），MCP OAuth 移植自 pi-mcp 1.2（D24），`registerMcpServer` 一族仍按 D21 排除。
+P32（D36）的分层记忆、凭据库、密钥守卫与审计账本是 pi 没有的原创面，不新增扩展 API：记忆是纯 ES 扩展包 `@yophon/tau-ext-memory`（P63，存储由宿主注入），其余都以 CLI 内置扩展或宿主代码实现；连接器配置照抄 pi 1.2 的 `mcp.json` 格式（P21 附录 A 的 `mcp-builtin-support`），MCP OAuth 移植自 pi-mcp 1.2（D24），`registerMcpServer` 一族仍按 D21 排除。
 
 ## 设计参考
 

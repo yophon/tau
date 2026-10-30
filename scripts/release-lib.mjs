@@ -19,6 +19,7 @@ export const PUBLISHABLE_PACKAGES = [
 	"ext-loop-detection",
 	"ext-checkpoint",
 	"ext-web",
+	"ext-memory",
 	"ext-codemode",
 	"ext-lsp",
 	"ext-provider-anthropic",

@@ -9,6 +9,7 @@ import { dirname, join, resolve } from "node:path";
 import { type CheckpointBackend, createCheckpointExtension, createFileBackupBackend } from "@yophon/tau-ext-checkpoint";
 import { type CodemodeMode, createNodeCodemodeExtension } from "@yophon/tau-ext-codemode/node";
 import { createLoopDetectionExtension } from "@yophon/tau-ext-loop-detection";
+import { createMemoryExtension, fileSystemMemoryStore, type MemoryScope } from "@yophon/tau-ext-memory";
 import { createResourcesExtension } from "@yophon/tau-ext-resources";
 import { createSubagentsExtension, type SubagentsOptions } from "@yophon/tau-ext-subagents";
 import { createToolSearchExtension } from "@yophon/tau-ext-tool-search";
@@ -23,9 +24,9 @@ import {
 	type ToolInfo,
 } from "@yophon/tau-kernel";
 import { mainCheckoutOf } from "./git-paths.ts";
-import { createMemoryExtension, type MemoryScope } from "./memory.ts";
 import { resolveConfigValue } from "./models.ts";
 import { createSecretGuard } from "./secret-guard.ts";
+import { createSessionSearchExtension, type SessionRoot } from "./session-search.ts";
 import { loadSettings, readSettings } from "./settings.ts";
 import { todoExtension } from "./todo.ts";
 
@@ -43,6 +44,8 @@ const state: {
 	defaultPrompt: boolean;
 	/** The project's memory scope (P26c, P32a); undefined until configured. */
 	memory: MemoryScope | undefined;
+	/** The session directories session_search reads (P32a, P40c sessionDir); undefined until configured. */
+	sessionRoots: SessionRoot[] | undefined;
 	/** The web_search provider (P28); undefined = web_search is not registered. */
 	webSearch: WebSearchConfig | undefined;
 	/** The user home (P32b: the secret guard protects ~/.tau credential files). */
@@ -72,6 +75,7 @@ const state: {
 	agent: undefined,
 	defaultPrompt: true,
 	memory: undefined,
+	sessionRoots: undefined,
 	webSearch: undefined,
 	home: homedir(),
 	envAllow: [],
@@ -183,14 +187,13 @@ function readCodemodeSettings(path: string): CodemodeSettings {
 	}
 }
 
-/** The memory of the person at the terminal (P32a): their USER.md, the project's index and topics, and their sessions. */
+/** The memory of the person at the terminal (P32a): their USER.md, and the project's index and topics. */
 function defaultMemoryScope(home: string, cwd: string): MemoryScope {
 	// P37d: every worktree of a repository shares the main checkout's project memory (Claude Code).
 	const project = join(home, ".tau", "projects", sessionDirSlug(mainCheckoutOf(cwd) ?? cwd));
 	return {
 		userFile: join(home, ".tau", "memory", "USER.md"),
 		project: { file: join(project, "MEMORY.md"), topicsDir: join(project, "memory") },
-		sessions: [{ dir: join(home, ".tau", "sessions") }],
 	};
 }
 
@@ -201,6 +204,7 @@ function defaultMemoryScope(home: string, cwd: string): MemoryScope {
 export function configureBuiltins(options: { cwd: string; projectTrusted: boolean; home?: string }): void {
 	const home = options.home ?? process.env.HOME ?? process.env.USERPROFILE ?? homedir();
 	state.memory = defaultMemoryScope(home, options.cwd);
+	state.sessionRoots = [{ dir: join(home, ".tau", "sessions") }];
 	const layered = loadSettings({ home, cwd: options.cwd, projectTrusted: options.projectTrusted });
 	state.skillPaths = layered.skills ?? [];
 	state.promptPaths = layered.prompts ?? [];
@@ -227,7 +231,7 @@ export function configureBuiltins(options: { cwd: string; projectTrusted: boolea
 	cleanupCheckpoints(home);
 	// P40c: sessions kept in settings' sessionDir are searched too.
 	if (layered.sessionDir !== undefined) {
-		state.memory.sessions = [...state.memory.sessions, { dir: resolve(options.cwd, layered.sessionDir) }];
+		state.sessionRoots = [...state.sessionRoots, { dir: resolve(options.cwd, layered.sessionDir) }];
 	}
 	state.home = home;
 	state.envAllow = readSettings(join(home, ".tau", "settings.json")).shellEnvAllow ?? [];
@@ -398,9 +402,14 @@ export function builtinExtensions(): Extension[] {
 					? state.isolate(agentId, kept)
 					: Promise.reject(new Error("This host cannot run a subagent in a worktree of its own.")),
 		}),
-		// P26c: the todo list and long-term memory.
+		// P26c: the todo list and long-term memory (P63: @yophon/tau-ext-memory over the home directory),
+		// then session_search right after it, so the tools keep their order.
 		todoExtension,
-		createMemoryExtension(() => state.memory),
+		createMemoryExtension({
+			store: fileSystemMemoryStore(new NodeFileSystem(state.home)),
+			getScope: () => state.memory,
+		}),
+		createSessionSearchExtension(() => state.sessionRoots),
 		// P28: web_fetch always, web_search when a provider is configured.
 		createWebExtension({
 			...(state.webSearch ? { search: state.webSearch } : {}),

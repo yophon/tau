@@ -71,6 +71,7 @@ Native 适配器在 Android 上。OpenAI 兼容这条路每个阶段末都用 De
 | `@yophon/tau-ext-provider-openai-responses` | OpenAI Responses `ChatTransport`：推理强度、加密推理无状态回放 | **不可**——纯 `Platform` |
 | `@yophon/tau-ext-provider-google` | Gemini API `ChatTransport`：思考级别与预算、thought signature | **不可**——纯 `Platform` |
 | `@yophon/tau-ext-web` | `web_fetch`（HTML 转 markdown）与自带 key 的 `web_search`（Brave、Tavily、Exa、SearXNG） | **不可**——纯 `Platform` |
+| `@yophon/tau-ext-memory` | 长期记忆（`memory_write` / `memory_edit` / `memory_read`、`/remember`、`/memory`），存储由宿主注入（异步） | **不可**——纯 `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`：在延迟加载的工具里 BM25 检索并加载命中的 | 不可——纯 ES |
 | `@yophon/tau-ext-loop-detection` | 一直重复同一个工具调用时停下这次运行（Gemini CLI 的检测） | 不可——纯 ES |
 | `@yophon/tau-ext-checkpoint` | 每次提示改文件前存下原样，TUI 的 `/rewind` 还原 | 不可——纯 ES，经 `FileSystem` |

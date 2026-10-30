@@ -1,6 +1,6 @@
 # tau 路线图
 
-> 最后更新：2026-10-26（P62 打底子完成；P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；当前没有进行中的阶段，桌面端在讨论中，规格书暂不写）
+> 最后更新：2026-10-29（P63 长期记忆抽成 ext-memory 完成；P62 打底子完成；P61 完成；P60 完成，常驻 tau 这条线（P56–P60）完成；P59 完成；P58 完成；P57 完成；P56 完成；P55 完成；P54 完成；P53 完成；P52 复盘完成；P51 完成；P50 完成：已完成阶段压成一张表，旧版在 [archive/2026-10-22/roadmap.md](archive/2026-10-22/roadmap.md)；0.4.0 发版已推迟（Backlog C）；当前没有进行中的阶段，桌面端在讨论中，规格书暂不写）
 > 状态标记：✅ 完成 · 🚧 进行中 · ⬜ 未开始 · ⏸ 搁置/重定位
 > **执行与归档流程见 [development.md](development.md)**（规格书先行 → 实现 → DoD 验证 → 文档归档），此处不重复。每阶段动工前先写 `docs/specs/phase-<N>-<slug>.md`。
 
@@ -76,6 +76,7 @@
 | [P60](specs/phase-60-editor-acp.md) | 常驻 tau 第五步：编辑器——`--mode acp` 改成协议上的适配层，连接策略同 TUI；`session/list`（终端的会话排前）、load、resume、close；别的客户端的话与设置推给编辑器；审批先答为准、别处答了以 `$/cancel_request` 撤回；会话配置项（档位、模型、推理强度）；对话框走 `elicitation/create`；工具直接读写磁盘（去掉经编辑器读写）；协议加客户端带来的 MCP server（只限本机） | 2026-10-24 | D62 |
 | [P61](specs/phase-61-debt-cleanup.md) | 日常使用相关的三条技术债：常驻服务里图片支持按会话的模型（#35）；扩展的 Markdown 变换在流式时也生效、换宽度按新宽度取（#33）；管道一次灌给 `tau --repl` 的几行一句跑完再跑下一句、跑完退出（#30，原来一句都不跑） | 2026-10-24 | |
 | [P62](specs/phase-62-groundwork.md) | 打底子：基线（`scripts/baseline.mjs`、`docs/baseline.md`）；网关、两个渠道、飞书扩展与三个示例应用归档；CI 加 Ubuntu Node 24 与 Windows 两路 gate；8 个快撞线的文件拆分；重复实现、死代码、空 catch、类型断言（协议边界收进 `wire.ts`）；补测试、偶发失败结论、#18 用 pi 自己的实现核对；常驻服务这条线自查（7 处修正，其中两处未配对就能让服务退出）；依赖升级（Ink 8 + React 19 与 wrap-ansi 10 的移植、Preact 11、Biome 2.5、esbuild；undici 8.12.2 作安全例外）；文档逐句对代码；账目（五份验收清单、真机清单、技术债表；查出子代理拿得到 `ask_user`） | 2026-10-26 | D63（D31、D54 补记） |
+| [P63](specs/phase-63-memory-extension.md) | 长期记忆抽成纯 ES 扩展包 `@yophon/tau-ext-memory`：存储由宿主注入（异步的读、整份写、列目录），三个工具、`/remember`、`/memory`、提示词段落与冻结的快照都在包里，同一文件的读写串行；`fileSystemMemoryStore` 接内核的 FileSystem；终端行为一字不变，`session_search` 留在 CLI 成独立内置扩展；裸 QuickJS 冒烟加记忆段（第一个使用者是 gopan 的助手） | 2026-10-29 | D64 |
 
 真机验收：只能在真终端、手机、编辑器里看的场景都在 [device-acceptance.md](device-acceptance.md)（P34–P60，P62 合成），用户找时间走一遍。
 
@@ -250,7 +251,7 @@ P53 总计划里没做的几项，常驻 tau 那条线之后再看：
 |---|---|---|---|
 | 9 | cost 需宿主注入单价才有值（P14 半解：机制就位，tau 不带定价数据——D19-3 不伪造） | 未配 `--pricing`/`TAU_PRICING` 时 footer 仍 unknown | 数据外置为设计决策，机制侧销案；如出现可信定价数据源再议 |
 | 10 | token 估算为加权启发式（P14：CJK 1 token/字 + 其余 chars/4，D19-1），与真实 tokenizer 仍有残余偏差 | 压缩触发点/footer 百分比不精确（中文场景系统性低估已消除） | 残余偏差接受；换真 tokenizer 属大决策不做 |
-| 13 | 10 个包从没发过 npm：ext-checkpoint、ext-codemode、ext-loop-detection、ext-lsp、ext-provider-google、ext-provider-openai-responses、ext-tool-search、ext-web、protocol、web；已发的 11 个停在 0.2.0（2026-07-21）（P52 复盘更正，P62j 重数） | 只能在仓库里用；npm 上的 `tau` 是三个月前的版本 | 随 0.4.0 首发，或决定不对外发布（复盘候选 C） |
+| 13 | 11 个包从没发过 npm：ext-checkpoint、ext-codemode、ext-loop-detection、ext-lsp、ext-memory（P63 新增）、ext-provider-google、ext-provider-openai-responses、ext-tool-search、ext-web、protocol、web；已发的 11 个停在 0.2.0（2026-07-21）（P52 复盘更正，P62j 重数） | 只能在仓库里用；npm 上的 `tau` 是三个月前的版本 | 随 0.4.0 首发，或决定不对外发布（复盘候选 C） |
 | 28 | 真机验收没人走过：P34–P60 只能真机验的场景已合成一份清单 [device-acceptance.md](device-acceptance.md)（P62j，11 组），一条也还没走 | 真实终端、输入法、剪贴板、通知、MCP 网页登录、手机、编辑器等自动化测不到的交互没人试过；P62 换了 Ink 8，全屏显示一组尤其要看 | 用户找时间按清单走一遍，组内从上往下 |
 | 36 | `smoke:browser:runtime`（浏览器里跑内核与 OPFS）在 CI 上超时过一次（20 秒内 Chrome 没报结果，stderr 只有 dbus 的报错），重跑通过（P59 文档提交的 CI，run 40064221954）；之后没再出现 | CI 偶尔红一次 | P62f 已把超时放宽到 40 秒，超时报错带上页面何时发出第一个模型请求；再出现时看它卡在页面加载还是模型那边 |
 | 37 | `scripts/` 里几处在 Windows 上用 `shell: true` 跑 `npm.cmd` 并传参数数组（smoke-pack、build-packages、publish），Node 24 报 DEP0190 弃用警告（P62） | 以后的 Node 可能改成报错；发布与 pack smoke 在 Windows 上跑不了 | 动发布脚本时把命令与参数自己拼成一条带引号的命令行，或改用 `npm.cmd` 的绝对路径不经 shell |

@@ -4,6 +4,12 @@ All notable changes to the tau packages (`@yophon/tau-*`, lockstep-versioned).
 
 ## [Unreleased]
 
+### Changed (P63: memory as an extension package)
+- Long-term memory moved out of the CLI into `@yophon/tau-ext-memory` (pure ES): `memory_write` /
+  `memory_edit` / `memory_read`, `/remember`, `/memory` and the frozen prompt section, over an async
+  `MemoryStore` the host provides (`fileSystemMemoryStore(fs)` for the kernel's FileSystem). The terminal
+  behaves exactly as before; `session_search` / `session_read` stay in the CLI as their own built-in extension.
+
 ### Removed (P62: the parked parts are archived)
 - `tau gateway` and the packages `@yophon/tau-gateway`, `@yophon/tau-channel-weixin`,
   `@yophon/tau-channel-feishu` and `@yophon/tau-ext-feishu`, with the mini-program, React Native and

@@ -1,6 +1,6 @@
 # tau 架构
 
-> 最后更新：2026-10-26（P62：拆出的模块、常驻服务自查的修正、Ink 8；P62 归档：网关、两个渠道、飞书扩展与三个示例应用移进 `archive/2026-10-25/`，CLI 的 cron 搬进 `cron.ts`；P60：编辑器接常驻会话——`--mode acp` 改成协议上的适配层（`modes/acp.ts`、`modes/acp-updates.ts`、`acp-hub.ts`），协议加客户端带来的 MCP server；P59：远程设备与网页客户端——`server/remote.ts`、`server/devices.ts`、新包 `@yophon/tau-web`，TUI 断线重连；P58：常驻服务与本机 socket——`daemon.ts`、`tui-link.ts`、`tau serve --listen unix://` 与 `start|stop|restart|status`，中枢服务多个目录；P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
+> 最后更新：2026-10-29（P63：长期记忆抽成纯 ES 包 `@yophon/tau-ext-memory`，CLI 的 `memory.ts` 删掉、`session_search` 成独立内置扩展；P62：拆出的模块、常驻服务自查的修正、Ink 8；P62 归档：网关、两个渠道、飞书扩展与三个示例应用移进 `archive/2026-10-25/`，CLI 的 cron 搬进 `cron.ts`；P60：编辑器接常驻会话——`--mode acp` 改成协议上的适配层（`modes/acp.ts`、`modes/acp-updates.ts`、`acp-hub.ts`），协议加客户端带来的 MCP server；P59：远程设备与网页客户端——`server/remote.ts`、`server/devices.ts`、新包 `@yophon/tau-web`，TUI 断线重连；P58：常驻服务与本机 socket——`daemon.ts`、`tui-link.ts`、`tau serve --listen unix://` 与 `start|stop|restart|status`，中枢服务多个目录；P57：TUI 与 `--mode rpc` 成为会话中枢的客户端——`local-hub.ts`、`tui/session-client.ts`、中枢的 `control.ts`/`ui.ts`/`native.ts`；P56：客户端协议包与 CLI 的会话中枢、`tau serve`；P55：apply_patch、循环检测与 checkpoint 两个包、TUI 的 `/rewind`；P54：OpenAI Responses 与 Gemini 两个 transport 包、内核的模型降级与 prompt shim、CLI 端点的 native 联合；P51：TUI 各部分的窄接口、内核的 `AgentInternals`、结构门禁；P50 按包和模块重写为现状，旧版在 [archive/2026-10-22/architecture.md](archive/2026-10-22/architecture.md)）
 > 本文档描述**当前已实现**的架构。未实现的部分见 [roadmap.md](roadmap.md)，决策理由见 [decisions.md](decisions.md)，每个阶段具体改了什么见 `specs/` 里对应规格书的实施记录。
 
 ## 一句话
@@ -19,7 +19,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 │  host-weapp    wx.request → Platform      host-rn  expo/fetch → Platform │
 ├─ 扩展层（纯函数扩展，静态或动态注册）──────────────────────┤
 │  ext-subagents · ext-resources · ext-mcp-http（纯 ES）· ext-mcp（stdio）│
-│  ext-tool-search · ext-codemode · ext-web · ext-lsp                    │
+│  ext-tool-search · ext-codemode · ext-web · ext-memory · ext-lsp       │
 │  ext-loop-detection · ext-checkpoint（纯 ES 的运行保护）               │
 │  ext-provider-anthropic · -openai-responses · -google（纯 Platform 的协议）│
 ├─ 内核层（禁止碰运行时，门禁强制）──────────────────────────┤
@@ -30,7 +30,7 @@ tau 是运行时无关的 coding agent 内核：内核只依赖 ECMAScript 语�
 
 ## 关键不变量（违反即架构回退）
 
-1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-loop-detection、ext-checkpoint、ext-web、ext-codemode 与 ext-lsp 的纯 ES 入口）与协议包 `@yophon/tau-protocol` 过同一门禁。
+1. **内核纯度是机械门禁**：`npm run check:purity` = esbuild `platform: "neutral"` 打包加逐行扫描禁用全局（`process`/`Buffer`/裸 `fetch`/timer/`TextDecoder`/`crypto`/动态 import/`node:` import）。只有 `platform.ts` 豁免 WinterTC 全局。纯 Platform 的扩展包（ext-mcp-http、三个 ext-provider-*、ext-tool-search、ext-loop-detection、ext-checkpoint、ext-web、ext-memory、ext-codemode 与 ext-lsp 的纯 ES 入口）与协议包 `@yophon/tau-protocol` 过同一门禁。
 2. **内核零 npm 依赖**。JSON Schema 等一律用结构化类型，不引 typebox。
 3. **可擦除 TypeScript**（`erasableSyntaxOnly`）：无 enum/namespace/参数属性，Node 原生 type-stripping 直接跑源码，开发期零构建。
 4. **能力可选**：内核任何路径不得假设某能力存在；宿主不提供就少注册工具。
@@ -146,6 +146,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 - **`@yophon/tau-ext-tool-search`**（纯 ES）：照抄 pi 的 BM25 排序与 `tool_search` 工具，在 codemode/deferred 档且未 active 的工具里检索，命中的经 `setActiveTools` 激活。
 - **`@yophon/tau-ext-codemode`**：`codemode` 工具（脚本没有环境权限，经 `ctx.executeTool` 调工具，每个嵌套调用照样过权限门）。纯 ES 入口过纯度门禁；`./node` 接 pi-codemode 的 worker 线程 QuickJS 沙箱（工作进程池缺省 2，`TAU_CODEMODE_MAX_WORKERS`）；`store()`/`load()` 读写活动分支上的条目。
 - **`@yophon/tau-ext-web`**（纯 Platform）：`web_fetch`（HTML 经 `html.ts` 转 markdown，50 KB 分页）与 `web_search`（Brave、Tavily、Exa、SearXNG，自带 key，没有就不注册）。
+- **`@yophon/tau-ext-memory`**（纯 ES）：长期记忆（P63 从 CLI 搬来）。`createMemoryExtension({ store, getScope })`：`memory_write` / `memory_edit` / `memory_read` 三个工具（低风险）、`/remember` 与 `/memory`、第一次 `before_agent_start` 时读取并冻结到下个 `session_start` 的提示词段落；记忆文件经宿主给的 `MemoryStore`（异步的 `read` / `write` / `list`）读写，同一文件的读写排队串行，读失败时这次会话没有记忆段。`fileSystemMemoryStore(fs)` 接内核的 `FileSystem`（终端用 NodeFileSystem，浏览器可用 OPFS）。纯函数 `appendFact`、`replaceOnce`、`loadLimitReminder`、`memoryPromptSection`、`resolveMemoryFile` 也导出。语义见 [memory.md](memory.md)。
 - **`@yophon/tau-ext-lsp`**（纯 ES 入口，`./node` 启进程）：`config.ts`（Claude Code 的 `.lsp.json`）、`framing.ts`（按字节的 Content-Length 分帧）、`connection.ts`（JSON-RPC）、`client.ts`（一个服务器：懒启动、文档同步、崩溃后重启）、`manager.ts`（按扩展名路由、等诊断）、`diagnostics.ts`、`tool.ts`（`lsp` 工具，九种操作）、`extension.ts`（改完文件后在 `turn_end` 追加诊断、`/lsp`）、`catalog.ts`（Claude Code 官方 12 个语言插件的配置）、`gitignore.ts`（照 Claude Code，从定义、引用、实现、工作区符号的结果里去掉被 gitignore 的路径）、`node.ts`。使用说明见 [connectors.md](connectors.md)。
 - **`@yophon/tau-ext-provider-anthropic`**（纯 Platform，零依赖）：`createAnthropicTransport(config, platform)`，手写 Anthropic Messages 流式协议，消息与事件映射照抄 pi：thinking 原生流式（signature、redacted）、`none` 在支持的模型上发 disabled、tool_result 图片、`cache_control` 打点、cacheRead/cacheWrite 用量。
 - **`@yophon/tau-ext-provider-openai-responses`**（纯 Platform，零依赖）：`createOpenAIResponsesTransport(config, platform)`，手写 OpenAI Responses 流式协议（`POST {baseUrl}/responses`），映射照抄 pi 的 shared：指令作 developer（推理模型）或 system 输入、function tools、`reasoning.effort` 按思考级别、`store: false` 加 `reasoning.encrypted_content`，推理项与消息项 id（`textSignature`）同模型原样回放，tool call id 是 `call_id|item_id`，用量减去缓存命中，`incomplete`/`failed` 映射到 stopReason。没有模型目录：`reasoning`、`input` 由配置给。
@@ -195,7 +196,7 @@ Agent 总持有一个 SessionStore（不传时用私有的内存库，只有一�
 | `audit.ts` | 审计账本 `~/.tau/audit/*.jsonl`（按天、保留 30 天）：一轮的开始与结束、每个工具调用、谁批准。使用说明见 [audit.md](audit.md) |
 | **内置工具与扩展** | |
 | `ask-user.ts` | `ask_user`：经 `UiCapability` 依次问，缺省不等待（回答后作为消息送达） |
-| `todo.ts` · `memory.ts` · `session-search.ts` | `todo_write`（整表替换，存 custom 条目，按分支恢复）；长期记忆（`USER.md`、项目 `MEMORY.md` 与主题文件，提示词只加载前 200 行或 25 KB，见 [memory.md](memory.md)）；`session_search`/`session_read`（扫会话 JSONL，不建索引） |
+| `todo.ts` · `session-search.ts` | `todo_write`（整表替换，存 custom 条目，按分支恢复）；`session_search`/`session_read`（扫会话 JSONL，不建索引；`createSessionSearchExtension`，紧跟记忆扩展加载）。长期记忆在 `@yophon/tau-ext-memory`，`builtins.ts` 给它 `~/.tau` 下的文件（`USER.md`、项目 `MEMORY.md` 与主题文件，见 [memory.md](memory.md)） |
 | `background.ts` | 后台命令结束时作为 follow-up 送达、`/tasks`（后台命令、后台子 agent、定时任务）、`monitor` 工具 |
 | `loop.ts` · `scheduler.ts` · `run-time.ts` | `/loop` 与 `cron_*`/`schedule_wakeup` 工具（只在空闲时触发，存 custom 条目）；任务表与 cron（`cron.ts`：Vixie 语义、夏令时，P62 从网关搬来）；给人看的时间 |
 | `worktree.ts` · `worktree-tools.ts` | `--worktree` 的建立、跟随主检出的信任、退出清理；`enter_worktree`/`exit_worktree`（隔离的子 agent 也用 `openWorktree`）。使用说明见 [worktrees.md](worktrees.md) |

@@ -1,19 +1,22 @@
-// P26c: todo_write and long-term memory (layers, limits and the frozen snapshot: P32a).
+// P26c: todo_write and long-term memory (layers, limits and the frozen snapshot: P32a), with the
+// memory from @yophon/tau-ext-memory over the terminal's files (P63).
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, describe, it } from "node:test";
-import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import {
+	appendFact,
 	createMemoryExtension,
-	editMemory,
+	fileSystemMemoryStore,
 	loadLimitReminder,
 	type MemoryScope,
-	memorySection,
+	memoryPromptSection,
+	replaceOnce,
 	resolveMemoryFile,
-	writeMemory,
-} from "../src/memory.ts";
+} from "@yophon/tau-ext-memory";
+import { NodeFileSystem } from "@yophon/tau-host-node";
+import { makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
 import { parseTodos, todoExtension, todoSummary, todosFromEntries } from "../src/todo.ts";
 import { type Harness, type HarnessOptions, harness as start } from "./tui-harness.ts";
 
@@ -110,9 +113,51 @@ function scopeIn(dir: string, project = true): MemoryScope {
 	return {
 		userFile: join(dir, "USER.md"),
 		...(project ? { project: { file: join(dir, "MEMORY.md"), topicsDir: join(dir, "memory") } } : {}),
-		sessions: [],
 	};
 }
+
+const read = (file: string) => (existsSync(file) ? readFileSync(file, "utf8") : "");
+
+/** What memory_write and /remember do to a file on disk. */
+function writeMemory(file: string, fact: string): { line: string; deduped: boolean } {
+	const { content, line, deduped } = appendFact(read(file), fact);
+	if (!deduped) {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, content);
+	}
+	return { line, deduped };
+}
+
+/** What memory_edit does to a file on disk. */
+function editMemory(file: string, old: string, replacement: string): void {
+	writeFileSync(file, replaceOnce(read(file), old, replacement, file));
+}
+
+/** The prompt section the extension builds from the files at session start. */
+function memorySection(scope: MemoryScope): string | undefined {
+	const project = scope.project;
+	return memoryPromptSection({
+		userFile: scope.userFile,
+		user: read(scope.userFile),
+		...(project
+			? {
+					project: {
+						file: project.file,
+						content: read(project.file),
+						topics: existsSync(project.topicsDir)
+							? readdirSync(project.topicsDir)
+									.filter((name) => name.endsWith(".md"))
+									.map((name) => name.slice(0, -3))
+									.sort()
+							: [],
+					},
+				}
+			: {}),
+	});
+}
+
+const fileMemory = (scope: MemoryScope) =>
+	createMemoryExtension({ store: fileSystemMemoryStore(new NodeFileSystem()), getScope: () => scope });
 
 describe("memory", () => {
 	it("appends one line per fact and skips repeats regardless of case and spacing", () => {
@@ -206,7 +251,7 @@ describe("memory", () => {
 				makeSseResponse(textTurn("noted")),
 				makeSseResponse(textTurn("again")),
 			],
-			extensions: [createMemoryExtension(() => scope)],
+			extensions: [fileMemory(scope)],
 		});
 		await h.submit("#Deploys go through the release script");
 		await h.waitFor((f) => f.includes("Remembered: Deploys go through the release script"), "the quick memory");

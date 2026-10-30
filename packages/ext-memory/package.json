@@ -1,0 +1,25 @@
+{
+	"name": "@yophon/tau-ext-memory",
+	"version": "0.2.0",
+	"description": "Long-term memory for tau (memory_write / memory_edit / memory_read, /remember, /memory) over a host-provided async store, pure ES",
+	"type": "module",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/yophon/tau.git",
+		"directory": "packages/ext-memory"
+	},
+	"exports": {
+		".": "./src/index.ts",
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"dependencies": {
+		"@yophon/tau-kernel": "^0.2.0"
+	}
+}

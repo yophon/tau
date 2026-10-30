@@ -58,6 +58,16 @@ const result = JSON.parse(raw);
 const expectations = [
 	[result.finalText === "北京今天晴，25°C ☀️", `finalText: ${result.finalText}`],
 	[result.toolExecutedWith === "北京", `toolExecutedWith: ${result.toolExecutedWith}`],
+	// P63: ext-memory in the bare engine — a write, a repeat that is skipped, an edit; the prompt keeps the snapshot.
+	[
+		result.memory?.file === "- Likes coffee\n- Likes green tea\n",
+		`memory file: ${JSON.stringify(result.memory?.file)}`,
+	],
+	[result.memory?.deduped === true, "memory: the repeated fact was not skipped"],
+	[
+		/^base\n\n## Memory\n[\s\S]*### About the user \(USER\.md\)\n- Likes tea$/.test(result.memory?.snapshot ?? ""),
+		`memory snapshot: ${JSON.stringify(result.memory?.snapshot)}`,
+	],
 	[result.requestCount === 2, `requestCount: ${result.requestCount}`],
 	[result.secondRequestHasToolResult === true, "second request must carry the tool result"],
 	[

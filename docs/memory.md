@@ -51,3 +51,12 @@ tau 的长期记忆是几个 Markdown 文件，都在你的用户目录下，不
 
 - 记忆当作背景，不当指令：提示词里写明了这一点。但网页里的提示注入理论上可以诱导模型写进奇怪的内容，写入又不需要审批，所以偶尔看一眼 `/memory`。
 - 记忆是明文文件，别让它记密码和密钥；密钥放进凭据库（见 [connectors.md](connectors.md)）。
+
+## 在别的宿主里
+
+记忆是纯 ES 的扩展包 `@yophon/tau-ext-memory`（P63），不碰 Node：终端只是给它 `~/.tau` 下的文件。别的宿主（浏览器、裸 QuickJS、服务器上的 qjs）装上它、给一个存储，就有同一套记忆：
+
+- `createMemoryExtension({ store, getScope })`：`getScope()` 返回 `{ userFile, project? }`，只给 `userFile` 就只有「关于你」一层（项目层与主题文件随之不可用，工具会说明）。
+- `MemoryStore` 三个异步方法：`read(file)`（不存在返回 ""）、`write(file, content)`（整份替换）、`list(dir)`（只在有项目层时调用）。文件标识由宿主定，也原样出现在工具结果里。浏览器可以直接用 `fileSystemMemoryStore(fs)` 接 OPFS。
+- 冻结照旧：每次会话第一次请求前读一次、冻结到下一次会话；存储读不出来（比如断网）时这次会话没有记忆段，不让一轮对话因此失败。同一个文件的读写在扩展里排队，同一批里的两次 `memory_write` 不会互相覆盖；跨设备的一致性由存储自己负责。
+- `session_search` / `session_read` 只在终端：它们扫的是终端的会话文件。

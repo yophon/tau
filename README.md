@@ -88,6 +88,7 @@ its boundaries.
 | `@yophon/tau-ext-provider-openai-responses` | OpenAI Responses `ChatTransport`: reasoning effort, encrypted reasoning replayed statelessly | **No** — pure `Platform` |
 | `@yophon/tau-ext-provider-google` | Gemini API `ChatTransport`: thinking levels and budgets, thought signatures | **No** — pure `Platform` |
 | `@yophon/tau-ext-web` | `web_fetch` (HTML to markdown) and BYOK `web_search` (Brave, Tavily, Exa, SearXNG) | **No** — pure `Platform` |
+| `@yophon/tau-ext-memory` | Long-term memory (`memory_write` / `memory_edit` / `memory_read`, `/remember`, `/memory`) over a host-provided async store | **No** — pure `Platform` |
 | `@yophon/tau-ext-tool-search` | `tool_search`: BM25 over deferred tools, loading the matches | No — pure ES |
 | `@yophon/tau-ext-loop-detection` | Stops a run that keeps repeating the same tool call (Gemini CLI's check) | No — pure ES |
 | `@yophon/tau-ext-checkpoint` | Files kept before each prompt changes them; the TUI's `/rewind` restores them | No — pure ES over `FileSystem` |

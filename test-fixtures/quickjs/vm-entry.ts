@@ -1,9 +1,12 @@
 // 裸引擎冒烟 fixture：在 QuickJS（无 fetch/TextEncoder/TextDecoder/crypto/timers，
 // 即 flutter_js 的运行模型）里跑内核的完整两轮 agent 循环。
 // Platform 全部手工注入——这既是测试，也是 D4 注入缝隙的持续证明。
+// P63：再跑一段长期记忆（ext-memory 经内存里的假存储；gopan 的助手就跑在 QuickJS 上）。
+import { createMemoryExtension, type MemoryStore } from "../../packages/ext-memory/src/index.ts";
 import {
 	Agent,
 	createIncrementalUtf8Decoder,
+	ExtensionRegistry,
 	type Platform,
 	type PlatformResponse,
 	type Tool,
@@ -111,6 +114,66 @@ const agent = new Agent({
 	tools: [weatherTool],
 });
 
+// ---- P63：长期记忆。写一条、重复写一条、改一条；这次会话的提示词是开头的快照 ----
+function toolTurn(name: string, args: unknown): PlatformResponse {
+	return sseResponse([
+		{
+			choices: [
+				{
+					delta: {
+						tool_calls: [{ index: 0, id: `call_${name}`, function: { name, arguments: JSON.stringify(args) } }],
+					},
+					finish_reason: "tool_calls",
+				},
+			],
+		},
+	]);
+}
+
+async function runMemory() {
+	const files = new Map([["USER.md", "- Likes tea\n"]]);
+	const store: MemoryStore = {
+		read: async (file) => files.get(file) ?? "",
+		write: async (file, content) => {
+			files.set(file, content);
+		},
+		list: async () => [],
+	};
+	const memoryTurns = [
+		toolTurn("memory_write", { target: "user", content: "Likes green tea" }),
+		toolTurn("memory_write", { target: "user", content: "likes  GREEN tea" }),
+		toolTurn("memory_edit", { target: "user", old: "Likes tea", new: "Likes coffee" }),
+		sseResponse([{ choices: [{ delta: { content: "记下了" }, finish_reason: "stop" }] }]),
+	];
+	const memoryRequests: unknown[] = [];
+	let memoryCall = 0;
+	const agent = new Agent({
+		config: { baseUrl: "https://fake.example/v1", apiKey: "sk-fake", model: "fake-model" },
+		platform: {
+			...platform,
+			fetch: async (_url, init) => {
+				memoryRequests.push(JSON.parse(init?.body ?? "{}"));
+				const response = memoryTurns[memoryCall++];
+				if (!response) throw new Error("memory responses exhausted");
+				return response;
+			},
+		},
+		systemPrompt: "base",
+		extensions: await ExtensionRegistry.load([
+			createMemoryExtension({ store, getScope: () => ({ userFile: "USER.md" }) }),
+		]),
+	});
+	for await (const _ of agent.prompt("记住我喜欢绿茶")) {
+		// drain
+	}
+	const first = memoryRequests[0] as { messages?: { content?: unknown }[] } | undefined;
+	return {
+		file: files.get("USER.md"),
+		snapshot: String(first?.messages?.[0]?.content ?? ""),
+		deduped: JSON.stringify(memoryRequests[2] ?? {}).includes("Already remembered"),
+	};
+}
+
 const globals = globalThis as typeof globalThis & { __RESULT?: string };
 globals.__RESULT = "(pending)";
 (async () => {
@@ -120,12 +183,14 @@ globals.__RESULT = "(pending)";
 		eventTypes.push(event.type);
 		if (event.type === "text_delta") text += event.delta;
 	}
+	const memory = await runMemory();
 	globals.__RESULT = JSON.stringify({
 		finalText: text,
 		toolExecutedWith,
 		requestCount: requests.length,
 		secondRequestHasToolResult: JSON.stringify(requests[1]?.body ?? {}).includes("晴，25°C"),
 		eventTypes: [...new Set(eventTypes)],
+		memory,
 	});
 })().catch((error: unknown) => {
 	globals.__RESULT = `ERROR: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`;

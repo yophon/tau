@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { createMemoryExtension, fileSystemMemoryStore } from "@yophon/tau-ext-memory";
 import { NodeFileSystem } from "@yophon/tau-host-node";
 import {
 	createOpenAICompatTransport,
@@ -15,7 +16,6 @@ import {
 	SessionRecorder,
 } from "@yophon/tau-kernel";
 import { fakePlatform, makeSseResponse, textTurn, toolCallTurn } from "../../kernel/test/helpers.ts";
-import { createMemoryExtension } from "../src/memory.ts";
 import { todoExtension } from "../src/todo.ts";
 import { sessionHtml } from "../src/tui/export-html.ts";
 import { computeCompletion } from "../src/tui/input/completion.ts";
@@ -281,8 +281,13 @@ describe("P27 extension commands", () => {
 	it("/memory shows, edits through ui.editor and clears after confirmation", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "tau-memory-"));
 		const file = join(dir, "MEMORY.md");
-		const scope = { userFile: join(dir, "USER.md"), project: { file, topicsDir: join(dir, "memory") }, sessions: [] };
-		const h = await harness({ responses: [], extensions: [createMemoryExtension(() => scope)] });
+		const scope = { userFile: join(dir, "USER.md"), project: { file, topicsDir: join(dir, "memory") } };
+		const h = await harness({
+			responses: [],
+			extensions: [
+				createMemoryExtension({ store: fileSystemMemoryStore(new NodeFileSystem(dir)), getScope: () => scope }),
+			],
+		});
 		await h.submit("/memory");
 		await h.waitFor((f) => f.includes("This project") && f.includes("(empty)"), "the empty memory");
 		await h.submit("#Tabs, not spaces");
@@ -306,8 +311,10 @@ describe("P27 extension commands", () => {
 		const dir = mkdtempSync(join(tmpdir(), "tau-memory-"));
 		const file = join(dir, "MEMORY.md");
 		writeFileSync(file, "- x\n");
-		const scope = { userFile: join(dir, "USER.md"), project: { file, topicsDir: join(dir, "memory") }, sessions: [] };
-		const registry = await ExtensionRegistry.load([createMemoryExtension(() => scope)]);
+		const scope = { userFile: join(dir, "USER.md"), project: { file, topicsDir: join(dir, "memory") } };
+		const registry = await ExtensionRegistry.load([
+			createMemoryExtension({ store: fileSystemMemoryStore(new NodeFileSystem(dir)), getScope: () => scope }),
+		]);
 		const command = registry.commands.get("memory");
 		const output = await command?.handler("edit", {
 			messages: [],

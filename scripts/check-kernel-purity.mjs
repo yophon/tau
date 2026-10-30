@@ -23,6 +23,7 @@ const PURE_PACKAGES = [
 	{ dir: "ext-checkpoint", external: ["@yophon/tau-kernel"] },
 	{ dir: "protocol", external: [] },
 	{ dir: "ext-web", external: ["@yophon/tau-kernel"] },
+	{ dir: "ext-memory", external: ["@yophon/tau-kernel"] },
 	// The pure entry only; ./node wires the worker-thread sandbox (D30).
 	{ dir: "ext-codemode", external: ["@yophon/tau-kernel", "@yophon/tau-ext-tool-search"], skip: ["node.ts"] },
 	// The pure entry only; ./node starts the server processes (P45).
